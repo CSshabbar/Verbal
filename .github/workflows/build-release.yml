@@ -141,41 +141,88 @@ jobs:
           echo "mac_hash=$MAC_HASH" >> $GITHUB_OUTPUT
           echo "mac_size=$MAC_SIZE" >> $GITHUB_OUTPUT
 
+      - name: Install upload dependencies
+        run: pip install tuspy supabase
+
       - name: Upload Windows build to Supabase Storage
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: |
-          pip install supabase
-          python3 -c "
-          import supabase, os
-          sb = supabase.create_client(os.environ['SUPABASE_URL'], os.environ['SUPABASE_SERVICE_KEY'])
-          with open('dist/Verbal.exe', 'rb') as f:
-              sb.storage.from_('releases').upload(
-                  path='win/Verbal-${{ steps.version.outputs.version }}-setup.exe',
-                  file=f,
-                  file_options={'content-type': 'application/octet-stream', 'upsert': 'true'}
+          python3 << 'PYEOF'
+          import os
+          from tusclient import client as tus_client
+
+          supabase_url = os.environ['SUPABASE_URL']
+          service_key = os.environ['SUPABASE_SERVICE_KEY']
+          project_id = supabase_url.replace('https://', '').replace('.supabase.co', '')
+          tus_url = f'https://{project_id}.storage.supabase.co/storage/v1/upload/resumable'
+
+          file_path = 'dist/Verbal.exe'
+          storage_path = f'win/Verbal-${{ steps.version.outputs.version }}-setup.exe'
+          file_size = os.path.getsize(file_path)
+          print(f'Uploading {file_path} ({file_size} bytes) via TUS...')
+
+          tus = tus_client.TusClient(
+              tus_url,
+              headers={
+                  'Authorization': f'Bearer {service_key}',
+                  'x-upsert': 'true',
+              },
+          )
+          with open(file_path, 'rb') as f:
+              uploader = tus.uploader(
+                  file_stream=f,
+                  chunk_size=6 * 1024 * 1024,
+                  metadata={
+                      'bucketName': 'releases',
+                      'objectName': storage_path,
+                      'contentType': 'application/octet-stream',
+                  },
               )
+              uploader.upload()
           print('Windows upload done')
-          "
+          PYEOF
 
       - name: Upload Mac build to Supabase Storage
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: |
-          pip install supabase
-          python3 -c "
-          import supabase, os
-          sb = supabase.create_client(os.environ['SUPABASE_URL'], os.environ['SUPABASE_SERVICE_KEY'])
-          with open('dist/Verbal.dmg', 'rb') as f:
-              sb.storage.from_('releases').upload(
-                  path='mac/Verbal-${{ steps.version.outputs.version }}.dmg',
-                  file=f,
-                  file_options={'content-type': 'application/octet-stream', 'upsert': 'true'}
+          python3 << 'PYEOF'
+          import os
+          from tusclient import client as tus_client
+
+          supabase_url = os.environ['SUPABASE_URL']
+          service_key = os.environ['SUPABASE_SERVICE_KEY']
+          project_id = supabase_url.replace('https://', '').replace('.supabase.co', '')
+          tus_url = f'https://{project_id}.storage.supabase.co/storage/v1/upload/resumable'
+
+          file_path = 'dist/Verbal.dmg'
+          storage_path = f'mac/Verbal-${{ steps.version.outputs.version }}.dmg'
+          file_size = os.path.getsize(file_path)
+          print(f'Uploading {file_path} ({file_size} bytes) via TUS...')
+
+          tus = tus_client.TusClient(
+              tus_url,
+              headers={
+                  'Authorization': f'Bearer {service_key}',
+                  'x-upsert': 'true',
+              },
+          )
+          with open(file_path, 'rb') as f:
+              uploader = tus.uploader(
+                  file_stream=f,
+                  chunk_size=6 * 1024 * 1024,
+                  metadata={
+                      'bucketName': 'releases',
+                      'objectName': storage_path,
+                      'contentType': 'application/octet-stream',
+                  },
               )
+              uploader.upload()
           print('Mac upload done')
-          "
+          PYEOF
 
       - name: Register Windows version
         env:
