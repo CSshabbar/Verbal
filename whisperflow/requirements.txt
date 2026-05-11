@@ -1,4 +1,4 @@
-rumps>=0.4.0
+rumps>=0.4.0; sys_platform == 'darwin'
 pynput>=1.7.6
 sounddevice>=0.4.6
 soundfile>=0.12.0
