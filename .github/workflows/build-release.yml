@@ -146,26 +146,36 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: |
-          curl -s -X POST \
-            "${SUPABASE_URL}/storage/v1/object/releases/win/Verbal-${{ steps.version.outputs.version }}-setup.exe" \
-            -H "apikey: ${SUPABASE_SERVICE_KEY}" \
-            -H "Authorization: Bearer ${SUPABASE_SERVICE_KEY}" \
-            -H "Content-Type: application/octet-stream" \
-            -H "x-upsert: true" \
-            --data-binary "@dist/Verbal.exe"
+          pip install supabase
+          python3 -c "
+          import supabase, os
+          sb = supabase.create_client(os.environ['SUPABASE_URL'], os.environ['SUPABASE_SERVICE_KEY'])
+          with open('dist/Verbal.exe', 'rb') as f:
+              sb.storage.from_('releases').upload(
+                  path='win/Verbal-${{ steps.version.outputs.version }}-setup.exe',
+                  file=f,
+                  file_options={'content-type': 'application/octet-stream', 'upsert': 'true'}
+              )
+          print('Windows upload done')
+          "
 
       - name: Upload Mac build to Supabase Storage
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: |
-          curl -s -X POST \
-            "${SUPABASE_URL}/storage/v1/object/releases/mac/Verbal-${{ steps.version.outputs.version }}.dmg" \
-            -H "apikey: ${SUPABASE_SERVICE_KEY}" \
-            -H "Authorization: Bearer ${SUPABASE_SERVICE_KEY}" \
-            -H "Content-Type: application/octet-stream" \
-            -H "x-upsert: true" \
-            --data-binary "@dist/Verbal.dmg"
+          pip install supabase
+          python3 -c "
+          import supabase, os
+          sb = supabase.create_client(os.environ['SUPABASE_URL'], os.environ['SUPABASE_SERVICE_KEY'])
+          with open('dist/Verbal.dmg', 'rb') as f:
+              sb.storage.from_('releases').upload(
+                  path='mac/Verbal-${{ steps.version.outputs.version }}.dmg',
+                  file=f,
+                  file_options={'content-type': 'application/octet-stream', 'upsert': 'true'}
+              )
+          print('Mac upload done')
+          "
 
       - name: Register Windows version
         env:
