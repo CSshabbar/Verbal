@@ -6,8 +6,14 @@ import sys
 import time
 import threading
 import traceback
-import faulthandler
 
+# Fix for PyInstaller "console=False" builds where sys.stderr/stdout are None
+if sys.stderr is None:
+    sys.stderr = open(os.devnull, 'w')
+if sys.stdout is None:
+    sys.stdout = open(os.devnull, 'w')
+
+import faulthandler
 faulthandler.enable()
 
 from app.config import (
