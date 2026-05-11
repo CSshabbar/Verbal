@@ -1,0 +1,48 @@
+{
+  "expo": {
+    "name": "Verbal",
+    "slug": "verbal-mobile",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#1A1917"
+    },
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.verbal.app",
+      "infoPlist": {
+        "NSMicrophoneUsageDescription": "Verbal needs microphone access to record your voice for transcription.",
+        "NSSpeechRecognitionUsageDescription": "Verbal uses speech recognition to transcribe your voice."
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#1A1917"
+      },
+      "permissions": [
+        "RECORD_AUDIO"
+      ],
+      "package": "com.verbal.app"
+    },
+    "plugins": [
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "Verbal needs microphone access to record your voice."
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Verbal needs photo library access to share images via Canvas."
+        }
+      ]
+    ],
+    "scheme": "verbal"
+  }
+}

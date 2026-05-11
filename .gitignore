@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Build output
+build/
+dist/
+*.spec.bak
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment / secrets
+.env
+.env.local
+.env.*.local
+
+# Claude / Qoder
+.claude/
+.qoder/
+
+# Node
+node_modules/
+
+# Expo
+.expo/
+*.jks
+*.keystore
+
+# WhisperFlow model cache
+*.bin
+
+# Logs
+*.log
