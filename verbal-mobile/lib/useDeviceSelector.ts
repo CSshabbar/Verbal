@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { Platform } from 'react-native';
 import { supabase } from './supabase';
-import { getUserId, getDeviceName } from './storage';
+import { getUserId, getDeviceName, getDeviceId } from './storage';
 
 export interface Device {
   device_id:   string;
@@ -26,7 +26,7 @@ export function useDeviceSelector() {
     (async () => {
       const uid = await getUserId();
       const dn  = await getDeviceName();
-      const did = `${DEVICE_TYPE}_${uid.slice(-8)}`;
+      const did = await getDeviceId();
       if (!mounted) return;
       setMyDeviceId(did);
 

@@ -3,6 +3,12 @@
 import sys
 import os
 
+import faster_whisper
+import ctranslate2
+
+fw_dir = os.path.dirname(faster_whisper.__file__)
+ct2_dir = os.path.dirname(ctranslate2.__file__)
+
 # Convert PNG icon to ICO for Windows
 icon_src = 'assets/icon.png'
 icon_ico = 'assets/icon.ico'
@@ -18,6 +24,8 @@ a = Analysis(
     datas=[
         ('assets/icon.png', 'assets'),
         ('assets/icon_active.png', 'assets'),
+        (fw_dir, 'faster_whisper'),
+        (ct2_dir, 'ctranslate2'),
     ],
     hiddenimports=[
         'app.recorder',
@@ -29,10 +37,15 @@ a = Analysis(
         'app.win_injector',
         'app.win_overlay',
         'app.win_dashboard',
+        'app.shared_dashboard',
         'app.win_main',
         'faster_whisper',
+        'ctranslate2',
         'google.generativeai',
         'groq',
+        'webview',
+        'webview.platforms.winforms',
+        'webview.platforms.edgechromium',
         'pystray._win32',
         'pynput.keyboard._win32',
         'pynput.mouse._win32',

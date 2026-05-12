@@ -62,10 +62,10 @@ class VerbalWinApp:
         self._tray_icon = None
 
         from app.win_overlay import WinOverlay
-        from app.win_dashboard import WinDashboard
+        from app.shared_dashboard import SharedDashboard
 
         self.overlay = WinOverlay()
-        self.dashboard = WinDashboard(self)
+        self.dashboard = SharedDashboard(self)
 
         history = self.config.get("history", [])
         self._total_transcriptions = len(history)
@@ -88,7 +88,7 @@ class VerbalWinApp:
             f"Verbal v{APP_VERSION}",
             menu=pystray.Menu(
                 pystray.MenuItem("Start Recording", self._tray_toggle_record),
-                pystray.MenuItem("Open Dashboard", self._tray_open_dashboard),
+                pystray.MenuItem("Open Verbal", self._tray_open_dashboard),
                 pystray.Menu.SEPARATOR,
                 pystray.MenuItem(f"Verbal v{APP_VERSION}", None, enabled=False),
                 pystray.MenuItem("Quit", self._tray_quit),
@@ -250,8 +250,17 @@ class VerbalWinApp:
             _play_sound("done")
 
             if self._sync:
+                target = self.dashboard._target_device_id if self.dashboard else "__all__"
+                if target == "__none__":
+                    push_target = "__skip__"
+                else:
+                    push_target = None if target in (None, "__all__") else target
+            else:
+                push_target = "__skip__"
+
+            if self._sync and push_target != "__skip__":
                 threading.Thread(
-                    target=self._sync.push, args=(result, None), daemon=True
+                    target=self._sync.push, args=(result, push_target), daemon=True
                 ).start()
 
             brief = f"Pasted | {word_count}w" if success else f"Copied | {word_count}w"
@@ -291,11 +300,27 @@ class VerbalWinApp:
         except Exception as e:
             logger.error(f"Sync init failed: {e}")
 
+    def _restart_sync(self):
+        if self._sync:
+            try:
+                self._sync.stop()
+            except Exception:
+                pass
+            self._sync = None
+        self._init_sync()
+
     def _on_sync_receive(self, text: str, device_name: str):
         import pyperclip
         pyperclip.copy(text)
         logger.info(f"Sync received from {device_name}: '{text[:40]}'")
-        brief = f"From {device_name} | {len(text.split())}w - copied"
+        try:
+            from app.win_injector import inject_text
+            success = inject_text(text)
+        except Exception as e:
+            logger.error(f"Sync paste failed: {e}")
+            success = False
+        action = "pasted" if success else "copied"
+        brief = f"From {device_name} | {len(text.split())}w - {action}"
         self.overlay.show_briefly(brief, duration=2.5)
 
     # ── Update check ──────────────────────────────────────────────────────
