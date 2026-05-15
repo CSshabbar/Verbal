@@ -24,6 +24,8 @@ DEFAULT_CONFIG = {
         "summarize", "rephrase", "translate", "shorter", "longer"
     ],
     "recording_mode": "toggle",
+    "hotkey_hold": 54 if PLATFORM == "mac" else "alt_r",
+    "hotkey_toggle": 54 if PLATFORM == "mac" else "alt_r",
     "history": [],       # list of {"text": str, "app": str, "ts": str}
     "pinned": [],        # list of {"text": str, "app": str, "ts": str}
     "daily": {"date": "", "words": 0},
@@ -42,13 +44,30 @@ def load_config() -> dict:
     ensure_dirs()
     load_dotenv(ENV_FILE)
 
+    config = None
     if CONFIG_FILE.exists():
-        with open(CONFIG_FILE) as f:
-            config = json.load(f)
+        try:
+            with open(CONFIG_FILE) as f:
+                config = json.load(f)
+        except (json.JSONDecodeError, Exception):
+            backup = CONFIG_FILE.with_suffix(".json.bak")
+            CONFIG_FILE.rename(backup)
+
+    if config is None:
+        config = dict(DEFAULT_CONFIG)
+    else:
+        # Migration: if old hotkey exists and new ones don't
+        if "hotkey" in config and "hotkey_hold" not in config:
+            old = config["hotkey"]
+            # Convert known legacy strings to keycodes/names
+            if old == "cmd_r":   val = 54
+            elif old == "alt_r":  val = "alt_r"
+            else: val = old
+            config["hotkey_hold"] = val
+            config["hotkey_toggle"] = val
+
         for key, val in DEFAULT_CONFIG.items():
             config.setdefault(key, val)
-    else:
-        config = dict(DEFAULT_CONFIG)
 
     env_key = os.getenv("GEMINI_API_KEY", "").strip()
     if env_key and env_key not in config["gemini_api_keys"]:
@@ -60,8 +79,10 @@ def load_config() -> dict:
 
 def save_config(config: dict):
     ensure_dirs()
-    with open(CONFIG_FILE, "w") as f:
+    tmp = CONFIG_FILE.with_suffix(".tmp")
+    with open(tmp, "w") as f:
         json.dump(config, f, indent=2)
+    tmp.replace(CONFIG_FILE)
 
 
 def add_gemini_key(config: dict, key: str) -> dict:
