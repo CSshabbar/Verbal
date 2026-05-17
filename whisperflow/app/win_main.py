@@ -98,12 +98,12 @@ class VerbalWinApp:
 
         # Dynamic status text
         self._menu_status = pystray.MenuItem(
-            lambda: self._status_text(), None, enabled=False
+            lambda item: self._status_text(), None, enabled=False
         )
 
         # Dynamic record button text
         self._menu_record = pystray.MenuItem(
-            lambda: "Stop Recording" if self._is_recording else "Start Recording",
+            lambda item: "Stop Recording" if self._is_recording else "Start Recording",
             self._tray_toggle_record,
         )
 
@@ -129,7 +129,7 @@ class VerbalWinApp:
             pystray.MenuItem("Groq API Key...", self._tray_manage_groq),
             pystray.MenuItem("Gemini API Key...", self._tray_manage_gemini),
             pystray.Menu.SEPARATOR,
-            pystray.MenuItem(lambda: f"Verbal v{APP_VERSION}", self._tray_about),
+            pystray.MenuItem(lambda item: f"Verbal v{APP_VERSION}", self._tray_about),
             pystray.MenuItem("Quit", self._tray_quit),
         )
 
