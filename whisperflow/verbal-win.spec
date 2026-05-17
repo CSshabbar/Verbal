@@ -24,6 +24,9 @@ a = Analysis(
     datas=[
         ('assets/icon.png', 'assets'),
         ('assets/icon_active.png', 'assets'),
+        ('assets/sounds/start.wav', 'assets/sounds'),
+        ('assets/sounds/stop.wav', 'assets/sounds'),
+        ('assets/sounds/done.wav', 'assets/sounds'),
         (fw_dir, 'faster_whisper'),
         (ct2_dir, 'ctranslate2'),
     ],

@@ -124,6 +124,7 @@ class VerbalWinApp:
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Open Verbal", self._tray_open_dashboard),
             pystray.MenuItem("Open Canvas", self._tray_open_canvas),
+            pystray.MenuItem("Settings...", self._tray_open_settings),
             pystray.MenuItem("Recording Mode", mode_menu),
             pystray.MenuItem("Whisper Model", model_menu),
             pystray.MenuItem("Groq API Key...", self._tray_manage_groq),
@@ -188,6 +189,10 @@ class VerbalWinApp:
         self.dashboard.show()
 
     def _tray_open_canvas(self, icon=None, item=None):
+        self.dashboard.show()
+        self.dashboard._on_tab_select(3)
+
+    def _tray_open_settings(self, icon=None, item=None):
         self.dashboard.show()
         self.dashboard._on_tab_select(4)
 
