@@ -78,6 +78,7 @@ class SyncClient:
 
     def push(self, text: str, target_device_id: str | None = None):
         """Insert transcription via REST. If target_device_id set, only that device receives it."""
+        logger.info(f"Sync push request: target={target_device_id}")
         threading.Thread(target=self._push_rest, args=(text, target_device_id), daemon=True).start()
 
     def _push_rest(self, text: str, target_device_id: str | None = None):
@@ -88,8 +89,12 @@ class SyncClient:
                 "device_name": self.device_name,
                 "text":        text,
             }
+            # Only include target_device_id if it's not None (None means broadcast)
             if target_device_id:
                 payload["target_device_id"] = target_device_id
+                logger.debug(f"Targeting specific device: {target_device_id}")
+            else:
+                logger.debug("Broadcasting to all devices")
 
             resp = httpx.post(
                 f"{REST_URL}/transcriptions",

@@ -41,7 +41,9 @@
         {
           "photosPermission": "Verbal needs photo library access to share images via Canvas."
         }
-      ]
+      ],
+      "expo-font",
+      "expo-asset"
     ],
     "scheme": "verbal"
   }

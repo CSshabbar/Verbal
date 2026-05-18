@@ -241,6 +241,22 @@ class WinDashboard:
                      values=["hold", "toggle"],
                      state="readonly", width=20, font=("Segoe UI", 11)).pack(**pad, anchor="w")
 
+        # Hotkeys
+        tk.Label(scroll_frame, text="HOTKEYS", font=("Segoe UI", 9, "bold"),
+                 fg=MUTED, bg=SHEET_BG).pack(**pad, anchor="w")
+        
+        hold_var = tk.StringVar(value=config.get("hotkey_hold", "alt_r"))
+        self._hold_btn = tk.Button(scroll_frame, textvariable=hold_var, **entry_opts,
+                                  command=lambda: self._record_hotkey("hold", hold_var))
+        self._hold_btn.pack(**pad)
+        tk.Label(scroll_frame, text="Push-to-talk Key", font=("Segoe UI", 8), fg=MUTED, bg=SHEET_BG).pack(padx=20, anchor="w")
+
+        toggle_var = tk.StringVar(value=config.get("hotkey_toggle", "alt_r"))
+        self._toggle_btn = tk.Button(scroll_frame, textvariable=toggle_var, **entry_opts,
+                                    command=lambda: self._record_hotkey("toggle", toggle_var))
+        self._toggle_btn.pack(**pad)
+        tk.Label(scroll_frame, text="Toggle Key", font=("Segoe UI", 8), fg=MUTED, bg=SHEET_BG).pack(padx=20, anchor="w")
+
         # Sync
         tk.Label(scroll_frame, text="SYNC", font=("Segoe UI", 9, "bold"),
                  fg=MUTED, bg=SHEET_BG).pack(**pad, anchor="w")
@@ -290,7 +306,30 @@ class WinDashboard:
         config["sync_user_id"] = uid_var.get().strip()
         config["sync_device_name"] = dn_var.get().strip() or "Windows"
         save_config(config)
+        self.app.config = config
         messagebox.showinfo("Settings", "Saved")
 
+    def _record_hotkey(self, mode, var):
+        var.set("Press any key...")
+        self._window.bind("<Key>", lambda e: self._on_tk_key(e, mode, var))
+
+    def _on_tk_key(self, event, mode, var):
+        self._window.unbind("<Key>")
+        key = event.keysym.lower()
+        if key == "alt_l" or key == "alt_r" or key == "control_l" or key == "control_r":
+            pass # Keep it as is
+        elif len(key) == 1:
+            pass # Keep it as is
+
+        var.set(key)
+        config = load_config()
+        if mode == "hold":
+            config["hotkey_hold"] = key
+        else:
+            config["hotkey_toggle"] = key
+        save_config(config)
+        self.app.config = config
+
     def _refresh(self):
+
         self._refresh_history()

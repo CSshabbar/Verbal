@@ -124,6 +124,7 @@ class VerbalWinApp:
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Open Verbal", self._tray_open_dashboard),
             pystray.MenuItem("Open Canvas", self._tray_open_canvas),
+            pystray.MenuItem("Open Notes", self._tray_open_notes),
             pystray.MenuItem("Settings...", self._tray_open_settings),
             pystray.MenuItem("Recording Mode", submenu=mode_menu),
             pystray.MenuItem("Whisper Model", submenu=model_menu),
@@ -191,6 +192,10 @@ class VerbalWinApp:
     def _tray_open_canvas(self, icon=None, item=None):
         self.dashboard.show()
         self.dashboard._on_tab_select(3)
+
+    def _tray_open_notes(self, icon=None, item=None):
+        self.dashboard.show()
+        self.dashboard._on_tab_select(5)
 
     def _tray_open_settings(self, icon=None, item=None):
         self.dashboard.show()

@@ -122,10 +122,25 @@ class VerbalApp(rumps.App):
         self.hotkey_listener = HotkeyListener(
             on_start=self._on_hotkey_press,
             on_stop=self._on_hotkey_release,
+            on_toggle=self._on_hotkey_toggle,
             on_esc=self._on_esc_pressed,
+            hold_key=self.config.get("hotkey_hold", 54),
+            toggle_key=self.config.get("hotkey_toggle", 54),
         )
 
         self._ui_timer = rumps.Timer(self._drain_ui_queue, 0.1)
+
+    def _on_hotkey_toggle(self):
+        """Called by HotkeyListener when the toggle key is pressed."""
+        self._ui_queue.put(self._toggle_recording)
+
+    def _update_hotkeys(self):
+        """Update the hotkey listener with new keys from config."""
+        if self.hotkey_listener:
+            self.hotkey_listener.update_keys(
+                self.config.get("hotkey_hold", 54),
+                self.config.get("hotkey_toggle", 54)
+            )
 
     def _status_text(self):
         return f"{self._total_transcriptions} transcriptions | {self._total_words} words"
@@ -226,21 +241,18 @@ class VerbalApp(rumps.App):
         save_config(self.config)
 
     def _on_hotkey_press(self):
-        if self._mode == MODE_HOLD:
-            if not self._is_recording:
-                self._on_main(self._on_record_start)
-        else:
-            # Toggle mode: debounce — ignore if last toggle was < 1s ago
-            now = time.time()
-            if now - self._last_toggle_time < 1.0:
-                return
-            self._last_toggle_time = now
-            self._on_main(lambda: self._toggle_recording(None))
+        """Called by HotkeyListener for Hold Key Down."""
+        if not self._is_recording:
+            self._on_main(self._on_record_start)
 
     def _on_hotkey_release(self):
-        if self._mode == MODE_HOLD:
-            if self._is_recording:
-                self._on_main(self._on_record_stop)
+        """Called by HotkeyListener for Hold Key Up."""
+        if self._is_recording:
+            self._on_main(self._on_record_stop)
+
+    def _on_hotkey_toggle(self):
+        """Called by HotkeyListener for Toggle Key Down."""
+        self._on_main(lambda: self._toggle_recording(None))
 
     def _on_esc_pressed(self):
         if self._processing:
@@ -290,7 +302,8 @@ class VerbalApp(rumps.App):
             self.record_btn.title = "Start Recording"
             self.dashboard.update_recording_state(False)
 
-            if audio is None or len(audio) < 1600:
+            # Minimum 0.5s of audio to avoid accidental clicks / hallucinations
+            if audio is None or len(audio) < 8000:
                 self.status_item.title = self._status_text()
                 self.overlay.hide()
                 return
@@ -344,9 +357,8 @@ class VerbalApp(rumps.App):
             # Push to other devices if sync is enabled
             if self._sync:
                 target = self.dashboard._target_device_id if self.dashboard else "__all__"
-                # None = don't send to any device
-                if target is not None:
-                    # "__all__" = broadcast (pass None to push), specific id = targeted
+                if target not in (None, "__none__"):
+                    # "__all__" = broadcast (None), else = specific device_id
                     push_target = None if target == "__all__" else target
                     threading.Thread(
                         target=self._sync.push, args=(result, push_target), daemon=True

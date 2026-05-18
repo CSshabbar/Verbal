@@ -2,6 +2,7 @@ import logging
 import math
 import threading
 import time
+import datetime as _dt
 import pyperclip
 
 from AppKit import (
@@ -57,6 +58,32 @@ CARD_PIN_BG = _hex("FFF7F2")      # very subtle warm tint for pinned
 CARD_TEXT   = _hex("2C2A27")      # slightly softer than pure black — more elegant
 CARD_SUB    = _hex("9A9590")      # muted subtitle
 CARD_BORDER = _hex("EBEBEB")      # barely-there border
+
+KEYCODE_MAP = {
+    54: "Right ⌘",
+    55: "Left ⌘",
+    56: "Left ⇧",
+    57: "Caps Lock",
+    58: "Left ⌥",
+    59: "Left ⌃",
+    60: "Right ⇧",
+    61: "Right ⌥",
+    62: "Right ⌃",
+    36: "Return",
+    48: "Tab",
+    49: "Spacebar",
+    51: "Delete",
+    53: "Escape",
+    123: "Left Arrow",
+    124: "Right Arrow",
+    125: "Down Arrow",
+    126: "Up Arrow",
+    96: "F5", 97: "F6", 98: "F7", 99: "F3", 100: "F8", 101: "F9", 
+    109: "F10", 103: "F11", 111: "F12",
+}
+
+def _keycode_to_name(code):
+    return KEYCODE_MAP.get(code, f"Key {code}")
 PIN_ACCENT  = _hex("E05A2B")      # orange for pin state
 ICON_GRAY   = _hex("EFEFED")      # icon box bg (inactive)
 ICON_ORANGE = _hex("E05A2B")      # icon box bg (active/pinned)
@@ -388,23 +415,22 @@ def _card_h(text, w, ekey, editing=False):
     return 42 + lines * 18 + 16
 
 
-# ── Device selector (segmented pill control) ─────────────────────────────────
+# ── Device selector (Professional minimalist chips) ───────────────────────────
 class DeviceSelectorView(NSView):
     """
-    Horizontal pill selector: [None] [📱1] [💻1] ...
-    Tapping a segment sets the target device.
+    Minimalist horizontal chip selector.
     """
     def initWithFrame_devices_selected_onSelect_(
             self, frame, devices, selected_id, on_select):
         self = objc.super(DeviceSelectorView, self).initWithFrame_(frame)
         if self is None: return None
-        self._devices    = devices        # [{device_id, device_name, device_type}]
-        self._selected   = selected_id   # None or device_id
+        self._devices    = devices
+        self._selected   = selected_id
         self._on_select  = on_select
-        self._seg_rects  = []            # [(rect, device_id_or_None)]
+        self._seg_rects  = []
         self.setWantsLayer_(True)
-        self.layer().setBackgroundColor_(_hex("FFFFFF", 0.07).CGColor())
-        self.layer().setCornerRadius_(12)
+        # Transparent background for a cleaner look
+        self.layer().setBackgroundColor_(NSColor.clearColor().CGColor())
         self._build()
         return self
 
@@ -412,67 +438,68 @@ class DeviceSelectorView(NSView):
         self._selected = device_id
         self._build()
 
-    def _icon_for(self, dtype: str, idx: int) -> str:
-        if dtype in ('iphone', 'ios', 'android'):
-            return f"[M{idx}]"   # Mobile
-        return f"[L{idx}]"       # Laptop/Mac
+    def _icon_for(self, dtype: str, name: str) -> str:
+        icon = "📱 " if dtype in ('iphone', 'ios', 'android') else "💻 "
+        display_name = (name[:10] + ".." if len(name) > 10 else name) if name else "Device"
+        return f"{icon}{display_name}"
 
     def _build(self):
         for sv in list(self.subviews()): sv.removeFromSuperview()
         self._seg_rects = []
 
-        w = self.bounds().size.width
-        h = self.bounds().size.height
-
-        # Segments: None (don't send) + All (broadcast) + one per device
+        # Segments: None (local) + All (broadcast) + specific devices
         segments = [
-            (None,       "✕ None"),   # don't send to any device
-            ("__all__",  "⊕ All"),    # send to all
+            ("__none__", "✕ Local"),
+            ("__all__",  "⊕ All"),
         ]
-        type_counts: dict = {}
         for d in self._devices:
             dtype = d.get("device_type", "mac")
-            type_counts[dtype] = type_counts.get(dtype, 0) + 1
-            icon = self._icon_for(dtype, type_counts[dtype])
-            segments.append((d["device_id"], icon))
+            name  = d.get("device_name", "Unknown")
+            segments.append((d["device_id"], self._icon_for(dtype, name)))
 
-        # If no other devices, show a hint
-        if len(segments) == 1:
-            hint = NSTextField.labelWithString_("No devices online")
-            hint.setFont_(NSFont.systemFontOfSize_weight_(10, -0.3))
-            hint.setTextColor_(_hex("4A4845"))
-            hint.setAlignment_(NSTextAlignmentCenter)
-            hint.setFrame_(NSMakeRect(0, (h - 13) / 2, w, 13))
-            self.addSubview_(hint)
-            return
+        if len(segments) <= 2:
+            return # Don't show anything if only Local/All are available and no other devices
 
-        seg_w = w / len(segments)
+        # Calculate layout: horizontal row of pills with gap
+        cur_x = 0
+        gap = 8
+        h = self.bounds().size.height
 
-        for i, (dev_id, label) in enumerate(segments):
+        for dev_id, label in segments:
             is_sel = (dev_id == self._selected)
-            sx = i * seg_w
+            
+            # Measure text width
+            font = NSFont.systemFontOfSize_weight_(11, 0.6 if is_sel else 0.3)
+            tw = NSString.stringWithString_(label).sizeWithAttributes_({"NSFont": font}).width
+            pill_w = tw + 24
+            
+            rect = NSMakeRect(cur_x, 0, pill_w, h)
+            self._seg_rects.append((rect, dev_id))
 
+            pill = NSView.alloc().initWithFrame_(rect)
+            pill.setWantsLayer_(True)
+            pill.layer().setCornerRadius_(h/2)
+            
             if is_sel:
-                pill = NSView.alloc().initWithFrame_(NSMakeRect(sx + 2, 2, seg_w - 4, h - 4))
-                pill.setWantsLayer_(True)
-                pill.layer().setCornerRadius_(10)
-                pill.layer().setBackgroundColor_(
-                    H_ACCENT.CGColor() if dev_id and dev_id != "__all__"
-                    else _hex("FFFFFF", 0.15).CGColor()
-                )
-                self.addSubview_(pill)
+                pill.layer().setBackgroundColor_(_hex("FFFFFF", 0.1).CGColor())
+                pill.layer().setBorderWidth_(1.0)
+                pill.layer().setBorderColor_(H_ACCENT.CGColor())
+            else:
+                pill.layer().setBackgroundColor_(NSColor.clearColor().CGColor())
+                pill.layer().setBorderWidth_(1.0)
+                pill.layer().setBorderColor_(_hex("FFFFFF", 0.08).CGColor())
+            
+            self.addSubview_(pill)
 
             lbl = NSTextField.labelWithString_(label)
-            lbl.setFont_(NSFont.systemFontOfSize_weight_(11, 0.5 if is_sel else 0.3))
-            lbl.setTextColor_(
-                _hex("FFFFFF") if is_sel else _hex("7A7570")
-            )
+            lbl.setFont_(font)
+            lbl.setTextColor_(H_ACCENT if is_sel else _hex("7A7570"))
             lbl.setAlignment_(NSTextAlignmentCenter)
-            lbl.setFrame_(NSMakeRect(sx, (h - 14) / 2, seg_w, 14))
+            lbl.setFrame_(NSMakeRect(0, (h - 14) / 2, pill_w, 14))
             lbl.setSelectable_(False)
-            self.addSubview_(lbl)
+            pill.addSubview_(lbl)
 
-            self._seg_rects.append((NSMakeRect(sx, 0, seg_w, h), dev_id))
+            cur_x += pill_w + gap
 
     def mouseUp_(self, event):
         loc = event.locationInWindow()
@@ -640,6 +667,7 @@ NAV_ITEMS = [
     ("By App",    "Grouped by app",      1),
     ("Stats",     "Usage overview",      2),
     ("Canvas",    "Shared clipboard",    4),
+    ("Notes",     "Voice notes & ideas", 5),
     ("Settings",  "Keys & preferences",  3),
 ]
 
@@ -918,10 +946,11 @@ class DashboardWindow:
     def __init__(self, app_ref):
         self._window    = None; self._app = app_ref
         self._hero      = None; self._rec_btn = None
+        self._recording_hotkey_for = None # "hold" or "toggle"
         self._scroll    = None; self._container = None
         self._perm      = None; self._timer = None
         self._sidebar   = None
-        self._active_tab = 0   # 0=All, 1=By App, 2=Stats, 3=Settings, 4=Canvas
+        self._active_tab = 0   # 0=All, 1=By App, 2=Stats, 3=Settings, 4=Canvas, 5=Notes
         self._app_groups = {}
         self._page_lbl  = None
         self._canvas_text_view = None
@@ -1070,7 +1099,7 @@ class DashboardWindow:
     # ── Tab navigation ────────────────────────────────────────────────────────
     def _on_tab_select(self, idx):
         PAGE_NAMES = {0: "All transcriptions", 1: "By application",
-                      2: "Statistics", 3: "Settings", 4: "Canvas"}
+                      2: "Statistics", 3: "Settings", 4: "Canvas", 5: "Notes"}
         self._active_tab = idx
         if self._sidebar:
             self._sidebar.setActiveItem_(idx)
@@ -1078,7 +1107,7 @@ class DashboardWindow:
             self._page_lbl.setStringValue_(PAGE_NAMES.get(idx, ""))
         # Show/hide record button and clear button based on tab
         if self._rec_btn:
-            self._rec_btn.setHidden_(idx == 4)
+            self._rec_btn.setHidden_(idx in (4, 5))
         self._rebuild()
 
     # ── Edit ─────────────────────────────────────────────────────────────────
@@ -1161,11 +1190,77 @@ class DashboardWindow:
             _upd_rec_btn(self._rec_btn, self._app._is_recording)
         self._rebuild()
 
+    # ── Hotkey Selection ──────────────────────────────────────────────────────
+    def _start_hotkey_record(self, mode):
+        """Begin listening for the next key press to assign as a hotkey."""
+        from AppKit import NSEvent
+        import Quartz
+        
+        if self._recording_hotkey_for == mode:
+            # Cancel if clicked again
+            self._recording_hotkey_for = None
+            self._rebuild_settings()
+            return
+
+        self._recording_hotkey_for = mode
+        self._rebuild_settings()
+
+        # Add a local monitor to capture the next key
+        mask = Quartz.NSEventMaskKeyDown | Quartz.NSEventMaskFlagsChanged
+        self._key_monitor = NSEvent.addLocalMonitorForEventsMatchingMask_handler_(
+            mask, self._handle_key_capture
+        )
+
+    def _handle_key_capture(self, event):
+        """Internal handler for the local event monitor."""
+        from AppKit import NSEvent
+        if self._recording_hotkey_for:
+            code = event.keyCode()
+            # Ignore Escape for hotkeys (used for cancelling)
+            if code == 53: 
+                self._recording_hotkey_for = None
+                self._rebuild_settings()
+            else:
+                self._on_hotkey_captured(code)
+            
+            # Stop monitoring
+            if hasattr(self, "_key_monitor") and self._key_monitor:
+                NSEvent.removeMonitor_(self._key_monitor)
+                self._key_monitor = None
+            return None # Swallow the event
+        return event
+
+    def _on_hotkey_captured(self, keycode):
+        """Save the captured keycode and update listener."""
+        mode = self._recording_hotkey_for
+        self._recording_hotkey_for = None
+        
+        cfg = self._app.config
+        if mode == "hold":
+            cfg["hotkey_hold"] = keycode
+        else:
+            cfg["hotkey_toggle"] = keycode
+        
+        from app.config import save_config
+        save_config(cfg)
+        
+        # Update active listener
+        if self._app.hotkey_listener:
+            self._app.hotkey_listener.update_keys(
+                cfg.get("hotkey_hold", 54),
+                cfg.get("hotkey_toggle", 54)
+            )
+            
+        self._rebuild_settings()
+
     # ── Rebuild ───────────────────────────────────────────────────────────────
     def _rebuild(self, expanded_card=None):
         if not self._container: return
         if self._active_tab == 4:
             self._rebuild_canvas()
+            return
+        if self._active_tab == 5:
+            self._rebuild_notes()
             return
         if self._active_tab == 1:
             self._rebuild_by_app()
@@ -1441,6 +1536,8 @@ class DashboardWindow:
             68 +          # model row
             12 + 18 +     # Recording section label
             68 +          # toggle row
+            88 +          # hold hotkey row
+            88 +          # toggle hotkey row
             12 + 18 +     # Sync section label
             68 +          # sync toggle row
             (68 + 68 if sync_enabled else 0) +  # user ID + device name rows
@@ -1459,6 +1556,48 @@ class DashboardWindow:
             lbl.setTextColor_(CARD_SUB)
             lbl.setFrame_(NSMakeRect(2, yy - 14, sw, 13))
             self._container.addSubview_(lbl)
+
+        def hotkey_row(label, mode, keycode, yy):
+            row = NSView.alloc().initWithFrame_(NSMakeRect(0, yy - 80, sw, 80))
+            row.setWantsLayer_(True)
+            row.layer().setBackgroundColor_(CARD_BG.CGColor())
+            row.layer().setCornerRadius_(CARD_R)
+            row.layer().setShadowOpacity_(0.04)
+            row.layer().setShadowRadius_(4)
+            self._container.addSubview_(row)
+
+            tl = NSTextField.labelWithString_(label)
+            tl.setFont_(NSFont.systemFontOfSize_weight_(12.5, 0.5))
+            tl.setTextColor_(CARD_TEXT)
+            tl.setFrame_(NSMakeRect(14, 54, sw - 28, 16))
+            row.addSubview_(tl)
+
+            is_rec = (self._recording_hotkey_for == mode)
+            if is_rec:
+                key_text = "Press any key..."
+                color = H_ACCENT
+            else:
+                key_text = _keycode_to_name(keycode)
+                color = CARD_SUB
+
+            sl = NSTextField.labelWithString_(key_text)
+            sl.setFont_(NSFont.systemFontOfSize_weight_(11, -0.2))
+            sl.setTextColor_(color)
+            sl.setFrame_(NSMakeRect(14, 36, sw - 100, 14))
+            row.addSubview_(sl)
+
+            rec_d = _d(lambda: self._start_hotkey_record(mode))
+            rb = NSButton.alloc().initWithFrame_(NSMakeRect(sw - 90, 10, 76, 26))
+            rb.setBordered_(False); rb.setWantsLayer_(True)
+            rb.layer().setCornerRadius_(8)
+            rb.layer().setBackgroundColor_(H_ACCENT.CGColor() if is_rec else H_BG.CGColor())
+            rb.setAttributedTitle_(_attr(
+                "Cancel" if is_rec else "Record",
+                _hex("FFFFFF") if is_rec else H_TEXT,
+                NSFont.systemFontOfSize_weight_(10.5, 0.5)))
+            rb.setTarget_(rec_d); rb.setAction_(objc.selector(rec_d.fire_, signature=b'v@:@'))
+            row.addSubview_(rb)
+            return row
 
         def divider(yy):
             d = NSView.alloc().initWithFrame_(NSMakeRect(0, yy, sw, 1))
@@ -1634,6 +1773,20 @@ class DashboardWindow:
             lambda: self._set_recording_mode("hold" if mode != "hold" else "toggle")
         )
         y -= 68
+
+        hotkey_row(
+            "Push-to-talk Key",
+            "hold",
+            cfg.get("hotkey_hold", 54), y
+        )
+        y -= 88
+
+        hotkey_row(
+            "Toggle Key",
+            "toggle",
+            cfg.get("hotkey_toggle", 54), y
+        )
+        y -= 88
 
         # ── Sync section ──────────────────────────────────────────────────
         y -= 12
@@ -1837,6 +1990,147 @@ class DashboardWindow:
             self._app.config["sync_device_name"] = r.text.strip()
             save_config(self._app.config)
             self._rebuild_settings()
+
+    # ── Notes tab ─────────────────────────────────────────────────────────────
+    def _rebuild_notes(self):
+        if not self._container: return
+        for sv in list(self._container.subviews()): sv.removeFromSuperview()
+        sw = self._scroll.frame().size.width
+        sh = self._scroll.frame().size.height
+        self._container.setFrame_(NSMakeRect(0, 0, sw, sh))
+
+        LIST_W = 220
+        y = sh - 16
+
+        lbl = NSTextField.labelWithString_("Notes")
+        lbl.setFont_(NSFont.systemFontOfSize_weight_(22, 0.8))
+        lbl.setTextColor_(H_TEXT)
+        lbl.setFrame_(NSMakeRect(16, y - 28, LIST_W - 16, 24))
+        self._container.addSubview_(lbl)
+
+        new_btn = NSButton.alloc().initWithFrame_(NSMakeRect(16, y - 62, LIST_W - 16, 28))
+        new_btn.setBordered_(False); new_btn.setWantsLayer_(True)
+        new_btn.layer().setCornerRadius_(6)
+        new_btn.layer().setBackgroundColor_(H_ACCENT.CGColor())
+        new_btn.setAttributedTitle_(_attr("+ New Note", H_SHEET, NSFont.systemFontOfSize_weight_(12, 0.5)))
+        new_d = _d(self._notes_new)
+        new_btn.setTarget_(new_d)
+        new_btn.setAction_(objc.selector(new_d.fire_, signature=b'v@:@'))
+        self._container.addSubview_(new_btn)
+
+        self._notes_list = []
+        self._notes_selected = None
+        self._notes_data = []
+        threading.Thread(target=self._notes_load, daemon=True).start()
+
+    def _notes_load(self):
+        import httpx
+        from app.sync import SUPABASE_KEY, SUPABASE_URL
+        user_id = self._app.config.get("sync_user_id", "")
+        if not user_id:
+            self._notes_data = []
+            return
+        try:
+            resp = httpx.get(
+                f"{SUPABASE_URL}/rest/v1/notes",
+                headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"},
+                params={"user_id": f"eq.{user_id}", "order": "updated_at.desc", "limit": "200", "select": "*"},
+                timeout=8,
+            )
+            if resp.status_code == 200:
+                self._notes_data = resp.json()
+        except Exception as e:
+            logger.error(f"Notes load failed: {e}")
+        self._rebuild_notes()
+
+    def _notes_new(self):
+        import rumps
+        r = rumps.Window(
+            message="Enter note content:",
+            title="New Note",
+            default_text="",
+            ok="Save", cancel="Cancel",
+            dimensions=(440, 120),
+        ).run()
+        if r.clicked and r.text.strip():
+            self._notes_save(None, "", r.text.strip())
+
+    def _notes_save(self, note_id, title, content):
+        import httpx
+        from app.sync import SUPABASE_KEY, SUPABASE_URL
+        user_id = self._app.config.get("sync_user_id", "")
+        device_name = self._app.config.get("sync_device_name", "Mac")
+        if not user_id:
+            return
+        try:
+            now = _dt.datetime.now(_dt.timezone.utc).isoformat()
+            if note_id:
+                httpx.patch(
+                    f"{SUPABASE_URL}/rest/v1/notes?id=eq.{note_id}",
+                    headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}", "Content-Type": "application/json"},
+                    json={"title": title, "content": content, "device_name": device_name, "updated_at": now},
+                    timeout=10,
+                )
+            else:
+                httpx.post(
+                    f"{SUPABASE_URL}/rest/v1/notes",
+                    headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}", "Content-Type": "application/json"},
+                    json={"user_id": user_id, "title": title, "content": content, "device_name": device_name, "created_at": now, "updated_at": now},
+                    timeout=10,
+                )
+        except Exception as e:
+            logger.error(f"Note save failed: {e}")
+        self._notes_load()
+
+    def _notes_delete(self, note_id):
+        import httpx
+        from app.sync import SUPABASE_KEY, SUPABASE_URL
+        try:
+            httpx.delete(
+                f"{SUPABASE_URL}/rest/v1/notes?id=eq.{note_id}",
+                headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"},
+                timeout=10,
+            )
+        except Exception as e:
+            logger.error(f"Note delete failed: {e}")
+        self._notes_load()
+
+    def _notes_format_ai(self):
+        import rumps
+        if not self._notes_selected:
+            rumps.alert("Select a note", "Click a note in the list, then use Format.")
+            return
+        note = self._notes_selected
+        text = note.get("content", "")
+        if not text.strip():
+            return
+        api_keys = self._app.config.get("groq_api_keys", [])
+        if not api_keys:
+            rumps.alert("No API Key", "Add a Groq API key in Settings.")
+            return
+        import httpx
+        from app.ai_cleanup import NOTES_FORMATTER_SYSTEM_PROMPT
+        try:
+            resp = httpx.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers={"Authorization": f"Bearer {api_keys[0]}", "Content-Type": "application/json"},
+                json={
+                    "model": "llama-3.3-70b-versatile",
+                    "messages": [
+                        {"role": "system", "content": NOTES_FORMATTER_SYSTEM_PROMPT},
+                        {"role": "user", "content": f"NOTES TO FORMAT:\n```\n{text}\n```\n\nOutput the formatted markdown only."},
+                    ],
+                    "temperature": 0, "max_tokens": 4096,
+                },
+                timeout=30,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                content = data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+                if content:
+                    self._notes_save(note.get("id"), note.get("title", ""), content)
+        except Exception as e:
+            logger.error(f"AI note format failed: {e}")
 
     # ── Canvas tab ────────────────────────────────────────────────────────────
     def _rebuild_canvas(self):

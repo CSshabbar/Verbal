@@ -34,8 +34,9 @@ class WinOverlay:
         self._root.withdraw()
 
         screen_w = self._root.winfo_screenwidth()
+        screen_h = self._root.winfo_screenheight()
         x = (screen_w - PILL_W) // 2
-        y = 16
+        y = screen_h - PILL_H - 60
         self._root.geometry(f"{PILL_W}x{PILL_H}+{x}+{y}")
 
         frame = tk.Frame(self._root, bg=BG, padx=10, pady=6)

@@ -10,6 +10,7 @@ import { colors } from './lib/theme';
 import HomeScreen    from './screens/HomeScreen';
 import HistoryScreen from './screens/HistoryScreen';
 import CanvasScreen  from './screens/CanvasScreen';
+import NotesScreen   from './screens/NotesScreen';
 import SettingsScreen from './screens/SettingsScreen';
 
 const Tab = createBottomTabNavigator();
@@ -77,6 +78,7 @@ export default function App() {
                 const icons: Record<string, [string, string]> = {
                   Home:     ['mic',            'mic-outline'],
                   Canvas:   ['albums',         'albums-outline'],
+                  Notes:    ['document-text',  'document-text-outline'],
                   History:  ['time',           'time-outline'],
                   Settings: ['settings',       'settings-outline'],
                 };
@@ -87,6 +89,7 @@ export default function App() {
           >
             <Tab.Screen name="Home"     component={HomeScreen} />
             <Tab.Screen name="Canvas"   component={CanvasScreen} />
+            <Tab.Screen name="Notes"    component={NotesScreen} />
             <Tab.Screen name="History"  component={HistoryScreen} />
             <Tab.Screen name="Settings" component={SettingsScreen} />
           </Tab.Navigator>

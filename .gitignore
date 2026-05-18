@@ -43,3 +43,7 @@ node_modules/
 
 # Logs
 *.log
+artifacts/windows-exe/
+dist-windows/
+build_exe.sh
+.commandcode/
