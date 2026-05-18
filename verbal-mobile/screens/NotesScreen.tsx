@@ -32,7 +32,9 @@ export default function NotesScreen() {
   const [formatting,   setFormatting]   = useState(false);
   const [recording,    setRecording]    = useState(false);
   const [transcribing, setTranscribing] = useState(false);
-  const [previewMode,  setPreviewMode]  = useState(false);
+  const [editRaw,      setEditRaw]      = useState(false);   // toggle raw editing
+
+  const contentInputRef = useRef<TextInput>(null);
 
   const audioRecorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
   const channelRef    = useRef<ReturnType<typeof supabase.channel> | null>(null);
@@ -127,8 +129,18 @@ export default function NotesScreen() {
     setEditingNote(note ?? null);
     setEditorTitle(note?.title ?? '');
     setEditorContent(note?.content ?? '');
+    setEditRaw(false);
     setShowEditor(true);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+  };
+
+  const closeEditor = () => {
+    setShowEditor(false);
+    setEditingNote(null);
+    setEditorTitle('');
+    setEditorContent('');
+    setEditRaw(false);
+    setAutoFormat(false);
   };
 
   const insertAtCursor = (text: string) => {
@@ -191,6 +203,20 @@ export default function NotesScreen() {
     else startDictation();
   };
 
+  // ── Formatting helpers (insert markdown at cursor) ────────────────────
+  const insMarkdown = (prefix: string, suffix = '') => {
+    setEditRaw(true);
+    setTimeout(() => {
+      contentInputRef.current?.focus();
+      setEditorContent(prev => {
+        if (!prev) return prefix;
+        return `${prev}\n${prefix}`;
+      });
+    }, 100);
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+  };
+
+  // ── Save ──────────────────────────────────────────────────────────────
   const saveNote = async () => {
     const uid   = await getUserId();
     const dn    = await getDeviceName();
@@ -224,14 +250,6 @@ export default function NotesScreen() {
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
   };
 
-  const closeEditor = () => {
-    setShowEditor(false);
-    setEditingNote(null);
-    setEditorTitle('');
-    setEditorContent('');
-    setAutoFormat(false);
-  };
-
   const togglePin = async (note: NoteEntry) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     const newPin = !note.is_pinned;
@@ -251,21 +269,6 @@ export default function NotesScreen() {
         },
       },
     ]);
-  };
-
-  // ── Formatting helpers ────────────────────────────────────────────────
-  const formatAction = (prefix: string, suffix = '') => {
-    setEditorContent(prev => {
-      const lines = prev.split('\n');
-      const last = lines[lines.length - 1];
-      if (last.startsWith(prefix)) {
-        lines[lines.length - 1] = last.slice(prefix.length);
-        return lines.join('\n');
-      }
-      if (prev === '') return prefix;
-      return `${prev}\n${prefix}`;
-    });
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
   };
 
   // ── Card ──────────────────────────────────────────────────────────────
@@ -394,10 +397,6 @@ export default function NotesScreen() {
                 <Ionicons name="flash-outline" size={13} color={autoFormat ? '#fff' : colors.heroMuted} />
                 <Text style={[s.autoBtnTxt, autoFormat && s.autoBtnTxtOn]}>Auto AI</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={[s.autoBtn, previewMode && s.autoBtnOn]} onPress={() => setPreviewMode(!previewMode)}>
-                <Ionicons name={previewMode ? 'create-outline' : 'eye-outline'} size={13} color={previewMode ? '#fff' : colors.heroMuted} />
-                <Text style={[s.autoBtnTxt, previewMode && s.autoBtnTxtOn]}>{previewMode ? 'Edit' : 'Preview'}</Text>
-              </TouchableOpacity>
             </View>
           </SafeAreaView>
 
@@ -412,16 +411,20 @@ export default function NotesScreen() {
 
           {/* Formatting toolbar */}
           <View style={s.toolbar}>
-            <TouchableOpacity style={s.toolBtn} onPress={() => formatAction('## ')}>
-              <Ionicons name="text" size={16} color={colors.cardText} />
+            <TouchableOpacity style={[s.toolBtn, editRaw && s.toolBtnActive]} onPress={() => setEditRaw(!editRaw)}>
+              <Ionicons name={editRaw ? 'eye-outline' : 'create-outline'} size={16} color={colors.cardText} />
             </TouchableOpacity>
-            <TouchableOpacity style={s.toolBtn} onPress={() => formatAction('**', '**')}>
-              <Ionicons name="text" size={16} color={colors.cardText} style={{ fontWeight: '700' }} />
+            <View style={s.toolSep} />
+            <TouchableOpacity style={s.toolBtn} onPress={() => insMarkdown('## ')}>
+              <Text style={s.toolBtnLabel}>H</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={s.toolBtn} onPress={() => formatAction('- ')}>
+            <TouchableOpacity style={s.toolBtn} onPress={() => insMarkdown('**', '**')}>
+              <Text style={[s.toolBtnLabel, { fontWeight: '700' }]}>B</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={s.toolBtn} onPress={() => insMarkdown('- ')}>
               <Ionicons name="list" size={16} color={colors.cardText} />
             </TouchableOpacity>
-            <TouchableOpacity style={s.toolBtn} onPress={() => formatAction('1. ')}>
+            <TouchableOpacity style={s.toolBtn} onPress={() => insMarkdown('1. ')}>
               <Ionicons name="list-circle-outline" size={16} color={colors.cardText} />
             </TouchableOpacity>
             <View style={{ flex: 1 }} />
@@ -457,21 +460,31 @@ export default function NotesScreen() {
 
           {/* Content editor */}
           <ScrollView style={s.editorBody} keyboardShouldPersistTaps="handled">
-            {previewMode ? (
-              <View style={s.previewWrap}>
-                <MarkdownText>{editorContent || 'Nothing to preview'}</MarkdownText>
-              </View>
-            ) : (
+            {editRaw ? (
               <TextInput
+                ref={contentInputRef}
                 style={s.contentInput}
                 value={editorContent}
                 onChangeText={setEditorContent}
                 multiline
-                placeholder={recording ? 'Listening...' : 'Start typing or tap the mic...'}
+                placeholder="Start typing..."
                 placeholderTextColor={colors.cardSub}
                 textAlignVertical="top"
                 autoCorrect
+                autoFocus
               />
+            ) : (
+              <TouchableOpacity
+                activeOpacity={0.9}
+                onPress={() => setEditRaw(true)}
+                style={s.previewTouchable}
+              >
+                {editorContent ? (
+                  <MarkdownText>{editorContent}</MarkdownText>
+                ) : (
+                  <Text style={s.placeholder}>Tap to start writing...</Text>
+                )}
+              </TouchableOpacity>
             )}
             {formatting && (
               <View style={s.formattingOverlay}>
@@ -555,6 +568,9 @@ const s = StyleSheet.create({
 
   toolbar:   { flexDirection: 'row', alignItems: 'center', gap: 2, paddingHorizontal: 16, paddingVertical: 8, backgroundColor: colors.sheetBg, borderTopLeftRadius: 16, borderTopRightRadius: 16 },
   toolBtn:   { width: 36, height: 36, borderRadius: 8, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.iconGray },
+  toolBtnActive: { backgroundColor: 'rgba(224,90,43,0.12)' },
+  toolBtnLabel:  { fontSize: 14, fontWeight: fonts.semibold, color: colors.cardText },
+  toolSep:   { width: 1, height: 20, backgroundColor: colors.divider },
   micBtn:    { backgroundColor: colors.heroBg, marginLeft: 4 },
   micBtnOn:  { backgroundColor: colors.accent },
   aiBtn:     { marginLeft: 4 },
@@ -562,9 +578,10 @@ const s = StyleSheet.create({
   delBtn:    { marginLeft: 4, backgroundColor: 'rgba(224,90,43,0.10)' },
 
   editorBody: { flex: 1, backgroundColor: colors.sheetBg, paddingHorizontal: 16 },
-  contentInput: { fontSize: 15, color: colors.cardText, lineHeight: 24, fontWeight: fonts.light, minHeight: 200, paddingBottom: 40 },
+  contentInput: { fontSize: 15, color: colors.cardText, lineHeight: 24, fontWeight: fonts.light, minHeight: 200, paddingVertical: 16, paddingBottom: 40 },
+  previewTouchable: { flex: 1, minHeight: 200, paddingVertical: 16 },
+  placeholder: { fontSize: 15, color: colors.cardSub, fontStyle: 'italic' },
 
   formattingOverlay: { flexDirection: 'row', alignItems: 'center', gap: 8, padding: 16, alignSelf: 'center' },
   formattingTxt:     { fontSize: 13, color: colors.accent, fontWeight: fonts.medium },
-  previewWrap:       { paddingVertical: 8 },
 });
