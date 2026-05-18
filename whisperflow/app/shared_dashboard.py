@@ -735,6 +735,7 @@ function selectNote(id,silent){ selectedNoteId=id; const n=notesList.find(x=>x.i
       <span style="flex:1"></span>
       <label class="autoAi"><input type="checkbox" id="notesAutoAi" ${noteAutoFormat?'checked':''} onchange="noteAutoFormat=this.checked"/> Auto AI</label>
       <button class="accent" onclick="notesAiFormat()">✨ Format</button>
+      <button class="accent" onclick="notesTogglePreview()">👁</button>
       <button class="primary" onclick="saveCurrentNote()">Save</button>
       <button class="danger" onclick="notesTogglePin('${esc(id)}')">${n.is_pinned?'Unpin':'Pin'}</button>
       <button class="danger" onclick="deleteNote('${esc(id)}')">Delete</button>
@@ -743,6 +744,32 @@ function selectNote(id,silent){ selectedNoteId=id; const n=notesList.find(x=>x.i
       <input class="title" value="${esc(n.title||'')}" id="noteTitle" oninput="notesDirty=true"/>
       <textarea class="content" id="noteContent" oninput="notesDirty=true">${esc(n.content||'')}</textarea>
     </div>`; notesDirty=false;
+}
+let notesPreviewing=false;
+function notesTogglePreview(){
+  notesPreviewing=!notesPreviewing;
+  const ta=$('noteContent');
+  if(!ta)return;
+  if(notesPreviewing){
+    ta.style.display='none';
+    let md=ta.value;
+    md=md.replace(/^### (.+)/gm,'<h3>$1</h3>');
+    md=md.replace(/^## (.+)/gm,'<h2>$1</h2>');
+    md=md.replace(/^# (.+)/gm,'<h1>$1</h1>');
+    md=md.replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>');
+    md=md.replace(/__(.+?)__/g,'<strong>$1</strong>');
+    md=md.replace(/\*(.+?)\*/g,'<em>$1</em>');
+    md=md.replace(/_(.+?)_/g,'<em>$1</em>');
+    md=md.replace(/`(.+?)`/g,'<code>$1</code>');
+    md=md.replace(/- \[ \]/g,'☐ ');
+    md=md.replace(/- \[x\]/g,'☑ ');
+    md=md.replace(/\n/g,'<br>');
+    let pv=$('notePreview');
+    if(!pv){ pv=document.createElement('div'); pv.id='notePreview'; pv.style.cssText='font-size:15px;color:var(--text);line-height:1.6;white-space:pre-wrap;padding:4px 0'; ta.parentNode.insertBefore(pv,ta.nextSibling); }
+    pv.innerHTML=md; pv.style.display='block';
+  } else {
+    ta.style.display=''; let pv=$('notePreview'); if(pv)pv.style.display='none';
+  }
 }
 function notesHeading(){ insMark('## '); }
 function notesBold(){ insMark('**','**'); }

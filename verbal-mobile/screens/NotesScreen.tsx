@@ -16,6 +16,7 @@ import {
   updateCachedNote, removeCachedNote, NoteEntry,
 } from '../lib/notesStorage';
 import { useAudioRecorder, RecordingPresets, AudioModule } from 'expo-audio';
+import MarkdownText from '../lib/MarkdownText';
 
 type Filter = 'all' | 'pinned';
 
@@ -31,6 +32,7 @@ export default function NotesScreen() {
   const [formatting,   setFormatting]   = useState(false);
   const [recording,    setRecording]    = useState(false);
   const [transcribing, setTranscribing] = useState(false);
+  const [previewMode,  setPreviewMode]  = useState(false);
 
   const audioRecorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
   const channelRef    = useRef<ReturnType<typeof supabase.channel> | null>(null);
@@ -294,7 +296,7 @@ export default function NotesScreen() {
             {item.title || 'Untitled'}
           </Text>
           {preview ? (
-            <Text style={s.cardPreview} numberOfLines={2}>{preview}</Text>
+            <MarkdownText style={s.cardPreview} numberOfLines={2}>{preview}</MarkdownText>
           ) : null}
           <View style={s.cardMeta}>
             <Text style={s.cardMetaTxt}>{wc} words</Text>
@@ -392,6 +394,10 @@ export default function NotesScreen() {
                 <Ionicons name="flash-outline" size={13} color={autoFormat ? '#fff' : colors.heroMuted} />
                 <Text style={[s.autoBtnTxt, autoFormat && s.autoBtnTxtOn]}>Auto AI</Text>
               </TouchableOpacity>
+              <TouchableOpacity style={[s.autoBtn, previewMode && s.autoBtnOn]} onPress={() => setPreviewMode(!previewMode)}>
+                <Ionicons name={previewMode ? 'create-outline' : 'eye-outline'} size={13} color={previewMode ? '#fff' : colors.heroMuted} />
+                <Text style={[s.autoBtnTxt, previewMode && s.autoBtnTxtOn]}>{previewMode ? 'Edit' : 'Preview'}</Text>
+              </TouchableOpacity>
             </View>
           </SafeAreaView>
 
@@ -451,16 +457,22 @@ export default function NotesScreen() {
 
           {/* Content editor */}
           <ScrollView style={s.editorBody} keyboardShouldPersistTaps="handled">
-            <TextInput
-              style={s.contentInput}
-              value={editorContent}
-              onChangeText={setEditorContent}
-              multiline
-              placeholder={recording ? 'Listening...' : 'Start typing or tap the mic...'}
-              placeholderTextColor={colors.cardSub}
-              textAlignVertical="top"
-              autoCorrect
-            />
+            {previewMode ? (
+              <View style={s.previewWrap}>
+                <MarkdownText>{editorContent || 'Nothing to preview'}</MarkdownText>
+              </View>
+            ) : (
+              <TextInput
+                style={s.contentInput}
+                value={editorContent}
+                onChangeText={setEditorContent}
+                multiline
+                placeholder={recording ? 'Listening...' : 'Start typing or tap the mic...'}
+                placeholderTextColor={colors.cardSub}
+                textAlignVertical="top"
+                autoCorrect
+              />
+            )}
             {formatting && (
               <View style={s.formattingOverlay}>
                 <Ionicons name="sparkles" size={20} color={colors.accent} />
@@ -554,4 +566,5 @@ const s = StyleSheet.create({
 
   formattingOverlay: { flexDirection: 'row', alignItems: 'center', gap: 8, padding: 16, alignSelf: 'center' },
   formattingTxt:     { fontSize: 13, color: colors.accent, fontWeight: fonts.medium },
+  previewWrap:       { paddingVertical: 8 },
 });
