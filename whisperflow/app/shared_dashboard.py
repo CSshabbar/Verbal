@@ -84,6 +84,11 @@ class SharedDashboard:
     def show_result(self, text: str):
         self._emit("result", {"text": text})
 
+    def _on_tab_select(self, idx):
+        TAB_MAP = {0: "all", 1: "apps", 2: "stats", 3: "canvas", 4: "settings", 5: "notes"}
+        tab_name = TAB_MAP.get(idx, "all")
+        self._emit("selectTab", {"tab": tab_name})
+
     def _refresh(self):
         self._emit("state", DashboardApi(self).get_state())
 
@@ -706,7 +711,7 @@ function renderNotes(){ $("toolbarTitle").textContent="Notes"; $("recordBtn").st
   if(selectedNoteId) selectNote(selectedNoteId,true);
   $("recordBtn").style.display="";
 }
-function newNote(){ selectedNoteId=null; noteAutoFormat=false;
+function newNote(){ selectedNoteId=null; noteAutoFormat=false; notesPreviewing=false;
   $("notesEditorPane").innerHTML=`
     <div class="notesToolbar">
       <button onclick="notesBold()"><b>B</b></button>
@@ -716,6 +721,7 @@ function newNote(){ selectedNoteId=null; noteAutoFormat=false;
       <span style="flex:1"></span>
       <label class="autoAi"><input type="checkbox" id="notesAutoAi" ${noteAutoFormat?'checked':''} onchange="noteAutoFormat=this.checked"/> Auto AI</label>
       <button class="accent" onclick="notesAiFormat()">✨ Format</button>
+      <button class="accent" onclick="notesTogglePreview()">👁</button>
       <button class="primary" onclick="saveCurrentNote()">Save</button>
     </div>
     <div class="notesEditorBody">
@@ -726,6 +732,7 @@ function newNote(){ selectedNoteId=null; noteAutoFormat=false;
 let notesDirty=false;
 function selectNote(id,silent){ selectedNoteId=id; const n=notesList.find(x=>x.id===id); if(!n)return;
   if(!silent){ if(notesDirty&&$("noteContent")?.value!==n.content){ if(!confirm('Discard unsaved changes?')){selectedNoteId=null;renderNotes();return} } }
+  notesPreviewing=false;
   $("notesEditorPane").innerHTML=`
     <div class="notesToolbar">
       <button onclick="notesBold()"><b>B</b></button>
@@ -815,7 +822,7 @@ async function chooseImage(){ const r=await api("choose_canvas_image"); if(r.can
 async function pasteImage(){ const r=await api("paste_canvas_image_from_clipboard"); if(!r.ok){$("canvasStatus").textContent=r.error;return} canvasImage=r.image_url; canvasPreview=r.preview||r.image_url; setCanvasImage(canvasPreview); $("canvasStatus").textContent="Image ready. Save to sync."; }
 function removeImage(){canvasImage=null;canvasPreview=null;setCanvasImage(null)}
 async function clearCanvas(){ $("canvasText").value=""; canvasContent=""; canvasImage=null; canvasPreview=null; setCanvasImage(null); await saveCanvas(); }
-window.VerbalNative=(event,payload)=>{ if(event==="recordingState"){state.recording=payload.recording;render()} if(event==="result"){load()} if(event==="devices"){state.devices=payload.devices;renderDevices()} if(event==="canvasRemote"&&active==="canvas"){canvasContent=payload.content||""; $("canvasText").value=canvasContent; canvasImage=payload.image_url; canvasPreview=null; canvasLoaded=true; setCanvasImage(canvasImage); $("canvasStatus").textContent=`From ${payload.device_name}`;} if(event==="notesUpdated"){notesList=payload.notes||[]; if(active==="notes")renderNotes()} };
+window.VerbalNative=(event,payload)=>{ if(event==="recordingState"){state.recording=payload.recording;render()} if(event==="result"){load()} if(event==="devices"){state.devices=payload.devices;renderDevices()} if(event==="canvasRemote"&&active==="canvas"){canvasContent=payload.content||""; $("canvasText").value=canvasContent; canvasImage=payload.image_url; canvasPreview=null; canvasLoaded=true; setCanvasImage(canvasImage); $("canvasStatus").textContent=`From ${payload.device_name}`;} if(event==="notesUpdated"){notesList=payload.notes||[]; if(active==="notes")renderNotes()} if(event==="selectTab"){active=payload.tab;if(payload.tab==="notes")loadNotes();render()} };
 setInterval(()=>{ if(active!=="canvas"&&active!=="notes"&&active!=="settings") load(); if(active==="notes"&&!notesList.length) loadNotes(); },10000); window.addEventListener("pywebviewready",load);
 async function loadNotes(){ const r=await api("fetch_notes"); if(r.ok&&r.notes){notesList=r.notes;if(active==="notes")renderNotes()} }
 </script>
