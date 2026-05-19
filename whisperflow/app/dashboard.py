@@ -18,7 +18,7 @@ from AppKit import (
     NSAttributedString, NSForegroundColorAttributeName, NSFontAttributeName,
     NSParagraphStyleAttributeName, NSMutableParagraphStyle,
 )
-from Foundation import NSMakeRect, NSMakeSize, NSString, NSMakePoint, NSObject, NSPointInRect
+from Foundation import NSMakeRect, NSMakeSize, NSString, NSMakePoint, NSObject, NSPointInRect, NSMakeRange, NSRange
 import objc
 
 logger = logging.getLogger("verbal.dashboard")
@@ -2006,7 +2006,6 @@ class DashboardWindow:
         if not hasattr(self, '_notes_loaded_once'):
             self._notes_loaded_once = True
             threading.Thread(target=self._notes_load, daemon=True).start()
-            # Show loading placeholder while fetching
             spin = NSTextField.labelWithString_("Loading notes...")
             spin.setFont_(NSFont.systemFontOfSize_(13))
             spin.setTextColor_(H_MUTED)
@@ -2014,28 +2013,58 @@ class DashboardWindow:
             self._container.addSubview_(spin)
             return
 
-        LIST_W = 240
-        PAD = 16
+        HERO_H  = 100
+        LIST_W  = 240
+        PAD     = 16
+
+        # ── Hero (dark header) ───────────────────────────────────────────
+        hero = NSView.alloc().initWithFrame_(NSMakeRect(0, sh - HERO_H, sw, HERO_H))
+        hero.setWantsLayer_(True)
+        hero.layer().setBackgroundColor_(H_BG.CGColor())
+        self._container.addSubview_(hero)
+
+        hero_lbl = NSTextField.labelWithString_("Notes")
+        hero_lbl.setFont_(NSFont.systemFontOfSize_weight_(24, 0.8))
+        hero_lbl.setTextColor_(H_TEXT)
+        hero_lbl.setFrame_(NSMakeRect(PAD, HERO_H - 40, 140, 28))
+        hero.addSubview_(hero_lbl)
+
+        count = len(self._notes_data)
+        count_lbl = NSTextField.labelWithString_(f"{count} notes")
+        count_lbl.setFont_(NSFont.systemFontOfSize_(11))
+        count_lbl.setTextColor_(H_MUTED)
+        count_lbl.setFrame_(NSMakeRect(PAD, HERO_H - 56, 80, 14))
+        hero.addSubview_(count_lbl)
+
+        # Mic dictation button in hero
+        mic_d = _d(self._notes_dictate)
+        mic_btn = NSButton.alloc().initWithFrame_(NSMakeRect(sw - PAD - 100, HERO_H / 2 - 14, 100, 28))
+        mic_btn.setBordered_(False); mic_btn.setWantsLayer_(True)
+        mic_btn.layer().setCornerRadius_(8)
+        mic_btn.layer().setBackgroundColor_(H_ACCENT.CGColor())
+        mic_btn.setAttributedTitle_(_attr("🎙  Record", _hex("FFFFFF"), NSFont.systemFontOfSize_weight_(11, 0.5)))
+        mic_btn.setTarget_(mic_d)
+        mic_btn.setAction_(objc.selector(mic_d.fire_, signature=b'v@:@'))
+        hero.addSubview_(mic_btn)
+
+        # Refresh button
+        ref_d = _d(self._notes_load)
+        ref_btn = NSButton.alloc().initWithFrame_(NSMakeRect(sw - PAD - 28, HERO_H - 40, 26, 26))
+        ref_btn.setBordered_(False)
+        ref_btn.setTitle_("↻")
+        ref_btn.setFont_(NSFont.systemFontOfSize_(14))
+        ref_btn.setTarget_(ref_d)
+        ref_btn.setAction_(objc.selector(ref_d.fire_, signature=b'v@:@'))
+        hero.addSubview_(ref_btn)
 
         # ── Sidebar (left) ──────────────────────────────────────────────
-        sidebar = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, LIST_W, sh))
+        sidebar = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, LIST_W, sh - HERO_H))
         sidebar.setWantsLayer_(True)
         sidebar.layer().setBackgroundColor_(_hex("F7F5F1").CGColor())
         self._container.addSubview_(sidebar)
 
-        # New note button
-        new_d = _d(self._notes_new)
-        new_btn = NSButton.alloc().initWithFrame_(NSMakeRect(PAD, sh - 52, LIST_W - 2 * PAD, 32))
-        new_btn.setBordered_(False); new_btn.setWantsLayer_(True)
-        new_btn.layer().setCornerRadius_(8)
-        new_btn.layer().setBackgroundColor_(H_ACCENT.CGColor())
-        new_btn.setAttributedTitle_(_attr("+ New Note", _hex("FFFFFF"), NSFont.systemFontOfSize_weight_(13, 0.500)))
-        new_btn.setTarget_(new_d)
-        new_btn.setAction_(objc.selector(new_d.fire_, signature=b'v@:@'))
-        sidebar.addSubview_(new_btn)
-
         # Search
-        search = NSTextField.alloc().initWithFrame_(NSMakeRect(PAD, sh - 90, LIST_W - 2 * PAD, 26))
+        search = NSTextField.alloc().initWithFrame_(NSMakeRect(PAD, sh - HERO_H - 42, LIST_W - 2 * PAD, 26))
         search.setPlaceholderString_("Search notes...")
         search.setFont_(NSFont.systemFontOfSize_(12))
         search.setBordered_(True)
@@ -2043,24 +2072,16 @@ class DashboardWindow:
         search.setBezelStyle_(NSRoundedBezelStyle)
         sidebar.addSubview_(search)
 
-        # Refresh
-        ref_d = _d(self._notes_load)
-        ref_btn = NSButton.alloc().initWithFrame_(NSMakeRect(LIST_W - 60, sh - 90, 26, 26))
-        ref_btn.setBordered_(False)
-        ref_btn.setTitle_("↻")
-        ref_btn.setFont_(NSFont.systemFontOfSize_(14))
-        ref_btn.setTarget_(ref_d)
-        ref_btn.setAction_(objc.selector(ref_d.fire_, signature=b'v@:@'))
-        sidebar.addSubview_(ref_btn)
-
         # Note list
-        list_scroll = NSScrollView.alloc().initWithFrame_(NSMakeRect(0, 0, LIST_W, sh - 100))
+        list_scroll = NSScrollView.alloc().initWithFrame_(NSMakeRect(0, 0, LIST_W, sh - HERO_H - 52))
         list_scroll.setHasVerticalScroller_(True)
         list_scroll.setDrawsBackground_(False)
         list_scroll.setBorderType_(0)
         sidebar.addSubview_(list_scroll)
 
-        list_content = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, LIST_W, max(20, len(self._notes_data) * 58 + 10)))
+        list_content = NSView.alloc().initWithFrame_(
+            NSMakeRect(0, 0, LIST_W, max(20, len(self._notes_data) * 58 + 10))
+        )
         list_scroll.setDocumentView_(list_content)
 
         if not self._notes_data:
@@ -2074,47 +2095,47 @@ class DashboardWindow:
                 title = note.get("title", "") or "Untitled"
                 content = (note.get("content", "") or "")[:60]
                 is_pinned = note.get("is_pinned", False)
+                is_selected = self._notes_selected and self._notes_selected.get("id") == note.get("id")
                 card_y = len(self._notes_data) * 58 - (i + 1) * 58
 
                 # Card background
+                bg_color = "FFF7F2" if is_pinned else ("FFFFFF" if not is_selected else "FEF0E8")
                 card = NSView.alloc().initWithFrame_(NSMakeRect(4, card_y, LIST_W - 8, 52))
                 card.setWantsLayer_(True)
                 card.layer().setCornerRadius_(6)
-                card.layer().setBackgroundColor_(_hex("FFFFFF" if not is_pinned else "FFF7F2").CGColor())
+                card.layer().setBackgroundColor_(_hex(bg_color).CGColor())
                 if is_pinned:
                     card.layer().setBorderWidth_(1.5)
                     card.layer().setBorderColor_(_hex("E05A2B", 0.25).CGColor())
+                if is_selected:
+                    card.layer().setBorderWidth_(1.5)
+                    card.layer().setBorderColor_(_hex("E05A2B", 0.4).CGColor())
                 list_content.addSubview_(card)
 
-                # Pin indicator
                 if is_pinned:
                     pin = NSTextField.labelWithString_("📌")
                     pin.setFont_(NSFont.systemFontOfSize_(10))
                     pin.setFrame_(NSMakeRect(8, card_y + 18, 16, 14))
                     list_content.addSubview_(pin)
 
-                # Title
+                x_off = 26 if is_pinned else 10
                 tl = NSTextField.labelWithString_(title[:40])
                 tl.setFont_(NSFont.systemFontOfSize_weight_(12, 0.6))
                 tl.setTextColor_(H_TEXT)
-                tl.setFrame_(NSMakeRect(is_pinned and 26 or 10, card_y + 28, LIST_W - 34, 16))
+                tl.setFrame_(NSMakeRect(x_off, card_y + 28, LIST_W - x_off - 4, 16))
                 list_content.addSubview_(tl)
 
-                # Preview
                 prev = NSTextField.labelWithString_(content)
                 prev.setFont_(NSFont.systemFontOfSize_(10))
                 prev.setTextColor_(H_MUTED)
-                prev.setFrame_(NSMakeRect(is_pinned and 26 or 10, card_y + 10, LIST_W - 34, 14))
+                prev.setFrame_(NSMakeRect(x_off, card_y + 10, LIST_W - x_off - 4, 14))
                 list_content.addSubview_(prev)
 
-                # Click handler
                 note_id = note.get("id")
                 sel_d = _d(lambda nid=note_id: self._notes_select(nid))
-
-                # Invisible button over card
                 card_btn = NSButton.alloc().initWithFrame_(NSMakeRect(4, card_y, LIST_W - 8, 52))
                 card_btn.setBordered_(False)
-                card_btn.setButtonType_(2)  # NSMomentaryChangeButton
+                card_btn.setButtonType_(2)
                 card_btn.setTarget_(sel_d)
                 card_btn.setAction_(objc.selector(sel_d.fire_, signature=b'v@:@'))
                 list_content.addSubview_(card_btn)
@@ -2122,19 +2143,32 @@ class DashboardWindow:
         # ── Editor pane (right) ──────────────────────────────────────────
         editor_x = LIST_W + 1
         editor_w = sw - LIST_W - 1
+        editor_h = sh - HERO_H
 
-        # Divider
-        divider = NSView.alloc().initWithFrame_(NSMakeRect(LIST_W, 0, 1, sh))
+        divider = NSView.alloc().initWithFrame_(NSMakeRect(LIST_W, 0, 1, editor_h))
         divider.setWantsLayer_(True)
         divider.layer().setBackgroundColor_(_hex("E2DDD5").CGColor())
         self._container.addSubview_(divider)
 
+        # Always show editor — either for a selected note or for creating new
         if not self._notes_selected:
-            empty_ed = NSTextField.labelWithString_("Select a note or create a new one")
+            # Empty state with prompt
+            empty_ed = NSTextField.labelWithString_("Select a note or create one below")
             empty_ed.setFont_(NSFont.systemFontOfSize_(13))
             empty_ed.setTextColor_(H_MUTED)
-            empty_ed.setFrame_(NSMakeRect(editor_x + 40, sh / 2 - 12, editor_w - 80, 24))
+            empty_ed.setFrame_(NSMakeRect(editor_x + 40, editor_h / 2 - 12, editor_w - 80, 24))
             self._container.addSubview_(empty_ed)
+
+            # New note button inline
+            new_d = _d(self._notes_start_new)
+            new_btn = NSButton.alloc().initWithFrame_(NSMakeRect(editor_x + 60, editor_h / 2 - 50, 120, 36))
+            new_btn.setBordered_(False); new_btn.setWantsLayer_(True)
+            new_btn.layer().setCornerRadius_(10)
+            new_btn.layer().setBackgroundColor_(H_ACCENT.CGColor())
+            new_btn.setAttributedTitle_(_attr("+ New Note", _hex("FFFFFF"), NSFont.systemFontOfSize_weight_(14, 0.5)))
+            new_btn.setTarget_(new_d)
+            new_btn.setAction_(objc.selector(new_d.fire_, signature=b'v@:@'))
+            self._container.addSubview_(new_btn)
             return
 
         note = self._notes_selected
@@ -2142,63 +2176,177 @@ class DashboardWindow:
         content = note.get("content", "")
         note_id = note.get("id")
 
-        # Title input
-        self._notes_title_input = NSTextField.alloc().initWithFrame_(NSMakeRect(editor_x + PAD, sh - 48, editor_w - 2 * PAD, 28))
-        self._notes_title_input.setStringValue_(title)
-        self._notes_title_input.setPlaceholderString_("Note title...")
-        self._notes_title_input.setFont_(NSFont.systemFontOfSize_weight_(16, 0.6))
-        self._notes_title_input.setBordered_(False)
-        self._notes_title_input.setDrawsBackground_(False)
-        self._notes_title_input.setTextColor_(H_TEXT)
-        self._container.addSubview_(self._notes_title_input)
+        # ── Formatting toolbar ──────────────────────────────────────────
+        TOOL_H = 38
+        toolbar = NSView.alloc().initWithFrame_(NSMakeRect(editor_x, editor_h - TOOL_H, editor_w, TOOL_H))
+        toolbar.setWantsLayer_(True)
+        toolbar.layer().setBackgroundColor_(_hex("F7F5F1").CGColor())
+        self._container.addSubview_(toolbar)
 
-        # Content text view in scroll
-        BAR_H = 36
-        content_scroll = NSScrollView.alloc().initWithFrame_(NSMakeRect(editor_x, BAR_H, editor_w, sh - 48 - BAR_H))
-        content_scroll.setHasVerticalScroller_(True)
-        content_scroll.setDrawsBackground_(False)
-        content_scroll.setBorderType_(0)
-        self._container.addSubview_(content_scroll)
+        # H (heading) button
+        h_d = _d(lambda: self._notes_insert_md("## "))
+        h_btn = NSButton.alloc().initWithFrame_(NSMakeRect(PAD, 5, 28, 28))
+        h_btn.setBordered_(False); h_btn.setWantsLayer_(True)
+        h_btn.layer().setCornerRadius_(6)
+        h_btn.layer().setBackgroundColor_(_hex("FFFFFF").CGColor())
+        h_btn.setAttributedTitle_(_attr("H", H_TEXT, NSFont.systemFontOfSize_weight_(13, 0.6)))
+        h_btn.setTarget_(h_d)
+        h_btn.setAction_(objc.selector(h_d.fire_, signature=b'v@:@'))
+        toolbar.addSubview_(h_btn)
 
-        self._notes_text_view = NSTextView.alloc().initWithFrame_(NSMakeRect(0, 0, editor_w - 20, sh - 48 - BAR_H))
-        self._notes_text_view.setString_(content)
-        self._notes_text_view.setFont_(NSFont.systemFontOfSize_(13))
-        self._notes_text_view.setDrawsBackground_(False)
-        self._notes_text_view.setTextColor_(H_TEXT)
-        content_scroll.setDocumentView_(self._notes_text_view)
+        # B (bold) button
+        b_d = _d(lambda: self._notes_insert_md("**", "**"))
+        b_btn = NSButton.alloc().initWithFrame_(NSMakeRect(PAD + 34, 5, 28, 28))
+        b_btn.setBordered_(False); b_btn.setWantsLayer_(True)
+        b_btn.layer().setCornerRadius_(6)
+        b_btn.layer().setBackgroundColor_(_hex("FFFFFF").CGColor())
+        b_btn.setAttributedTitle_(_attr("B", H_TEXT, NSFont.boldSystemFontOfSize_(13)))
+        b_btn.setTarget_(b_d)
+        b_btn.setAction_(objc.selector(b_d.fire_, signature=b'v@:@'))
+        toolbar.addSubview_(b_btn)
 
-        # Save button
-        save_d = _d(self._notes_save_ui)
-        save_btn = NSButton.alloc().initWithFrame_(NSMakeRect(editor_x + PAD, 6, 80, 24))
-        save_btn.setBordered_(False); save_btn.setWantsLayer_(True)
-        save_btn.layer().setCornerRadius_(6)
-        save_btn.layer().setBackgroundColor_(H_ACCENT.CGColor())
-        save_btn.setAttributedTitle_(_attr("Save", _hex("FFFFFF"), NSFont.systemFontOfSize_weight_(11, 0.5)))
-        save_btn.setTarget_(save_d)
-        save_btn.setAction_(objc.selector(save_d.fire_, signature=b'v@:@'))
-        self._container.addSubview_(save_btn)
+        # Bullet button
+        ul_d = _d(lambda: self._notes_insert_md("- "))
+        ul_btn = NSButton.alloc().initWithFrame_(NSMakeRect(PAD + 68, 5, 28, 28))
+        ul_btn.setBordered_(False); ul_btn.setWantsLayer_(True)
+        ul_btn.layer().setCornerRadius_(6)
+        ul_btn.layer().setBackgroundColor_(_hex("FFFFFF").CGColor())
+        ul_btn.setAttributedTitle_(_attr("•", H_TEXT, NSFont.systemFontOfSize_(14)))
+        ul_btn.setTarget_(ul_d)
+        ul_btn.setAction_(objc.selector(ul_d.fire_, signature=b'v@:@'))
+        toolbar.addSubview_(ul_btn)
 
-        # AI Format button
+        # Numbered button
+        nl_d = _d(lambda: self._notes_insert_md("1. "))
+        nl_btn = NSButton.alloc().initWithFrame_(NSMakeRect(PAD + 102, 5, 28, 28))
+        nl_btn.setBordered_(False); nl_btn.setWantsLayer_(True)
+        nl_btn.layer().setCornerRadius_(6)
+        nl_btn.layer().setBackgroundColor_(_hex("FFFFFF").CGColor())
+        nl_btn.setAttributedTitle_(_attr("1.", H_TEXT, NSFont.systemFontOfSize_(12)))
+        nl_btn.setTarget_(nl_d)
+        nl_btn.setAction_(objc.selector(nl_d.fire_, signature=b'v@:@'))
+        toolbar.addSubview_(nl_btn)
+
+        # AI Format
         ai_d = _d(self._notes_format_ai)
-        ai_btn = NSButton.alloc().initWithFrame_(NSMakeRect(editor_x + PAD + 90, 6, 100, 24))
+        ai_btn = NSButton.alloc().initWithFrame_(NSMakeRect(editor_w - PAD - 320, 5, 110, 28))
         ai_btn.setBordered_(False); ai_btn.setWantsLayer_(True)
         ai_btn.layer().setCornerRadius_(6)
         ai_btn.layer().setBackgroundColor_(_hex("E05A2B", 0.12).CGColor())
         ai_btn.setAttributedTitle_(_attr("✨ Format with AI", H_ACCENT, NSFont.systemFontOfSize_weight_(11, 0.5)))
         ai_btn.setTarget_(ai_d)
         ai_btn.setAction_(objc.selector(ai_d.fire_, signature=b'v@:@'))
-        self._container.addSubview_(ai_btn)
+        toolbar.addSubview_(ai_btn)
 
-        # Delete button
+        # Save
+        save_d = _d(self._notes_save_ui)
+        save_btn = NSButton.alloc().initWithFrame_(NSMakeRect(editor_w - PAD - 200, 5, 70, 28))
+        save_btn.setBordered_(False); save_btn.setWantsLayer_(True)
+        save_btn.layer().setCornerRadius_(6)
+        save_btn.layer().setBackgroundColor_(H_ACCENT.CGColor())
+        save_btn.setAttributedTitle_(_attr("Save", _hex("FFFFFF"), NSFont.systemFontOfSize_weight_(11, 0.5)))
+        save_btn.setTarget_(save_d)
+        save_btn.setAction_(objc.selector(save_d.fire_, signature=b'v@:@'))
+        toolbar.addSubview_(save_btn)
+
+        # Delete
         del_d = _d(lambda: self._notes_delete(note_id))
-        del_btn = NSButton.alloc().initWithFrame_(NSMakeRect(editor_x + PAD + 200, 6, 60, 24))
+        del_btn = NSButton.alloc().initWithFrame_(NSMakeRect(editor_w - PAD - 120, 5, 50, 28))
         del_btn.setBordered_(False); del_btn.setWantsLayer_(True)
         del_btn.layer().setCornerRadius_(6)
         del_btn.layer().setBackgroundColor_(_hex("E05A2B", 0.12).CGColor())
-        del_btn.setAttributedTitle_(_attr("Delete", H_ACCENT, NSFont.systemFontOfSize_weight_(11, 0.5)))
+        del_btn.setAttributedTitle_(_attr("Del", H_ACCENT, NSFont.systemFontOfSize_weight_(11, 0.5)))
         del_btn.setTarget_(del_d)
         del_btn.setAction_(objc.selector(del_d.fire_, signature=b'v@:@'))
-        self._container.addSubview_(del_btn)
+        toolbar.addSubview_(del_btn)
+
+        # Pin toggle
+        is_pinned = note.get("is_pinned", False)
+        pin_d = _d(lambda: self._notes_toggle_pin(note_id))
+        pin_btn = NSButton.alloc().initWithFrame_(NSMakeRect(editor_w - PAD - 60, 5, 28, 28))
+        pin_btn.setBordered_(False); pin_btn.setWantsLayer_(True)
+        pin_btn.layer().setCornerRadius_(6)
+        pin_btn.layer().setBackgroundColor_(_hex("FFFFFF" if not is_pinned else "FFF7F2").CGColor())
+        pin_btn.setAttributedTitle_(_attr("📌" if is_pinned else "📍", H_TEXT, NSFont.systemFontOfSize_(12)))
+        pin_btn.setTarget_(pin_d)
+        pin_btn.setAction_(objc.selector(pin_d.fire_, signature=b'v@:@'))
+        toolbar.addSubview_(pin_btn)
+
+        # Title input
+        self._notes_title_input = NSTextField.alloc().initWithFrame_(
+            NSMakeRect(editor_x + PAD, editor_h - TOOL_H - 40, editor_w - 2 * PAD, 28)
+        )
+        self._notes_title_input.setStringValue_(title)
+        self._notes_title_input.setPlaceholderString_("Note title...")
+        self._notes_title_input.setFont_(NSFont.systemFontOfSize_weight_(17, 0.7))
+        self._notes_title_input.setBordered_(False)
+        self._notes_title_input.setDrawsBackground_(False)
+        self._notes_title_input.setTextColor_(H_TEXT)
+        self._container.addSubview_(self._notes_title_input)
+
+        # Content text view
+        content_scroll = NSScrollView.alloc().initWithFrame_(
+            NSMakeRect(editor_x, 0, editor_w, editor_h - TOOL_H - 48)
+        )
+        content_scroll.setHasVerticalScroller_(True)
+        content_scroll.setDrawsBackground_(False)
+        content_scroll.setBorderType_(0)
+        self._container.addSubview_(content_scroll)
+
+        self._notes_text_view = NSTextView.alloc().initWithFrame_(
+            NSMakeRect(0, 0, editor_w - PAD, editor_h - TOOL_H - 48)
+        )
+        self._notes_text_view.setString_(content)
+        self._notes_text_view.setFont_(NSFont.systemFontOfSize_(14))
+        self._notes_text_view.setDrawsBackground_(False)
+        self._notes_text_view.setTextColor_(H_TEXT)
+        content_scroll.setDocumentView_(self._notes_text_view)
+
+    def _notes_insert_md(self, prefix, suffix=""):
+        if not hasattr(self, '_notes_text_view') or not self._notes_text_view:
+            return
+        current = self._notes_text_view.string() or ""
+        selected = self._notes_text_view.selectedRange()
+        if selected.length > 0:
+            sel_text = current[selected.location:selected.location + selected.length]
+            new_text = prefix + sel_text + suffix
+            self._notes_text_view.insertText_replaceRange_(new_text, selected)
+        else:
+            new_line = "\n" if current and not current.endswith("\n") else ""
+            insert = new_line + prefix
+            if suffix:
+                insert += suffix
+            self._notes_text_view.insertText_(insert)
+            end = len(self._notes_text_view.string() or "")
+            self._notes_text_view.setSelectedRange_(NSRange(end - len(suffix), 0))
+
+    def _notes_toggle_pin(self, note_id):
+        import httpx
+        from app.sync import SUPABASE_KEY, SUPABASE_URL
+        try:
+            note = self._notes_selected
+            current = note.get("is_pinned", False) if note else False
+            httpx.patch(
+                f"{SUPABASE_URL}/rest/v1/notes?id=eq.{note_id}",
+                headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}", "Content-Type": "application/json"},
+                json={"is_pinned": not current},
+                timeout=10,
+            )
+        except Exception as e:
+            logger.error(f"Pin toggle failed: {e}")
+        self._notes_load()
+
+    def _notes_start_new(self):
+        self._notes_selected = {"id": None, "title": "", "content": "", "is_pinned": False}
+        self._rebuild_notes()
+
+    def _notes_dictate(self):
+        import rumps
+        import pyperclip
+        from app.ai_cleanup import NOTES_FORMATTER_SYSTEM_PROMPT
+        rumps.alert("Dictation", "Record a voice note using the global hotkey.\nIt will be pasted into your clipboard — then paste it into the editor.")
+        # Dictation is handled by the global recorder pipeline already.
+        # This just reminds the user how to use it.
 
     def _notes_select(self, note_id):
         for n in self._notes_data:
@@ -2211,11 +2359,11 @@ class DashboardWindow:
         if self._notes_selected and hasattr(self, '_notes_title_input'):
             title = self._notes_title_input.stringValue() if hasattr(self._notes_title_input, 'stringValue') else ""
             content = self._notes_text_view.string() if hasattr(self._notes_text_view, 'string') else ""
-            self._notes_save(self._notes_selected.get("id"), title, content)
-
-    def _notes_save_from_ui(self, title, content):
-        if self._notes_selected:
-            self._notes_save(self._notes_selected.get("id"), title, content)
+            note_id = self._notes_selected.get("id")
+            is_new = not note_id
+            self._notes_save(note_id, title, content)
+            if is_new:
+                self._notes_selected = None
 
     def _notes_load(self):
         import httpx
@@ -2223,6 +2371,7 @@ class DashboardWindow:
         user_id = self._app.config.get("sync_user_id", "")
         if not user_id:
             self._notes_data = []
+            self._rebuild_notes()
             return
         try:
             resp = httpx.get(
@@ -2236,21 +2385,6 @@ class DashboardWindow:
         except Exception as e:
             logger.error(f"Notes load failed: {e}")
         self._rebuild_notes()
-
-    def _notes_new(self):
-        import rumps
-        r = rumps.Window(
-            message="",
-            title="New Note",
-            default_text="",
-            ok="Save", cancel="Cancel",
-            dimensions=(480, 200),
-        ).run()
-        if r.clicked and r.text.strip():
-            lines = r.text.strip().split('\n', 1)
-            title = lines[0] if len(lines) > 0 else ''
-            content = lines[1] if len(lines) > 1 else ''
-            self._notes_save(None, title, content)
 
     def _notes_save(self, note_id, title, content):
         import httpx
@@ -2269,9 +2403,9 @@ class DashboardWindow:
                     timeout=10,
                 )
             else:
-                httpx.post(
+                resp = httpx.post(
                     f"{SUPABASE_URL}/rest/v1/notes",
-                    headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}", "Content-Type": "application/json"},
+                    headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}", "Content-Type": "application/json", "Prefer": "return=representation"},
                     json={"user_id": user_id, "title": title, "content": content, "device_name": device_name, "created_at": now, "updated_at": now},
                     timeout=10,
                 )
@@ -2290,19 +2424,14 @@ class DashboardWindow:
             )
         except Exception as e:
             logger.error(f"Note delete failed: {e}")
+        self._notes_selected = None
         self._notes_load()
 
     def _notes_format_ai(self):
-        if not self._notes_selected:
-            import rumps
-            rumps.alert("Select a note", "Click a note in the list, then use Format.")
+        if not hasattr(self, '_notes_text_view') or not self._notes_text_view:
             return
-        content = ""
-        if hasattr(self, '_notes_text_view') and self._notes_text_view:
-            content = self._notes_text_view.string() or ""
+        content = self._notes_text_view.string() or ""
         if not content.strip():
-            import rumps
-            rumps.alert("Empty note", "The note has no content to format.")
             return
         api_keys = self._app.config.get("groq_api_keys", [])
         if not api_keys:
@@ -2311,6 +2440,8 @@ class DashboardWindow:
             return
         import httpx
         from app.ai_cleanup import NOTES_FORMATTER_SYSTEM_PROMPT
+        # Show loading
+        self._notes_text_view.setString_("Formatting with AI...")
         try:
             resp = httpx.post(
                 "https://api.groq.com/openai/v1/chat/completions",
@@ -2330,11 +2461,14 @@ class DashboardWindow:
                 formatted = data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
                 if formatted and hasattr(self, '_notes_text_view') and self._notes_text_view:
                     self._notes_text_view.setString_(formatted)
-                    # Auto-save after formatting
                     title = self._notes_title_input.stringValue() if hasattr(self._notes_title_input, 'stringValue') else ""
-                    self._notes_save(self._notes_selected.get("id"), title, formatted)
+                    if self._notes_selected:
+                        self._notes_save(self._notes_selected.get("id"), title, formatted)
+            else:
+                self._notes_text_view.setString_(content)
         except Exception as e:
             logger.error(f"AI note format failed: {e}")
+            self._notes_text_view.setString_(content)
 
     # ── Canvas tab ────────────────────────────────────────────────────────────
     def _rebuild_canvas(self):
