@@ -2029,7 +2029,7 @@ class DashboardWindow:
         new_btn.setBordered_(False); new_btn.setWantsLayer_(True)
         new_btn.layer().setCornerRadius_(8)
         new_btn.layer().setBackgroundColor_(H_ACCENT.CGColor())
-        new_btn.setAttributedTitle_(_attr("+ New Note", H_SHEET, NSFont.systemFontOfSize_weight_(13, 0.5)))
+        new_btn.setAttributedTitle_(_attr("+ New Note", H_SHEET, NSFont.systemFontOfSize_weight_(13, 0.500)))
         new_btn.setTarget_(new_d)
         new_btn.setAction_(objc.selector(new_d.fire_, signature=b'v@:@'))
         sidebar.addSubview_(new_btn)
