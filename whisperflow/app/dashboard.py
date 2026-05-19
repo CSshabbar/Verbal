@@ -961,6 +961,9 @@ class DashboardWindow:
         self._target_device_id  = None   # None = all devices, str = specific device_id
         self._known_devices     = []     # list of {device_id, device_name, device_type}
         self._device_sel_view   = None   # the segmented control view
+        # Notes
+        self._notes_data      = []
+        self._notes_selected  = None
 
     def show(self):
         if self._window and self._window.isVisible():

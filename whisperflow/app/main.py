@@ -111,6 +111,7 @@ class VerbalApp(rumps.App):
             None,
             rumps.MenuItem("Open Verbal", callback=self._open_dashboard),
             rumps.MenuItem("Open Canvas", callback=self._open_canvas),
+            rumps.MenuItem("Open Notes", callback=self._open_notes),
             mode_menu,
             rumps.MenuItem("Groq API Key (Transcription)...", callback=self._manage_groq_keys),
             rumps.MenuItem("Gemini API Key (AI Cleanup)...", callback=self._manage_keys),
@@ -222,9 +223,12 @@ class VerbalApp(rumps.App):
         self.dashboard.show()
 
     def _open_canvas(self, _=None):
-        # Canvas is now embedded in the dashboard — switch to Canvas tab
         self.dashboard.show()
         self.dashboard._on_tab_select(4)
+
+    def _open_notes(self, _=None):
+        self.dashboard.show()
+        self.dashboard._on_tab_select(5)
 
     def _set_mode_hold(self, _):
         self._mode = MODE_HOLD
