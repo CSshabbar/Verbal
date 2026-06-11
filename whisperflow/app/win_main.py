@@ -310,6 +310,17 @@ class VerbalWinApp:
         except Exception:
             return None
 
+    def _keys_match(self, pressed_key, target_key):
+        """Check if pressed key matches target, treating alt_r/alt_gr as equivalent on Windows."""
+        if pressed_key == target_key:
+            return True
+        from pynput import keyboard
+        # On Windows, right Alt can emit either alt_r or alt_gr depending on keyboard layout
+        alt_keys = {keyboard.Key.alt_r, keyboard.Key.alt_gr}
+        if pressed_key in alt_keys and target_key in alt_keys:
+            return True
+        return False
+
     def _start_hotkey(self):
         from pynput import keyboard
         self._parsed_hold_key = self._parse_key(self.config.get("hotkey_hold", "alt_r"))
@@ -331,7 +342,7 @@ class VerbalWinApp:
             toggle_key = self._parsed_toggle_key
             
             # Case 1: Same key for both
-            if hold_key == toggle_key and key == hold_key:
+            if hold_key == toggle_key and self._keys_match(key, hold_key):
                 if self._mode == MODE_HOLD:
                     if not self._is_recording:
                         self._on_record_start()
@@ -343,11 +354,11 @@ class VerbalWinApp:
                 return
 
             # Case 2: Different keys
-            if key == hold_key:
+            if self._keys_match(key, hold_key):
                 if not self._is_recording:
                     self._on_record_start()
             
-            if key == toggle_key:
+            if self._keys_match(key, toggle_key):
                 now = time.time()
                 if now - self._last_toggle_time > 0.3:
                     self._last_toggle_time = now
@@ -356,12 +367,12 @@ class VerbalWinApp:
             if key == keyboard.Key.esc:
                 self._on_esc_pressed()
         except Exception as e:
-            logger.debug(f"Key press error: {e}")
+            logger.error(f"Key press error: {e}", exc_info=True)
 
     def _on_key_release(self, key):
         try:
             # Only handle release if we are in Hold mode or if it's explicitly the hold key
-            if key == self._parsed_hold_key:
+            if self._keys_match(key, self._parsed_hold_key):
                 if self._parsed_hold_key == self._parsed_toggle_key:
                     if self._mode == MODE_HOLD and self._is_recording:
                         self._on_record_stop()
@@ -401,9 +412,13 @@ class VerbalWinApp:
             save_focused_app()
         except Exception:
             pass
-        self._is_recording = True
         self._cancel_flag.clear()
-        self.recorder.start()
+        try:
+            self.recorder.start()
+        except Exception as e:
+            logger.error(f"Failed to start recording: {e}", exc_info=True)
+            return
+        self._is_recording = True
         _play_sound("start")
         self._update_tray_icon(True)
         self._update_tray_menu()
