@@ -22,7 +22,13 @@ jobs:
           python -m pip install --upgrade pip
           pip install "setuptools<75" wheel
           pip install -r whisperflow/requirements.txt
-          pip install pyinstaller
+          pip install pyinstaller numpy
+
+      - name: Generate modern sounds
+        shell: pwsh
+        run: |
+          cd whisperflow
+          python generate_sounds.py assets/sounds
 
       - name: Build Verbal.exe
         shell: pwsh
