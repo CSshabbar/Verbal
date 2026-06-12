@@ -88,12 +88,15 @@ def download_update(version_info: dict, on_progress=None) -> str | None:
         return None
 
 
-def install_update(file_path: str):
+def install_update(file_path: str, silent: bool = False):
     """Launch the installer and exit the current app."""
     logger.info(f"Installing update from {file_path}")
     if PLATFORM == "win":
+        args = [file_path, "/SILENT", "/CLOSEAPPLICATIONS", "/SUPPRESSMSGBOXES", "/NORESTART"]
+        if silent:
+            args.append("/VERYSILENT")
         subprocess.Popen(
-            [file_path, "/SILENT", "/CLOSEAPPLICATIONS"],
+            args,
             creationflags=0x00000008 | 0x00000200,  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
         )
     else:

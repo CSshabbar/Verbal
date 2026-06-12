@@ -29,7 +29,7 @@ DEFAULT_CONFIG = {
     "history": [],       # list of {"text": str, "app": str, "ts": str}
     "pinned": [],        # list of {"text": str, "app": str, "ts": str}
     "daily": {"date": "", "words": 0},
-    "sync_enabled":     False,
+    "auto_update": True,
     "sync_user_id":     "",
     "sync_device_name": "",
 }

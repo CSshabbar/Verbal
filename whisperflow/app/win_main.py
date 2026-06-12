@@ -560,6 +560,15 @@ class VerbalWinApp:
         if not update:
             return
         try:
+            auto_update = self.config.get("auto_update", True)
+            if auto_update:
+                logger.info(f"Auto-update: downloading {update['version']}")
+                self.overlay.show_briefly(f"Updating to v{update['version']}...", duration=3.0)
+                path = download_update(update)
+                if path:
+                    install_update(path, silent=True)
+                return
+
             import tkinter as tk
             from tkinter import messagebox
             root = tk.Tk()
@@ -575,7 +584,7 @@ class VerbalWinApp:
                 if path:
                     install_update(path)
         except Exception as e:
-            logger.error(f"Update prompt failed: {e}")
+            logger.error(f"Update failed: {e}")
 
 
 def main():

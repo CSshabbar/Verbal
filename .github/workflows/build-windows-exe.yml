@@ -30,9 +30,28 @@ jobs:
           cd whisperflow
           pyinstaller verbal-win.spec --clean --noconfirm
 
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          choco install innosetup -y
+          $env:PATH += ";C:\Program Files (x86)\Inno Setup 6"
+
+      - name: Build Installer
+        shell: pwsh
+        run: |
+          cd whisperflow
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" verbal-setup.iss
+
       - name: Upload Windows EXE
         uses: actions/upload-artifact@v4
         with:
           name: Verbal-Windows-EXE
           path: whisperflow/dist/Verbal.exe
+          if-no-files-found: error
+
+      - name: Upload Windows Installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: Verbal-Windows-Installer
+          path: whisperflow/dist/VerbalSetup.exe
           if-no-files-found: error
