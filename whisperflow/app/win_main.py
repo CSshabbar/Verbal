@@ -555,8 +555,14 @@ class VerbalWinApp:
 
     # ── Update check ──────────────────────────────────────────────────────
     def _check_update(self):
+        # Only check for updates once per session to prevent resource exhaustion
+        if hasattr(self, '_update_checked') and self._update_checked:
+            return
+            
         from app.updater import check_for_update, download_update, install_update
         update = check_for_update()
+        self._update_checked = True  # Mark that we've checked
+        
         if not update:
             return
         try:
@@ -588,6 +594,8 @@ class VerbalWinApp:
 
 
 def main():
+    import time
+    sys._verbal_start_time = time.time()
     app = VerbalWinApp()
     app.start()
 

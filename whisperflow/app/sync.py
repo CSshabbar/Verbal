@@ -124,11 +124,12 @@ class SyncClient:
 
     def _listen(self):
         import websocket
+        import time
 
         def on_open(ws):
             self._connected = True
             logger.info("Sync WebSocket connected — subscribing to postgres_changes")
-
+            
             # Single join message with postgres_changes config
             # Topic must be "realtime:*" for postgres_changes
             ws.send(json.dumps({
@@ -197,20 +198,36 @@ class SyncClient:
         def on_close(ws, code, msg):
             self._connected = False
             logger.info(f"Sync WebSocket closed (code={code})")
+            # Attempt to reconnect after a delay
+            if not hasattr(self, '_reconnecting') or not self._reconnecting:
+                self._reconnecting = True
+                time.sleep(5)  # Wait before reconnecting
+                self._reconnecting = False
+                # Restart the connection
+                try:
+                    self._listen()
+                except Exception as e:
+                    logger.error(f"Failed to restart sync listener: {e}")
 
         def on_error(ws, error):
             logger.error(f"Sync WebSocket error: {error}")
+            # Don't let errors crash the entire application
+            pass
 
-        ws = websocket.WebSocketApp(
-            WS_URL,
-            header={"Authorization": f"Bearer {SUPABASE_KEY}"},
-            on_open=on_open,
-            on_message=on_message,
-            on_close=on_close,
-            on_error=on_error,
-        )
-        self._ws = ws
-        ws.run_forever(ping_interval=25, ping_timeout=10)
+        try:
+            ws = websocket.WebSocketApp(
+                WS_URL,
+                header={"Authorization": f"Bearer {SUPABASE_KEY}"},
+                on_open=on_open,
+                on_message=on_message,
+                on_close=on_close,
+                on_error=on_error,
+            )
+            self._ws = ws
+            ws.run_forever(ping_interval=25, ping_timeout=10)
+        except Exception as e:
+            logger.error(f"Sync WebSocket failed to start: {e}")
+            # Continue running even if sync fails
 
     @property
     def connected(self) -> bool:

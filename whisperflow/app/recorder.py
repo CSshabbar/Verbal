@@ -65,6 +65,9 @@ class Recorder:
         with self._lock:
             if not self._buffer:
                 return None
+            # Limit buffer size to prevent memory issues
+            if len(self._buffer) > 1000:  # Roughly 30 seconds at 48kHz
+                self._buffer = self._buffer[-1000:]
             audio = np.concatenate(self._buffer, axis=0).flatten()
             self._buffer = []
 
