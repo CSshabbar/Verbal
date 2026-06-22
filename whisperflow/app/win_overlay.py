@@ -25,13 +25,13 @@ TRANSPARENT_COLOR = "#ff00ff"
 TRANSPARENT_RGBA  = (255, 0, 255, 255)
 
 # ── Layout ────────────────────────────────────────────────────────────
-PILL_W    = 260
-PILL_H    = 52
-RADIUS    = 26
-BAR_COUNT = 12
-BAR_W     = 3
-BAR_GAP   = 3
-BAR_MAX_H = 24
+PILL_W    = 280
+PILL_H    = 60
+RADIUS    = 30
+BAR_COUNT = 16
+BAR_W     = 2
+BAR_GAP   = 2
+BAR_MAX_H = 28
 
 
 class WinOverlay:
@@ -205,7 +205,20 @@ class WinOverlay:
             img = Image.new("RGBA", (PILL_W, PILL_H), (0, 0, 0, 0))
             draw = ImageDraw.Draw(img)
 
-            # ── Pill background ───────────────────────────────────────
+            # ── Smooth pill background with subtle shadow ───────────────────────────────────────
+            # Create shadow
+            shadow_img = Image.new("RGBA", (PILL_W, PILL_H), (0, 0, 0, 0))
+            shadow_draw = ImageDraw.Draw(shadow_img)
+            shadow_draw.rounded_rectangle(
+                [2, 2, PILL_W - 1, PILL_H - 1],
+                radius=RADIUS,
+                fill=(*SHADOW[:3], 40),  # More subtle shadow
+            )
+            shadow_img = shadow_img.filter(ImageFilter.GaussianBlur(radius=3))
+            img = Image.alpha_composite(img, shadow_img)
+            draw = ImageDraw.Draw(img)
+
+            # Main pill with gradient effect
             draw.rounded_rectangle(
                 [0, 0, PILL_W - 1, PILL_H - 1],
                 radius=RADIUS,
@@ -214,63 +227,97 @@ class WinOverlay:
                 width=1,
             )
 
-            # ── Glow behind dot ───────────────────────────────────────
+            # Add subtle gradient highlight at top
+            highlight = Image.new("RGBA", (PILL_W, PILL_H//3), (255, 255, 255, 10))
+            img.paste(highlight, (0, 0), highlight)
+            draw = ImageDraw.Draw(img)
+
+            # ── Enhanced glow behind dot ───────────────────────────────────────
             if is_recording and self._amplitude > 0.01:
-                glow_r = 10 + 5 * self._amplitude * abs(math.sin(self._phase * 2.0))
-                cx, cy = 26, PILL_H // 2
+                glow_r = 12 + 8 * self._amplitude * abs(math.sin(self._phase * 2.0))
+                cx, cy = 30, PILL_H // 2
                 glow = Image.new("RGBA", (PILL_W, PILL_H), (0, 0, 0, 0))
                 gd = ImageDraw.Draw(glow)
-                for i in range(3):
+                # Multi-layer glow for smoother effect
+                for i in range(5):
                     r = glow_r - i * 2
-                    alpha = 30 - i * 10
+                    alpha = 40 - i * 8
                     if r > 0 and alpha > 0:
                         gd.ellipse(
                             [cx - r, cy - r, cx + r, cy + r],
                             fill=(*ACCENT, alpha),
                         )
-                glow = glow.filter(ImageFilter.GaussianBlur(radius=4))
+                glow = glow.filter(ImageFilter.GaussianBlur(radius=6))
                 img = Image.alpha_composite(img, glow)
                 draw = ImageDraw.Draw(img)
 
-            # ── Status dot ───────────────────────────────────────────
-            dot_r = 5
+            # ── Status dot with enhanced visual effect ───────────────────────────────────────────
+            dot_r = 6
             dot_pulse = 0.7 + 0.3 * abs(math.sin(self._phase * 2.0)) if is_recording else 1.0
             dr = int(dot_r * dot_pulse)
-            if dr < 2:
-                dr = 2
-            cx, cy = 26, PILL_H // 2
+            if dr < 3:
+                dr = 3
+            cx, cy = 30, PILL_H // 2
+            
+            # Inner dot with gradient effect
             draw.ellipse(
                 [cx - dr, cy - dr, cx + dr, cy + dr],
                 fill=(*dot_color, int(255 * dot_pulse)),
             )
+            
+            # Outer glow ring
+            outer_r = dr + 2
             draw.ellipse(
-                [cx - dr - 1, cy - dr - 1, cx + dr + 1, cy + dr + 1],
-                outline=(*dot_color, 100),
+                [cx - outer_r, cy - outer_r, cx + outer_r, cy + outer_r],
+                outline=(*dot_color, int(80 * dot_pulse)),
                 width=1,
             )
+            
+            # Inner highlight for 3D effect
+            highlight_r = max(1, dr // 2)
+            draw.ellipse(
+                [cx - highlight_r, cy - highlight_r, cx + highlight_r, cy + highlight_r],
+                fill=(255, 255, 255, int(100 * dot_pulse)),
+            )
 
-            # ── Waveform bars (recording only) ───────────────────────
+            # ── Smooth waveform bars (recording only) ───────────────────────
             if is_recording and self._amplitude > 0.01:
                 total_w = BAR_COUNT * BAR_W + (BAR_COUNT - 1) * BAR_GAP
-                sx = 48
+                sx = 54
                 sy = PILL_H // 2
+                
+                # Draw smooth bars with rounded ends and gradient effect
                 for i in range(BAR_COUNT):
                     frac = 1.0 - abs(i - (BAR_COUNT - 1) / 2.0) / ((BAR_COUNT - 1) / 2.0)
-                    wave = abs(math.sin(self._phase * 3.0 + i * 0.6))
-                    bh = max(3, BAR_MAX_H * (0.3 + 0.7 * frac) * wave * self._amplitude)
+                    wave = abs(math.sin(self._phase * 3.0 + i * 0.5))
+                    bh = max(2, BAR_MAX_H * (0.2 + 0.8 * frac) * wave * self._amplitude)
                     bx = sx + i * (BAR_W + BAR_GAP)
                     by = sy - bh / 2
-                    alpha = int(255 * (0.5 + 0.4 * frac * self._amplitude))
+                    
+                    # Calculate alpha based on position and amplitude
+                    alpha = int(255 * (0.4 + 0.6 * frac * self._amplitude))
+                    
+                    # Draw bar with rounded ends
                     draw.rounded_rectangle(
                         [bx, by, bx + BAR_W, by + bh],
-                        radius=BAR_W // 2,
+                        radius=BAR_W,
                         fill=(*ACCENT, alpha),
                     )
-                text_x = sx + total_w + 14
+                    
+                    # Add highlight to bars for 3D effect
+                    if bh > 4:
+                        highlight_h = max(1, int(bh * 0.3))
+                        draw.rounded_rectangle(
+                            [bx, by, bx + BAR_W, by + highlight_h],
+                            radius=BAR_W//2,
+                            fill=(255, 255, 255, int(alpha * 0.3)),
+                        )
+                
+                text_x = sx + total_w + 16
             else:
-                text_x = 48
+                text_x = 54
 
-            # ── Status text ──────────────────────────────────────────
+            # ── Status text with better positioning ──────────────────────────────────────────
             text = self._status_text
             try:
                 bbox = draw.textbbox((0, 0), text, font=self._font)
@@ -280,11 +327,19 @@ class WinOverlay:
                 text_w, text_h = 100, 16
             text_y = (PILL_H - text_h) // 2 - 1
 
-            if text_x + text_w > PILL_W - 14:
-                text_x = PILL_W - 14 - text_w
-                if text_x < 48:
-                    text_x = 48
+            if text_x + text_w > PILL_W - 16:
+                text_x = PILL_W - 16 - text_w
+                if text_x < 54:
+                    text_x = 54
 
+            # Add subtle text shadow for better readability
+            draw.text(
+                (text_x + 1, text_y + 1),
+                text,
+                font=self._font,
+                fill=(*TEXT, 80),  # Semi-transparent shadow
+            )
+            
             draw.text(
                 (text_x, text_y),
                 text,
