@@ -12,6 +12,16 @@ logger = logging.getLogger("verbal.transcriber")
 def transcribe(audio: np.ndarray, config: dict, sample_rate: int = 48000) -> str:
     """Transcribe audio. Priority: Groq -> Gemini -> Local Whisper."""
     start = time.time()
+    
+    # Handle empty or silent audio
+    if audio is None or len(audio) == 0:
+        logger.warning("Empty audio provided for transcription")
+        return ""
+        
+    peak = np.max(np.abs(audio))
+    if peak < 0.01:
+        logger.warning(f"Audio is nearly silent (peak={peak:.4f})")
+        return ""
 
     # Save at native sample rate — cloud APIs handle resampling
     tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
@@ -90,7 +100,8 @@ def _transcribe_groq(wav_path: str, api_key: str) -> str | None:
                 prompt="Voice dictation of spoken English. Transcribe exactly what is said.",
             )
         text = result.text.strip()
-        if text and text not in [".", "...", "you", "You", "Thank you.", "Thanks."]:
+        # Filter out common hallucinations for low-quality audio
+        if text and text not in [".", "...", "you", "You", "Thank you.", "Thanks.", "uh", "um", "ah", "hm"]:
             return text
         return None
     except Exception as e:
@@ -110,7 +121,7 @@ def _transcribe_gemini(wav_path: str, api_key: str) -> str | None:
         response = model.generate_content(
             [
                 {"mime_type": "audio/wav", "data": audio_bytes},
-                "Transcribe this audio exactly word for word. Return ONLY the transcription, nothing else.",
+                "Transcribe this audio exactly word for word. Return ONLY the transcription, nothing else. If you cannot understand the audio clearly, return an empty response.",
             ],
             request_options={"timeout": 10},
         )
@@ -120,15 +131,20 @@ def _transcribe_gemini(wav_path: str, api_key: str) -> str | None:
             if text.lower().startswith(prefix.lower()):
                 text = text[len(prefix):].strip()
         text = text.strip('"').strip("'").strip()
-        return text if text else None
+        
+        # Filter out common hallucinations for low-quality audio
+        if text and len(text) > 1 and text not in [".", "...", "you", "You", "Thank you.", "Thanks.", "uh", "um", "ah", "hm"]:
+            return text
+        return None
     except Exception as e:
         logger.warning(f"Gemini failed: {e}")
         return None
 
 
+# Global model cache
 _model = None
-_model_lock = threading.Lock()
 _model_name = None
+_model_lock = threading.Lock()
 
 
 def _transcribe_local(wav_path: str, model_name: str = "base") -> str:
@@ -136,9 +152,16 @@ def _transcribe_local(wav_path: str, model_name: str = "base") -> str:
     with _model_lock:
         if _model is None or _model_name != model_name:
             logger.info(f"Loading local Whisper '{model_name}'...")
-            from faster_whisper import WhisperModel
-            _model = WhisperModel(model_name, device="cpu", compute_type="int8")
-            _model_name = model_name
+            try:
+                from faster_whisper import WhisperModel
+                _model = WhisperModel(model_name, device="cpu", compute_type="int8")
+                _model_name = model_name
+            except ImportError as e:
+                logger.error(f"Failed to import faster_whisper: {e}")
+                raise Exception("Local Whisper model not available. Please check your installation.")
+            except Exception as e:
+                logger.error(f"Failed to load Whisper model: {e}")
+                raise Exception(f"Failed to load Whisper model: {e}")
 
     def _run(vad: bool) -> str:
         kwargs = dict(
@@ -158,11 +181,20 @@ def _transcribe_local(wav_path: str, model_name: str = "base") -> str:
         else:
             kwargs["vad_filter"] = False
 
-        segments, _ = _model.transcribe(wav_path, **kwargs)
-        return " ".join(seg.text.strip() for seg in segments).strip()
+        try:
+            segments, _ = _model.transcribe(wav_path, **kwargs)
+            result = " ".join(seg.text.strip() for seg in segments).strip()
+            
+            # Filter out common hallucinations for low-quality audio
+            if result and len(result) > 1 and result not in [".", "...", "you", "You", "Thank you.", "Thanks.", "uh", "um", "ah", "hm"]:
+                return result
+            return ""
+        except Exception as e:
+            logger.error(f"Transcription failed: {e}")
+            raise Exception(f"Transcription failed: {e}")
 
     result = _run(vad=True)
-    if not result:
+    if not result and _model_name in ["base", "small"]:
         logger.warning("VAD filtered everything — retrying without VAD")
         result = _run(vad=False)
     return result

@@ -49,9 +49,9 @@ def _play_sound(name: str):
             base_dir = sys._MEIPASS
         else:
             base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            
+
         sound_path = os.path.join(base_dir, "assets", "sounds", f"{name}.wav")
-        
+
         if os.path.exists(sound_path):
             winsound.PlaySound(sound_path, winsound.SND_FILENAME | winsound.SND_ASYNC)
         else:
@@ -325,7 +325,7 @@ class VerbalWinApp:
         from pynput import keyboard
         self._parsed_hold_key = self._parse_key(self.config.get("hotkey_hold", "alt_r"))
         self._parsed_toggle_key = self._parse_key(self.config.get("hotkey_toggle", "alt_r"))
-        
+
         self._hotkey_listener = keyboard.Listener(
             on_press=self._on_key_press,
             on_release=self._on_key_release,
@@ -334,13 +334,17 @@ class VerbalWinApp:
         self._hotkey_listener.start()
         logger.info(f"Hotkey listener started (Hold={self.config.get('hotkey_hold')}, Toggle={self.config.get('hotkey_toggle')})")
 
+        # Start periodic cleanup timer
+        self._cleanup_timer = None
+        self._start_cleanup_timer()
+
     def _on_key_press(self, key):
         try:
             from pynput import keyboard
-            
+
             hold_key = self._parsed_hold_key
             toggle_key = self._parsed_toggle_key
-            
+
             # Case 1: Same key for both
             if hold_key == toggle_key and self._keys_match(key, hold_key):
                 if self._mode == MODE_HOLD:
@@ -357,7 +361,7 @@ class VerbalWinApp:
             if self._keys_match(key, hold_key):
                 if not self._is_recording:
                     self._on_record_start()
-            
+
             if self._keys_match(key, toggle_key):
                 now = time.time()
                 if now - self._last_toggle_time > 0.3:
@@ -381,6 +385,32 @@ class VerbalWinApp:
                         self._on_record_stop()
         except Exception:
             pass
+
+    def _start_cleanup_timer(self):
+        """Start a periodic cleanup timer to prevent resource accumulation"""
+        try:
+            if self._cleanup_timer:
+                self._cleanup_timer.cancel()
+        except:
+            pass
+
+        def cleanup_callback():
+            try:
+                # Perform periodic cleanup
+                import gc
+                gc.collect()
+                logger.debug("Periodic cleanup completed")
+            except Exception as e:
+                logger.debug(f"Periodic cleanup error: {e}")
+            finally:
+                # Schedule next cleanup
+                self._start_cleanup_timer()
+
+        # Schedule cleanup every 5 minutes
+        import threading
+        self._cleanup_timer = threading.Timer(300.0, cleanup_callback)
+        self._cleanup_timer.daemon = True
+        self._cleanup_timer.start()
 
     def _update_hotkeys(self):
         try:
@@ -483,6 +513,7 @@ class VerbalWinApp:
             success = inject_text(result)
             _play_sound("done")
 
+            # Push to other devices if sync is enabled
             if self._sync:
                 target = self.dashboard._target_device_id if self.dashboard else "__all__"
                 if target not in (None, "__none__"):
@@ -498,7 +529,11 @@ class VerbalWinApp:
 
         except Exception as e:
             logger.critical(f"PROCESS CRASH: {e}\n{traceback.format_exc()}")
-            self.overlay.hide()
+            try:
+                self.overlay.show_briefly("Error occurred", duration=2.0)
+            except:
+                pass
+            self._reset_to_ready()
         finally:
             self._processing = False
 
@@ -506,6 +541,10 @@ class VerbalWinApp:
         self._processing = False
         self._is_recording = False
         self._cancel_flag.clear()
+        try:
+            self.recorder.cleanup()
+        except Exception as e:
+            logger.error(f"Error cleaning up recorder: {e}")
         self.overlay.hide()
         self._update_tray_icon(False)
         self._update_tray_menu()
@@ -540,8 +579,6 @@ class VerbalWinApp:
         self._init_sync()
 
     def _on_sync_receive(self, text: str, device_name: str):
-        import pyperclip
-        pyperclip.copy(text)
         logger.info(f"Sync received from {device_name}: '{text[:40]}'")
         try:
             from app.win_injector import inject_text
@@ -558,11 +595,11 @@ class VerbalWinApp:
         # Only check for updates once per session to prevent resource exhaustion
         if hasattr(self, '_update_checked') and self._update_checked:
             return
-            
+
         from app.updater import check_for_update, download_update, install_update
         update = check_for_update()
         self._update_checked = True  # Mark that we've checked
-        
+
         if not update:
             return
         try:

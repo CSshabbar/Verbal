@@ -25,13 +25,13 @@ TRANSPARENT_COLOR = "#ff00ff"
 TRANSPARENT_RGBA  = (255, 0, 255, 255)
 
 # ── Layout ────────────────────────────────────────────────────────────
-PILL_W    = 280
-PILL_H    = 60
-RADIUS    = 30
-BAR_COUNT = 16
-BAR_W     = 2
-BAR_GAP   = 2
-BAR_MAX_H = 28
+PILL_W    = 190
+PILL_H    = 38
+RADIUS    = 19
+BAR_COUNT = 10
+BAR_W     = 2.5
+BAR_GAP   = 3.0
+BAR_MAX_H = 20
 
 
 class WinOverlay:
@@ -150,10 +150,10 @@ class WinOverlay:
 
     def _animate_fade_in(self):
         if self._fade_alpha < 0.95:
-            self._fade_alpha += 0.10
+            self._fade_alpha += 0.05  # Smoother fade
             self._root.attributes("-alpha", min(self._fade_alpha, 0.95))
             self._render()
-            self._fade_timer = self._root.after(20, self._animate_fade_in)
+            self._fade_timer = self._root.after(16, self._animate_fade_in)  # ~60fps
         else:
             self._root.attributes("-alpha", 0.95)
             self._render()
@@ -166,11 +166,11 @@ class WinOverlay:
 
     def _animate_fade_out(self):
         if self._fade_alpha > 0.0:
-            self._fade_alpha -= 0.10
+            self._fade_alpha -= 0.05  # Smoother fade
             if self._fade_alpha > 0:
                 self._root.attributes("-alpha", self._fade_alpha)
                 self._render()
-                self._fade_timer = self._root.after(20, self._animate_fade_out)
+                self._fade_timer = self._root.after(16, self._animate_fade_out)  # ~60fps
             else:
                 self._root.attributes("-alpha", 0.0)
                 self._root.withdraw()
@@ -186,9 +186,9 @@ class WinOverlay:
 
     def _start_animation_loop(self):
         if self._active and self._root:
-            self._phase += 0.12
+            self._phase += 0.10  # Match Mac animation speed
             self._render()
-            self._fade_timer = self._root.after(50, self._start_animation_loop)
+            self._fade_timer = self._root.after(33, self._start_animation_loop)  # ~30fps like Mac
 
     def _render(self):
         if not self._canvas or not self._root:
@@ -235,7 +235,7 @@ class WinOverlay:
             # ── Enhanced glow behind dot ───────────────────────────────────────
             if is_recording and self._amplitude > 0.01:
                 glow_r = 12 + 8 * self._amplitude * abs(math.sin(self._phase * 2.0))
-                cx, cy = 30, PILL_H // 2
+                cx, cy = 14, PILL_H // 2  # Move to left side like Mac version
                 glow = Image.new("RGBA", (PILL_W, PILL_H), (0, 0, 0, 0))
                 gd = ImageDraw.Draw(glow)
                 # Multi-layer glow for smoother effect
@@ -252,12 +252,12 @@ class WinOverlay:
                 draw = ImageDraw.Draw(img)
 
             # ── Status dot with enhanced visual effect ───────────────────────────────────────────
-            dot_r = 6
+            dot_r = 4.0  # Smaller dot like Mac version
             dot_pulse = 0.7 + 0.3 * abs(math.sin(self._phase * 2.0)) if is_recording else 1.0
             dr = int(dot_r * dot_pulse)
             if dr < 3:
                 dr = 3
-            cx, cy = 30, PILL_H // 2
+            cx, cy = 14, PILL_H // 2  # Move to left side like Mac version
             
             # Inner dot with gradient effect
             draw.ellipse(
@@ -283,24 +283,24 @@ class WinOverlay:
             # ── Smooth waveform bars (recording only) ───────────────────────
             if is_recording and self._amplitude > 0.01:
                 total_w = BAR_COUNT * BAR_W + (BAR_COUNT - 1) * BAR_GAP
-                sx = 54
+                sx = 24  # Adjust position
                 sy = PILL_H // 2
                 
                 # Draw smooth bars with rounded ends and gradient effect
                 for i in range(BAR_COUNT):
                     frac = 1.0 - abs(i - (BAR_COUNT - 1) / 2.0) / ((BAR_COUNT - 1) / 2.0)
-                    wave = abs(math.sin(self._phase * 3.0 + i * 0.5))
-                    bh = max(2, BAR_MAX_H * (0.2 + 0.8 * frac) * wave * self._amplitude)
+                    wave = abs(math.sin(self._phase * 3.0 + i * 0.6))  # Match Mac animation
+                    bh = max(2.5, BAR_MAX_H * (0.3 + 0.7 * frac) * wave * self._amplitude)
                     bx = sx + i * (BAR_W + BAR_GAP)
                     by = sy - bh / 2
                     
                     # Calculate alpha based on position and amplitude
-                    alpha = int(255 * (0.4 + 0.6 * frac * self._amplitude))
+                    alpha = int(255 * (0.5 + 0.5 * frac * self._amplitude))
                     
                     # Draw bar with rounded ends
                     draw.rounded_rectangle(
                         [bx, by, bx + BAR_W, by + bh],
-                        radius=BAR_W,
+                        radius=BAR_W/2,  # Match Mac rounded corners
                         fill=(*ACCENT, alpha),
                     )
                     
@@ -309,13 +309,13 @@ class WinOverlay:
                         highlight_h = max(1, int(bh * 0.3))
                         draw.rounded_rectangle(
                             [bx, by, bx + BAR_W, by + highlight_h],
-                            radius=BAR_W//2,
+                            radius=BAR_W/4,
                             fill=(255, 255, 255, int(alpha * 0.3)),
                         )
                 
-                text_x = sx + total_w + 16
+                text_x = sx + total_w + 8
             else:
-                text_x = 54
+                text_x = 24
 
             # ── Status text with better positioning ──────────────────────────────────────────
             text = self._status_text
@@ -329,8 +329,8 @@ class WinOverlay:
 
             if text_x + text_w > PILL_W - 16:
                 text_x = PILL_W - 16 - text_w
-                if text_x < 54:
-                    text_x = 54
+                if text_x < 24:
+                    text_x = 24
 
             # Add subtle text shadow for better readability
             draw.text(

@@ -5,7 +5,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-APP_VERSION = "1.0.8"
+APP_VERSION = "1.0.9"
 PLATFORM = "mac" if platform.system() == "Darwin" else "win" if platform.system() == "Windows" else "linux"
 
 CONFIG_DIR = Path.home() / ".verbal"

@@ -2,7 +2,7 @@
 ; Builds a silent-install capable .exe that auto-updates the app
 
 #define MyAppName "Verbal"
-#define MyAppVersion "1.0.0"
+#define MyAppVersion "1.0.6"
 #define MyAppPublisher "Verbal"
 #define MyAppExeName "Verbal.exe"
 
