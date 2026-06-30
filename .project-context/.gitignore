@@ -1,0 +1,36 @@
+# Project Context .gitignore
+
+# Keep this folder private (not committed to git)
+# These files contain development aids and should not be versioned
+
+# Logs and temporary files
+*.log
+*.tmp
+*.bak
+
+# Sensitive data (if accidentally created)
+*.key
+*.secret
+*credentials*
+
+# Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Keep the folder structure but ignore content
+# Uncomment below if you want to track the documentation files
+# *.md
+# !README.md
+# !INDEX.md
+# !SKILL.md
+# !API_REFERENCE.md
+# !DEBUGGING_GUIDE.md
+# !FEATURE_DEVELOPMENT.md
+# !QUICK_REFERENCE.md
