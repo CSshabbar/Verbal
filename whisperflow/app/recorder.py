@@ -84,9 +84,10 @@ class Recorder:
         peak = np.max(np.abs(audio))
         logger.info(f"Captured {duration:.1f}s at {self._sample_rate}Hz, peak={peak:.4f}")
 
+        # DISABLED: Audio enhancement was destroying speech content
         # Apply noise reduction and audio enhancement
-        if len(audio) > 0:
-            audio = self._enhance_audio(audio)
+        # if len(audio) > 0:
+        #     audio = self._enhance_audio(audio)
         
         # Always normalize to TARGET_PEAK so Whisper gets clean, consistent audio
         if peak > 0.01:

@@ -101,13 +101,12 @@ def _transcribe_groq(wav_path: str, api_key: str) -> str | None:
         from groq import Groq
         client = Groq(api_key=api_key)
         with open(wav_path, "rb") as f:
-            # Use whisper-large-v3-turbo (same as mobile app - working configuration)
+            # Use whisper-large-v3-turbo (EXACT same as mobile app - NO prompt!)
             result = client.audio.transcriptions.create(
                 file=("audio.wav", f),
                 model="whisper-large-v3-turbo",
                 language="en",
                 temperature=0.0,
-                prompt="Voice dictation of spoken English. Transcribe exactly what is said.",
             )
         text = result.text.strip()
         logger.debug(f"Groq returned: '{text[:100] if text else 'EMPTY'}'")
