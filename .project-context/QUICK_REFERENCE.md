@@ -71,20 +71,14 @@ rm -rf build/ dist/ && ./build.sh
 
 ## 🐛 Common Issues
 
-### Recording Cuts Short
-**Fix:** Switch to hold mode or add minimum duration in `app/main.py`
-
-### Transcription Fails
-**Check:** API keys valid? Network OK? Not rate-limited?
-
-### Paste Fails
-**Fix:** Re-enable Accessibility permissions (System Settings → Privacy)
-
-### Sync Not Working
-**Check:** Same `sync_user_id` on all devices? Supabase Realtime enabled?
-
-### Build Fails
-**Fix:** Update `.spec` file with missing imports/data files
+| Issue | Fix |
+|-------|-----|
+| Recording Cuts Short | Switch to hold mode or add min duration |
+| Transcription Fails | Check API keys, network, rate limits |
+| Paste Fails | Re-enable Accessibility permissions |
+| Sync Not Working | Verify same `sync_user_id` on devices |
+| Build Fails | Update `.spec` hiddenimports |
+| **Local Whisper Missing** | **Use Groq only - it's optional!** |
 
 ---
 

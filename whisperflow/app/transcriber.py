@@ -47,13 +47,22 @@ def transcribe(audio: np.ndarray, config: dict, sample_rate: int = 48000) -> str
         tmp16 = _resample_to_16k(audio, sample_rate)
         try:
             result = _transcribe_local(tmp16, config.get("whisper_model", "base"))
-            logger.info(f"[Local] {time.time()-start:.2f}s: '{result[:80]}'")
-            return result
+            if result:
+                logger.info(f"[Local] {time.time()-start:.2f}s: '{result[:80]}'")
+                return result
+            else:
+                logger.warning("Local Whisper not available - all transcription methods failed")
+        except Exception as e:
+            logger.error(f"Local Whisper failed: {e}")
         finally:
             try:
                 os.unlink(tmp16)
             except:
                 pass
+        
+        # All methods failed
+        logger.error("All transcription methods failed")
+        return ""
     finally:
         try:
             os.unlink(tmp.name)
@@ -147,7 +156,7 @@ _model_name = None
 _model_lock = threading.Lock()
 
 
-def _transcribe_local(wav_path: str, model_name: str = "base") -> str:
+def _transcribe_local(wav_path: str, model_name: str = "base") -> str | None:
     global _model, _model_name
     with _model_lock:
         if _model is None or _model_name != model_name:
@@ -158,10 +167,20 @@ def _transcribe_local(wav_path: str, model_name: str = "base") -> str:
                 _model_name = model_name
             except ImportError as e:
                 logger.error(f"Failed to import faster_whisper: {e}")
-                raise Exception("Local Whisper model not available. Please check your installation.")
+                logger.warning("Local Whisper not available - install with: pip install faster-whisper")
+                return None
             except Exception as e:
                 logger.error(f"Failed to load Whisper model: {e}")
-                raise Exception(f"Failed to load Whisper model: {e}")
+                return None
+        
+        # Model loaded, proceed with transcription
+        try:
+            segments, info = _model.transcribe(wav_path, beam_size=1, language="en")
+            result = " ".join([segment.text for segment in segments]).strip()
+            return result if result else None
+        except Exception as e:
+            logger.error(f"Whisper transcription failed: {e}")
+            return None
 
     def _run(vad: bool) -> str:
         kwargs = dict(

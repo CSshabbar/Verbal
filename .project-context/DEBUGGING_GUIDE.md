@@ -508,6 +508,84 @@ def get_next_groq_key(config):
 
 ---
 
+### 8. Local Whisper Not Available (Dependency Conflict)
+
+**Symptoms:**
+- App crashes with: `ModuleNotFoundError: No module named 'faster_whisper'`
+- Error: `Local Whisper model not available. Please check your installation.`
+- Groq transcription works, but fallback fails
+
+**Root Cause:**
+- `faster-whisper` has dependency conflicts on Python 3.14+
+- Specifically: `onnxruntime` package not available for Python 3.14
+- Local Whisper is optional - app should work with Groq/Gemini only
+
+**Debug Steps:**
+
+1. **Check if faster-whisper is installed:**
+```bash
+pip show faster-whisper
+```
+
+2. **Check Python version:**
+```bash
+python3 --version
+# If 3.14+, faster-whisper may not be compatible
+```
+
+3. **Check logs:**
+```bash
+grep "faster_whisper" ~/.verbal/logs/app.log
+# Should see: "Failed to import faster_whisper: No module named 'faster_whisper'"
+```
+
+**Solution:**
+
+**Option 1: Use Cloud APIs Only (Recommended)**
+- Groq (primary) and Gemini (fallback) work without local Whisper
+- App handles missing module gracefully
+- No action needed - just ignore the warning
+
+**Option 2: Install in Separate Environment**
+```bash
+# Create separate environment with Python 3.11 or 3.12
+python3.11 -m venv whisper-env
+source whisper-env/bin/activate
+pip install faster-whisper
+
+# Then use this environment when running Verbal
+```
+
+**Option 3: Wait for Compatibility**
+- onnxruntime Python 3.14 support is in progress
+- Monitor: https://pypi.org/project/onnxruntime/
+
+**Code Fix (Implemented):**
+The app now handles missing faster-whisper gracefully:
+
+```python
+# In app/transcriber.py
+def _transcribe_local(wav_path: str, model_name: str = "base") -> str | None:
+    try:
+        from faster_whisper import WhisperModel
+        # ... load model ...
+    except ImportError as e:
+        logger.error(f"Failed to import faster_whisper: {e}")
+        logger.warning("Local Whisper not available - install with: pip install faster-whisper")
+        return None  # Don't crash, just return None
+```
+
+**Verification:**
+After fix, logs should show:
+```
+[Groq] 0.32s: "transcription successful"
+WARNING: Local Whisper not available - install with: pip install faster-whisper
+```
+
+App continues working without crash.
+
+---
+
 ## 🛠️ Debugging Tools
 
 ### Log Analysis
