@@ -336,6 +336,10 @@ class VerbalApp(rumps.App):
             if self._cancel_flag.is_set():
                 return
             if not text:
+                logger.warning("Transcription returned empty text - no speech detected or audio too quiet")
+                # Show user-friendly error
+                self._on_main(lambda: self.overlay.update_status("⚠️ No speech detected. Speak louder!"))
+                time.sleep(1.5)
                 self._on_main(self._reset_to_ready)
                 return
 

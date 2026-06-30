@@ -100,6 +100,7 @@ def _transcribe_groq(wav_path: str, api_key: str) -> str | None:
     try:
         from groq import Groq
         client = Groq(api_key=api_key)
+        logger.debug(f"Calling Groq API with file: {wav_path}")
         with open(wav_path, "rb") as f:
             result = client.audio.transcriptions.create(
                 file=("audio.wav", f),
@@ -109,9 +110,22 @@ def _transcribe_groq(wav_path: str, api_key: str) -> str | None:
                 prompt="Voice dictation of spoken English. Transcribe exactly what is said.",
             )
         text = result.text.strip()
+        logger.debug(f"Groq returned: '{text[:100] if text else 'EMPTY'}'")
         # Filter out common hallucinations for low-quality audio
-        if text and text not in [".", "...", "you", "You", "Thank you.", "Thanks.", "uh", "um", "ah", "hm"]:
+        # But keep them if user actually spoke (we'll show warning)
+        hallucinations = [".", "...", "uh", "um", "ah", "hm"]
+        if text and text in hallucinations:
+            logger.warning(f"Groq returned likely hallucination: '{text}'")
+            return None
+        # Special handling for "Thank you." / "Thanks." - common Groq hallucination on silence
+        if text in ["Thank you.", "Thanks."]:
+            logger.warning(f"Groq hallucinated '{text}' - likely no speech detected. Speak louder!")
+            # Return it anyway so user knows something went wrong
             return text
+        if text:
+            logger.info(f"Groq transcription successful: {len(text)} chars")
+            return text
+        logger.warning(f"Groq returned empty result")
         return None
     except Exception as e:
         logger.warning(f"Groq failed: {e}")
