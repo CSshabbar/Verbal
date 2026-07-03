@@ -8,13 +8,13 @@ import * as Clipboard from 'expo-clipboard';
 import * as Haptics from 'expo-haptics';
 import * as ImagePicker from 'expo-image-picker';
 import { Ionicons } from '@expo/vector-icons';
-import { colors, fonts, radius } from '../lib/theme';
-import { getUserId, getDeviceName } from '../lib/storage';
-import { supabase, SUPABASE_URL, SUPABASE_ANON_KEY } from '../lib/supabase';
+import { colors, radius, space, fonts } from '../theme';
+import { getUserId, getDeviceName } from '../../lib/storage';
+import { supabase, SUPABASE_URL, SUPABASE_ANON_KEY } from '../../lib/supabase';
 
 type Status = 'idle' | 'saving' | 'saved' | 'error' | 'synced';
 
-export default function CanvasScreen() {
+export const CanvasScreen: React.FC = () => {
   const [content,    setContent]    = useState('');
   const [imageUri,   setImageUri]   = useState<string | null>(null);   // local preview
   const [imageUrl,   setImageUrl]   = useState<string | null>(null);   // remote URL
@@ -269,9 +269,9 @@ export default function CanvasScreen() {
   };
 
   const statusColor =
-    status === 'saved'  ? colors.green :
+    status === 'saved'  ? colors.success :
     status === 'synced' ? colors.accent :
-    status === 'error'  ? colors.danger : colors.heroMuted;
+    status === 'error'  ? colors.error : colors.textTertiary;
 
   return (
     <KeyboardAvoidingView style={s.root} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
@@ -285,13 +285,13 @@ export default function CanvasScreen() {
             </View>
             <View style={s.heroActions}>
               <TouchableOpacity style={s.iconBtn} onPress={() => loadCanvas(userId)}>
-                <Ionicons name="refresh-outline" size={17} color={colors.heroText} />
+                <Ionicons name="refresh-outline" size={17} color={colors.textPrimary} />
               </TouchableOpacity>
               <TouchableOpacity style={s.iconBtn} onPress={handlePaste}>
-                <Ionicons name="clipboard-outline" size={17} color={colors.heroText} />
+                <Ionicons name="clipboard-outline" size={17} color={colors.textPrimary} />
               </TouchableOpacity>
               <TouchableOpacity style={s.iconBtn} onPress={pickImage}>
-                <Ionicons name="image-outline" size={17} color={colors.heroText} />
+                <Ionicons name="image-outline" size={17} color={colors.textPrimary} />
               </TouchableOpacity>
               <TouchableOpacity style={[s.iconBtn, s.iconBtnDanger]} onPress={handleClear}>
                 <Ionicons name="trash-outline" size={17} color={colors.accent} />
@@ -314,7 +314,7 @@ export default function CanvasScreen() {
               <Image source={{ uri: imageUri }} style={s.imagePreview} resizeMode="contain" />
               <View style={s.imageActions}>
                 <TouchableOpacity style={s.imageActionBtn} onPress={copyImageUrl}>
-                  <Ionicons name="copy-outline" size={16} color={colors.heroText} />
+                  <Ionicons name="copy-outline" size={16} color={colors.textPrimary} />
                   <Text style={s.imageActionTxt}>Copy URL</Text>
                 </TouchableOpacity>
                 <TouchableOpacity style={[s.imageActionBtn, s.imageActionBtnDanger]} onPress={removeImage}>
@@ -325,7 +325,7 @@ export default function CanvasScreen() {
             </View>
           ) : (
             <TouchableOpacity style={s.imagePlaceholder} onPress={pickImage}>
-              <Ionicons name="image-outline" size={28} color={colors.cardSub} />
+              <Ionicons name="image-outline" size={28} color={colors.textSecondary} />
               <Text style={s.imagePlaceholderTxt}>Tap to add image from gallery</Text>
             </TouchableOpacity>
           )}
@@ -338,7 +338,7 @@ export default function CanvasScreen() {
             onChangeText={handleChange}
             multiline
             placeholder="Type or paste text here…"
-            placeholderTextColor={colors.cardSub}
+            placeholderTextColor={colors.textTertiary}
             textAlignVertical="top"
             autoCorrect
           />
@@ -355,7 +355,7 @@ export default function CanvasScreen() {
             <Ionicons
               name={status === 'saved' ? 'checkmark' : 'cloud-upload-outline'}
               size={16}
-              color={colors.heroText}
+              color={colors.buttonPrimaryText}
               style={{ marginRight: 6 }}
             />
             <Text style={s.saveBtnTxt}>
@@ -369,36 +369,36 @@ export default function CanvasScreen() {
 }
 
 const s = StyleSheet.create({
-  root:               { flex: 1, backgroundColor: colors.heroBg },
-  hero:               { backgroundColor: colors.heroBg, paddingHorizontal: 22, paddingBottom: 16 },
-  heroRow:            { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', marginTop: 8 },
-  headline:           { fontSize: 28, fontWeight: fonts.bold, color: colors.heroText },
-  sub:                { fontSize: 12, color: colors.heroMuted, marginTop: 2 },
-  heroActions:        { flexDirection: 'row', gap: 8, alignItems: 'center', marginTop: 4 },
-  iconBtn:            { width: 34, height: 34, borderRadius: 10, backgroundColor: 'rgba(255,255,255,0.08)', alignItems: 'center', justifyContent: 'center' },
-  iconBtnDanger:      { backgroundColor: 'rgba(224,90,43,0.10)' },
-  statsRow:           { flexDirection: 'row', alignItems: 'center', gap: 14, marginTop: 10 },
-  stat:               { fontSize: 12, color: colors.heroMuted },
+  root:               { flex: 1, backgroundColor: colors.background },
+  hero:               { backgroundColor: colors.background, paddingHorizontal: space.xl, paddingBottom: space.lg },
+  heroRow:            { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', marginTop: space.md },
+  headline:           { fontSize: fonts.xxxl, fontWeight: fonts.light, color: colors.textPrimary, letterSpacing: -0.5 },
+  sub:                { fontSize: fonts.sm, color: colors.textSecondary, marginTop: 4 },
+  heroActions:        { flexDirection: 'row', gap: space.md, alignItems: 'center', marginTop: space.md },
+  iconBtn:            { width: 36, height: 36, borderRadius: space.md, backgroundColor: colors.buttonSecondary, alignItems: 'center', justifyContent: 'center' },
+  iconBtnDanger:      { backgroundColor: colors.accentDim },
+  statsRow:           { flexDirection: 'row', alignItems: 'center', gap: space.xl, marginTop: space.lg },
+  stat:               { fontSize: fonts.sm, color: colors.textSecondary },
   statVal:            { color: colors.accent, fontWeight: fonts.semibold },
-  statusTxt:          { fontSize: 11, fontStyle: 'italic', flex: 1 },
+  statusTxt:          { fontSize: fonts.xs, fontStyle: 'italic', flex: 1, color: colors.textTertiary },
 
-  sheet:              { flex: 1, backgroundColor: colors.sheetBg, borderTopLeftRadius: 28, borderTopRightRadius: 28, overflow: 'hidden' },
+  sheet:              { flex: 1, backgroundColor: colors.surface, borderTopLeftRadius: space.xxl, borderTopRightRadius: space.xxl, overflow: 'hidden' },
   scroll:             { flex: 1 },
-  scrollContent:      { padding: 20, paddingBottom: 8 },
+  scrollContent:      { padding: space.xl, paddingBottom: space.md },
 
-  imageWrap:          { marginBottom: 16, borderRadius: 12, overflow: 'hidden', backgroundColor: colors.iconGray },
-  imagePreview:       { width: '100%', height: 200, borderRadius: 12 },
-  imageActions:       { flexDirection: 'row', gap: 8, padding: 10, backgroundColor: colors.sheetBg },
-  imageActionBtn:     { flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: colors.heroBg, paddingHorizontal: 12, paddingVertical: 7, borderRadius: 8 },
-  imageActionBtnDanger: { backgroundColor: 'rgba(224,90,43,0.10)' },
-  imageActionTxt:     { fontSize: 12, color: colors.heroText, fontWeight: fonts.medium },
-  imagePlaceholder:   { height: 100, borderRadius: 12, borderWidth: 1.5, borderColor: colors.divider, borderStyle: 'dashed', alignItems: 'center', justifyContent: 'center', gap: 8, marginBottom: 16 },
-  imagePlaceholderTxt:{ fontSize: 12, color: colors.cardSub },
+  imageWrap:          { marginBottom: space.lg, borderRadius: space.lg, overflow: 'hidden', backgroundColor: 'rgba(255,255,255,0.06)' },
+  imagePreview:       { width: '100%', height: 200, borderRadius: space.lg },
+  imageActions:       { flexDirection: 'row', gap: space.sm, padding: space.md, backgroundColor: colors.surface },
+  imageActionBtn:     { flexDirection: 'row', alignItems: 'center', gap: space.sm, backgroundColor: colors.background, paddingHorizontal: space.md, paddingVertical: space.sm, borderRadius: space.md },
+  imageActionBtnDanger: { backgroundColor: colors.accentDim },
+  imageActionTxt:     { fontSize: fonts.sm, color: colors.textPrimary, fontWeight: fonts.medium },
+  imagePlaceholder:   { height: 100, borderRadius: space.lg, borderWidth: 1.5, borderColor: colors.border, borderStyle: 'dashed', alignItems: 'center', justifyContent: 'center', gap: space.md, marginBottom: space.lg },
+  imagePlaceholderTxt:{ fontSize: fonts.sm, color: colors.textSecondary },
 
-  input:              { fontSize: 15, color: colors.cardText, fontWeight: fonts.light, lineHeight: 24, minHeight: 120 },
+  input:              { fontSize: fonts.md, color: colors.textPrimary, fontWeight: fonts.light, lineHeight: 26, minHeight: 140 },
 
-  saveBar:            { paddingHorizontal: 20, paddingVertical: 14, borderTopWidth: 1, borderTopColor: colors.divider, backgroundColor: colors.sheetBg },
-  saveBtn:            { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: colors.heroBg, borderRadius: 14, paddingVertical: 13 },
+  saveBar:            { paddingHorizontal: space.xl, paddingVertical: space.lg, borderTopWidth: 1, borderTopColor: colors.border, backgroundColor: colors.surface },
+  saveBtn:            { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: colors.buttonPrimary, borderRadius: space.xl, paddingVertical: space.lg },
   saveBtnDisabled:    { opacity: 0.5 },
-  saveBtnTxt:         { fontSize: 14, fontWeight: fonts.semibold, color: colors.heroText },
+  saveBtnTxt:         { fontSize: fonts.md, fontWeight: fonts.semibold, color: colors.buttonPrimaryText },
 });

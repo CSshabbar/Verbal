@@ -10,18 +10,27 @@ logger = logging.getLogger("verbal.transcriber")
 
 
 def transcribe(audio: np.ndarray, config: dict, sample_rate: int = 48000) -> str:
-    """Transcribe audio. Priority: Groq -> Gemini -> Local Whisper."""
+    """Transcribe audio. Priority: Groq -> Gemini -> Local Whisper.
+    Backward-compatible: returns just the text ("" on silence or failure)."""
+    return transcribe_with_status(audio, config, sample_rate)[0]
+
+
+def transcribe_with_status(audio: np.ndarray, config: dict, sample_rate: int = 48000):
+    """Like transcribe() but returns (text, status) where status is:
+      'ok'      — got a transcription
+      'silent'  — audio was empty/near-silent (no speech; not an error)
+      'failed'  — every method failed (network/API down) — retryable
+    """
     start = time.time()
-    
-    # Handle empty or silent audio
+
     if audio is None or len(audio) == 0:
         logger.warning("Empty audio provided for transcription")
-        return ""
-        
+        return "", "silent"
+
     peak = np.max(np.abs(audio))
     if peak < 0.01:
         logger.warning(f"Audio is nearly silent (peak={peak:.4f})")
-        return ""
+        return "", "silent"
 
     # Save at native sample rate — cloud APIs handle resampling
     tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
@@ -34,22 +43,22 @@ def transcribe(audio: np.ndarray, config: dict, sample_rate: int = 48000) -> str
             result = _transcribe_groq(tmp.name, key)
             if result is not None:
                 logger.info(f"[Groq] {time.time()-start:.2f}s: '{result[:80]}'")
-                return result
+                return result, "ok"
 
         # 2. Gemini Flash (user has keys)
         for key in config.get("gemini_api_keys", []):
             result = _transcribe_gemini(tmp.name, key)
             if result is not None:
                 logger.info(f"[Gemini] {time.time()-start:.2f}s: '{result[:80]}'")
-                return result
+                return result, "ok"
 
-        # 3. Local whisper fallback — needs 16kHz
+        # 3. Local whisper fallback — needs 16kHz (works offline)
         tmp16 = _resample_to_16k(audio, sample_rate)
         try:
             result = _transcribe_local(tmp16, config.get("whisper_model", "base"))
             if result:
                 logger.info(f"[Local] {time.time()-start:.2f}s: '{result[:80]}'")
-                return result
+                return result, "ok"
             else:
                 logger.warning("Local Whisper not available - all transcription methods failed")
         except Exception as e:
@@ -59,10 +68,10 @@ def transcribe(audio: np.ndarray, config: dict, sample_rate: int = 48000) -> str
                 os.unlink(tmp16)
             except:
                 pass
-        
-        # All methods failed
+
+        # All methods failed (likely network/API down) — retryable
         logger.error("All transcription methods failed")
-        return ""
+        return "", "failed"
     finally:
         try:
             os.unlink(tmp.name)

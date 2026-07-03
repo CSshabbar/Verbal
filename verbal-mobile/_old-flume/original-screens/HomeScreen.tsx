@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, Animated,
-  ScrollView, Alert, Platform, Easing, Vibration,
+  ScrollView, Alert, Platform, Easing, Vibration, Dimensions,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useAudioRecorder, RecordingPresets, AudioModule, useAudioPlayer } from 'expo-audio';
@@ -9,6 +9,7 @@ import * as Clipboard from 'expo-clipboard';
 import * as Haptics from 'expo-haptics';
 import { Ionicons } from '@expo/vector-icons';
 import { colors, fonts, radius } from '../lib/theme';
+import { flumeColors, flumeFonts, flumeSpacing, flumeRadius } from '../lib/flumeTheme';
 import { transcribeAudio, formatText } from '../lib/groq';
 import {
   addToHistory, getGroqKey, getUserId,
@@ -19,6 +20,8 @@ import { useDeviceSelector, TARGET_NONE } from '../lib/useDeviceSelector';
 import DeviceSelector from '../components/DeviceSelector';
 
 type State = 'idle' | 'recording' | 'processing' | 'done' | 'error';
+
+const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
 // Vibration patterns (ms: wait, vibrate, wait, vibrate...)
 const VIB_START = [0, 40, 60, 40];          // double tap — start
@@ -164,7 +167,7 @@ export default function HomeScreen({ navigation }: { navigation?: any }) {
     error:      errorMsg || 'Error — tap to retry',
   }[state];
 
-  const btnBg = state === 'recording' ? colors.accent : colors.heroBg;
+  const btnBg = state === 'recording' ? flumeColors.accent : flumeColors.background;
 
   return (
     <View style={s.root}>
@@ -279,7 +282,7 @@ export default function HomeScreen({ navigation }: { navigation?: any }) {
               <Text style={s.cardText}>{result}</Text>
             </ScrollView>
             <TouchableOpacity style={s.copyRow} onPress={copyResult}>
-              <Ionicons name="copy-outline" size={15} color={colors.accent} />
+              <Ionicons name="copy-outline" size={15} color={flumeColors.accent} />
               <Text style={s.copyTxt}>Copy again</Text>
             </TouchableOpacity>
           </Animated.View>
@@ -290,52 +293,51 @@ export default function HomeScreen({ navigation }: { navigation?: any }) {
 }
 
 const s = StyleSheet.create({
-  root:     { flex: 1, backgroundColor: colors.heroBg },
-  hero:     { backgroundColor: colors.heroBg, paddingHorizontal: 24, paddingBottom: 20 },
-  heroTop:  { flexDirection: 'row', alignItems: 'center', marginBottom: 18, marginTop: 8, gap: 8, flex: 1 },
-  logo:     { fontSize: 26, color: colors.heroText, fontWeight: fonts.thin },
+  root:     { flex: 1, backgroundColor: flumeColors.background },
+  hero:     { backgroundColor: flumeColors.background, paddingHorizontal: flumeSpacing.xl, paddingBottom: flumeSpacing.lg },
+  heroTop:  { flexDirection: 'row', alignItems: 'center', marginBottom: flumeSpacing.xl, marginTop: flumeSpacing.md, gap: flumeSpacing.sm, flex: 1 },
+  logo:     { fontSize: flumeFonts.xxl, color: flumeColors.textPrimary, fontWeight: flumeFonts.light, letterSpacing: 2 },
   dot:      { width: 8, height: 8, borderRadius: 4 },
-  canvasBtn:{ marginLeft: 'auto' as any, width: 34, height: 34, borderRadius: 10, backgroundColor: 'rgba(255,255,255,0.08)', alignItems: 'center', justifyContent: 'center' },
-  headline: { fontSize: 34, fontWeight: fonts.bold, color: colors.heroText, lineHeight: 40, marginBottom: 14 },
+  canvasBtn:{ marginLeft: 'auto' as any, width: 36, height: 36, borderRadius: flumeRadius.md, backgroundColor: flumeColors.buttonSecondary, alignItems: 'center', justifyContent: 'center' },
+  headline: { fontSize: flumeFonts.xxxl, fontWeight: flumeFonts.light, color: flumeColors.textPrimary, lineHeight: 42, marginBottom: flumeSpacing.lg, letterSpacing: -0.5 },
 
-  selectorRow:  { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 4 },
-  selectorLabel:{ fontSize: 11, color: 'rgba(255,255,255,0.35)', fontWeight: fonts.medium },
+  selectorRow:  { flexDirection: 'row', alignItems: 'center', gap: flumeSpacing.md, marginBottom: flumeSpacing.xs },
+  selectorLabel:{ fontSize: flumeFonts.xs, color: flumeColors.textTertiary, fontWeight: flumeFonts.medium },
 
   sheet: {
-    flex: 1, backgroundColor: colors.sheetBg,
-    borderTopLeftRadius: 28, borderTopRightRadius: 28,
-    paddingTop: 32, paddingHorizontal: 24,
+    flex: 1, backgroundColor: flumeColors.surface,
+    borderTopLeftRadius: flumeRadius.xxl, borderTopRightRadius: flumeRadius.xxl,
+    paddingTop: flumeSpacing.xxl, paddingHorizontal: flumeSpacing.xl,
   },
 
-  btnWrap: { alignItems: 'center', marginBottom: 24 },
+  btnWrap: { alignItems: 'center', marginBottom: flumeSpacing.xl },
   btn: {
-    width: 80, height: 80, borderRadius: 40,
+    width: 88, height: 88, borderRadius: 44,
     alignItems: 'center', justifyContent: 'center',
-    shadowColor: '#000', shadowOpacity: 0.18, shadowRadius: 14, shadowOffset: { width: 0, height: 5 },
-    elevation: 8,
+    shadowColor: '#000', shadowOpacity: 0.2, shadowRadius: 16, shadowOffset: { width: 0, height: 6 },
+    elevation: 10,
   },
-  label: { marginTop: 14, fontSize: 13, color: colors.cardSub, fontWeight: fonts.medium },
+  label: { marginTop: flumeSpacing.lg, fontSize: flumeFonts.md, color: flumeColors.textSecondary, fontWeight: flumeFonts.medium },
 
-  wave:  { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 3, marginBottom: 20 },
-  bar:   { width: 3, backgroundColor: colors.accent, borderRadius: 2 },
+  wave:  { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: flumeSpacing.xs, marginBottom: flumeSpacing.xl },
+  bar:   { width: 4, backgroundColor: flumeColors.accent, borderRadius: 2 },
 
   cancelBtn: {
-    flexDirection: 'row', alignItems: 'center', gap: 6,
+    flexDirection: 'row', alignItems: 'center', gap: flumeSpacing.sm,
     alignSelf: 'center',
-    marginTop: 32,        // pushed lower — more breathing room from waveform
-    paddingHorizontal: 20, paddingVertical: 10,
-    borderRadius: 20, backgroundColor: colors.iconGray,
+    marginTop: flumeSpacing.xxxl,
+    paddingHorizontal: flumeSpacing.xl, paddingVertical: flumeSpacing.md,
+    borderRadius: flumeRadius.full, backgroundColor: 'rgba(255,255,255,0.06)',
   },
-  cancelTxt: { fontSize: 13, color: colors.cardSub, fontWeight: fonts.medium },
+  cancelTxt: { fontSize: flumeFonts.md, color: flumeColors.textSecondary, fontWeight: flumeFonts.medium },
 
   card: {
-    backgroundColor: colors.cardBg, borderRadius: radius.lg,
-    padding: 16, maxHeight: 230,
-    shadowColor: '#000', shadowOpacity: 0.05, shadowRadius: 8, shadowOffset: { width: 0, height: 2 },
-    elevation: 2,
+    backgroundColor: flumeColors.background, borderRadius: flumeRadius.lg,
+    padding: flumeSpacing.lg, maxHeight: 240,
+    borderWidth: 1, borderColor: flumeColors.border,
   },
-  cardScroll: { maxHeight: 170 },
-  cardText:   { fontSize: 15, color: colors.cardText, lineHeight: 22, fontWeight: fonts.light },
-  copyRow:    { flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 10, alignSelf: 'flex-end' },
-  copyTxt:    { fontSize: 12, color: colors.accent, fontWeight: fonts.medium },
+  cardScroll: { maxHeight: 180 },
+  cardText:   { fontSize: flumeFonts.md, color: flumeColors.textPrimary, lineHeight: 24, fontWeight: flumeFonts.light },
+  copyRow:    { flexDirection: 'row', alignItems: 'center', gap: flumeSpacing.sm, marginTop: flumeSpacing.md, alignSelf: 'flex-end' },
+  copyTxt:    { fontSize: flumeFonts.sm, color: flumeColors.accent, fontWeight: flumeFonts.medium },
 });

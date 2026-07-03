@@ -31,13 +31,16 @@ def _hex(h, a=1.0):
     r, g, b = int(h[0:2],16)/255, int(h[2:4],16)/255, int(h[4:6],16)/255
     return NSColor.colorWithCalibratedRed_green_blue_alpha_(r, g, b, a)
 
-H_BG      = _hex("1A1917")
-H_TEXT    = _hex("F2EFE9")
-H_MUTED   = _hex("7A7570")
-H_ACCENT  = _hex("E05A2B")
-S_BG      = _hex("F2EFE9")
-CARD_TEXT = _hex("2C2A27")
-CARD_SUB  = _hex("9A9590")
+# Flume minimalist-dark tokens (shared theme).
+from app import theme as _T
+_TC = _T.colors
+H_BG      = _TC["bgScreen"]
+H_TEXT    = _TC["textPrimary"]
+H_MUTED   = _TC["textMuted"]
+H_ACCENT  = _TC["primary"]
+S_BG      = _TC["bgScreen"]
+CARD_TEXT = _TC["textPrimary"]
+CARD_SUB  = _TC["textMuted"]
 
 SAVE_DEBOUNCE = 0.8   # seconds after last keystroke before saving
 
@@ -77,38 +80,38 @@ class CanvasHeaderView(NSView):
         # ── Logo mark ─────────────────────────────────────────────────────
         NSString.stringWithString_("✳").drawAtPoint_withAttributes_(
             NSMakePoint(24, 14),
-            {"NSFont": NSFont.systemFontOfSize_weight_(20, 0.2), "NSColor": H_TEXT}
+            {"NSFont": _T.geist(20, "regular"), "NSColor": H_TEXT}
         )
 
         # Canvas icon (grid symbol) next to logo
         NSString.stringWithString_("⊞").drawAtPoint_withAttributes_(
             NSMakePoint(50, 16),
-            {"NSFont": NSFont.systemFontOfSize_weight_(16, 0.2), "NSColor": H_ACCENT}
+            {"NSFont": _T.geist(16, "regular"), "NSColor": H_ACCENT}
         )
 
         # Title
         NSString.stringWithString_("Canvas").drawAtPoint_withAttributes_(
             NSMakePoint(74, 14),
-            {"NSFont": NSFont.systemFontOfSize_weight_(18, 0.7), "NSColor": H_TEXT}
+            {"NSFont": _T.geist(18, "bold"), "NSColor": H_TEXT}
         )
 
         # Subtitle
         NSString.stringWithString_("Shared clipboard · syncs to all devices").drawAtPoint_withAttributes_(
             NSMakePoint(24, 42),
-            {"NSFont": NSFont.systemFontOfSize_weight_(11, -0.3), "NSColor": H_MUTED}
+            {"NSFont": _T.geist(11, "regular"), "NSColor": H_MUTED}
         )
 
         # Stats row
-        sf = NSFont.systemFontOfSize_weight_(11, 0.4)
+        sf = _T.geist(11, "regular")
         sx = 24
         sy = 64
         for val, label in [(str(self._words), " words"), (str(self._chars), " chars")]:
             NSString.stringWithString_(val).drawAtPoint_withAttributes_(
                 NSMakePoint(sx, sy),
-                {"NSFont": NSFont.systemFontOfSize_weight_(11, 0.6), "NSColor": H_ACCENT}
+                {"NSFont": _T.geist(11, "semibold"), "NSColor": H_ACCENT}
             )
             vw = NSString.stringWithString_(val).sizeWithAttributes_(
-                {"NSFont": NSFont.systemFontOfSize_weight_(11, 0.6)}).width
+                {"NSFont": _T.geist(11, "semibold")}).width
             NSString.stringWithString_(label).drawAtPoint_withAttributes_(
                 NSMakePoint(sx + vw, sy), {"NSFont": sf, "NSColor": H_MUTED}
             )
@@ -120,7 +123,7 @@ class CanvasHeaderView(NSView):
             status_color = H_ACCENT if "Synced" in self._status or "↓" in self._status else H_MUTED
             NSString.stringWithString_(self._status).drawAtPoint_withAttributes_(
                 NSMakePoint(sx + 8, sy),
-                {"NSFont": NSFont.systemFontOfSize_weight_(10, -0.3), "NSColor": status_color}
+                {"NSFont": _T.geist(10, "regular"), "NSColor": status_color}
             )
 
         # Bottom divider
@@ -226,7 +229,7 @@ class CanvasWindow:
         self._text_view = NSTextView.alloc().initWithFrame_(
             NSMakeRect(0, 0, self.WIN_W, sheet_h)
         )
-        self._text_view.setFont_(NSFont.systemFontOfSize_weight_(15, -0.3))
+        self._text_view.setFont_(_T.geist(15, "regular"))
         self._text_view.setTextColor_(CARD_TEXT)
         self._text_view.setBackgroundColor_(NSColor.clearColor())
         self._text_view.setDrawsBackground_(False)
@@ -257,14 +260,14 @@ class CanvasWindow:
         btn.setWantsLayer_(True)
         btn.layer().setCornerRadius_(8)
         btn.layer().setBackgroundColor_(
-            _hex("E05A2B", 0.15).CGColor() if danger else _hex("FFFFFF", 0.08).CGColor()
+            _hex("C85A3E", 0.15).CGColor() if danger else _hex("FFFFFF", 0.08).CGColor()
         )
         btn.setAttributedTitle_(
             NSAttributedString.alloc().initWithString_attributes_(
                 title,
                 {
                     NSForegroundColorAttributeName: H_ACCENT if danger else H_TEXT,
-                    NSFontAttributeName: NSFont.systemFontOfSize_weight_(11, 0.5),
+                    NSFontAttributeName: _T.geist(11, "semibold"),
                 }
             )
         )

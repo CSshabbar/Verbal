@@ -6,6 +6,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { colors, fonts, radius } from '../lib/theme';
+import { flumeColors, flumeFonts, flumeSpacing, flumeRadius } from '../lib/flumeTheme';
 import {
   getGroqKey, setGroqKey,
   getUserId, setUserId,
@@ -193,60 +194,61 @@ export default function SettingsScreen() {
 }
 
 const styles = StyleSheet.create({
-  root:     { flex: 1, backgroundColor: colors.heroBg },
-  hero:     { backgroundColor: colors.heroBg, paddingHorizontal: 24, paddingBottom: 28 },
-  headline: { fontSize: 30, fontWeight: fonts.bold, color: colors.heroText, marginTop: 8 },
-  sub:      { fontSize: 13, color: colors.heroMuted, marginTop: 4 },
+  root:     { flex: 1, backgroundColor: flumeColors.background },
+  hero:     { backgroundColor: flumeColors.background, paddingHorizontal: flumeSpacing.xl, paddingBottom: flumeSpacing.xl },
+  headline: { fontSize: flumeFonts.xxxl, fontWeight: flumeFonts.light, color: flumeColors.textPrimary, marginTop: flumeSpacing.md, letterSpacing: -0.5 },
+  sub:      { fontSize: flumeFonts.md, color: flumeColors.textSecondary, marginTop: 4 },
 
   sheet:   {
     flex: 1,
-    backgroundColor: colors.sheetBg,
-    borderTopLeftRadius: 28,
-    borderTopRightRadius: 28,
+    backgroundColor: flumeColors.surface,
+    borderTopLeftRadius: flumeRadius.xxl,
+    borderTopRightRadius: flumeRadius.xxl,
   },
-  content: { paddingHorizontal: 16, paddingTop: 24 },
+  content: { paddingHorizontal: flumeSpacing.lg, paddingTop: flumeSpacing.xl },
 
   sectionLabel: {
-    fontSize: 10, fontWeight: fonts.bold,
-    color: colors.cardSub, letterSpacing: 1,
-    marginBottom: 10, marginTop: 4, marginLeft: 2,
+    fontSize: flumeFonts.xs, fontWeight: flumeFonts.semibold,
+    color: flumeColors.textTertiary, letterSpacing: 1.5,
+    marginBottom: flumeSpacing.md, marginTop: flumeSpacing.sm, marginLeft: flumeSpacing.xs,
   },
 
   card: {
-    backgroundColor: colors.cardBg,
-    borderRadius: radius.md,
-    padding: 14,
-    marginBottom: 10,
-    shadowColor: '#000', shadowOpacity: 0.04, shadowRadius: 6, shadowOffset: { width: 0, height: 2 },
-    elevation: 1,
+    backgroundColor: flumeColors.background,
+    borderRadius: flumeRadius.lg,
+    padding: flumeSpacing.lg,
+    marginBottom: flumeSpacing.md,
+    shadowColor: '#000', shadowOpacity: 0.08, shadowRadius: 10, shadowOffset: { width: 0, height: 3 },
+    elevation: 2,
+    borderWidth: 1, borderColor: flumeColors.border,
   },
-  cardHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 4 },
+  cardHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: flumeSpacing.md },
   iconBox:    {
-    width: 34, height: 34, borderRadius: 10,
-    backgroundColor: colors.accentDim,
-    alignItems: 'center', justifyContent: 'center', marginRight: 12,
+    width: 36, height: 36, borderRadius: flumeRadius.md,
+    backgroundColor: flumeColors.accentDim,
+    alignItems: 'center', justifyContent: 'center', marginRight: flumeSpacing.md,
   },
   cardInfo:   { flex: 1 },
-  cardTitle:  { fontSize: 14, fontWeight: fonts.semibold, color: colors.cardText },
-  cardSub:    { fontSize: 11, color: colors.cardSub, marginTop: 1 },
-  greenDot:   { width: 8, height: 8, borderRadius: 4, backgroundColor: colors.green },
-  redDot:     { width: 8, height: 8, borderRadius: 4, backgroundColor: colors.cardSub },
+  cardTitle:  { fontSize: flumeFonts.md, fontWeight: flumeFonts.semibold, color: flumeColors.textPrimary },
+  cardSub:    { fontSize: flumeFonts.xs, color: flumeColors.textSecondary, marginTop: 2 },
+  greenDot:   { width: 8, height: 8, borderRadius: 4, backgroundColor: flumeColors.success },
+  redDot:     { width: 8, height: 8, borderRadius: 4, backgroundColor: flumeColors.textTertiary },
 
   input: {
-    backgroundColor: colors.sheetBg,
-    borderRadius: radius.sm,
-    paddingHorizontal: 12, paddingVertical: 10,
-    fontSize: 13, color: colors.cardText,
-    marginTop: 10,
+    backgroundColor: 'rgba(255,255,255,0.04)',
+    borderRadius: flumeRadius.md,
+    paddingHorizontal: flumeSpacing.md, paddingVertical: flumeSpacing.sm,
+    fontSize: flumeFonts.sm, color: flumeColors.textPrimary,
+    marginTop: flumeSpacing.md,
     fontFamily: 'monospace',
   },
   saveBtn: {
     alignSelf: 'flex-end',
-    marginTop: 8,
-    backgroundColor: colors.heroBg,
-    paddingHorizontal: 16, paddingVertical: 8,
-    borderRadius: radius.sm,
+    marginTop: flumeSpacing.md,
+    backgroundColor: flumeColors.buttonPrimary,
+    paddingHorizontal: flumeSpacing.lg, paddingVertical: flumeSpacing.sm,
+    borderRadius: flumeRadius.md,
   },
-  saveBtnText: { fontSize: 12, color: colors.heroText, fontWeight: fonts.semibold },
-  hint:        { fontSize: 10, color: colors.cardSub, marginTop: 6 },
+  saveBtnText: { fontSize: flumeFonts.sm, color: flumeColors.buttonPrimaryText, fontWeight: flumeFonts.semibold },
+  hint:        { fontSize: flumeFonts.xs, color: flumeColors.textTertiary, marginTop: flumeSpacing.sm },
 });

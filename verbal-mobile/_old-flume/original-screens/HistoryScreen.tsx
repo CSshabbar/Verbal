@@ -9,6 +9,7 @@ import * as Clipboard from 'expo-clipboard';
 import * as Haptics from 'expo-haptics';
 import { Ionicons } from '@expo/vector-icons';
 import { colors, fonts, radius } from '../lib/theme';
+import { flumeColors, flumeFonts, flumeSpacing, flumeRadius } from '../lib/flumeTheme';
 import {
   getHistory, clearHistory, updateEntry, deleteEntry,
   HistoryEntry, getDeviceId, getSyncEnabled,
@@ -66,7 +67,7 @@ function ContextMenu({
               <Ionicons
                 name={item.icon as any}
                 size={15}
-                color={item.danger ? colors.accent : colors.cardText}
+                color={item.danger ? flumeColors.accent : flumeColors.textPrimary}
                 style={cm.icon}
               />
               <Text style={[cm.label, item.danger && cm.labelDanger]}>{item.label}</Text>
@@ -82,18 +83,19 @@ const cm = StyleSheet.create({
   backdrop: { ...StyleSheet.absoluteFillObject, zIndex: 10 },
   menu: {
     position: 'absolute', zIndex: 20,
-    backgroundColor: '#FFFFFF',
-    borderRadius: 14,
-    minWidth: 160,
-    shadowColor: '#000', shadowOpacity: 0.14, shadowRadius: 16, shadowOffset: { width: 0, height: 4 },
-    elevation: 12,
+    backgroundColor: flumeColors.surface,
+    borderRadius: flumeRadius.lg,
+    minWidth: 180,
+    shadowColor: '#000', shadowOpacity: 0.2, shadowRadius: 20, shadowOffset: { width: 0, height: 6 },
+    elevation: 14,
     overflow: 'hidden',
+    borderWidth: 1, borderColor: flumeColors.border,
   },
-  row:        { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 14, paddingVertical: 11 },
-  icon:       { marginRight: 10, width: 18 },
-  label:      { fontSize: 14, color: colors.cardText, fontWeight: fonts.medium },
-  labelDanger:{ color: colors.accent },
-  sep:        { height: 1, backgroundColor: colors.divider, marginHorizontal: 10 },
+  row:        { flexDirection: 'row', alignItems: 'center', paddingHorizontal: flumeSpacing.lg, paddingVertical: flumeSpacing.md },
+  icon:       { marginRight: flumeSpacing.md, width: 18 },
+  label:      { fontSize: flumeFonts.md, color: flumeColors.textPrimary, fontWeight: flumeFonts.medium },
+  labelDanger:{ color: flumeColors.accent },
+  sep:        { height: 1, backgroundColor: flumeColors.border, marginHorizontal: flumeSpacing.lg },
 });
 
 
@@ -246,7 +248,7 @@ export default function HistoryScreen() {
             <Text style={s.meta}>{wc} words</Text>
             {!isMine && (
               <View style={s.deviceTag}>
-                <Ionicons name="phone-portrait-outline" size={10} color={colors.cardSub} />
+                <Ionicons name="phone-portrait-outline" size={10} color={flumeColors.textTertiary} />
                 <Text style={s.deviceTxt}>{item.device_name}</Text>
               </View>
             )}
@@ -258,7 +260,7 @@ export default function HistoryScreen() {
           <Ionicons
             name={copied === item.id ? 'checkmark' : 'copy-outline'}
             size={17}
-            color={copied === item.id ? colors.green : colors.cardSub}
+            color={copied === item.id ? flumeColors.success : flumeColors.textSecondary}
           />
         </TouchableOpacity>
       </TouchableOpacity>
@@ -303,7 +305,7 @@ export default function HistoryScreen() {
       <View style={s.sheet}>
         {listData.length === 0 ? (
           <View style={s.empty}>
-            <Ionicons name="mic-outline" size={40} color={colors.cardSub} />
+            <Ionicons name="mic-outline" size={40} color={flumeColors.textTertiary} />
             <Text style={s.emptyTxt}>No transcriptions</Text>
             <Text style={s.emptySub}>
               {filter === 'pinned'  ? 'Hold a card and tap Pin' :
@@ -336,34 +338,34 @@ export default function HistoryScreen() {
 }
 
 const s = StyleSheet.create({
-  root:          { flex: 1, backgroundColor: colors.heroBg },
-  hero:          { backgroundColor: colors.heroBg, paddingHorizontal: 20, paddingBottom: 16 },
-  headline:      { fontSize: 30, fontWeight: fonts.bold, color: colors.heroText, marginTop: 8 },
-  sub:           { fontSize: 13, color: colors.heroMuted, marginTop: 2, marginBottom: 14 },
-  pills:         { flexDirection: 'row', gap: 8 },
-  pill:          { paddingHorizontal: 14, paddingVertical: 6, borderRadius: 20, backgroundColor: 'rgba(255,255,255,0.08)' },
-  pillActive:    { backgroundColor: colors.accent },
-  pillTxt:       { fontSize: 12, color: colors.heroMuted, fontWeight: fonts.medium },
-  pillTxtActive: { color: '#fff' },
-  sheet:         { flex: 1, backgroundColor: colors.sheetBg, borderTopLeftRadius: 28, borderTopRightRadius: 28, paddingTop: 16, paddingHorizontal: 14 },
-  empty:         { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 8, paddingBottom: 80 },
-  emptyTxt:      { fontSize: 16, color: colors.cardText, fontWeight: fonts.medium },
-  emptySub:      { fontSize: 13, color: colors.cardSub, textAlign: 'center', paddingHorizontal: 32 },
-  clearBtn:      { alignSelf: 'flex-end', marginBottom: 10, paddingVertical: 4, paddingHorizontal: 8 },
-  clearTxt:      { fontSize: 12, color: colors.cardSub },
-  card:          { flexDirection: 'row', alignItems: 'flex-start', backgroundColor: colors.cardBg, borderRadius: radius.md, padding: 12, marginBottom: 8, shadowColor: '#000', shadowOpacity: 0.04, shadowRadius: 6, shadowOffset: { width: 0, height: 2 }, elevation: 1 },
-  cardPinned:    { backgroundColor: '#FFF7F2', borderWidth: 1.5, borderColor: 'rgba(224,90,43,0.25)' },
-  badge:         { width: 34, height: 34, borderRadius: 10, backgroundColor: colors.iconGray, alignItems: 'center', justifyContent: 'center', marginRight: 10, marginTop: 2 },
-  badgePinned:   { backgroundColor: '#FFE8D6' },
-  badgeTxt:      { fontSize: 11, fontWeight: fonts.semibold, color: colors.cardSub },
-  pinEmoji:      { fontSize: 14 },
+  root:          { flex: 1, backgroundColor: flumeColors.background },
+  hero:          { backgroundColor: flumeColors.background, paddingHorizontal: flumeSpacing.xl, paddingBottom: flumeSpacing.lg },
+  headline:      { fontSize: flumeFonts.xxxl, fontWeight: flumeFonts.light, color: flumeColors.textPrimary, marginTop: flumeSpacing.md, letterSpacing: -0.5 },
+  sub:           { fontSize: flumeFonts.sm, color: flumeColors.textSecondary, marginTop: 4, marginBottom: flumeSpacing.lg },
+  pills:         { flexDirection: 'row', gap: flumeSpacing.sm },
+  pill:          { paddingHorizontal: flumeSpacing.lg, paddingVertical: flumeSpacing.sm, borderRadius: flumeRadius.full, backgroundColor: 'rgba(255,255,255,0.06)', borderWidth: 1, borderColor: flumeColors.border },
+  pillActive:    { backgroundColor: flumeColors.accent, borderColor: flumeColors.accent },
+  pillTxt:       { fontSize: flumeFonts.sm, color: flumeColors.textSecondary, fontWeight: flumeFonts.medium },
+  pillTxtActive: { color: flumeColors.buttonPrimaryText },
+  sheet:         { flex: 1, backgroundColor: flumeColors.surface, borderTopLeftRadius: flumeRadius.xxl, borderTopRightRadius: flumeRadius.xxl, paddingTop: flumeSpacing.xl, paddingHorizontal: flumeSpacing.lg },
+  empty:         { flex: 1, alignItems: 'center', justifyContent: 'center', gap: flumeSpacing.lg, paddingBottom: 80 },
+  emptyTxt:      { fontSize: flumeFonts.lg, color: flumeColors.textPrimary, fontWeight: flumeFonts.medium },
+  emptySub:      { fontSize: flumeFonts.md, color: flumeColors.textSecondary, textAlign: 'center', paddingHorizontal: 32 },
+  clearBtn:      { alignSelf: 'flex-end', marginBottom: flumeSpacing.md, paddingVertical: flumeSpacing.xs, paddingHorizontal: flumeSpacing.sm },
+  clearTxt:      { fontSize: flumeFonts.sm, color: flumeColors.textTertiary },
+  card:          { flexDirection: 'row', alignItems: 'flex-start', backgroundColor: flumeColors.background, borderRadius: flumeRadius.lg, padding: flumeSpacing.lg, marginBottom: flumeSpacing.md, shadowColor: '#000', shadowOpacity: 0.08, shadowRadius: 10, shadowOffset: { width: 0, height: 3 }, elevation: 2, borderWidth: 1, borderColor: flumeColors.border },
+  cardPinned:    { backgroundColor: flumeColors.accentDim, borderWidth: 1.5, borderColor: flumeColors.borderActive },
+  badge:         { width: 36, height: 36, borderRadius: flumeRadius.md, backgroundColor: 'rgba(255,255,255,0.06)', alignItems: 'center', justifyContent: 'center', marginRight: flumeSpacing.md, marginTop: 2 },
+  badgePinned:   { backgroundColor: flumeColors.accentDim },
+  badgeTxt:      { fontSize: flumeFonts.sm, fontWeight: flumeFonts.semibold, color: flumeColors.textTertiary },
+  pinEmoji:      { fontSize: 16 },
   body:          { flex: 1 },
-  cardTxt:       { fontSize: 13, color: colors.cardText, fontWeight: fonts.medium, lineHeight: 18 },
-  editInput:     { fontSize: 13, color: colors.cardText, lineHeight: 18, borderWidth: 1, borderColor: colors.accent, borderRadius: 8, padding: 8, minHeight: 60, backgroundColor: '#FFF7F2' },
-  metaRow:       { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 4, flexWrap: 'wrap' },
-  meta:          { fontSize: 11, color: colors.cardSub },
-  deviceTag:     { flexDirection: 'row', alignItems: 'center', gap: 3, backgroundColor: colors.iconGray, paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6 },
-  deviceTxt:     { fontSize: 10, color: colors.cardSub },
-  holdHint:      { fontSize: 10, color: colors.cardBorder, fontStyle: 'italic' },
-  copyBtn:       { padding: 6, marginLeft: 4 },
+  cardTxt:       { fontSize: flumeFonts.md, color: flumeColors.textPrimary, fontWeight: flumeFonts.medium, lineHeight: 22 },
+  editInput:     { fontSize: flumeFonts.md, color: flumeColors.textPrimary, lineHeight: 22, borderWidth: 1, borderColor: flumeColors.accent, borderRadius: flumeRadius.md, padding: flumeSpacing.md, minHeight: 60, backgroundColor: flumeColors.accentDim },
+  metaRow:       { flexDirection: 'row', alignItems: 'center', gap: flumeSpacing.md, marginTop: flumeSpacing.sm, flexWrap: 'wrap' },
+  meta:          { fontSize: flumeFonts.xs, color: flumeColors.textTertiary },
+  deviceTag:     { flexDirection: 'row', alignItems: 'center', gap: 3, backgroundColor: 'rgba(255,255,255,0.06)', paddingHorizontal: flumeSpacing.sm, paddingVertical: 2, borderRadius: flumeRadius.sm },
+  deviceTxt:     { fontSize: flumeFonts.xs, color: flumeColors.textTertiary },
+  holdHint:      { fontSize: flumeFonts.xs, color: flumeColors.textTertiary, fontStyle: 'italic' },
+  copyBtn:       { padding: flumeSpacing.sm, marginLeft: 4 },
 });

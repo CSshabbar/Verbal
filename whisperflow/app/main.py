@@ -13,17 +13,20 @@ import rumps
 
 from app.config import (
     load_config, save_config, add_gemini_key, remove_gemini_key,
-    add_to_history, update_daily_words, get_daily_words,
+    add_to_history, update_history_entry, update_daily_words, get_daily_words,
     _entry_text, _entry_app, LOG_DIR, ensure_dirs,
 )
 from app.recorder import Recorder
-from app.transcriber import transcribe
+from app.transcriber import transcribe, transcribe_with_status
+from app import recordings
 from app.ai_cleanup import process_text
 from app.injector import inject_text, save_focused_app, get_focused_app_name
 from app.hotkey import HotkeyListener
 from app.overlay import OverlayBar
 from app.sounds import play_start, play_stop, play_done
-from app.dashboard import DashboardWindow
+from app.dashboard import DashboardWindow           # legacy AppKit dashboard (fallback)
+from app.flume_web_dashboard import FlumeWebDashboard
+from app.flume_popover import FlumePopover
 from app.canvas_window import CanvasWindow
 
 ensure_dirs()  # ensure ~/.verbal/logs/ exists before FileHandler is created
@@ -72,9 +75,25 @@ class VerbalApp(rumps.App):
         self._cancel_flag = threading.Event()
         self._last_toggle_time = 0.0
 
-        self.overlay = OverlayBar()
-        self.dashboard = DashboardWindow(self)
+        self.overlay = OverlayBar(self)
+        self._last_result_text = ""
+        # Flume desktop dashboard (WKWebView). Falls back to the legacy AppKit
+        # dashboard if the web view can't be created.
+        try:
+            self.dashboard = FlumeWebDashboard(self)
+        except Exception as _e:
+            logging.getLogger("verbal").warning("Flume web dashboard unavailable (%s); using AppKit", _e)
+            self.dashboard = DashboardWindow(self)
         self.canvas    = CanvasWindow(self.config)
+
+        # Flume menubar popover (WKWebView in an NSPopover). Optional — if it
+        # can't be created the classic rumps menu is used unchanged.
+        try:
+            self.popover = FlumePopover(self)
+        except Exception as _e:
+            logging.getLogger("verbal").warning("Flume popover unavailable (%s)", _e)
+            self.popover = None
+        self._popover_hook_tries = 0
 
         history = self.config.get("history", [])
         self._total_transcriptions = len(history)
@@ -130,6 +149,8 @@ class VerbalApp(rumps.App):
         )
 
         self._ui_timer = rumps.Timer(self._drain_ui_queue, 0.1)
+        # attaches the popover to the status item once rumps has created it
+        self._popover_hook_timer = rumps.Timer(self._install_popover_hook, 0.5)
 
     def _on_hotkey_toggle(self):
         """Called by HotkeyListener when the toggle key is pressed."""
@@ -151,6 +172,8 @@ class VerbalApp(rumps.App):
         self.overlay.setup()
         self.hotkey_listener.start()
         self._ui_timer.start()
+        if self.popover:
+            self._popover_hook_timer.start()
         threading.Thread(target=self._preload_model, daemon=True).start()
         threading.Thread(target=self._check_update, daemon=True).start()
 
@@ -218,6 +241,22 @@ class VerbalApp(rumps.App):
 
     def _on_main(self, fn):
         self._ui_queue.put(fn)
+
+    def _install_popover_hook(self, timer):
+        """Attach the Flume popover to the status-bar button once rumps has
+        created it. Retries a few times, then stops the timer."""
+        self._popover_hook_tries += 1
+        done = False
+        try:
+            if self.popover and self.popover.install_status_hook():
+                done = True
+        except Exception as e:
+            logger.warning(f"popover hook attempt failed: {e}")
+        if done or self._popover_hook_tries >= 10:
+            try:
+                timer.stop()
+            except Exception:
+                pass
 
     def _open_dashboard(self, _=None):
         self.dashboard.show()
@@ -289,6 +328,8 @@ class VerbalApp(rumps.App):
             self.record_btn.title = "Stop Recording"
             self.overlay.show("Listening…")
             self.dashboard.update_recording_state(True)
+            if self.popover:
+                self.popover.update_recording_state(True)
         except Exception as e:
             self._is_recording = False
             logger.error(f"Record start failed: {e}\n{traceback.format_exc()}")
@@ -305,9 +346,14 @@ class VerbalApp(rumps.App):
                 self.icon = ICON_PATH
             self.record_btn.title = "Start Recording"
             self.dashboard.update_recording_state(False)
+            if self.popover:
+                self.popover.update_recording_state(False)
 
-            # Minimum 0.5s of audio to avoid accidental clicks / hallucinations
-            if audio is None or len(audio) < 8000:
+            # Minimum 1.0s of audio to avoid accidental clicks / hallucinations
+            # At 48kHz, we need at least 48000 samples for 1 second
+            if audio is None or len(audio) < 48000:
+                duration = len(audio) / self.recorder.sample_rate if audio is not None else 0
+                logger.warning(f"Audio too short: {duration:.2f}s (< 1.0s minimum)")
                 self.status_item.title = self._status_text()
                 self.overlay.hide()
                 return
@@ -326,28 +372,94 @@ class VerbalApp(rumps.App):
         play_stop()
         self._reset_to_ready()
 
+    def _transcribe_with_retry(self, audio, attempts=3):
+        """Transcribe, auto-retrying on 'failed' (transient network/API) with a
+        short backoff. Returns (text, status). Silence returns immediately."""
+        text, status = "", "failed"
+        for i in range(attempts):
+            if self._cancel_flag.is_set():
+                return "", "silent"
+            text, status = transcribe_with_status(audio, self.config, self.recorder.sample_rate)
+            if status in ("ok", "silent"):
+                return text, status
+            if i < attempts - 1:
+                logger.warning(f"Transcription failed (attempt {i+1}) — retrying…")
+                time.sleep(1.5 * (i + 1))
+        return text, status
+
+    def _upload_recording_async(self, rec_id, local_path):
+        """Upload the WAV to the cloud and attach its URL to the history entry."""
+        def work():
+            try:
+                user_id = self.config.get("sync_user_id", "")
+                if not user_id or not local_path:
+                    return
+                url = recordings.upload_cloud(local_path, user_id, rec_id)
+                if url:
+                    self.config = update_history_entry(self.config, rec_id, audio_url=url)
+                    self._on_main(self._refresh_dashboards)
+            except Exception as e:
+                logger.debug(f"recording upload failed: {e}")
+        threading.Thread(target=work, daemon=True).start()
+
+    def _refresh_dashboards(self):
+        try:
+            self.dashboard._refresh()
+        except Exception:
+            pass
+        if self.popover:
+            try:
+                self.popover._refresh()
+            except Exception:
+                pass
+
     def _process_audio(self, audio):
+        rec_id = recordings.new_id()
+        audio_path = recordings.save_wav(audio, self.recorder.sample_rate, rec_id)
+        logger.info(f"Recording saved: {audio_path} (id={rec_id})")
         try:
             if self._cancel_flag.is_set():
                 return
 
-            text = transcribe(audio, self.config, self.recorder.sample_rate)
+            text, status = self._transcribe_with_retry(audio)
 
             if self._cancel_flag.is_set():
                 return
-            if not text:
-                logger.warning("Transcription returned empty text - no speech detected or audio too quiet")
-                # Show user-friendly error
+
+            if status == "silent":
+                logger.warning("No speech detected — discarding recording")
+                if audio_path:
+                    try:
+                        os.remove(audio_path)
+                    except Exception:
+                        pass
                 self._on_main(lambda: self.overlay.update_status("⚠️ No speech detected. Speak louder!"))
                 time.sleep(1.5)
                 self._on_main(self._reset_to_ready)
+                return
+
+            if status == "failed":
+                # Network/API down — keep the audio and save a retryable entry.
+                logger.error("Transcription failed after retries — saved for retry")
+                self.config = add_to_history(
+                    self.config, "", get_focused_app_name(),
+                    entry_id=rec_id, audio=audio_path or "", status="failed")
+                self._upload_recording_async(rec_id, audio_path)
+                self._on_main(lambda: self.overlay.update_status(
+                    "⚠️ Transcription failed — retry from History"))
+                time.sleep(2.0)
+                self._on_main(self._reset_to_ready)
+                self._on_main(self._refresh_dashboards)
                 return
 
             result = process_text(text, self.config)
             if self._cancel_flag.is_set():
                 return
 
-            self.config = add_to_history(self.config, result, get_focused_app_name())
+            self._last_result_text = result
+            self.config = add_to_history(
+                self.config, result, get_focused_app_name(),
+                entry_id=rec_id, audio=audio_path or "", status="done")
             word_count = len(result.split())
             self._total_transcriptions += 1
             self._total_words += word_count
@@ -372,7 +484,9 @@ class VerbalApp(rumps.App):
                         target=self._sync.push, args=(result, push_target), daemon=True
                     ).start()
 
-            preview = result[:30] + "..." if len(result) > 30 else result
+            # Upload the audio to the cloud + attach its URL (async)
+            self._upload_recording_async(rec_id, audio_path)
+
             status = self._status_text()
             if success:
                 brief = f"Pasted · {word_count}w"
@@ -392,6 +506,8 @@ class VerbalApp(rumps.App):
             self.status_item.title = status
             self.overlay.show_briefly(brief, duration=2.0)
             self.dashboard._refresh()
+            if self.popover:
+                self.popover._refresh()
         except Exception as e:
             logger.error(f"_show_result error: {e}\n{traceback.format_exc()}")
 
@@ -406,6 +522,8 @@ class VerbalApp(rumps.App):
                 self.icon = ICON_PATH
             self.record_btn.title = "Start Recording"
             self.dashboard.update_recording_state(False)
+            if self.popover:
+                self.popover.update_recording_state(False)
         except Exception as e:
             logger.error(f"Reset error: {e}")
 

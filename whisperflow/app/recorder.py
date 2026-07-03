@@ -17,6 +17,11 @@ TARGET_PEAK = 0.5
 NOISE_REDUCTION_STRENGTH = 0.2
 NOISE_SAMPLE_DURATION = 0.5  # seconds to sample noise floor
 
+# Maximum recording length. Generous — a 16kHz mono clip this long is only a
+# few MB, well within the transcription API's limits. When exceeded we keep the
+# BEGINNING and ignore further audio (dictation should never lose its start).
+MAX_RECORDING_SECONDS = 300
+
 
 def _get_native_rate():
     try:
@@ -35,6 +40,10 @@ class Recorder:
         self._sample_rate = _get_native_rate()
         self._noise_profile = None
         self._noise_floor = 0.0
+        self._total_samples = 0
+        self._max_samples = int(MAX_RECORDING_SECONDS * self._sample_rate)
+        self._cap_warned = False
+        self._paused = False
         logger.info(f"Mic native rate: {self._sample_rate}Hz")
 
     @property
@@ -44,6 +53,9 @@ class Recorder:
     def start(self):
         with self._lock:
             self._buffer = []
+            self._total_samples = 0
+            self._cap_warned = False
+            self._paused = False
             self._recording = True
         try:
             self._stream = sd.InputStream(
@@ -54,6 +66,11 @@ class Recorder:
                 latency='low',  # Reduce latency for better responsiveness
             )
             self._stream.start()
+            
+            # Wait for stream to fully initialize and start capturing audio
+            # This prevents losing the first 1-2 seconds of speech
+            time.sleep(0.3)  # 300ms to ensure stream is ready
+            
             logger.info("Recording started")
         except Exception as e:
             logger.error(f"Failed to start recording: {e}")
@@ -63,6 +80,10 @@ class Recorder:
     def stop(self) -> Optional[np.ndarray]:
         with self._lock:
             self._recording = False
+        
+        # Give callbacks time to finish processing last audio frames
+        time.sleep(0.1)  # 100ms delay to ensure all audio is captured
+        
         if self._stream:
             try:
                 self._stream.stop()
@@ -74,9 +95,8 @@ class Recorder:
         with self._lock:
             if not self._buffer:
                 return None
-            # Limit buffer size to prevent memory issues
-            if len(self._buffer) > 1000:  # Roughly 30 seconds at 48kHz
-                self._buffer = self._buffer[-1000:]
+            # Keep the ENTIRE recording (memory is bounded during capture by
+            # MAX_RECORDING_SECONDS in the callback). Never trim the start.
             audio = np.concatenate(self._buffer, axis=0).flatten()
             self._buffer = []
 
@@ -102,8 +122,15 @@ class Recorder:
         if status:
             logger.warning(f"Audio status: {status}")
         with self._lock:
-            if self._recording:
-                self._buffer.append(indata.copy())
+            if self._recording and not self._paused:
+                if self._total_samples < self._max_samples:
+                    self._buffer.append(indata.copy())
+                    self._total_samples += frames
+                elif not self._cap_warned:
+                    self._cap_warned = True
+                    logger.warning(
+                        f"Recording reached {MAX_RECORDING_SECONDS}s cap — "
+                        "keeping the beginning, ignoring further audio")
 
     def _enhance_audio(self, audio: np.ndarray) -> np.ndarray:
         """Apply noise reduction and audio enhancement for low-quality microphones."""
@@ -228,6 +255,14 @@ class Recorder:
             return (1 - blend_factor) * audio + blend_factor * enhanced
         else:
             return pre_emphasized
+
+    def toggle_pause(self):
+        """Pause/resume capture (used by the overlay pause button). While paused
+        the mic keeps running but frames are dropped, so the start is preserved."""
+        with self._lock:
+            self._paused = not self._paused
+        logger.info(f"Recording {'paused' if self._paused else 'resumed'}")
+        return self._paused
 
     @property
     def is_recording(self):

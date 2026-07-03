@@ -1,14 +1,14 @@
 export const colors = {
-  // Hero dark
-  heroBg:     '#1A1917',
-  heroText:   '#F2EFE9',
-  heroMuted:  '#7A7570',
-  accent:     '#E05A2B',
-  accentDim:  'rgba(224,90,43,0.12)',
+  // EXACT Flume palette from wireframes
+  heroBg:     '#14110f',      // Flume background
+  heroText:   '#F5EDE4',      // Flume primary text
+  heroMuted:  '#9A9590',      // Flume secondary text
+  accent:     '#E0552C',      // Flume accent (exact)
+  accentDim:  'rgba(224,85,44,0.15)',
   green:      '#3DAA6E',
 
   // Sheet light
-  sheetBg:    '#F2EFE9',
+  sheetBg:    '#F5EDE4',
   cardBg:     '#FFFFFF',
   cardText:   '#2C2A27',
   cardSub:    '#9A9590',
@@ -17,7 +17,7 @@ export const colors = {
 
   // Common
   divider:    '#E8E5E0',
-  danger:     '#E05A2B',
+  danger:     '#E0552C',
 };
 
 export const fonts = {

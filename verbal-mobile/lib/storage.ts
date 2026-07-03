@@ -17,6 +17,9 @@ export interface HistoryEntry {
   is_pinned:   boolean;
   created_at:  string;
   source:      'local' | 'remote';
+  audio_uri?:  string;              // local file (backup + retry cache)
+  audio_url?:  string;              // cloud URL (primary, cross-device)
+  status?:     'done' | 'failed';   // 'failed' = retryable
 }
 
 // ── Identity ──────────────────────────────────────────────────────────────────
@@ -72,6 +75,7 @@ export async function addToHistory(
   deviceName: string,
   deviceId: string,
   id?: string,
+  extra?: Partial<Pick<HistoryEntry, 'audio_uri' | 'audio_url' | 'status'>>,
 ): Promise<HistoryEntry[]> {
   const h = await getHistory();
   const entry: HistoryEntry = {
@@ -82,6 +86,8 @@ export async function addToHistory(
     is_pinned:   false,
     created_at:  new Date().toISOString(),
     source:      'local',
+    status:      'done',
+    ...(extra || {}),
   };
   const updated = [entry, ...h].slice(0, 100);
   await AsyncStorage.setItem(KEYS.HISTORY, JSON.stringify(updated));

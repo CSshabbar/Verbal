@@ -43,21 +43,25 @@ def _attr(text, color, font):
     )
 
 
-# ── Exact palette from the reference ─────────────────────────────────────────
-# Hero (dark zone)
-H_BG        = _hex("1A1917")      # warm near-black
-H_TEXT      = _hex("F2EFE9")      # warm off-white
-H_MUTED     = _hex("7A7570")      # muted warm gray
-H_ACCENT    = _hex("E05A2B")      # orange (the key accent)
-H_GREEN     = _hex("3DAA6E")      # green for positive stats
+# ── Palette — Flume minimalist-dark (DESIGN_SYSTEM.md) ───────────────────────
+# Semantic tokens drive the whole dashboard; values come from the shared theme.
+from app import theme as _T
+_TC = _T.colors
 
-# Sheet (light zone)
-S_BG        = _hex("F2EFE9")      # warm cream — the sheet background
-CARD_BG     = _hex("FFFFFF")      # pure white cards
-CARD_PIN_BG = _hex("FFF7F2")      # very subtle warm tint for pinned
-CARD_TEXT   = _hex("2C2A27")      # slightly softer than pure black — more elegant
-CARD_SUB    = _hex("9A9590")      # muted subtitle
-CARD_BORDER = _hex("EBEBEB")      # barely-there border
+# Chrome / dark zones
+H_BG        = _TC["bgScreen"]      # near-black screen bg
+H_TEXT      = _TC["textPrimary"]   # off-white text
+H_MUTED     = _TC["textMuted"]     # muted gray
+H_ACCENT    = _TC["primary"]       # terracotta (the key accent)
+H_GREEN     = _TC["online"]        # green for positive stats
+
+# Content surfaces (now dark)
+S_BG        = _TC["bgScreen"]      # main content background
+CARD_BG     = _TC["surface1"]      # resting card surface
+CARD_PIN_BG = _TC["primarySofter"] # subtle terracotta tint for pinned
+CARD_TEXT   = _TC["textPrimary"]   # card body text
+CARD_SUB    = _TC["textMuted"]     # muted subtitle
+CARD_BORDER = _TC["borderSubtle"]  # hairline border
 
 KEYCODE_MAP = {
     54: "Right ⌘",
@@ -84,17 +88,17 @@ KEYCODE_MAP = {
 
 def _keycode_to_name(code):
     return KEYCODE_MAP.get(code, f"Key {code}")
-PIN_ACCENT  = _hex("E05A2B")      # orange for pin state
-ICON_GRAY   = _hex("EFEFED")      # icon box bg (inactive)
-ICON_ORANGE = _hex("E05A2B")      # icon box bg (active/pinned)
+PIN_ACCENT  = _TC["primary"]       # terracotta for pin state
+ICON_GRAY   = _TC["surface2"]      # icon box bg (inactive)
+ICON_ORANGE = _TC["primary"]       # icon box bg (active/pinned)
 
 # Layout
 WIN_W       = 900          # wider horizontal layout
 WIN_H       = 660
-HERO_H      = 230
-SHEET_R     = 28
-PAD         = 20
-SIDEBAR_W   = 200          # permanent left sidebar
+HERO_H      = 76           # compact top strip (was a giant editorial hero)
+SHEET_R     = 20
+PAD         = 24
+SIDEBAR_W   = 196          # permanent left sidebar (DESIGN_SYSTEM §6.2)
 CARD_H      = 66
 CARD_GAP    = 8
 CARD_R      = 14
@@ -130,7 +134,7 @@ class CopyHandler(NSObject):
         if not text: return
         pyperclip.copy(text)
         sender.setAttributedTitle_(
-            _attr("✓", _hex("3DAA6E"), NSFont.systemFontOfSize_weight_(14, 0.7)))
+            _attr("✓", _hex("4AD15A"), _T.geist(14, "bold")))
         NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
             1.5, self, "resetCopy:", sender, False)
 
@@ -138,7 +142,7 @@ class CopyHandler(NSObject):
         btn = timer.userInfo()
         if btn:
             btn.setAttributedTitle_(
-                _attr("⎘", _hex("6A6560"), NSFont.systemFontOfSize_weight_(15, 0.4)))
+                _attr("⎘", _hex("9A9A9A"), _T.geist(15, "regular")))
 
 _copy_handler = None
 def _ch():
@@ -183,7 +187,7 @@ class CardView(NSView):
         self.layer().setShadowOffset_((0, -2))
         if self._editing:
             self.layer().setBorderWidth_(1.5)
-            self.layer().setBorderColor_(_hex("E05A2B", 0.5).CGColor())
+            self.layer().setBorderColor_(_hex("C85A3E", 0.5).CGColor())
         else:
             self.layer().setBorderWidth_(0)
 
@@ -210,10 +214,10 @@ class CardView(NSView):
 
         if self._pinned:
             il = NSTextField.labelWithString_("📌")
-            il.setFont_(NSFont.systemFontOfSize_weight_(16, 0.4))
+            il.setFont_(_T.geist(16, "regular"))
         else:
             il = NSTextField.labelWithString_(f"{self._index:02d}")
-            il.setFont_(NSFont.monospacedSystemFontOfSize_weight_(11, -0.3))
+            il.setFont_(_T.mono(11, "medium"))
             il.setTextColor_(CARD_SUB)
         il.setAlignment_(NSTextAlignmentCenter)
         il.setFrame_(NSMakeRect(0, (ICON_S-16)/2, ICON_S, 16))
@@ -231,8 +235,8 @@ class CardView(NSView):
         cb.setBordered_(False); cb.setWantsLayer_(True)
         cb.layer().setCornerRadius_(7)
         cb.layer().setBackgroundColor_(
-            _hex("EBEBEB").CGColor() if self._hovered else NSColor.clearColor().CGColor())
-        cb.setAttributedTitle_(_attr("⎘", _hex("6A6560"), NSFont.systemFontOfSize_weight_(15, 0.4)))
+            _hex("2A2E33").CGColor() if self._hovered else NSColor.clearColor().CGColor())
+        cb.setAttributedTitle_(_attr("⎘", _hex("9A9A9A"), _T.geist(15, "regular")))
         cb.setTarget_(_ch()); cb.setAction_(objc.selector(_ch().handleCopy_, signature=b'v@:@'))
         cb.setTag_(tag); cb.setToolTip_("Copy")
         self.addSubview_(cb)
@@ -243,13 +247,13 @@ class CardView(NSView):
         pb = NSButton.alloc().initWithFrame_(NSMakeRect(px, cy2, BTN_S, BTN_S))
         pb.setBordered_(False); pb.setWantsLayer_(True); pb.layer().setCornerRadius_(7)
         if self._pinned:
-            pb.layer().setBackgroundColor_(_hex("FFE8D6").CGColor())
-            pb.setAttributedTitle_(_attr("📌", _hex("E05A2B"), NSFont.systemFontOfSize_weight_(13, 0.4)))
+            pb.layer().setBackgroundColor_(_hex("17191C").CGColor())
+            pb.setAttributedTitle_(_attr("📌", _hex("C85A3E"), _T.geist(13, "regular")))
             pb.setToolTip_("Unpin")
         else:
             pb.layer().setBackgroundColor_(
-                _hex("EBEBEB").CGColor() if self._hovered else NSColor.clearColor().CGColor())
-            pb.setAttributedTitle_(_attr("⊕", _hex("9A9590"), NSFont.systemFontOfSize_weight_(16, 0.3)))
+                _hex("2A2E33").CGColor() if self._hovered else NSColor.clearColor().CGColor())
+            pb.setAttributedTitle_(_attr("⊕", _hex("8A8A8A"), _T.geist(16, "medium")))
             pb.setToolTip_("Pin to top")
         pd = _d(lambda t=text_ref, p=want_pin: self._on_pin(t, p))
         pb.setTarget_(pd); pb.setAction_(objc.selector(pd.fire_, signature=b'v@:@'))
@@ -263,9 +267,9 @@ class CardView(NSView):
             # Editable text field
             ef = NSTextField.alloc().initWithFrame_(NSMakeRect(tx, 32, tw, h - 58))
             ef.setStringValue_(self._text)
-            ef.setFont_(NSFont.systemFontOfSize_weight_(12.5, -0.3))
-            ef.setTextColor_(_hex("1A1917"))
-            ef.setBackgroundColor_(_hex("F5F3EF"))
+            ef.setFont_(_T.geist(12.5, "regular"))
+            ef.setTextColor_(_hex("F2F2F2"))
+            ef.setBackgroundColor_(_hex("17191C"))
             ef.setBezeled_(True); ef.setEditable_(True); ef.setSelectable_(True)
             ef.setWantsLayer_(True); ef.layer().setCornerRadius_(8)
             self.addSubview_(ef)
@@ -277,8 +281,8 @@ class CardView(NSView):
             sv_b = NSButton.alloc().initWithFrame_(NSMakeRect(tx, 6, 58, 24))
             sv_b.setBordered_(False); sv_b.setWantsLayer_(True)
             sv_b.layer().setCornerRadius_(8)
-            sv_b.layer().setBackgroundColor_(_hex("E05A2B").CGColor())
-            sv_b.setAttributedTitle_(_attr("Save", _hex("FFFFFF"), NSFont.systemFontOfSize_weight_(11, 0.6)))
+            sv_b.layer().setBackgroundColor_(_hex("C85A3E").CGColor())
+            sv_b.setAttributedTitle_(_attr("Save", _hex("FFFFFF"), _T.geist(11, "semibold")))
             sv_b.setTarget_(sv_d); sv_b.setAction_(objc.selector(sv_d.fire_, signature=b'v@:@'))
             self.addSubview_(sv_b)
 
@@ -287,8 +291,8 @@ class CardView(NSView):
             cn_b = NSButton.alloc().initWithFrame_(NSMakeRect(tx + 66, 6, 62, 24))
             cn_b.setBordered_(False); cn_b.setWantsLayer_(True)
             cn_b.layer().setCornerRadius_(8)
-            cn_b.layer().setBackgroundColor_(_hex("E8E5E0").CGColor())
-            cn_b.setAttributedTitle_(_attr("Cancel", _hex("6A6560"), NSFont.systemFontOfSize_weight_(11, 0.4)))
+            cn_b.layer().setBackgroundColor_(_hex("17191C").CGColor())
+            cn_b.setAttributedTitle_(_attr("Cancel", _hex("9A9A9A"), _T.geist(11, "regular")))
             cn_b.setTarget_(cn_d); cn_b.setAction_(objc.selector(cn_d.fire_, signature=b'v@:@'))
             self.addSubview_(cn_b)
 
@@ -299,8 +303,8 @@ class CardView(NSView):
         elif self._expanded:
             # Read-only expanded with edit button
             tf = NSTextField.wrappingLabelWithString_(self._text)
-            tf.setFont_(NSFont.systemFontOfSize_weight_(12.5, -0.4))
-            tf.setTextColor_(_hex("3A3835"))
+            tf.setFont_(_T.geist(12.5, "regular"))
+            tf.setTextColor_(CARD_TEXT)
             tf.setLineBreakMode_(NSLineBreakByWordWrapping)
             tf.setSelectable_(True)
             tf.setFrame_(NSMakeRect(tx, 26, tw, h - 42))
@@ -312,8 +316,8 @@ class CardView(NSView):
             ed_b.setBordered_(False); ed_b.setWantsLayer_(True)
             ed_b.layer().setCornerRadius_(6)
             ed_b.layer().setBackgroundColor_(
-                _hex("EBEBEB").CGColor() if self._hovered else NSColor.clearColor().CGColor())
-            ed_b.setAttributedTitle_(_attr("✎", _hex("9A9590"), NSFont.systemFontOfSize_weight_(13, 0.3)))
+                _hex("2A2E33").CGColor() if self._hovered else NSColor.clearColor().CGColor())
+            ed_b.setAttributedTitle_(_attr("✎", _hex("8A8A8A"), _T.geist(13, "medium")))
             ed_b.setTarget_(ed_d); ed_b.setAction_(objc.selector(ed_d.fire_, signature=b'v@:@'))
             ed_b.setToolTip_("Edit")
             self.addSubview_(ed_b)
@@ -324,7 +328,7 @@ class CardView(NSView):
                 meta_parts.append(self._app_name)
             meta_parts.append("click to collapse")
             sl = NSTextField.labelWithString_("  ·  ".join(meta_parts))
-            sl.setFont_(NSFont.systemFontOfSize_weight_(9, -0.3))
+            sl.setFont_(_T.geist(9, "regular"))
             sl.setTextColor_(CARD_SUB)
             sl.setFrame_(NSMakeRect(tx + 32, 7, tw - 32, 12))
             self.addSubview_(sl)
@@ -333,8 +337,8 @@ class CardView(NSView):
             # Collapsed
             display = self._text[:200] + ("…" if len(self._text) > 200 else "")
             tl = NSTextField.labelWithString_(display)
-            tl.setFont_(NSFont.systemFontOfSize_weight_(12.5, -0.3))
-            tl.setTextColor_(_hex("3A3835"))
+            tl.setFont_(_T.geist(12.5, "regular"))
+            tl.setTextColor_(CARD_TEXT)
             tl.setLineBreakMode_(NSLineBreakByTruncatingTail)
             tl.setFrame_(NSMakeRect(tx, CARD_H/2 + 3, tw, 15))
             self.addSubview_(tl)
@@ -345,7 +349,7 @@ class CardView(NSView):
             if self._app_name:
                 sub_parts.append(self._app_name)
             sl = NSTextField.labelWithString_("  ·  ".join(sub_parts))
-            sl.setFont_(NSFont.systemFontOfSize_weight_(10, -0.3))
+            sl.setFont_(_T.geist(10, "regular"))
             sl.setTextColor_(CARD_SUB)
             sl.setFrame_(NSMakeRect(tx, CARD_H/2 - 15, tw, 14))
             self.addSubview_(sl)
@@ -469,7 +473,7 @@ class DeviceSelectorView(NSView):
             is_sel = (dev_id == self._selected)
             
             # Measure text width
-            font = NSFont.systemFontOfSize_weight_(11, 0.6 if is_sel else 0.3)
+            font = _T.geist(11, "semibold" if is_sel else "medium")
             tw = NSString.stringWithString_(label).sizeWithAttributes_({"NSFont": font}).width
             pill_w = tw + 24
             
@@ -493,7 +497,7 @@ class DeviceSelectorView(NSView):
 
             lbl = NSTextField.labelWithString_(label)
             lbl.setFont_(font)
-            lbl.setTextColor_(H_ACCENT if is_sel else _hex("7A7570"))
+            lbl.setTextColor_(H_ACCENT if is_sel else _hex("9A9A9A"))
             lbl.setAlignment_(NSTextAlignmentCenter)
             lbl.setFrame_(NSMakeRect(0, (h - 14) / 2, pill_w, 14))
             lbl.setSelectable_(False)
@@ -576,73 +580,36 @@ class HeroView(NSView):
                 bx   = sx + i*(bw+gap)
                 by   = h - 52 - bh/2
                 a    = (0.20+0.40*frac*self._amp) if self._recording else (0.10+0.18*frac*self._amp)
-                (H_ACCENT if self._recording else _hex("F2EFE9")).colorWithAlphaComponent_(a).set()
+                (H_ACCENT if self._recording else _hex("17191C")).colorWithAlphaComponent_(a).set()
                 NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
                     NSMakeRect(bx, by, bw, bh), bw/2, bw/2).fill()
 
         # ── Logo ✳ + status dot ───────────────────────────────────────────
-        # Logo shifted right to leave room for hamburger at top-left
         NSString.stringWithString_("✳").drawAtPoint_withAttributes_(
-            NSMakePoint(PAD + 40, 22),
-            {"NSFont": NSFont.systemFontOfSize_weight_(24, 0.2), "NSColor": H_TEXT})
+            NSMakePoint(PAD, 15),
+            {"NSFont": _T.geist(20, "regular"), "NSColor": H_TEXT})
 
-        dot = H_ACCENT if self._recording else (_hex("4A90E2") if self._processing else _hex("4CAF7D", 0.8))
+        dot = H_ACCENT if self._recording else (_hex("4A6494") if self._processing else _hex("4AD15A", 0.8))
         dot.set()
-        NSBezierPath.bezierPathWithOvalInRect_(NSMakeRect(PAD + 72, 30, 7, 7)).fill()
+        NSBezierPath.bezierPathWithOvalInRect_(NSMakeRect(PAD + 26, 24, 7, 7)).fill()
 
-        # ── Big editorial text ────────────────────────────────────────────
-        # Line 1 — plain
-        if self._recording:
-            line1 = "Listening…"
-            line2 = ""
-        elif self._processing:
-            line1 = "Transcribing…"
-            line2 = ""
-        else:
-            line1 = f"You've made"
-            line2 = f"{self._total} transcriptions."
+        # ── Compact status + inline stats (fits the slim strip) ───────────
+        status = ("Listening…" if self._recording
+                  else "Transcribing…" if self._processing
+                  else "Ready to dictate")
+        NSString.stringWithString_(status).drawAtPoint_withAttributes_(
+            NSMakePoint(PAD + 46, 20),
+            {"NSFont": _T.geist(13, "semibold"), "NSColor": H_TEXT})
 
-        big_font  = NSFont.systemFontOfSize_weight_(26, 0.7)
-        big_attrs = {"NSFont": big_font, "NSColor": H_TEXT}
-        NSString.stringWithString_(line1).drawAtPoint_withAttributes_(NSMakePoint(PAD, 68), big_attrs)
+        # Hotkey hint only (full stats now live on the Stats tab)
+        hint = f"{'Hold' if self._mode == 'hold' else 'Toggle'} · Right ⌘"
+        NSString.stringWithString_(hint).drawAtPoint_withAttributes_(
+            NSMakePoint(PAD + 46, 42),
+            {"NSFont": _T.geist(10.5, "regular"), "NSColor": H_MUTED})
 
-        if line2:
-            # Number in accent, rest in white
-            num_str  = f"{self._total}"
-            rest_str = " transcriptions."
-            num_font = NSFont.systemFontOfSize_weight_(26, 0.7)
-            num_w    = NSString.stringWithString_(num_str).sizeWithAttributes_(
-                {"NSFont": num_font}).width
-
-            NSString.stringWithString_(num_str).drawAtPoint_withAttributes_(
-                NSMakePoint(PAD, 100),
-                {"NSFont": num_font, "NSColor": H_ACCENT})
-            NSString.stringWithString_(rest_str).drawAtPoint_withAttributes_(
-                NSMakePoint(PAD + num_w, 100),
-                {"NSFont": NSFont.systemFontOfSize_weight_(26, 0.7), "NSColor": H_TEXT})
-
-        # ── Stats row ─────────────────────────────────────────────────────
-        sf  = NSFont.systemFontOfSize_weight_(11, 0.4)
-        sx2 = PAD
-        for val, label in [
-            (f"{self._total}", " clips"),
-            (f"{self._words}", " total words"),
-            (f"{self._daily}", " today"),
-        ]:
-            NSString.stringWithString_(val).drawAtPoint_withAttributes_(
-                NSMakePoint(sx2, 148), {"NSFont": NSFont.systemFontOfSize_weight_(11, 0.6), "NSColor": H_ACCENT})
-            vw = NSString.stringWithString_(val).sizeWithAttributes_({"NSFont": NSFont.systemFontOfSize_weight_(11, 0.6)}).width
-            NSString.stringWithString_(label).drawAtPoint_withAttributes_(
-                NSMakePoint(sx2+vw, 148), {"NSFont": sf, "NSColor": H_MUTED})
-            lw = NSString.stringWithString_(label).sizeWithAttributes_({"NSFont": sf}).width
-            sx2 += vw + lw + 18
-
-        # Mode hint
-        NSString.stringWithString_(
-            f"{'Hold' if self._mode=='hold' else 'Toggle'} · Right ⌘"
-        ).drawAtPoint_withAttributes_(
-            NSMakePoint(PAD, 174),
-            {"NSFont": NSFont.systemFontOfSize_weight_(10, 0.3), "NSColor": H_MUTED})
+        # Bottom divider
+        _hex("2A2E33").set()
+        NSBezierPath.fillRect_(NSMakeRect(0, h - 1, w, 1))
 
 
 # ── Sheet view ────────────────────────────────────────────────────────────────
@@ -654,34 +621,54 @@ class SheetView(NSView):
         S_BG.set()
         NSBezierPath.fillRect_(self.bounds())
         # Drag handle pill
-        _hex("C8C4BE").set()
+        _hex("2A2E33").set()
         NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
             NSMakeRect((w-32)/2, 10, 32, 4), 2, 2).fill()
 
 
-# ── Sidebar overlay ───────────────────────────────────────────────────────────
-SIDEBAR_W = 220
+# ── Sidebar ───────────────────────────────────────────────────────────────────
+SIDEBAR_W = 196
 
+# (label, SF-symbol name, tab index) — WORKSPACE nav per the Flume desktop design.
 NAV_ITEMS = [
-    ("All",       "All transcriptions",  0),
-    ("By App",    "Grouped by app",      1),
-    ("Stats",     "Usage overview",      2),
-    ("Canvas",    "Shared clipboard",    4),
-    ("Notes",     "Voice notes & ideas", 5),
-    ("Settings",  "Keys & preferences",  3),
+    ("Home",     "house",              6),
+    ("History",  "clock",              0),
+    ("Canvas",   "square.grid.2x2",    4),
+    ("Notes",    "line.3.horizontal",  5),
+    ("Settings", "gearshape",          3),
 ]
 
+def _sidebar_symbol(name, color, box=18):
+    """SF-symbol icon as an NSImageView (module-level: NSView methods can't take kwargs)."""
+    from AppKit import NSImageView, NSImage
+    iv = NSImageView.alloc().initWithFrame_(NSMakeRect(0, 0, box, box))
+    img = NSImage.imageWithSystemSymbolName_accessibilityDescription_(name, None)
+    if img is not None:
+        iv.setImage_(img)
+        try: iv.setContentTintColor_(color)
+        except Exception: pass
+    return iv
+
+
+def _sidebar_heading(view, text, y, w):
+    lbl = NSTextField.labelWithString_(text)
+    lbl.setFont_(_T.mono(10, "medium")); lbl.setTextColor_(H_MUTED)
+    lbl.setFrame_(NSMakeRect(18, y, w - 36, 12)); view.addSubview_(lbl)
+    return y + 26
+
+
 class SidebarView(NSView):
-    """Permanent dark left navigation panel."""
+    """Permanent left navigation panel (Flume desktop design §6.2)."""
 
     def initWithFrame_onSelect_(self, frame, on_select):
         self = objc.super(SidebarView, self).initWithFrame_(frame)
         if self is None: return None
         self._on_select  = on_select
-        self._active     = 0
+        self._active     = 6      # Home
         self._item_rects = []
+        self._devices    = []
         self.setWantsLayer_(True)
-        self.layer().setBackgroundColor_(_hex("141412").CGColor())
+        self.layer().setBackgroundColor_(_hex("0A0C0E").CGColor())
         self._build()
         return self
 
@@ -689,70 +676,87 @@ class SidebarView(NSView):
         self._active = idx
         self._build()
 
+    def setDevices_(self, devices):
+        self._devices = list(devices or [])
+        self._build()
+
     def _build(self):
+        # Top-anchored layout (this view isFlipped → y=0 is the TOP).
         for sv in list(self.subviews()): sv.removeFromSuperview()
         self._item_rects = []
         w = self.bounds().size.width
         h = self.bounds().size.height
 
-        # Logo + app name
+        # ── Logo + wordmark ───────────────────────────────────────────────
         logo = NSTextField.labelWithString_("✳")
-        logo.setFont_(NSFont.systemFontOfSize_weight_(18, 0.2))
-        logo.setTextColor_(H_ACCENT)
-        logo.setFrame_(NSMakeRect(16, h - 44, 24, 24))
-        self.addSubview_(logo)
+        logo.setFont_(_T.geist(20, "semibold")); logo.setTextColor_(H_ACCENT)
+        logo.setFrame_(NSMakeRect(18, 20, 26, 26)); self.addSubview_(logo)
+        name = NSTextField.labelWithString_("FLUME")
+        name.setFont_(_T.geist(15, "bold")); name.setTextColor_(H_TEXT)
+        name.setFrame_(NSMakeRect(48, 22, w - 60, 20)); self.addSubview_(name)
 
-        name = NSTextField.labelWithString_("Verbal")
-        name.setFont_(NSFont.systemFontOfSize_weight_(13, 0.6))
-        name.setTextColor_(H_TEXT)
-        name.setFrame_(NSMakeRect(44, h - 42, w - 56, 18))
-        self.addSubview_(name)
-
-        # Divider
-        div = NSView.alloc().initWithFrame_(NSMakeRect(12, h - 54, w - 24, 1))
-        div.setWantsLayer_(True)
-        div.layer().setBackgroundColor_(_hex("FFFFFF", 0.07).CGColor())
-        self.addSubview_(div)
-
-        # Nav items
-        for i, (label, sublabel, idx) in enumerate(NAV_ITEMS):
+        # ── WORKSPACE ─────────────────────────────────────────────────────
+        y = 72
+        y = _sidebar_heading(self, "WORKSPACE", y, w)
+        for (label, sym, idx) in NAV_ITEMS:
             is_active = (idx == self._active)
-            item_y    = h - 100 - i * 54
-            item_rect = NSMakeRect(0, item_y, w, 48)
-            self._item_rects.append((item_rect, idx))
-
+            ih = 40
+            self._item_rects.append((NSMakeRect(0, y - 6, w, ih - 2), idx))
             if is_active:
-                bar = NSView.alloc().initWithFrame_(NSMakeRect(0, item_y + 5, 3, 38))
-                bar.setWantsLayer_(True)
-                bar.layer().setCornerRadius_(1.5)
-                bar.layer().setBackgroundColor_(H_ACCENT.CGColor())
-                self.addSubview_(bar)
-                tint = NSView.alloc().initWithFrame_(NSMakeRect(5, item_y + 2, w - 10, 44))
-                tint.setWantsLayer_(True)
-                tint.layer().setCornerRadius_(8)
-                tint.layer().setBackgroundColor_(_hex("FFFFFF", 0.05).CGColor())
+                tint = NSView.alloc().initWithFrame_(NSMakeRect(8, y - 6, w - 16, ih - 4))
+                tint.setWantsLayer_(True); tint.layer().setCornerRadius_(9)
+                tint.layer().setBackgroundColor_(_hex("FFFFFF", 0.07).CGColor())
                 self.addSubview_(tint)
-
+            icon = _sidebar_symbol(sym, H_TEXT if is_active else _hex("9A9A9A"), 18)
+            icon.setFrame_(NSMakeRect(18, y, 18, 18)); self.addSubview_(icon)
             lbl = NSTextField.labelWithString_(label)
-            lbl.setFont_(NSFont.systemFontOfSize_weight_(12, 0.6 if is_active else 0.3))
-            lbl.setTextColor_(H_TEXT if is_active else _hex("6A6560"))
-            lbl.setFrame_(NSMakeRect(16, item_y + 20, w - 32, 15))
-            lbl.setSelectable_(False)
+            lbl.setFont_(_T.geist(13, "semibold" if is_active else "medium"))
+            lbl.setTextColor_(H_TEXT if is_active else _hex("9A9A9A"))
+            lbl.setFrame_(NSMakeRect(46, y + 1, w - 60, 16)); lbl.setSelectable_(False)
             self.addSubview_(lbl)
+            y += ih
 
-            sub = NSTextField.labelWithString_(sublabel)
-            sub.setFont_(NSFont.systemFontOfSize_weight_(9, -0.3))
-            sub.setTextColor_(_hex("3A3835"))
-            sub.setFrame_(NSMakeRect(16, item_y + 5, w - 32, 13))
-            sub.setSelectable_(False)
-            self.addSubview_(sub)
+        # ── DEVICES ───────────────────────────────────────────────────────
+        y += 16
+        y = _sidebar_heading(self, "DEVICES", y, w)
+        if self._devices:
+            for d in self._devices:
+                nm     = d.get("name", "Device") if isinstance(d, dict) else str(d)
+                online = d.get("online", True) if isinstance(d, dict) else True
+                dot = NSView.alloc().initWithFrame_(NSMakeRect(20, y + 4, 7, 7))
+                dot.setWantsLayer_(True); dot.layer().setCornerRadius_(3.5)
+                dot.layer().setBackgroundColor_((_hex("4AD15A") if online else _hex("6A6A6A")).CGColor())
+                self.addSubview_(dot)
+                dl = NSTextField.labelWithString_(nm)
+                dl.setFont_(_T.geist(12.5, "regular"))
+                dl.setTextColor_(H_TEXT if online else H_MUTED)
+                dl.setFrame_(NSMakeRect(38, y, w - 52, 16)); self.addSubview_(dl)
+                y += 30
+        else:
+            hint = NSTextField.labelWithString_("This Mac")
+            hint.setFont_(_T.geist(12.5, "regular")); hint.setTextColor_(H_MUTED)
+            hint.setFrame_(NSMakeRect(38, y, w - 52, 16)); self.addSubview_(hint)
+            hdot = NSView.alloc().initWithFrame_(NSMakeRect(20, y + 4, 7, 7))
+            hdot.setWantsLayer_(True); hdot.layer().setCornerRadius_(3.5)
+            hdot.layer().setBackgroundColor_(_hex("4AD15A").CGColor()); self.addSubview_(hdot)
 
-        # Footer
-        ver = NSTextField.labelWithString_("v1.0")
-        ver.setFont_(NSFont.systemFontOfSize_weight_(9, -0.3))
-        ver.setTextColor_(_hex("2A2825"))
-        ver.setFrame_(NSMakeRect(16, 12, w - 32, 12))
-        self.addSubview_(ver)
+        # ── Footer: avatar + name + theme toggle ──────────────────────────
+        fy = h - 44
+        div = NSView.alloc().initWithFrame_(NSMakeRect(16, fy + 34, w - 32, 1))
+        div.setWantsLayer_(True); div.layer().setBackgroundColor_(_hex("FFFFFF", 0.06).CGColor())
+        self.addSubview_(div)
+        av = NSView.alloc().initWithFrame_(NSMakeRect(16, fy, 30, 30))
+        av.setWantsLayer_(True); av.layer().setCornerRadius_(15)
+        av.layer().setBackgroundColor_(H_ACCENT.CGColor())
+        al = NSTextField.labelWithString_("V")
+        al.setFont_(_T.geist(13, "semibold")); al.setTextColor_(_hex("FFF5EA"))
+        al.setAlignment_(NSTextAlignmentCenter); al.setFrame_(NSMakeRect(0, 7, 30, 16))
+        av.addSubview_(al); self.addSubview_(av)
+        un = NSTextField.labelWithString_("You")
+        un.setFont_(_T.geist(13, "semibold")); un.setTextColor_(H_TEXT)
+        un.setFrame_(NSMakeRect(54, fy + 7, w - 92, 16)); self.addSubview_(un)
+        sun = _sidebar_symbol("sun.max", H_MUTED, 16)
+        sun.setFrame_(NSMakeRect(w - 34, fy + 7, 16, 16)); self.addSubview_(sun)
 
     def mouseUp_(self, event):
         loc = event.locationInWindow()
@@ -803,7 +807,7 @@ class AppGroupView(NSView):
         # App initial letter
         initial = (self._app_name[0].upper() if self._app_name else "?")
         il = NSTextField.labelWithString_(initial)
-        il.setFont_(NSFont.systemFontOfSize_weight_(16, 0.3))
+        il.setFont_(_T.geist(16, "medium"))
         il.setTextColor_(CARD_SUB)
         il.setAlignment_(NSTextAlignmentCenter)
         il.setFrame_(NSMakeRect(0, (ICON_S-20)/2, ICON_S, 20))
@@ -812,21 +816,21 @@ class AppGroupView(NSView):
         # App name
         tx = 14 + ICON_S + 12
         name_lbl = NSTextField.labelWithString_(self._app_name or "Unknown")
-        name_lbl.setFont_(NSFont.systemFontOfSize_weight_(13, 0.5))
+        name_lbl.setFont_(_T.geist(13, "semibold"))
         name_lbl.setTextColor_(CARD_TEXT)
         name_lbl.setFrame_(NSMakeRect(tx, CARD_H/2 + 2, w - tx - 60, 16))
         self.addSubview_(name_lbl)
 
         # Count badge
         count_lbl = NSTextField.labelWithString_(f"{len(self._entries)} clips")
-        count_lbl.setFont_(NSFont.systemFontOfSize_weight_(10, -0.3))
+        count_lbl.setFont_(_T.geist(10, "regular"))
         count_lbl.setTextColor_(CARD_SUB)
         count_lbl.setFrame_(NSMakeRect(tx, CARD_H/2 - 15, 80, 14))
         self.addSubview_(count_lbl)
 
         # Chevron
         chev = NSTextField.labelWithString_("›" if self._collapsed else "⌄")
-        chev.setFont_(NSFont.systemFontOfSize_weight_(16, 0.3))
+        chev.setFont_(_T.geist(16, "medium"))
         chev.setTextColor_(CARD_SUB)
         chev.setFrame_(NSMakeRect(w - 30, (CARD_H-18)/2, 20, 18))
         self.addSubview_(chev)
@@ -839,17 +843,17 @@ class AppGroupView(NSView):
                 display = text[:160] + ("…" if len(text) > 160 else "")
                 row = NSView.alloc().initWithFrame_(NSMakeRect(0, y, w, 52))
                 row.setWantsLayer_(True)
-                row.layer().setBackgroundColor_(_hex("F8F6F2").CGColor())
+                row.layer().setBackgroundColor_(_hex("17191C").CGColor())
 
                 # Divider line at top
                 div = NSView.alloc().initWithFrame_(NSMakeRect(tx, 0, w - tx - 14, 1))
                 div.setWantsLayer_(True)
-                div.layer().setBackgroundColor_(_hex("ECEAE6").CGColor())
+                div.layer().setBackgroundColor_(_hex("17191C").CGColor())
                 row.addSubview_(div)
 
                 tl = NSTextField.wrappingLabelWithString_(display)
-                tl.setFont_(NSFont.systemFontOfSize_weight_(12, -0.3))
-                tl.setTextColor_(_hex("3A3835"))
+                tl.setFont_(_T.geist(12, "regular"))
+                tl.setTextColor_(CARD_TEXT)
                 tl.setLineBreakMode_(NSLineBreakByTruncatingTail)
                 tl.setSelectable_(True)
                 tl.setFrame_(NSMakeRect(tx, 8, w - tx - 50, 36))
@@ -861,8 +865,8 @@ class AppGroupView(NSView):
                 cb = NSButton.alloc().initWithFrame_(NSMakeRect(w - 42, 14, BTN_S, BTN_S))
                 cb.setBordered_(False); cb.setWantsLayer_(True)
                 cb.layer().setCornerRadius_(7)
-                cb.layer().setBackgroundColor_(_hex("EBEBEB").CGColor())
-                cb.setAttributedTitle_(_attr("⎘", _hex("6A6560"), NSFont.systemFontOfSize_weight_(14, 0.4)))
+                cb.layer().setBackgroundColor_(_hex("2A2E33").CGColor())
+                cb.setAttributedTitle_(_attr("⎘", _hex("9A9A9A"), _T.geist(14, "regular")))
                 cb.setTarget_(_ch()); cb.setAction_(objc.selector(_ch().handleCopy_, signature=b'v@:@'))
                 cb.setTag_(tag)
                 row.addSubview_(cb)
@@ -892,7 +896,7 @@ def _make_stat_row(x, y, w, app_name, word_count, clip_count, max_words):
 
     # App name
     nl = NSTextField.labelWithString_(app_name or "Unknown")
-    nl.setFont_(NSFont.systemFontOfSize_weight_(12, 0.4))
+    nl.setFont_(_T.geist(12, "regular"))
     nl.setTextColor_(CARD_TEXT)
     nl.setFrame_(NSMakeRect(12, 14, 110, 15))
     row.addSubview_(nl)
@@ -902,7 +906,7 @@ def _make_stat_row(x, y, w, app_name, word_count, clip_count, max_words):
     track = NSView.alloc().initWithFrame_(NSMakeRect(bar_x, 19, bar_w, bar_h))
     track.setWantsLayer_(True)
     track.layer().setCornerRadius_(3)
-    track.layer().setBackgroundColor_(_hex("ECEAE6").CGColor())
+    track.layer().setBackgroundColor_(_hex("17191C").CGColor())
     row.addSubview_(track)
 
     # Bar fill
@@ -915,7 +919,7 @@ def _make_stat_row(x, y, w, app_name, word_count, clip_count, max_words):
 
     # Numbers
     nums = NSTextField.labelWithString_(f"{word_count}w  ·  {clip_count}")
-    nums.setFont_(NSFont.systemFontOfSize_weight_(10, -0.3))
+    nums.setFont_(_T.geist(10, "regular"))
     nums.setTextColor_(CARD_SUB)
     nums.setAlignment_(NSTextAlignmentRight)
     nums.setFrame_(NSMakeRect(w - 68, 14, 56, 14))
@@ -929,7 +933,7 @@ def _make_rec_btn(frame, cb):
     btn.layer().setCornerRadius_(10)
     btn.layer().setBackgroundColor_(H_BG.CGColor())
     btn.setAttributedTitle_(
-        _attr("⏺  Record", H_TEXT, NSFont.systemFontOfSize_weight_(11.5, 0.5)))
+        _attr("⏺  Record", H_TEXT, _T.geist(11.5, "semibold")))
     btn.setTarget_(dd)
     btn.setAction_(objc.selector(dd.fire_, signature=b'v@:@'))
     return btn
@@ -938,7 +942,7 @@ def _upd_rec_btn(btn, rec):
     btn.layer().setBackgroundColor_((H_ACCENT if rec else H_BG).CGColor())
     btn.setAttributedTitle_(
         _attr("⏹  Stop" if rec else "⏺  Record",
-              H_TEXT, NSFont.systemFontOfSize_weight_(11.5, 0.5)))
+              H_TEXT, _T.geist(11.5, "semibold")))
 
 
 # ── Dashboard window ──────────────────────────────────────────────────────────
@@ -950,7 +954,7 @@ class DashboardWindow:
         self._scroll    = None; self._container = None
         self._perm      = None; self._timer = None
         self._sidebar   = None
-        self._active_tab = 0   # 0=All, 1=By App, 2=Stats, 3=Settings, 4=Canvas, 5=Notes
+        self._active_tab = 6   # 6=Home, 0=History, 3=Settings, 4=Canvas, 5=Notes
         self._app_groups = {}
         self._page_lbl  = None
         self._canvas_text_view = None
@@ -1050,7 +1054,7 @@ class DashboardWindow:
         sc.addSubview_(self._rec_btn)
 
         self._perm = NSTextField.labelWithString_("")
-        self._perm.setFont_(NSFont.systemFontOfSize_weight_(9, -0.3))
+        self._perm.setFont_(_T.geist(9, "regular"))
         self._perm.setTextColor_(H_ACCENT)
         self._perm.setFrame_(NSMakeRect(PAD + bw + 8, cy - bh + 10, 160, 14))
         sc.addSubview_(self._perm)
@@ -1067,19 +1071,19 @@ class DashboardWindow:
         clrb.layer().setCornerRadius_(6)
         clrb.layer().setBackgroundColor_(NSColor.clearColor().CGColor())
         clrb.setAttributedTitle_(
-            _attr("Clear all", _hex("B0ADA8"), NSFont.systemFontOfSize_weight_(10, -0.3)))
+            _attr("Clear all", _hex("2A2E33"), _T.geist(10, "regular")))
         clrb.setTarget_(clrd)
         clrb.setAction_(objc.selector(clrd.fire_, signature=b'v@:@'))
         sc.addSubview_(clrb)
 
         cy -= bh + 12
 
-        self._page_lbl = NSTextField.labelWithString_("All transcriptions")
-        self._page_lbl.setFont_(NSFont.systemFontOfSize_weight_(11, -0.3))
-        self._page_lbl.setTextColor_(CARD_SUB)
-        self._page_lbl.setFrame_(NSMakeRect(PAD, cy - 14, 200, 14))
+        self._page_lbl = NSTextField.labelWithString_("Home")
+        self._page_lbl.setFont_(_T.geist(22, "semibold"))   # page title (DESIGN_SYSTEM §3.2)
+        self._page_lbl.setTextColor_(H_TEXT)
+        self._page_lbl.setFrame_(NSMakeRect(PAD, cy - 28, CONTENT_W - PAD * 2, 30))
         sc.addSubview_(self._page_lbl)
-        cy -= 20
+        cy -= 40
 
         # ── Scroll area ───────────────────────────────────────────────────
         sh = cy - 6
@@ -1101,16 +1105,17 @@ class DashboardWindow:
 
     # ── Tab navigation ────────────────────────────────────────────────────────
     def _on_tab_select(self, idx):
-        PAGE_NAMES = {0: "All transcriptions", 1: "By application",
-                      2: "Statistics", 3: "Settings", 4: "Canvas", 5: "Notes"}
+        PAGE_NAMES = {0: "History", 1: "By application",
+                      2: "Statistics", 3: "Settings", 4: "Canvas", 5: "Notes",
+                      6: "Home"}
         self._active_tab = idx
         if self._sidebar:
             self._sidebar.setActiveItem_(idx)
         if self._page_lbl:
             self._page_lbl.setStringValue_(PAGE_NAMES.get(idx, ""))
-        # Show/hide record button and clear button based on tab
+        # Show/hide record button based on tab (Home/Canvas/Notes have none)
         if self._rec_btn:
-            self._rec_btn.setHidden_(idx in (4, 5))
+            self._rec_btn.setHidden_(idx in (4, 5, 6))
         self._rebuild()
 
     # ── Edit ─────────────────────────────────────────────────────────────────
@@ -1259,6 +1264,9 @@ class DashboardWindow:
     # ── Rebuild ───────────────────────────────────────────────────────────────
     def _rebuild(self, expanded_card=None):
         if not self._container: return
+        if self._active_tab == 6:
+            self._rebuild_home()
+            return
         if self._active_tab == 4:
             self._rebuild_canvas()
             return
@@ -1273,6 +1281,142 @@ class DashboardWindow:
             self._rebuild_settings()
         else:
             self._rebuild_all(expanded_card)
+
+    # ── Home dashboard (Flume desktop design) ───────────────────────────────────
+    def _rebuild_home(self):
+        if not self._container: return
+        _copy_cbs.clear()
+        for sv in list(self._container.subviews()): sv.removeFromSuperview()
+
+        sw   = self._scroll.frame().size.width
+        cfg  = self._app.config
+        hist = cfg.get("history", [])
+        total = len(hist)
+        notes = cfg.get("notes", [])
+        try:
+            from datetime import date as _date
+            daily = cfg.get("daily", {"date": "", "words": 0})
+            today = daily.get("words", 0) if daily.get("date") == str(_date.today()) else 0
+        except Exception:
+            today = 0
+
+        gap   = 14
+        card_h = 132
+        row_h  = 60
+        recent = hist[:3]
+        rows_block = (26 + len(recent) * (row_h + 10)) if recent else 0
+        total_h = card_h + 26 + rows_block + 24
+        sh2 = self._scroll.frame().size.height
+        cont = max(total_h, sh2)
+        self._container.setFrame_(NSMakeRect(0, 0, sw, cont))
+
+        # ── Feature cards (row of 3) ──────────────────────────────────────
+        cw = (sw - gap * 2) / 3.0
+        cy = cont - card_h
+        cards = [
+            (_TC["cream"], _TC["creamInk"], _TC["creamDisc"], "mic",               str(today),        "Voice pastes",  f"{total} all time"),
+            (_TC["sage"],  _TC["sageInk"],  _TC["sageDisc"],  "square.grid.2x2",   "Canvas",          "Shared clip",   "Ready to receive"),
+            (_TC["plum"],  _TC["plumInk"],  _TC["plumDisc"],  "line.3.horizontal", str(len(notes)),   "Notes synced",  "In sync"),
+        ]
+        for i, (bg, ink, disc, sym, num, label, sub) in enumerate(cards):
+            self._feature_card(NSMakeRect(i * (cw + gap), cy, cw, card_h), bg, ink, disc, sym, num, label, sub)
+
+        # ── Received today ────────────────────────────────────────────────
+        y = cy - 30
+        head = NSTextField.labelWithString_("Received today")
+        head.setFont_(_T.geist(14, "semibold")); head.setTextColor_(H_TEXT)
+        head.setFrame_(NSMakeRect(2, y, 240, 18)); self._container.addSubview_(head)
+        link = NSTextField.labelWithString_("Open history →")
+        link.setFont_(_T.geist(11.5, "medium")); link.setTextColor_(H_MUTED)
+        link.setAlignment_(NSTextAlignmentRight)
+        link.setFrame_(NSMakeRect(sw - 160, y, 158, 16)); self._container.addSubview_(link)
+        y -= 12
+
+        if not recent:
+            e = NSTextField.labelWithString_("Nothing yet — hold Right ⌘ to record.")
+            e.setFont_(_T.geist(12.5, "regular")); e.setTextColor_(CARD_SUB)
+            e.setFrame_(NSMakeRect(2, y - 40, sw, 20)); self._container.addSubview_(e)
+            return
+        for entry in recent:
+            y -= row_h + 10
+            self._home_row(NSMakeRect(0, y, sw, row_h), entry)
+
+    def _feature_card(self, frame, bg, ink, disc, sym, num, label, sub):
+        card = NSView.alloc().initWithFrame_(frame)
+        card.setWantsLayer_(True); card.layer().setCornerRadius_(16)
+        card.layer().setBackgroundColor_(bg.CGColor())
+        self._container.addSubview_(card)
+        cw = frame.size.width; ch = frame.size.height
+        # Disc icon (top-left)
+        d = NSView.alloc().initWithFrame_(NSMakeRect(14, ch - 46, 32, 32))
+        d.setWantsLayer_(True); d.layer().setCornerRadius_(16)
+        d.layer().setBackgroundColor_(disc.CGColor()); card.addSubview_(d)
+        icon = self._sf_icon(sym, bg, 15)
+        if icon is not None:
+            icon.setFrame_(NSMakeRect(8, 8, 16, 16)); d.addSubview_(icon)
+        # Number
+        n = NSTextField.labelWithString_(num)
+        n.setFont_(_T.geist(22, "semibold")); n.setTextColor_(ink)
+        n.setFrame_(NSMakeRect(14, 44, cw - 28, 26)); card.addSubview_(n)
+        # Label
+        l = NSTextField.labelWithString_(label)
+        l.setFont_(_T.geist(13, "semibold")); l.setTextColor_(ink)
+        l.setFrame_(NSMakeRect(14, 24, cw - 28, 18)); card.addSubview_(l)
+        # Sub
+        s = NSTextField.labelWithString_(sub)
+        s.setFont_(_T.geist(11, "regular")); s.setTextColor_(ink.colorWithAlphaComponent_(0.6))
+        s.setFrame_(NSMakeRect(14, 8, cw - 28, 14)); card.addSubview_(s)
+
+    def _sf_icon(self, name, tint, box=16):
+        from AppKit import NSImageView, NSImage
+        iv = NSImageView.alloc().initWithFrame_(NSMakeRect(0, 0, box, box))
+        img = NSImage.imageWithSystemSymbolName_accessibilityDescription_(name, None)
+        if img is None: return None
+        iv.setImage_(img)
+        try: iv.setContentTintColor_(tint)
+        except Exception: pass
+        return iv
+
+    def _home_row(self, frame, entry):
+        text = _entry_text(entry)
+        app  = _entry_app(entry)
+        ts   = entry.get("ts", "") if isinstance(entry, dict) else ""
+        row = NSView.alloc().initWithFrame_(frame)
+        row.setWantsLayer_(True); row.layer().setCornerRadius_(12)
+        row.layer().setBackgroundColor_(CARD_BG.CGColor())
+        row.layer().setBorderWidth_(1)
+        row.layer().setBorderColor_(_hex("FFFFFF", 0.05).CGColor())
+        self._container.addSubview_(row)
+        rw = frame.size.width; rh = frame.size.height
+        # Time (mono, left)
+        tlbl = NSTextField.labelWithString_(ts or "")
+        tlbl.setFont_(_T.mono(10.5, "medium")); tlbl.setTextColor_(H_MUTED)
+        tlbl.setFrame_(NSMakeRect(16, rh/2 - 8, 74, 14)); row.addSubview_(tlbl)
+        # Text (middle, truncated)
+        disp = text.replace("\n", " ")
+        tv = NSTextField.labelWithString_(disp)
+        tv.setFont_(_T.geist(12.5, "regular")); tv.setTextColor_(CARD_TEXT)
+        tv.setLineBreakMode_(NSLineBreakByTruncatingTail)
+        tv.setFrame_(NSMakeRect(98, rh/2 - 9, rw - 98 - 150, 18)); row.addSubview_(tv)
+        # Device/app tag pill (right)
+        tag = (app or "Local")[:12]
+        low = tag.lower()
+        pbg, pink = ((_TC["tagIPad"], _TC["tagIPadInk"]) if ("pc" in low or "pad" in low or "win" in low)
+                     else (_TC["tagIPhone"], _TC["tagIPhoneInk"]))
+        pill = NSView.alloc().initWithFrame_(NSMakeRect(rw - 138, rh/2 - 12, 74, 24))
+        pill.setWantsLayer_(True); pill.layer().setCornerRadius_(7)
+        pill.layer().setBackgroundColor_(pbg.CGColor()); row.addSubview_(pill)
+        pl = NSTextField.labelWithString_(tag)
+        pl.setFont_(_T.geist(10.5, "semibold")); pl.setTextColor_(pink)
+        pl.setAlignment_(NSTextAlignmentCenter); pl.setFrame_(NSMakeRect(0, 5, 74, 14))
+        pill.addSubview_(pl)
+        # Copy button (far right)
+        tagn = abs(hash(text)) % (2**31); _copy_cbs[tagn] = text
+        cbtn = NSButton.alloc().initWithFrame_(NSMakeRect(rw - 50, rh/2 - 15, 30, 30))
+        cbtn.setBordered_(False); cbtn.setWantsLayer_(True); cbtn.layer().setCornerRadius_(7)
+        cbtn.setAttributedTitle_(_attr("⎘", _hex("9A9A9A"), _T.geist(15, "regular")))
+        cbtn.setTarget_(_ch()); cbtn.setAction_(objc.selector(_ch().handleCopy_, signature=b'v@:@'))
+        cbtn.setTag_(tagn); row.addSubview_(cbtn)
 
     # ── All tab ───────────────────────────────────────────────────────────────
     def _rebuild_all(self, expanded_card=None):
@@ -1290,7 +1434,7 @@ class DashboardWindow:
         if not pinned and not recent:
             e = NSTextField.wrappingLabelWithString_(
                 "No transcriptions yet.\nHold Right ⌘ to start recording.")
-            e.setFont_(NSFont.systemFontOfSize_weight_(12.5, 0.0))
+            e.setFont_(_T.geist(12.5, "regular"))
             e.setTextColor_(CARD_SUB)
             e.setAlignment_(NSTextAlignmentCenter)
             e.setFrame_(NSMakeRect(0, 60, sw, 44))
@@ -1319,7 +1463,7 @@ class DashboardWindow:
         if pinned:
             y -= SEC
             sl = NSTextField.labelWithString_("Pinned")
-            sl.setFont_(NSFont.systemFontOfSize_weight_(11, 0.6))
+            sl.setFont_(_T.geist(11, "semibold"))
             sl.setTextColor_(H_ACCENT)
             sl.setFrame_(NSMakeRect(2, y, 80, 15))
             self._container.addSubview_(sl)
@@ -1340,7 +1484,7 @@ class DashboardWindow:
         if recent:
             y -= SEC
             sl2 = NSTextField.labelWithString_("Recent activity")
-            sl2.setFont_(NSFont.systemFontOfSize_weight_(11, 0.6))
+            sl2.setFont_(_T.geist(11, "semibold"))
             sl2.setTextColor_(CARD_SUB)
             sl2.setFrame_(NSMakeRect(2, y, 140, 15))
             self._container.addSubview_(sl2)
@@ -1389,7 +1533,7 @@ class DashboardWindow:
         if not groups:
             e = NSTextField.wrappingLabelWithString_(
                 "No transcriptions yet.\nHold Right ⌘ to start recording.")
-            e.setFont_(NSFont.systemFontOfSize_weight_(12.5, 0.0))
+            e.setFont_(_T.geist(12.5, "regular"))
             e.setTextColor_(CARD_SUB)
             e.setAlignment_(NSTextAlignmentCenter)
             e.setFrame_(NSMakeRect(0, 60, sw, 44))
@@ -1449,7 +1593,7 @@ class DashboardWindow:
         if not app_words:
             e = NSTextField.wrappingLabelWithString_(
                 "No transcriptions yet.\nHold Right ⌘ to start recording.")
-            e.setFont_(NSFont.systemFontOfSize_weight_(12.5, 0.0))
+            e.setFont_(_T.geist(12.5, "regular"))
             e.setTextColor_(CARD_SUB)
             e.setAlignment_(NSTextAlignmentCenter)
             e.setFrame_(NSMakeRect(0, 60, sw, 44))
@@ -1489,13 +1633,13 @@ class DashboardWindow:
         ]):
             col_x = col * (sw / 3)
             vl = NSTextField.labelWithString_(val)
-            vl.setFont_(NSFont.systemFontOfSize_weight_(18, 0.6))
+            vl.setFont_(_T.geist(18, "semibold"))
             vl.setTextColor_(H_ACCENT)
             vl.setAlignment_(NSTextAlignmentCenter)
             vl.setFrame_(NSMakeRect(col_x, 10, sw/3, 22))
             summary.addSubview_(vl)
             ll = NSTextField.labelWithString_(label)
-            ll.setFont_(NSFont.systemFontOfSize_weight_(9.5, -0.3))
+            ll.setFont_(_T.geist(9.5, "regular"))
             ll.setTextColor_(H_MUTED)
             ll.setAlignment_(NSTextAlignmentCenter)
             ll.setFrame_(NSMakeRect(col_x, 32, sw/3, 12))
@@ -1506,7 +1650,7 @@ class DashboardWindow:
 
         # Section label
         sec = NSTextField.labelWithString_("By application")
-        sec.setFont_(NSFont.systemFontOfSize_weight_(10, -0.3))
+        sec.setFont_(_T.geist(10, "regular"))
         sec.setTextColor_(CARD_SUB)
         sec.setFrame_(NSMakeRect(2, y - 14, 140, 13))
         self._container.addSubview_(sec)
@@ -1555,7 +1699,7 @@ class DashboardWindow:
 
         def section_label(title, yy):
             lbl = NSTextField.labelWithString_(title.upper())
-            lbl.setFont_(NSFont.systemFontOfSize_weight_(9, 0.7))
+            lbl.setFont_(_T.geist(9, "bold"))
             lbl.setTextColor_(CARD_SUB)
             lbl.setFrame_(NSMakeRect(2, yy - 14, sw, 13))
             self._container.addSubview_(lbl)
@@ -1570,7 +1714,7 @@ class DashboardWindow:
             self._container.addSubview_(row)
 
             tl = NSTextField.labelWithString_(label)
-            tl.setFont_(NSFont.systemFontOfSize_weight_(12.5, 0.5))
+            tl.setFont_(_T.geist(12.5, "semibold"))
             tl.setTextColor_(CARD_TEXT)
             tl.setFrame_(NSMakeRect(14, 54, sw - 28, 16))
             row.addSubview_(tl)
@@ -1584,7 +1728,7 @@ class DashboardWindow:
                 color = CARD_SUB
 
             sl = NSTextField.labelWithString_(key_text)
-            sl.setFont_(NSFont.systemFontOfSize_weight_(11, -0.2))
+            sl.setFont_(_T.geist(11, "regular"))
             sl.setTextColor_(color)
             sl.setFrame_(NSMakeRect(14, 36, sw - 100, 14))
             row.addSubview_(sl)
@@ -1597,7 +1741,7 @@ class DashboardWindow:
             rb.setAttributedTitle_(_attr(
                 "Cancel" if is_rec else "Record",
                 _hex("FFFFFF") if is_rec else H_TEXT,
-                NSFont.systemFontOfSize_weight_(10.5, 0.5)))
+                _T.geist(10.5, "semibold")))
             rb.setTarget_(rec_d); rb.setAction_(objc.selector(rec_d.fire_, signature=b'v@:@'))
             row.addSubview_(rb)
             return row
@@ -1605,7 +1749,7 @@ class DashboardWindow:
         def divider(yy):
             d = NSView.alloc().initWithFrame_(NSMakeRect(0, yy, sw, 1))
             d.setWantsLayer_(True)
-            d.layer().setBackgroundColor_(_hex("E8E5E0").CGColor())
+            d.layer().setBackgroundColor_(_hex("17191C").CGColor())
             self._container.addSubview_(d)
 
         def key_row(label, keys, yy, add_cb, remove_cb):
@@ -1620,7 +1764,7 @@ class DashboardWindow:
 
             # Label
             tl = NSTextField.labelWithString_(label)
-            tl.setFont_(NSFont.systemFontOfSize_weight_(12.5, 0.5))
+            tl.setFont_(_T.geist(12.5, "semibold"))
             tl.setTextColor_(CARD_TEXT)
             tl.setFrame_(NSMakeRect(14, 54, sw - 28, 16))
             row.addSubview_(tl)
@@ -1628,14 +1772,14 @@ class DashboardWindow:
             # Keys list
             if keys:
                 key_str = "  ·  ".join(f"...{k[-8:]}" for k in keys)
-                status_color = _hex("3DAA6E")
+                status_color = _hex("4AD15A")
                 status_text  = f"✓  {key_str}"
             else:
                 status_text  = "No key configured"
                 status_color = CARD_SUB
 
             sl = NSTextField.labelWithString_(status_text)
-            sl.setFont_(NSFont.systemFontOfSize_weight_(10.5, -0.3))
+            sl.setFont_(_T.geist(10.5, "regular"))
             sl.setTextColor_(status_color)
             sl.setFrame_(NSMakeRect(14, 36, sw - 100, 14))
             row.addSubview_(sl)
@@ -1646,7 +1790,7 @@ class DashboardWindow:
             ab.setBordered_(False); ab.setWantsLayer_(True)
             ab.layer().setCornerRadius_(8)
             ab.layer().setBackgroundColor_(H_BG.CGColor())
-            ab.setAttributedTitle_(_attr("+ Add key", H_TEXT, NSFont.systemFontOfSize_weight_(10.5, 0.5)))
+            ab.setAttributedTitle_(_attr("+ Add key", H_TEXT, _T.geist(10.5, "semibold")))
             ab.setTarget_(add_d); ab.setAction_(objc.selector(add_d.fire_, signature=b'v@:@'))
             row.addSubview_(ab)
 
@@ -1657,7 +1801,7 @@ class DashboardWindow:
                 rb.setBordered_(False); rb.setWantsLayer_(True)
                 rb.layer().setCornerRadius_(6)
                 rb.layer().setBackgroundColor_(NSColor.clearColor().CGColor())
-                rb.setAttributedTitle_(_attr("Remove last", _hex("E05A2B"), NSFont.systemFontOfSize_weight_(9.5, -0.3)))
+                rb.setAttributedTitle_(_attr("Remove last", _hex("C85A3E"), _T.geist(9.5, "regular")))
                 rb.setTarget_(rm_d); rb.setAction_(objc.selector(rm_d.fire_, signature=b'v@:@'))
                 row.addSubview_(rb)
 
@@ -1673,13 +1817,13 @@ class DashboardWindow:
             self._container.addSubview_(row)
 
             tl = NSTextField.labelWithString_(label)
-            tl.setFont_(NSFont.systemFontOfSize_weight_(12.5, 0.5))
+            tl.setFont_(_T.geist(12.5, "semibold"))
             tl.setTextColor_(CARD_TEXT)
             tl.setFrame_(NSMakeRect(14, 34, sw - 80, 16))
             row.addSubview_(tl)
 
             sl = NSTextField.labelWithString_(sublabel)
-            sl.setFont_(NSFont.systemFontOfSize_weight_(10.5, -0.3))
+            sl.setFont_(_T.geist(10.5, "regular"))
             sl.setTextColor_(CARD_SUB)
             sl.setFrame_(NSMakeRect(14, 14, sw - 80, 14))
             row.addSubview_(sl)
@@ -1690,11 +1834,11 @@ class DashboardWindow:
             tb.setBordered_(False); tb.setWantsLayer_(True)
             tb.layer().setCornerRadius_(12)
             tb.layer().setBackgroundColor_(
-                H_ACCENT.CGColor() if value else _hex("DEDAD4").CGColor())
+                H_ACCENT.CGColor() if value else _hex("2A2E33").CGColor())
             tb.setAttributedTitle_(_attr(
                 "ON" if value else "OFF",
                 _hex("FFFFFF") if value else CARD_SUB,
-                NSFont.systemFontOfSize_weight_(9.5, 0.6)))
+                _T.geist(9.5, "semibold")))
             tb.setTarget_(tog_d); tb.setAction_(objc.selector(tog_d.fire_, signature=b'v@:@'))
             row.addSubview_(tb)
 
@@ -1708,7 +1852,7 @@ class DashboardWindow:
             self._container.addSubview_(row)
 
             tl = NSTextField.labelWithString_("Whisper model")
-            tl.setFont_(NSFont.systemFontOfSize_weight_(12.5, 0.5))
+            tl.setFont_(_T.geist(12.5, "semibold"))
             tl.setTextColor_(CARD_TEXT)
             tl.setFrame_(NSMakeRect(14, 34, 160, 16))
             row.addSubview_(tl)
@@ -1723,11 +1867,11 @@ class DashboardWindow:
                 mb.setBordered_(False); mb.setWantsLayer_(True)
                 mb.layer().setCornerRadius_(8)
                 mb.layer().setBackgroundColor_(
-                    H_BG.CGColor() if is_sel else _hex("ECEAE6").CGColor())
+                    H_BG.CGColor() if is_sel else _hex("17191C").CGColor())
                 mb.setAttributedTitle_(_attr(
                     m,
                     H_TEXT if is_sel else CARD_SUB,
-                    NSFont.systemFontOfSize_weight_(10.5, 0.5 if is_sel else 0.0)))
+                    _T.geist(10.5, "semibold" if is_sel else "regular")))
                 mb.setTarget_(md); mb.setAction_(objc.selector(md.fire_, signature=b'v@:@'))
                 row.addSubview_(mb)
 
@@ -1816,16 +1960,16 @@ class DashboardWindow:
             self._container.addSubview_(uid_row)
 
             uid_lbl = NSTextField.labelWithString_("User ID")
-            uid_lbl.setFont_(NSFont.systemFontOfSize_weight_(12.5, 0.5))
+            uid_lbl.setFont_(_T.geist(12.5, "semibold"))
             uid_lbl.setTextColor_(CARD_TEXT)
             uid_lbl.setFrame_(NSMakeRect(14, 34, 100, 16))
             uid_row.addSubview_(uid_lbl)
 
             uid_val = cfg.get("sync_user_id", "") or "Not set"
             uid_sub = NSTextField.labelWithString_(uid_val)
-            uid_sub.setFont_(NSFont.systemFontOfSize_weight_(10.5, -0.3))
+            uid_sub.setFont_(_T.geist(10.5, "regular"))
             uid_sub.setTextColor_(
-                _hex("3DAA6E") if cfg.get("sync_user_id") else CARD_SUB)
+                _hex("4AD15A") if cfg.get("sync_user_id") else CARD_SUB)
             uid_sub.setFrame_(NSMakeRect(14, 14, sw - 110, 14))
             uid_row.addSubview_(uid_sub)
 
@@ -1834,7 +1978,7 @@ class DashboardWindow:
             sb.setBordered_(False); sb.setWantsLayer_(True)
             sb.layer().setCornerRadius_(8)
             sb.layer().setBackgroundColor_(H_BG.CGColor())
-            sb.setAttributedTitle_(_attr("Set ID", H_TEXT, NSFont.systemFontOfSize_weight_(10.5, 0.5)))
+            sb.setAttributedTitle_(_attr("Set ID", H_TEXT, _T.geist(10.5, "semibold")))
             sb.setTarget_(set_d); sb.setAction_(objc.selector(set_d.fire_, signature=b'v@:@'))
             uid_row.addSubview_(sb)
             y -= 68
@@ -1849,7 +1993,7 @@ class DashboardWindow:
             self._container.addSubview_(dev_row)
 
             dev_lbl = NSTextField.labelWithString_("Device name")
-            dev_lbl.setFont_(NSFont.systemFontOfSize_weight_(12.5, 0.5))
+            dev_lbl.setFont_(_T.geist(12.5, "semibold"))
             dev_lbl.setTextColor_(CARD_TEXT)
             dev_lbl.setFrame_(NSMakeRect(14, 34, 120, 16))
             dev_row.addSubview_(dev_lbl)
@@ -1857,7 +2001,7 @@ class DashboardWindow:
             import platform as _platform
             dev_val = cfg.get("sync_device_name", "") or _platform.node()
             dev_sub = NSTextField.labelWithString_(dev_val)
-            dev_sub.setFont_(NSFont.systemFontOfSize_weight_(10.5, -0.3))
+            dev_sub.setFont_(_T.geist(10.5, "regular"))
             dev_sub.setTextColor_(CARD_SUB)
             dev_sub.setFrame_(NSMakeRect(14, 14, sw - 110, 14))
             dev_row.addSubview_(dev_sub)
@@ -1867,7 +2011,7 @@ class DashboardWindow:
             dnb.setBordered_(False); dnb.setWantsLayer_(True)
             dnb.layer().setCornerRadius_(8)
             dnb.layer().setBackgroundColor_(H_BG.CGColor())
-            dnb.setAttributedTitle_(_attr("Change", H_TEXT, NSFont.systemFontOfSize_weight_(10.5, 0.5)))
+            dnb.setAttributedTitle_(_attr("Change", H_TEXT, _T.geist(10.5, "semibold")))
             dnb.setTarget_(dn_d); dnb.setAction_(objc.selector(dn_d.fire_, signature=b'v@:@'))
             dev_row.addSubview_(dnb)
             y -= 68
@@ -1879,7 +2023,7 @@ class DashboardWindow:
             "They handle both transcription (Whisper) and formatting (LLaMA).\n"
             "Sync uses Supabase Realtime — same User ID on all devices."
         )
-        info.setFont_(NSFont.systemFontOfSize_weight_(10, -0.3))
+        info.setFont_(_T.geist(10, "regular"))
         info.setTextColor_(CARD_SUB)
         info.setFrame_(NSMakeRect(2, y - 40, sw - 4, 40))
         self._container.addSubview_(info)
@@ -2007,7 +2151,7 @@ class DashboardWindow:
             self._notes_loaded_once = True
             threading.Thread(target=self._notes_load, daemon=True).start()
             spin = NSTextField.labelWithString_("Loading notes...")
-            spin.setFont_(NSFont.systemFontOfSize_(13))
+            spin.setFont_(_T.geist(13, "regular"))
             spin.setTextColor_(H_MUTED)
             spin.setFrame_(NSMakeRect(sw / 2 - 60, sh / 2 - 10, 120, 20))
             self._container.addSubview_(spin)
@@ -2024,14 +2168,14 @@ class DashboardWindow:
         self._container.addSubview_(hero)
 
         hero_lbl = NSTextField.labelWithString_("Notes")
-        hero_lbl.setFont_(NSFont.systemFontOfSize_weight_(24, 0.8))
+        hero_lbl.setFont_(_T.geist(24, "bold"))
         hero_lbl.setTextColor_(H_TEXT)
         hero_lbl.setFrame_(NSMakeRect(PAD, HERO_H - 40, 140, 28))
         hero.addSubview_(hero_lbl)
 
         count = len(self._notes_data)
         count_lbl = NSTextField.labelWithString_(f"{count} notes")
-        count_lbl.setFont_(NSFont.systemFontOfSize_(11))
+        count_lbl.setFont_(_T.geist(11, "regular"))
         count_lbl.setTextColor_(H_MUTED)
         count_lbl.setFrame_(NSMakeRect(PAD, HERO_H - 56, 80, 14))
         hero.addSubview_(count_lbl)
@@ -2042,7 +2186,7 @@ class DashboardWindow:
         mic_btn.setBordered_(False); mic_btn.setWantsLayer_(True)
         mic_btn.layer().setCornerRadius_(8)
         mic_btn.layer().setBackgroundColor_(H_ACCENT.CGColor())
-        mic_btn.setAttributedTitle_(_attr("🎙  Record", _hex("FFFFFF"), NSFont.systemFontOfSize_weight_(11, 0.5)))
+        mic_btn.setAttributedTitle_(_attr("🎙  Record", _hex("FFFFFF"), _T.geist(11, "semibold")))
         mic_btn.setTarget_(mic_d)
         mic_btn.setAction_(objc.selector(mic_d.fire_, signature=b'v@:@'))
         hero.addSubview_(mic_btn)
@@ -2052,7 +2196,7 @@ class DashboardWindow:
         ref_btn = NSButton.alloc().initWithFrame_(NSMakeRect(sw - PAD - 28, HERO_H - 40, 26, 26))
         ref_btn.setBordered_(False)
         ref_btn.setTitle_("↻")
-        ref_btn.setFont_(NSFont.systemFontOfSize_(14))
+        ref_btn.setFont_(_T.geist(14, "regular"))
         ref_btn.setTarget_(ref_d)
         ref_btn.setAction_(objc.selector(ref_d.fire_, signature=b'v@:@'))
         hero.addSubview_(ref_btn)
@@ -2060,13 +2204,13 @@ class DashboardWindow:
         # ── Sidebar (left) ──────────────────────────────────────────────
         sidebar = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, LIST_W, sh - HERO_H))
         sidebar.setWantsLayer_(True)
-        sidebar.layer().setBackgroundColor_(_hex("F7F5F1").CGColor())
+        sidebar.layer().setBackgroundColor_(_hex("17191C").CGColor())
         self._container.addSubview_(sidebar)
 
         # Search
         search = NSTextField.alloc().initWithFrame_(NSMakeRect(PAD, sh - HERO_H - 42, LIST_W - 2 * PAD, 26))
         search.setPlaceholderString_("Search notes...")
-        search.setFont_(NSFont.systemFontOfSize_(12))
+        search.setFont_(_T.geist(12, "regular"))
         search.setBordered_(True)
         search.setBezeled_(True)
         search.setBezelStyle_(NSRoundedBezelStyle)
@@ -2086,7 +2230,7 @@ class DashboardWindow:
 
         if not self._notes_data:
             empty = NSTextField.labelWithString_("No notes yet")
-            empty.setFont_(NSFont.systemFontOfSize_(12))
+            empty.setFont_(_T.geist(12, "regular"))
             empty.setTextColor_(H_MUTED)
             empty.setFrame_(NSMakeRect(PAD, 10, LIST_W - 2 * PAD, 20))
             list_content.addSubview_(empty)
@@ -2106,27 +2250,27 @@ class DashboardWindow:
                 card.layer().setBackgroundColor_(_hex(bg_color).CGColor())
                 if is_pinned:
                     card.layer().setBorderWidth_(1.5)
-                    card.layer().setBorderColor_(_hex("E05A2B", 0.25).CGColor())
+                    card.layer().setBorderColor_(_hex("C85A3E", 0.25).CGColor())
                 if is_selected:
                     card.layer().setBorderWidth_(1.5)
-                    card.layer().setBorderColor_(_hex("E05A2B", 0.4).CGColor())
+                    card.layer().setBorderColor_(_hex("C85A3E", 0.4).CGColor())
                 list_content.addSubview_(card)
 
                 if is_pinned:
                     pin = NSTextField.labelWithString_("📌")
-                    pin.setFont_(NSFont.systemFontOfSize_(10))
+                    pin.setFont_(_T.geist(10, "regular"))
                     pin.setFrame_(NSMakeRect(8, card_y + 18, 16, 14))
                     list_content.addSubview_(pin)
 
                 x_off = 26 if is_pinned else 10
                 tl = NSTextField.labelWithString_(title[:40])
-                tl.setFont_(NSFont.systemFontOfSize_weight_(12, 0.6))
+                tl.setFont_(_T.geist(12, "semibold"))
                 tl.setTextColor_(H_TEXT)
                 tl.setFrame_(NSMakeRect(x_off, card_y + 28, LIST_W - x_off - 4, 16))
                 list_content.addSubview_(tl)
 
                 prev = NSTextField.labelWithString_(content)
-                prev.setFont_(NSFont.systemFontOfSize_(10))
+                prev.setFont_(_T.geist(10, "regular"))
                 prev.setTextColor_(H_MUTED)
                 prev.setFrame_(NSMakeRect(x_off, card_y + 10, LIST_W - x_off - 4, 14))
                 list_content.addSubview_(prev)
@@ -2147,14 +2291,14 @@ class DashboardWindow:
 
         divider = NSView.alloc().initWithFrame_(NSMakeRect(LIST_W, 0, 1, editor_h))
         divider.setWantsLayer_(True)
-        divider.layer().setBackgroundColor_(_hex("E2DDD5").CGColor())
+        divider.layer().setBackgroundColor_(_hex("2A2E33").CGColor())
         self._container.addSubview_(divider)
 
         # Always show editor — either for a selected note or for creating new
         if not self._notes_selected:
             # Empty state with prompt
             empty_ed = NSTextField.labelWithString_("Select a note or create one below")
-            empty_ed.setFont_(NSFont.systemFontOfSize_(13))
+            empty_ed.setFont_(_T.geist(13, "regular"))
             empty_ed.setTextColor_(H_MUTED)
             empty_ed.setFrame_(NSMakeRect(editor_x + 40, editor_h / 2 - 12, editor_w - 80, 24))
             self._container.addSubview_(empty_ed)
@@ -2165,7 +2309,7 @@ class DashboardWindow:
             new_btn.setBordered_(False); new_btn.setWantsLayer_(True)
             new_btn.layer().setCornerRadius_(10)
             new_btn.layer().setBackgroundColor_(H_ACCENT.CGColor())
-            new_btn.setAttributedTitle_(_attr("+ New Note", _hex("FFFFFF"), NSFont.systemFontOfSize_weight_(14, 0.5)))
+            new_btn.setAttributedTitle_(_attr("+ New Note", _hex("FFFFFF"), _T.geist(14, "semibold")))
             new_btn.setTarget_(new_d)
             new_btn.setAction_(objc.selector(new_d.fire_, signature=b'v@:@'))
             self._container.addSubview_(new_btn)
@@ -2180,7 +2324,7 @@ class DashboardWindow:
         TOOL_H = 38
         toolbar = NSView.alloc().initWithFrame_(NSMakeRect(editor_x, editor_h - TOOL_H, editor_w, TOOL_H))
         toolbar.setWantsLayer_(True)
-        toolbar.layer().setBackgroundColor_(_hex("F7F5F1").CGColor())
+        toolbar.layer().setBackgroundColor_(_hex("17191C").CGColor())
         self._container.addSubview_(toolbar)
 
         # H (heading) button
@@ -2189,7 +2333,7 @@ class DashboardWindow:
         h_btn.setBordered_(False); h_btn.setWantsLayer_(True)
         h_btn.layer().setCornerRadius_(6)
         h_btn.layer().setBackgroundColor_(_hex("FFFFFF").CGColor())
-        h_btn.setAttributedTitle_(_attr("H", H_TEXT, NSFont.systemFontOfSize_weight_(13, 0.6)))
+        h_btn.setAttributedTitle_(_attr("H", H_TEXT, _T.geist(13, "semibold")))
         h_btn.setTarget_(h_d)
         h_btn.setAction_(objc.selector(h_d.fire_, signature=b'v@:@'))
         toolbar.addSubview_(h_btn)
@@ -2200,7 +2344,7 @@ class DashboardWindow:
         b_btn.setBordered_(False); b_btn.setWantsLayer_(True)
         b_btn.layer().setCornerRadius_(6)
         b_btn.layer().setBackgroundColor_(_hex("FFFFFF").CGColor())
-        b_btn.setAttributedTitle_(_attr("B", H_TEXT, NSFont.boldSystemFontOfSize_(13)))
+        b_btn.setAttributedTitle_(_attr("B", H_TEXT, _T.geist(13, "bold")))
         b_btn.setTarget_(b_d)
         b_btn.setAction_(objc.selector(b_d.fire_, signature=b'v@:@'))
         toolbar.addSubview_(b_btn)
@@ -2211,7 +2355,7 @@ class DashboardWindow:
         ul_btn.setBordered_(False); ul_btn.setWantsLayer_(True)
         ul_btn.layer().setCornerRadius_(6)
         ul_btn.layer().setBackgroundColor_(_hex("FFFFFF").CGColor())
-        ul_btn.setAttributedTitle_(_attr("•", H_TEXT, NSFont.systemFontOfSize_(14)))
+        ul_btn.setAttributedTitle_(_attr("•", H_TEXT, _T.geist(14, "regular")))
         ul_btn.setTarget_(ul_d)
         ul_btn.setAction_(objc.selector(ul_d.fire_, signature=b'v@:@'))
         toolbar.addSubview_(ul_btn)
@@ -2222,7 +2366,7 @@ class DashboardWindow:
         nl_btn.setBordered_(False); nl_btn.setWantsLayer_(True)
         nl_btn.layer().setCornerRadius_(6)
         nl_btn.layer().setBackgroundColor_(_hex("FFFFFF").CGColor())
-        nl_btn.setAttributedTitle_(_attr("1.", H_TEXT, NSFont.systemFontOfSize_(12)))
+        nl_btn.setAttributedTitle_(_attr("1.", H_TEXT, _T.geist(12, "regular")))
         nl_btn.setTarget_(nl_d)
         nl_btn.setAction_(objc.selector(nl_d.fire_, signature=b'v@:@'))
         toolbar.addSubview_(nl_btn)
@@ -2232,8 +2376,8 @@ class DashboardWindow:
         ai_btn = NSButton.alloc().initWithFrame_(NSMakeRect(editor_w - PAD - 320, 5, 110, 28))
         ai_btn.setBordered_(False); ai_btn.setWantsLayer_(True)
         ai_btn.layer().setCornerRadius_(6)
-        ai_btn.layer().setBackgroundColor_(_hex("E05A2B", 0.12).CGColor())
-        ai_btn.setAttributedTitle_(_attr("✨ Format with AI", H_ACCENT, NSFont.systemFontOfSize_weight_(11, 0.5)))
+        ai_btn.layer().setBackgroundColor_(_hex("C85A3E", 0.12).CGColor())
+        ai_btn.setAttributedTitle_(_attr("✨ Format with AI", H_ACCENT, _T.geist(11, "semibold")))
         ai_btn.setTarget_(ai_d)
         ai_btn.setAction_(objc.selector(ai_d.fire_, signature=b'v@:@'))
         toolbar.addSubview_(ai_btn)
@@ -2244,7 +2388,7 @@ class DashboardWindow:
         save_btn.setBordered_(False); save_btn.setWantsLayer_(True)
         save_btn.layer().setCornerRadius_(6)
         save_btn.layer().setBackgroundColor_(H_ACCENT.CGColor())
-        save_btn.setAttributedTitle_(_attr("Save", _hex("FFFFFF"), NSFont.systemFontOfSize_weight_(11, 0.5)))
+        save_btn.setAttributedTitle_(_attr("Save", _hex("FFFFFF"), _T.geist(11, "semibold")))
         save_btn.setTarget_(save_d)
         save_btn.setAction_(objc.selector(save_d.fire_, signature=b'v@:@'))
         toolbar.addSubview_(save_btn)
@@ -2254,8 +2398,8 @@ class DashboardWindow:
         del_btn = NSButton.alloc().initWithFrame_(NSMakeRect(editor_w - PAD - 120, 5, 50, 28))
         del_btn.setBordered_(False); del_btn.setWantsLayer_(True)
         del_btn.layer().setCornerRadius_(6)
-        del_btn.layer().setBackgroundColor_(_hex("E05A2B", 0.12).CGColor())
-        del_btn.setAttributedTitle_(_attr("Del", H_ACCENT, NSFont.systemFontOfSize_weight_(11, 0.5)))
+        del_btn.layer().setBackgroundColor_(_hex("C85A3E", 0.12).CGColor())
+        del_btn.setAttributedTitle_(_attr("Del", H_ACCENT, _T.geist(11, "semibold")))
         del_btn.setTarget_(del_d)
         del_btn.setAction_(objc.selector(del_d.fire_, signature=b'v@:@'))
         toolbar.addSubview_(del_btn)
@@ -2267,7 +2411,7 @@ class DashboardWindow:
         pin_btn.setBordered_(False); pin_btn.setWantsLayer_(True)
         pin_btn.layer().setCornerRadius_(6)
         pin_btn.layer().setBackgroundColor_(_hex("FFFFFF" if not is_pinned else "FFF7F2").CGColor())
-        pin_btn.setAttributedTitle_(_attr("📌" if is_pinned else "📍", H_TEXT, NSFont.systemFontOfSize_(12)))
+        pin_btn.setAttributedTitle_(_attr("📌" if is_pinned else "📍", H_TEXT, _T.geist(12, "regular")))
         pin_btn.setTarget_(pin_d)
         pin_btn.setAction_(objc.selector(pin_d.fire_, signature=b'v@:@'))
         toolbar.addSubview_(pin_btn)
@@ -2278,7 +2422,7 @@ class DashboardWindow:
         )
         self._notes_title_input.setStringValue_(title)
         self._notes_title_input.setPlaceholderString_("Note title...")
-        self._notes_title_input.setFont_(NSFont.systemFontOfSize_weight_(17, 0.7))
+        self._notes_title_input.setFont_(_T.geist(17, "bold"))
         self._notes_title_input.setBordered_(False)
         self._notes_title_input.setDrawsBackground_(False)
         self._notes_title_input.setTextColor_(H_TEXT)
@@ -2297,7 +2441,7 @@ class DashboardWindow:
             NSMakeRect(0, 0, editor_w - PAD, editor_h - TOOL_H - 48)
         )
         self._notes_text_view.setString_(content)
-        self._notes_text_view.setFont_(NSFont.systemFontOfSize_(14))
+        self._notes_text_view.setFont_(_T.geist(14, "regular"))
         self._notes_text_view.setDrawsBackground_(False)
         self._notes_text_view.setTextColor_(H_TEXT)
         content_scroll.setDocumentView_(self._notes_text_view)
@@ -2493,7 +2637,7 @@ class DashboardWindow:
             from AppKit import NSImageView, NSImageScaleProportionallyUpOrDown
             img_panel = NSView.alloc().initWithFrame_(NSMakeRect(0, sh - BAR_H - IMG_H, sw, IMG_H))
             img_panel.setWantsLayer_(True)
-            img_panel.layer().setBackgroundColor_(_hex("ECEAE6").CGColor())
+            img_panel.layer().setBackgroundColor_(_hex("17191C").CGColor())
             self._container.addSubview_(img_panel)
 
             # Load image async and display
@@ -2508,8 +2652,8 @@ class DashboardWindow:
             rm_btn = NSButton.alloc().initWithFrame_(NSMakeRect(sw - 80, IMG_H - 28, 68, 22))
             rm_btn.setBordered_(False); rm_btn.setWantsLayer_(True)
             rm_btn.layer().setCornerRadius_(6)
-            rm_btn.layer().setBackgroundColor_(_hex("E05A2B", 0.15).CGColor())
-            rm_btn.setAttributedTitle_(_attr("✕ Remove", H_ACCENT, NSFont.systemFontOfSize_weight_(10, 0.4)))
+            rm_btn.layer().setBackgroundColor_(_hex("C85A3E", 0.15).CGColor())
+            rm_btn.setAttributedTitle_(_attr("✕ Remove", H_ACCENT, _T.geist(10, "regular")))
             rm_btn.setTarget_(rm_d)
             rm_btn.setAction_(objc.selector(rm_d.fire_, signature=b'v@:@'))
             img_panel.addSubview_(rm_btn)
@@ -2522,9 +2666,9 @@ class DashboardWindow:
         text_scroll.setDrawsBackground_(False)
 
         self._canvas_text_view = NSTextView.alloc().initWithFrame_(NSMakeRect(0, 0, sw, text_h))
-        self._canvas_text_view.setFont_(NSFont.systemFontOfSize_weight_(14, -0.3))
+        self._canvas_text_view.setFont_(_T.geist(14, "regular"))
         self._canvas_text_view.setTextColor_(CARD_TEXT)
-        self._canvas_text_view.setBackgroundColor_(_hex("FAFAF8"))
+        self._canvas_text_view.setBackgroundColor_(_hex("17191C"))
         self._canvas_text_view.setEditable_(True)
         self._canvas_text_view.setRichText_(False)
         self._canvas_text_view.setAutomaticQuoteSubstitutionEnabled_(False)
@@ -2540,11 +2684,11 @@ class DashboardWindow:
         # ── Bottom bar: status + Save button ─────────────────────────────
         bar = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, sw, 40))
         bar.setWantsLayer_(True)
-        bar.layer().setBackgroundColor_(_hex("F2EFE9").CGColor())
+        bar.layer().setBackgroundColor_(_hex("17191C").CGColor())
         self._container.addSubview_(bar)
 
         self._canvas_status = NSTextField.labelWithString_("Not saved")
-        self._canvas_status.setFont_(NSFont.systemFontOfSize_weight_(10, -0.3))
+        self._canvas_status.setFont_(_T.geist(10, "regular"))
         self._canvas_status.setTextColor_(CARD_SUB)
         self._canvas_status.setFrame_(NSMakeRect(12, 12, sw - 200, 16))
         bar.addSubview_(self._canvas_status)
@@ -2554,8 +2698,8 @@ class DashboardWindow:
         paste_img_btn = NSButton.alloc().initWithFrame_(NSMakeRect(sw - 430, 8, 80, 24))
         paste_img_btn.setBordered_(False); paste_img_btn.setWantsLayer_(True)
         paste_img_btn.layer().setCornerRadius_(8)
-        paste_img_btn.layer().setBackgroundColor_(_hex("ECEAE6").CGColor())
-        paste_img_btn.setAttributedTitle_(_attr("⌘V Image", CARD_TEXT, NSFont.systemFontOfSize_weight_(11, 0.4)))
+        paste_img_btn.layer().setBackgroundColor_(_hex("17191C").CGColor())
+        paste_img_btn.setAttributedTitle_(_attr("⌘V Image", CARD_TEXT, _T.geist(11, "regular")))
         paste_img_btn.setTarget_(paste_img_d)
         paste_img_btn.setAction_(objc.selector(paste_img_d.fire_, signature=b'v@:@'))
         paste_img_btn.setToolTip_("Paste image from clipboard and sync to all devices")
@@ -2566,8 +2710,8 @@ class DashboardWindow:
         clear_btn = NSButton.alloc().initWithFrame_(NSMakeRect(sw - 340, 8, 80, 24))
         clear_btn.setBordered_(False); clear_btn.setWantsLayer_(True)
         clear_btn.layer().setCornerRadius_(8)
-        clear_btn.layer().setBackgroundColor_(_hex("E05A2B", 0.10).CGColor())
-        clear_btn.setAttributedTitle_(_attr("✕ Clear", H_ACCENT, NSFont.systemFontOfSize_weight_(11, 0.4)))
+        clear_btn.layer().setBackgroundColor_(_hex("C85A3E", 0.10).CGColor())
+        clear_btn.setAttributedTitle_(_attr("✕ Clear", H_ACCENT, _T.geist(11, "regular")))
         clear_btn.setTarget_(clear_d)
         clear_btn.setAction_(objc.selector(clear_d.fire_, signature=b'v@:@'))
         bar.addSubview_(clear_btn)
@@ -2577,8 +2721,8 @@ class DashboardWindow:
         refresh_btn = NSButton.alloc().initWithFrame_(NSMakeRect(sw - 250, 8, 70, 24))
         refresh_btn.setBordered_(False); refresh_btn.setWantsLayer_(True)
         refresh_btn.layer().setCornerRadius_(8)
-        refresh_btn.layer().setBackgroundColor_(_hex("ECEAE6").CGColor())
-        refresh_btn.setAttributedTitle_(_attr("↻ Refresh", CARD_TEXT, NSFont.systemFontOfSize_weight_(11, 0.4)))
+        refresh_btn.layer().setBackgroundColor_(_hex("17191C").CGColor())
+        refresh_btn.setAttributedTitle_(_attr("↻ Refresh", CARD_TEXT, _T.geist(11, "regular")))
         refresh_btn.setTarget_(refresh_d)
         refresh_btn.setAction_(objc.selector(refresh_d.fire_, signature=b'v@:@'))
         bar.addSubview_(refresh_btn)
@@ -2588,8 +2732,8 @@ class DashboardWindow:
         copy_btn = NSButton.alloc().initWithFrame_(NSMakeRect(sw - 170, 8, 60, 24))
         copy_btn.setBordered_(False); copy_btn.setWantsLayer_(True)
         copy_btn.layer().setCornerRadius_(8)
-        copy_btn.layer().setBackgroundColor_(_hex("ECEAE6").CGColor())
-        copy_btn.setAttributedTitle_(_attr("⎘ Copy", CARD_TEXT, NSFont.systemFontOfSize_weight_(11, 0.4)))
+        copy_btn.layer().setBackgroundColor_(_hex("17191C").CGColor())
+        copy_btn.setAttributedTitle_(_attr("⎘ Copy", CARD_TEXT, _T.geist(11, "regular")))
         copy_btn.setTarget_(copy_d)
         copy_btn.setAction_(objc.selector(copy_d.fire_, signature=b'v@:@'))
         bar.addSubview_(copy_btn)
@@ -2600,7 +2744,7 @@ class DashboardWindow:
         save_btn.setBordered_(False); save_btn.setWantsLayer_(True)
         save_btn.layer().setCornerRadius_(8)
         save_btn.layer().setBackgroundColor_(H_BG.CGColor())
-        save_btn.setAttributedTitle_(_attr("Save & Sync", H_TEXT, NSFont.systemFontOfSize_weight_(11, 0.5)))
+        save_btn.setAttributedTitle_(_attr("Save & Sync", H_TEXT, _T.geist(11, "semibold")))
         save_btn.setTarget_(save_d)
         save_btn.setAction_(objc.selector(save_d.fire_, signature=b'v@:@'))
         bar.addSubview_(save_btn)
@@ -3001,6 +3145,12 @@ class DashboardWindow:
                         frame, devices, self._target_device_id, self._on_target_device_select
                     )
                     parent.addSubview_(self._device_sel_view)
+                # Populate the sidebar DEVICES section too
+                if self._sidebar:
+                    self._sidebar.setDevices_([
+                        {"name": d.get("device_name", "Device"), "online": d.get("online", True)}
+                        for d in devices
+                    ])
             self._app._on_main(update)
         except Exception as e:
             logger.error(f"Load devices error: {e}")

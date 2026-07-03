@@ -1,222 +1,254 @@
+"""
+Flume recording overlay — a floating, non-activating panel hosting the Flume
+overlay HTML (Recording → Transcribing → Done) in a WKWebView.
+
+Keeps the OverlayBar interface main.py already uses (setup / show /
+update_status / show_briefly / hide / visible) and derives the rich UI data
+(device name, elapsed seconds, word count) from those calls, so main.py needs
+no changes beyond passing the app reference.
+
+Interactive: the pill's buttons (stop / cancel / pause / copy again) post back
+through the pywebview bridge to methods here, which hop to the app on the main
+thread. The panel is non-activating so clicking it never steals key focus from
+the app you're dictating into.
+
+Sound effects are unchanged — they live in main.py (play_start/stop/done).
+"""
 import logging
-import math
+import re
+import time
 
 from AppKit import (
-    NSPanel, NSView, NSColor, NSFont,
+    NSPanel, NSColor,
     NSWindowStyleMaskBorderless,
-    NSScreen, NSBezierPath, NSTimer, NSRunLoop, NSDefaultRunLoopMode,
+    NSScreen, NSBackingStoreBuffered, NSScreenSaverWindowLevel,
     NSWindowCollectionBehaviorCanJoinAllSpaces,
     NSWindowCollectionBehaviorStationary,
     NSWindowCollectionBehaviorFullScreenAuxiliary,
-    NSBackingStoreBuffered, NSScreenSaverWindowLevel,
 )
-from Foundation import NSMakeRect, NSString, NSMakePoint
-import objc
+from Foundation import NSMakeRect
+
+from app import theme as _theme  # noqa: F401 — registers Geist/JBM for WKWebView
+from app.overlay_html import overlay_html
 
 logger = logging.getLogger("verbal.overlay")
 
-PILL_W  = 190
-PILL_H  = 38
-RADIUS  = 19
+PANEL_W = 560
+PANEL_H = 96
 
-def _c(r, g, b, a=1.0):
-    return NSColor.colorWithCalibratedRed_green_blue_alpha_(r, g, b, a)
-
-def _hex(h, a=1.0):
-    h = h.lstrip("#")
-    r, g, b = int(h[0:2],16)/255, int(h[2:4],16)/255, int(h[4:6],16)/255
-    return _c(r, g, b, a)
-
-PILL_BG     = _hex("141412", 0.94)
-PILL_BORDER = _c(1, 1, 1, 0.08)
-TEXT_COL    = _hex("F0EDE8")
-ACCENT      = _hex("E8522A")
-BLUE        = _hex("4A90E2")
-GREEN       = _hex("4CAF7D")
-
-
-class PillView(NSView):
-    def initWithFrame_(self, frame):
-        self = objc.super(PillView, self).initWithFrame_(frame)
-        if self is None:
-            return None
-        self._phase     = 0.0
-        self._active    = False
-        self._amplitude = 0.0
-        self._status    = ""
-        return self
-
-    def setActive_(self, active):
-        self._active = active
-        if active:
-            self._amplitude = 1.0
-        self.setNeedsDisplay_(True)
-
-    def setStatus_(self, text):
-        self._status = text
-        self.setNeedsDisplay_(True)
-
-    def hideParent_(self, timer):
-        if self.window():
-            self.window().orderOut_(None)
-
-    def tick_(self, timer):
-        if self._active:
-            self._phase    += 0.10
-            self._amplitude = 0.5 + 0.5 * math.sin(self._phase * 0.75)
-        else:
-            self._amplitude = max(0.0, self._amplitude - 0.07)
-        self.setNeedsDisplay_(True)
-
-    def isFlipped(self):
-        return True
-
-    def drawRect_(self, rect):
-        w = self.bounds().size.width
-        h = self.bounds().size.height
-
-        # Pill background
-        pill = NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
-            self.bounds(), RADIUS, RADIUS
-        )
-        PILL_BG.set()
-        pill.fill()
-
-        # Border
-        PILL_BORDER.set()
-        pill.setLineWidth_(1.0)
-        pill.stroke()
-
-        is_recording  = self._active and "Listen" in self._status
-        is_processing = self._active and "Transcrib" in self._status
-
-        # ── Waveform bars (recording only) ────────────────────────────────
-        if is_recording and self._amplitude > 0.01:
-            bar_count = 10
-            bar_w     = 2.5
-            gap       = 3.0
-            total_w   = bar_count * bar_w + (bar_count - 1) * gap
-            sx        = 14.0
-            max_bh    = h * 0.52
-
-            for i in range(bar_count):
-                frac = 1.0 - abs(i - (bar_count-1)/2.0) / ((bar_count-1)/2.0)
-                wave = abs(math.sin(self._phase * 3.0 + i * 0.6))
-                bh   = max(2.5, max_bh * (0.3 + 0.7 * frac) * wave * self._amplitude)
-                bx   = sx + i * (bar_w + gap)
-                by   = (h - bh) / 2
-                _hex("E8522A", 0.5 + 0.4 * frac * self._amplitude).set()
-                bar = NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
-                    NSMakeRect(bx, by, bar_w, bh), bar_w/2, bar_w/2
-                )
-                bar.fill()
-
-        # ── Status dot ────────────────────────────────────────────────────
-        dot_r = 4.0
-        dot_x = w - 14 - dot_r
-        dot_y = (h - dot_r * 2) / 2
-
-        if is_recording:
-            _hex("E8522A", 0.7 + 0.3 * self._amplitude).set()
-        elif is_processing:
-            BLUE.set()
-        else:
-            _hex("4CAF7D", 0.8).set()
-
-        dot = NSBezierPath.bezierPathWithOvalInRect_(
-            NSMakeRect(dot_x, dot_y, dot_r * 2, dot_r * 2)
-        )
-        dot.fill()
-
-        # ── Label ─────────────────────────────────────────────────────────
-        font  = NSFont.systemFontOfSize_weight_(12, 0.4)
-        attrs = {"NSFont": font, "NSColor": TEXT_COL}
-        s     = NSString.stringWithString_(self._status)
-        sz    = s.sizeWithAttributes_(attrs)
-
-        # Shift right of bars when recording
-        if is_recording:
-            tx = 14 + 10 * 2.5 + 9 * 3.0 + 8
-        else:
-            tx = (w - sz.width) / 2
-
-        ty = (h - sz.height) / 2
-        s.drawAtPoint_withAttributes_(NSMakePoint(tx, ty), attrs)
+_OVERLAY_ACTIONS = {"overlay_stop", "overlay_cancel", "overlay_pause",
+                    "overlay_copy", "overlay_dismiss"}
 
 
 class OverlayBar:
-    def __init__(self):
-        self._window  = None
-        self._view    = None
-        self._timer   = None
+    def __init__(self, app=None):
+        self.app = app
+        self._window = None
+        self._webview = None
+        self._bridge = None
         self._visible = False
+        self._ready = False
+        self._t0 = 0.0  # record start (for elapsed seconds)
 
+    # ── device-name helpers ───────────────────────────────────────────────────
+    def _this_device(self):
+        try:
+            return (self.app.config.get("sync_device_name") or "").strip() or "MAC"
+        except Exception:
+            return "MAC"
+
+    def _target_device(self):
+        """Name of the currently selected send-target, or this device if local."""
+        try:
+            dash = getattr(self.app, "dashboard", None)
+            tid = getattr(dash, "_target_device_id", "__all__") if dash else "__all__"
+            if tid in (None, "", "__all__", "__none__"):
+                return self._this_device()
+            for d in getattr(dash, "_known_devices", []) or []:
+                if d.get("device_id") == tid:
+                    return d.get("device_name") or self._this_device()
+        except Exception:
+            pass
+        return self._this_device()
+
+    # ── window / webview ──────────────────────────────────────────────────────
     def setup(self):
         screen = NSScreen.mainScreen()
         if not screen:
             return
         sf = screen.frame()
-        x  = (sf.size.width - PILL_W) / 2
-        y  = 28
+        x = (sf.size.width - PANEL_W) / 2
+        y = 40
 
         NSNonactivatingPanelMask = 1 << 7
         self._window = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
-            NSMakeRect(x, y, PILL_W, PILL_H),
+            NSMakeRect(x, y, PANEL_W, PANEL_H),
             NSWindowStyleMaskBorderless | NSNonactivatingPanelMask,
-            NSBackingStoreBuffered,
-            False,
-        )
+            NSBackingStoreBuffered, False)
         self._window.setLevel_(NSScreenSaverWindowLevel)
         self._window.setOpaque_(False)
         self._window.setBackgroundColor_(NSColor.clearColor())
-        self._window.setHasShadow_(True)
-        self._window.setIgnoresMouseEvents_(True)
+        self._window.setHasShadow_(False)
+        self._window.setIgnoresMouseEvents_(False)  # buttons need clicks
         self._window.setFloatingPanel_(True)
+        self._window.setBecomesKeyOnlyIfNeeded_(True)
         self._window.setHidesOnDeactivate_(False)
         self._window.setCollectionBehavior_(
             NSWindowCollectionBehaviorCanJoinAllSpaces
             | NSWindowCollectionBehaviorStationary
-            | NSWindowCollectionBehaviorFullScreenAuxiliary
+            | NSWindowCollectionBehaviorFullScreenAuxiliary)
+
+        try:
+            self._build_webview()
+        except Exception as e:
+            logger.error("overlay webview build failed: %s", e)
+
+    def _build_webview(self):
+        from WebKit import (
+            WKWebView, WKWebViewConfiguration, WKUserContentController, WKUserScript,
         )
+        from app.flume_web_dashboard import _Bridge, _SHIM
 
-        self._view = PillView.alloc().initWithFrame_(NSMakeRect(0, 0, PILL_W, PILL_H))
-        self._window.setContentView_(self._view)
+        ucc = WKUserContentController.alloc().init()
+        self._bridge = _Bridge.alloc().initWithDashboard_(self)
+        ucc.addScriptMessageHandler_name_(self._bridge, "flume")
+        ucc.addUserScript_(
+            WKUserScript.alloc().initWithSource_injectionTime_forMainFrameOnly_(_SHIM, 0, True))
 
-        self._timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
-            1.0 / 30.0, self._view, "tick:", None, True
-        )
+        config = WKWebViewConfiguration.alloc().init()
+        config.setUserContentController_(ucc)
 
-    def show(self, status="Listening…"):
+        rect = NSMakeRect(0, 0, PANEL_W, PANEL_H)
+        self._webview = WKWebView.alloc().initWithFrame_configuration_(rect, config)
+        self._webview.setAutoresizingMask_(0x02 | 0x10)
+        try:
+            self._webview.setValue_forKey_(False, "drawsBackground")  # transparent
+        except Exception:
+            pass
+        self._webview.loadHTMLString_baseURL_(overlay_html(), None)
+        self._window.setContentView_(self._webview)
+        self._ready = True
+
+    def _order_front(self):
         if not self._window:
             self.setup()
-        self._view.setActive_(True)
-        self._view.setStatus_(status)
         self._window.orderFrontRegardless()
         self._visible = True
 
+    def _push(self, mode, data=None):
+        import json
+        js = "if(window.VerbalOverlay)window.VerbalOverlay(%s, %s);" % (
+            json.dumps(mode), json.dumps(data or {}))
+        if self._webview:
+            try:
+                self._webview.evaluateJavaScript_completionHandler_(js, None)
+            except Exception as e:
+                logger.debug("overlay eval failed: %s", e)
+
+    # ── interface used by main.py ─────────────────────────────────────────────
+    def _cancel_autohide(self):
+        self._done_token = getattr(self, "_done_token", 0) + 1
+
+    def show(self, status="Listening…"):
+        self._cancel_autohide()
+        self._order_front()
+        self._t0 = time.time()
+        self._push("recording", {"device": self._this_device()})
+
     def update_status(self, status):
-        if self._view:
-            self._view.setStatus_(status)
+        if not self._window:
+            return
+        self._cancel_autohide()
+        if status and "Transcrib" in status:
+            secs = int(max(0, time.time() - self._t0)) if self._t0 else 0
+            self._push("transcribing", {
+                "src": self._this_device(), "dst": self._target_device(), "secs": secs})
+        else:
+            # warnings ("No speech…") — show the message briefly on the pill
+            self._order_front()
+            self._push("done", {"label": status or "", "meta": ""})
+
+    def show_briefly(self, status, duration=2.0):
+        self._order_front()
+        secs = int(max(0, time.time() - self._t0)) if self._t0 else 0
+        m = re.search(r"(\d+)\s*w", status or "", re.I)
+        words = m.group(1) if m else ""
+        if status and status.lower().startswith("pasted"):
+            label = f"Pasted to {self._this_device()}"
+        elif status and "clipboard" in status.lower():
+            label = "Copied to clipboard"
+        else:
+            label = status or "Done"
+        meta = (f"{words}W · {secs}S" if words else f"{secs}S")
+        self._push("done", {"label": label, "meta": meta})
+        # auto-dismiss the Done pill after `duration` (unless replaced sooner)
+        self._done_token = getattr(self, "_done_token", 0) + 1
+        token = self._done_token
+        import threading
+        def _auto_hide():
+            if getattr(self, "_done_token", None) != token:
+                return
+            if self.app:
+                self.app._on_main(self.hide)
+            else:
+                self.hide()
+        threading.Timer(max(0.5, float(duration or 2.0)), _auto_hide).start()
 
     def hide(self):
-        if self._view:
-            self._view.setActive_(False)
+        self._push("hide")
         if self._window:
             self._window.orderOut_(None)
         self._visible = False
 
-    def show_briefly(self, status, duration=2.0):
-        if not self._window:
-            self.setup()
-        self._view.setActive_(False)
-        self._view.setStatus_(status)
-        self._window.orderFrontRegardless()
-        self._visible = True
-        hide_timer = NSTimer.timerWithTimeInterval_target_selector_userInfo_repeats_(
-            duration, self._view, "hideParent:", None, False
-        )
-        NSRunLoop.mainRunLoop().addTimer_forMode_(hide_timer, NSDefaultRunLoopMode)
-
     @property
     def visible(self):
         return self._visible
+
+    def cleanup(self):
+        if self._window:
+            try:
+                self._window.orderOut_(None)
+            except Exception:
+                pass
+
+    # ── bridge dispatch (button clicks from the pill) ─────────────────────────
+    def _dispatch(self, mid, method, args):
+        if method in _OVERLAY_ACTIONS:
+            try:
+                getattr(self, method)()
+            except Exception as e:
+                logger.error("overlay action %s failed: %s", method, e)
+
+    def _resolve(self, mid, result):
+        pass  # overlay actions are fire-and-forget
+
+    # ── button actions ────────────────────────────────────────────────────────
+    def overlay_stop(self):
+        if self.app:
+            self.app._on_main(lambda: self.app._toggle_recording(None))
+
+    def overlay_cancel(self):
+        if self.app and hasattr(self.app, "_cancel_recording"):
+            self.app._on_main(self.app._cancel_recording)
+        else:
+            self.app and self.app._on_main(self.hide)
+
+    def overlay_pause(self):
+        rec = getattr(self.app, "recorder", None)
+        if rec and hasattr(rec, "toggle_pause"):
+            rec.toggle_pause()
+
+    def overlay_copy(self):
+        text = getattr(self.app, "_last_result_text", "") if self.app else ""
+        if text:
+            try:
+                import pyperclip
+                pyperclip.copy(text)
+            except Exception as e:
+                logger.debug("overlay copy failed: %s", e)
+
+    def overlay_dismiss(self):
+        if self.app:
+            self.app._on_main(self.hide)
+        else:
+            self.hide()

@@ -6,6 +6,7 @@
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "dark",
+    "newArchEnabled": true,
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
@@ -16,7 +17,9 @@
       "bundleIdentifier": "com.verbal.app",
       "infoPlist": {
         "NSMicrophoneUsageDescription": "Verbal needs microphone access to record your voice for transcription.",
-        "NSSpeechRecognitionUsageDescription": "Verbal uses speech recognition to transcribe your voice."
+        "NSSpeechRecognitionUsageDescription": "Verbal uses speech recognition to transcribe your voice.",
+        "NSCameraUsageDescription": "Verbal needs your camera to scan a pairing code on your computer.",
+        "NSPhotoLibraryUsageDescription": "Verbal needs photo access so you can send images to your computer."
       }
     },
     "android": {
@@ -28,7 +31,9 @@
         "android.permission.RECORD_AUDIO",
         "android.permission.MODIFY_AUDIO_SETTINGS",
         "android.permission.FOREGROUND_SERVICE",
-        "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"
+        "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK",
+        "android.permission.CAMERA",
+        "android.permission.READ_MEDIA_IMAGES"
       ],
       "package": "com.verbal.app"
     },
@@ -46,7 +51,14 @@
         }
       ],
       "expo-font",
-      "expo-asset"
+      "expo-asset",
+      "expo-secure-store",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Verbal needs your camera to scan a pairing code on your computer."
+        }
+      ]
     ],
     "scheme": "verbal",
     "extra": {

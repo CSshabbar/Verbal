@@ -9,6 +9,7 @@ from __future__ import annotations
 import base64
 import datetime as _dt
 import logging
+import os
 import threading
 import time
 from typing import Any
@@ -227,9 +228,12 @@ class DashboardApi:
             total_words=total_words,
             history=[
                 {
+                    "id": e.get("id", "") if isinstance(e, dict) else "",
                     "text": _entry_text(e),
                     "app": _entry_app(e),
                     "ts": e.get("ts", "") if isinstance(e, dict) else "",
+                    "status": e.get("status", "done") if isinstance(e, dict) else "done",
+                    "has_audio": bool((e.get("audio") or e.get("audio_url")) if isinstance(e, dict) else False),
                 }
                 for e in history
             ],
@@ -283,8 +287,13 @@ class DashboardApi:
         return self.get_state()
 
     def set_target_device(self, device_id):
-        self.dashboard._target_device_id = device_id
-        return _ok()
+        self.dashboard._target_device_id = device_id or "__all__"
+        try:
+            self.app.config["sync_target_device_id"] = self.dashboard._target_device_id
+            save_config(self.app.config)
+        except Exception:
+            pass
+        return _ok(target_device_id=self.dashboard._target_device_id)
 
     def copy_text(self, text):
         pyperclip.copy(text or "")
@@ -325,86 +334,145 @@ class DashboardApi:
         return self.get_state()
 
     # ── Notes API ───────────────────────────────────────────────────────
+    # ── notes: local-first, cloud-synced when enabled ─────────────────────────
+    def _local_notes(self):
+        notes = self.app.config.get("notes", [])
+        return notes if isinstance(notes, list) else []
+
+    def _save_local_notes(self, notes):
+        self.app.config["notes"] = notes
+        save_config(self.app.config)
+
+    def _sync_on(self):
+        return bool(self.app.config.get("sync_user_id", "") and self.app.config.get("sync_enabled"))
+
     def fetch_notes(self):
-        try:
-            import httpx
-            from app.sync import SUPABASE_KEY, SUPABASE_URL
-            user_id = self.app.config.get("sync_user_id", "")
-            if not user_id:
-                return _ok(notes=[])
-            resp = httpx.get(
-                f"{SUPABASE_URL}/rest/v1/notes",
-                headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"},
-                params={"user_id": f"eq.{user_id}", "order": "updated_at.desc", "limit": "200", "select": "*"},
-                timeout=8,
-            )
-            if resp.status_code == 200:
-                data = resp.json()
-                for n in data:
-                    n["content"] = n.get("content", "") or ""
-                    n["title"] = n.get("title", "") or ""
-                return _ok(notes=data)
-            return _ok(notes=[])
-        except Exception as e:
-            logger.error(f"Notes fetch failed: {e}")
-            return _err(str(e))
+        notes = list(self._local_notes())
+        # Merge any remote notes when sync is on (newest updated_at wins).
+        if self._sync_on():
+            try:
+                import httpx
+                from app.sync import SUPABASE_KEY, SUPABASE_URL
+                user_id = self.app.config.get("sync_user_id", "")
+                resp = httpx.get(
+                    f"{SUPABASE_URL}/rest/v1/notes",
+                    headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"},
+                    params={"user_id": f"eq.{user_id}", "order": "updated_at.desc",
+                            "limit": "200", "select": "id,title,content,created_at,updated_at"},
+                    timeout=8,
+                )
+                if resp.status_code == 200:
+                    by_id = {n["id"]: n for n in notes if n.get("id")}
+                    for r in resp.json():
+                        rid = r.get("id")
+                        if not rid:
+                            continue
+                        cand = {
+                            "id": rid,
+                            "title": r.get("title", "") or "",
+                            "content": r.get("content", "") or "",
+                            "created_at": r.get("created_at", "") or "",
+                            "updated_at": r.get("updated_at", "") or "",
+                        }
+                        ex = by_id.get(rid)
+                        if not ex or cand["updated_at"] > ex.get("updated_at", ""):
+                            by_id[rid] = cand
+                    notes = sorted(by_id.values(), key=lambda n: n.get("updated_at", ""), reverse=True)
+                    self._save_local_notes(notes)
+            except Exception as e:
+                logger.debug(f"Notes remote merge failed: {e}")
+        return _ok(notes=notes)
 
     def save_note(self, note):
-        try:
-            import httpx
-            from app.sync import SUPABASE_KEY, SUPABASE_URL
-            user_id = self.app.config.get("sync_user_id", "")
-            device_name = self.app.config.get("sync_device_name", "Windows")
-            if not user_id:
-                return _err("Set User ID in Settings first")
-            now = _dt.datetime.now(_dt.timezone.utc).isoformat()
-            title = note.get("title", "")
-            content = note.get("content", "")
-            note_id = note.get("id")
-            if note_id:
-                resp = httpx.patch(
-                    f"{SUPABASE_URL}/rest/v1/notes?id=eq.{note_id}",
-                    headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}", "Content-Type": "application/json"},
-                    json={"title": title, "content": content, "device_name": device_name, "updated_at": now},
+        import uuid
+        notes = list(self._local_notes())
+        now = _dt.datetime.now(_dt.timezone.utc).isoformat()
+        nid = (note or {}).get("id") or uuid.uuid4().hex
+        title = (note or {}).get("title", "") or ""
+        content = (note or {}).get("content", "") or ""
+        found = False
+        for n in notes:
+            if n.get("id") == nid:
+                n["title"], n["content"], n["updated_at"] = title, content, now
+                found = True
+                break
+        if not found:
+            notes.insert(0, {"id": nid, "title": title, "content": content,
+                             "created_at": now, "updated_at": now})
+        # newest first
+        notes = sorted(notes, key=lambda n: n.get("updated_at", ""), reverse=True)
+        self._save_local_notes(notes)
+        # push to cloud (best-effort)
+        if self._sync_on():
+            try:
+                import httpx
+                from app.sync import SUPABASE_KEY, SUPABASE_URL
+                httpx.post(
+                    f"{SUPABASE_URL}/rest/v1/notes?on_conflict=id",
+                    headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}",
+                             "Content-Type": "application/json",
+                             "Prefer": "resolution=merge-duplicates,return=minimal"},
+                    json={"id": nid, "user_id": self.app.config.get("sync_user_id", ""),
+                          "title": title, "content": content,
+                          "device_name": self.app.config.get("sync_device_name", ""),
+                          "updated_at": now},
                     timeout=10,
                 )
-            else:
-                resp = httpx.post(
-                    f"{SUPABASE_URL}/rest/v1/notes",
-                    headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}", "Content-Type": "application/json", "Prefer": "return=representation"},
-                    json={"user_id": user_id, "title": title, "content": content, "device_name": device_name, "created_at": now, "updated_at": now},
-                    timeout=10,
-                )
-                if resp.status_code in (200, 201):
-                    created = resp.json()
-                    note_id = created[0]["id"] if isinstance(created, list) else created.get("id")
-            if resp.status_code not in (200, 201):
-                return _err(f"Save failed: {resp.status_code}")
-            updated = self.fetch_notes()
-            updated["id"] = note_id
-            return updated
-        except Exception as e:
-            logger.error(f"Note save failed: {e}")
-            return _err(str(e))
+            except Exception as e:
+                logger.debug(f"Note cloud save failed: {e}")
+        r = _ok(notes=notes)
+        r["id"] = nid
+        return r
 
     def delete_note(self, note_id):
+        notes = [n for n in self._local_notes() if n.get("id") != note_id]
+        self._save_local_notes(notes)
+        if self._sync_on():
+            try:
+                import httpx
+                from app.sync import SUPABASE_KEY, SUPABASE_URL
+                httpx.delete(
+                    f"{SUPABASE_URL}/rest/v1/notes?id=eq.{note_id}",
+                    headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"},
+                    timeout=10,
+                )
+            except Exception as e:
+                logger.debug(f"Note cloud delete failed: {e}")
+        return _ok(notes=notes)
+
+    # ── voice dictation into a note (repeatable) ──────────────────────────────
+    def note_dictate_start(self):
+        rec = getattr(self.app, "recorder", None)
+        if rec is None:
+            return {"ok": False, "error": "no recorder"}
+        if getattr(self.app, "_is_recording", False):
+            return {"ok": False, "error": "busy"}
         try:
-            import httpx
-            from app.sync import SUPABASE_KEY, SUPABASE_URL
-            user_id = self.app.config.get("sync_user_id", "")
-            if not user_id:
-                return _err("Set User ID in Settings first")
-            resp = httpx.delete(
-                f"{SUPABASE_URL}/rest/v1/notes?id=eq.{note_id}",
-                headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"},
-                timeout=10,
-            )
-            if resp.status_code not in (200, 204):
-                return _err(f"Delete failed: {resp.status_code}")
-            return self.fetch_notes()
+            rec.start()
+            return _ok()
         except Exception as e:
-            logger.error(f"Note delete failed: {e}")
-            return _err(str(e))
+            return {"ok": False, "error": str(e)}
+
+    def note_dictate_stop(self):
+        rec = getattr(self.app, "recorder", None)
+        if rec is None:
+            return {"ok": False, "error": "no recorder"}
+        try:
+            audio = rec.stop()
+            if audio is None:
+                return _ok(text="")
+            from app.transcriber import transcribe_with_status
+            text, status = transcribe_with_status(audio, self.app.config, rec.sample_rate)
+            if status != "ok" or not text:
+                return _ok(text="", status=status)
+            try:
+                from app.ai_cleanup import process_text
+                text = process_text(text, self.app.config)
+            except Exception:
+                pass
+            return _ok(text=text)
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
 
     def toggle_note_pin(self, note_id):
         try:
@@ -487,6 +555,163 @@ class DashboardApi:
             self.app._init_sync()
         self.dashboard._load_devices()
         return self.get_state()
+
+    # ── device pairing (QR) ───────────────────────────────────────────────────
+    def _ensure_sync_account(self):
+        """Make sure this device has a sync user_id + sync enabled, starting the
+        sync client if needed. Returns the user_id. Used when the host begins
+        pairing before sync was ever configured."""
+        import uuid
+        cfg = self.app.config
+        uid = (cfg.get("sync_user_id") or "").strip()
+        started = False
+        if not uid:
+            uid = uuid.uuid4().hex
+            cfg["sync_user_id"] = uid
+            started = True
+        if not cfg.get("sync_enabled"):
+            cfg["sync_enabled"] = True
+            started = True
+        if started:
+            save_config(cfg)
+            self.app.config = cfg
+            try:
+                if hasattr(self.app, "_restart_sync"):
+                    self.app._restart_sync()
+                elif hasattr(self.app, "_init_sync"):
+                    if getattr(self.app, "_sync", None):
+                        try:
+                            self.app._sync.stop()
+                        except Exception:
+                            pass
+                        self.app._sync = None
+                    self.app._init_sync()
+            except Exception as e:
+                logger.warning("pairing: could not start sync (%s)", e)
+        return uid
+
+    def start_pairing(self):
+        """Host: create a short-lived token and return a QR (SVG) for it."""
+        try:
+            from app import pairing
+            uid = self._ensure_sync_account()
+            host = (self.app.config.get("sync_device_name") or "").strip()
+            if not host:
+                import platform
+                host = platform.node()
+            token, expires_at, ttl = pairing.create_pairing(uid, host)
+            svg = pairing.qr_svg("flume://pair?t=" + token)
+            return _ok(token=token, svg=svg, user_id=uid, host=host, expires_in=ttl)
+        except Exception as e:
+            logger.error("start_pairing failed: %s", e)
+            return {"ok": False, "error": str(e)}
+
+    def check_pairing(self, token):
+        """Host: poll whether the token has been claimed by another device."""
+        try:
+            from app import pairing
+            row = pairing.check_pairing(token)
+            claimed = bool(row and row.get("claimed_by"))
+            if claimed:
+                # a new device joined — refresh the device list
+                try:
+                    self.dashboard._load_devices()
+                except Exception:
+                    pass
+            return _ok(claimed=claimed, device_name=(row or {}).get("claimed_by"))
+        except Exception as e:
+            logger.debug("check_pairing failed: %s", e)
+            return {"ok": False, "error": str(e)}
+
+    # ── recordings: playback + retry ──────────────────────────────────────────
+    def _find_entry(self, entry_id):
+        for e in self.app.config.get("history", []):
+            if isinstance(e, dict) and e.get("id") == entry_id:
+                return e
+        return None
+
+    def _ensure_local_audio(self, entry):
+        """Return a local WAV path for the entry, downloading from cloud if needed."""
+        from app import recordings
+        path = entry.get("audio") or ""
+        if path and os.path.exists(path):
+            return path
+        url = entry.get("audio_url") or ""
+        if url:
+            dest = recordings.path_for(entry.get("id") or recordings.new_id())
+            recordings.ensure_dir()
+            if recordings.download(url, dest):
+                entry["audio"] = dest
+                save_config(self.app.config)
+                return dest
+        return path if path else None
+
+    def play_recording(self, entry_id):
+        entry = self._find_entry(entry_id)
+        if not entry:
+            return {"ok": False, "error": "not found"}
+        path = self._ensure_local_audio(entry)
+        if not path or not os.path.exists(path):
+            return {"ok": False, "error": "no audio"}
+        from app import recordings
+        recordings.play(path)
+        return _ok()
+
+    def get_audio(self, entry_id):
+        """Return the recording as a base64 data-URI so the WebView can play it
+        (works for both local files and cloud-only recordings)."""
+        entry = self._find_entry(entry_id)
+        if not entry:
+            return {"ok": False, "error": "not found"}
+        path = self._ensure_local_audio(entry)
+        if not path or not os.path.exists(path):
+            return {"ok": False, "error": "no audio"}
+        try:
+            duration = 0.0
+            try:
+                import soundfile as sf
+                duration = float(sf.info(path).duration)
+            except Exception:
+                pass
+            with open(path, "rb") as f:
+                data = f.read()
+            uri = "data:audio/wav;base64," + base64.b64encode(data).decode("ascii")
+            return _ok(data_uri=uri, duration=duration)
+        except Exception as e:
+            logger.error("get_audio failed: %s", e)
+            return {"ok": False, "error": str(e)}
+
+    def retry_transcription(self, entry_id):
+        entry = self._find_entry(entry_id)
+        if not entry:
+            return {"ok": False, "error": "not found"}
+        path = self._ensure_local_audio(entry)
+        if not path or not os.path.exists(path):
+            return {"ok": False, "error": "no audio to retry"}
+        try:
+            from app import recordings
+            from app.transcriber import transcribe_with_status
+            from app.ai_cleanup import process_text
+            audio, sr = recordings.load_wav(path)
+            if audio is None:
+                return {"ok": False, "error": "could not read audio"}
+            text, status = transcribe_with_status(audio, self.app.config, sr)
+            if status != "ok" or not text:
+                return {"ok": False, "error": "still failing — check your connection"}
+            result = process_text(text, self.app.config)
+            from app.config import update_history_entry
+            update_history_entry(self.app.config, entry_id, text=result, status="done")
+            pyperclip.copy(result)
+            # push to other devices if sync is on
+            if getattr(self.app, "_sync", None):
+                try:
+                    self.app._sync.push(result, None)
+                except Exception:
+                    pass
+            return self.get_state()
+        except Exception as e:
+            logger.error("retry_transcription failed: %s", e)
+            return {"ok": False, "error": str(e)}
 
     def fetch_canvas(self):
         try:

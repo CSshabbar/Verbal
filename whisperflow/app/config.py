@@ -38,6 +38,7 @@ DEFAULT_CONFIG = {
 def ensure_dirs():
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     LOG_DIR.mkdir(parents=True, exist_ok=True)
+    (CONFIG_DIR / "recordings").mkdir(parents=True, exist_ok=True)
 
 
 def load_config() -> dict:
@@ -123,12 +124,33 @@ def rotate_gemini_key(config: dict) -> str | None:
     return keys[new_idx]
 
 
-def add_to_history(config: dict, text: str, app_name: str = "") -> dict:
+def add_to_history(config: dict, text: str, app_name: str = "",
+                   entry_id: str = "", audio: str = "", audio_url: str = "",
+                   status: str = "done") -> dict:
     from datetime import date as _date
-    entry = {"text": text, "app": app_name, "ts": str(_date.today())}
+    import uuid
+    entry = {
+        "id": entry_id or uuid.uuid4().hex[:16],
+        "text": text,
+        "app": app_name,
+        "ts": str(_date.today()),
+        "audio": audio,          # local WAV path (backup + retry cache)
+        "audio_url": audio_url,  # cloud URL (primary, cross-device)
+        "status": status,        # 'done' | 'failed'
+    }
     history = config.get("history", [])
     history.insert(0, entry)
     config["history"] = history[:50]
+    save_config(config)
+    return config
+
+
+def update_history_entry(config: dict, entry_id: str, **fields) -> dict:
+    """Update fields on the history entry with the given id (by identity)."""
+    for e in config.get("history", []):
+        if isinstance(e, dict) and e.get("id") == entry_id:
+            e.update(fields)
+            break
     save_config(config)
     return config
 

@@ -1,0 +1,138 @@
+import React from 'react';
+import { View, StyleSheet, ScrollView, Pressable } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { Ionicons } from '@expo/vector-icons';
+import { Text, LogoMark } from '../components';
+import { colors } from '../theme';
+import { useDevices } from '../hooks/useDevices';
+import { useHistory } from '../hooks/useHistory';
+import { useNotes } from '../hooks/useNotes';
+import { useAuth } from '../hooks/useAuth';
+import { DeviceTag } from './HistoryListScreen';
+
+type Props = { onOpenSettings: () => void };
+
+// Muted pastel feature-card backgrounds (minimalist-dark, wireframe 7a).
+const CARD_CREAM = '#EADFCE';
+const CARD_CREAM_INK = '#2a1f18';
+const CARD_SAGE = '#DDE4D3';
+const CARD_SAGE_INK = '#1e2418';
+
+/**
+ * Screen 7a — Home dashboard (minimalist dark): greeting, device pills,
+ * two feature cards, recent list. Recording lives on the center tab-bar mic.
+ */
+export const HomeScreen: React.FC<Props> = ({ onOpenSettings }) => {
+  const insets = useSafeAreaInsets();
+  const { user } = useAuth();
+  const { devices, target, setTarget } = useDevices();
+  const { items } = useHistory();
+  const { notes } = useNotes();
+
+  const onlineNames = devices.map(d => d.name).join(' · ') || 'No devices';
+  const recent = items.slice(0, 4);
+
+  return (
+    <View style={[styles.root, { paddingTop: insets.top + 8 }]}>
+      {/* Header */}
+      <View style={styles.header}>
+        <View style={styles.headerLeft}>
+          <LogoMark size={34} />
+          <Text variant="subtitle" style={{ fontSize: 15 }}>Hi, {user?.firstName ?? 'there'}</Text>
+        </View>
+        <View style={{ flexDirection: 'row', gap: 8 }}>
+          <View style={styles.iconCircle}><Ionicons name="notifications-outline" size={16} color={colors.textSecondary} /></View>
+          <Pressable onPress={onOpenSettings} style={styles.iconCircle}>
+            <Ionicons name="settings-outline" size={16} color={colors.textSecondary} />
+          </Pressable>
+        </View>
+      </View>
+
+      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: insets.bottom + 24 }}>
+        {/* Device target pills */}
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 7, paddingRight: 16 }} style={{ marginBottom: 20, flexGrow: 0 }}>
+          <Pill label="All" active={!target} onPress={() => setTarget(null)} />
+          {devices.map(d => (
+            <Pill key={d.id} label={d.name} active={target?.id === d.id} onPress={() => setTarget(d)} />
+          ))}
+        </ScrollView>
+
+        {/* Feature cards */}
+        <View style={styles.featureRow}>
+          <FeatureCard bg={CARD_CREAM} ink={CARD_CREAM_INK} icon="mic-outline" big={`${devices.length} online`} title="Devices ready" sub={onlineNames} />
+          <FeatureCard bg={CARD_SAGE} ink={CARD_SAGE_INK} icon="document-text-outline" big={`${notes.length} notes`} title="Your notebook" sub={notes.length ? 'Tap to open' : 'No notes yet'} />
+        </View>
+
+        {/* Recent */}
+        <View style={styles.recentHead}>
+          <Text variant="subtitle" style={{ fontSize: 16 }}>Recent</Text>
+          <Text variant="buttonSm" color={colors.textMuted}>See all</Text>
+        </View>
+
+        {recent.length === 0 ? (
+          <View style={styles.emptyRecent}>
+            <Text variant="bodySm" color={colors.textSubtle}>Nothing yet — tap the mic to record.</Text>
+          </View>
+        ) : (
+          <View style={{ gap: 10 }}>
+            {recent.map(item => (
+              <View key={item.id} style={styles.recentCard}>
+                <View style={styles.recentCardHead}>
+                  <Text variant="caption" color={colors.textSubtle}>{item.dayLabel} · {item.timeOfDay}</Text>
+                  <View style={styles.recentIcon}>
+                    <Ionicons name="chatbubble-outline" size={13} color={colors.textMuted} />
+                  </View>
+                </View>
+                <Text variant="bodySm" numberOfLines={2} style={{ marginBottom: 10 }}>{item.text}</Text>
+                <DeviceTag tag={item.deviceTag} />
+              </View>
+            ))}
+          </View>
+        )}
+      </ScrollView>
+    </View>
+  );
+};
+
+const Pill: React.FC<{ label: string; active: boolean; onPress: () => void }> = ({ label, active, onPress }) => (
+  <Pressable onPress={onPress} style={[styles.pill, active ? styles.pillActive : styles.pillIdle]}>
+    <Text variant="buttonSm" color={active ? colors.primaryInk : colors.textSecondary}>{label}</Text>
+  </Pressable>
+);
+
+const FeatureCard: React.FC<{
+  bg: string; ink: string; icon: keyof typeof Ionicons.glyphMap; big: string; title: string; sub: string;
+}> = ({ bg, ink, icon, big, title, sub }) => (
+  <View style={[styles.feature, { backgroundColor: bg }]}>
+    <View style={styles.featureTop}>
+      <View style={[styles.featureIcon, { backgroundColor: ink }]}>
+        <Ionicons name={icon} size={15} color={bg} />
+      </View>
+      <Ionicons name="chevron-forward" size={13} color={ink} style={{ opacity: 0.5 }} />
+    </View>
+    <Text style={{ fontSize: 22, fontFamily: 'Geist_600SemiBold', color: ink, letterSpacing: -0.4, marginBottom: 3 }}>{big}</Text>
+    <Text style={{ fontSize: 13, fontFamily: 'Geist_600SemiBold', color: ink, marginBottom: 2 }}>{title}</Text>
+    <Text style={{ fontSize: 11, fontFamily: 'Geist_400Regular', color: ink, opacity: 0.6 }} numberOfLines={1}>{sub}</Text>
+  </View>
+);
+
+const styles = StyleSheet.create({
+  root: { flex: 1, backgroundColor: colors.bgScreen, paddingHorizontal: 18 },
+  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 },
+  headerLeft: { flexDirection: 'row', alignItems: 'center', gap: 11 },
+  iconCircle: { width: 34, height: 34, borderRadius: 17, backgroundColor: colors.surface2, alignItems: 'center', justifyContent: 'center' },
+  pill: { paddingVertical: 9, paddingHorizontal: 16, borderRadius: 999 },
+  pillActive: { backgroundColor: colors.inkLight },
+  pillIdle: { backgroundColor: 'transparent', borderWidth: 1, borderColor: colors.borderStrong },
+  featureRow: { flexDirection: 'row', gap: 10, marginBottom: 24 },
+  feature: { flex: 1, borderRadius: 18, padding: 14, paddingBottom: 16 },
+  featureTop: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 26 },
+  featureIcon: { width: 32, height: 32, borderRadius: 16, alignItems: 'center', justifyContent: 'center' },
+  recentHead: { flexDirection: 'row', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 12 },
+  emptyRecent: { paddingVertical: 24, alignItems: 'center' },
+  recentCard: { padding: 14, borderRadius: 16, backgroundColor: colors.surface1, borderWidth: 1, borderColor: colors.borderSubtle },
+  recentCardHead: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 8 },
+  recentIcon: { width: 26, height: 26, borderRadius: 8, backgroundColor: colors.surface2, alignItems: 'center', justifyContent: 'center' },
+});
+
+export default HomeScreen;

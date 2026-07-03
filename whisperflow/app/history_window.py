@@ -11,6 +11,9 @@ from AppKit import (
 from Foundation import NSMakeRect, NSObject, NSMakeSize
 import objc
 
+from app import theme as _T
+_TC = _T.colors
+
 logger = logging.getLogger("whisperflow.history")
 
 
@@ -44,18 +47,17 @@ class HistoryWindow:
         self._window.setTitle_("WhisperFlow History")
         self._window.setMinSize_(NSMakeSize(360, 300))
 
-        # Dark background
-        bg = NSColor.colorWithCalibratedRed_green_blue_alpha_(0.12, 0.11, 0.15, 1.0)
-        self._window.setBackgroundColor_(bg)
+        # Dark background (Flume minimalist-dark)
+        self._window.setBackgroundColor_(_TC["bgScreen"])
 
         content = self._window.contentView()
 
         # Stats bar at top
         stats_text = f"  {total} transcriptions  |  {total_words} words  |  {total_chars} characters"
         stats = NSTextField.labelWithString_(stats_text)
-        stats.setFont_(NSFont.monospacedSystemFontOfSize_weight_(11, 0.3))
-        stats.setTextColor_(NSColor.colorWithCalibratedRed_green_blue_alpha_(0.6, 0.55, 0.9, 0.9))
-        stats.setBackgroundColor_(NSColor.colorWithCalibratedRed_green_blue_alpha_(0.15, 0.14, 0.20, 1.0))
+        stats.setFont_(_T.mono(11, "medium"))
+        stats.setTextColor_(_TC["primaryAccent"])
+        stats.setBackgroundColor_(_TC["surface1"])
         stats.setDrawsBackground_(True)
         stats.setBezeled_(False)
         stats.setEditable_(False)
@@ -71,9 +73,9 @@ class HistoryWindow:
         text_view = NSTextView.alloc().initWithFrame_(NSMakeRect(0, 0, win_w - 40, win_h - 78))
         text_view.setEditable_(False)
         text_view.setSelectable_(True)
-        text_view.setBackgroundColor_(NSColor.colorWithCalibratedRed_green_blue_alpha_(0.10, 0.09, 0.13, 1.0))
-        text_view.setTextColor_(NSColor.colorWithCalibratedRed_green_blue_alpha_(0.85, 0.85, 0.90, 1.0))
-        text_view.setFont_(NSFont.systemFontOfSize_weight_(13, 0.0))
+        text_view.setBackgroundColor_(_TC["surface1"])
+        text_view.setTextColor_(_TC["textPrimary"])
+        text_view.setFont_(_T.geist(13, "regular"))
 
         # Build history text
         if history:
