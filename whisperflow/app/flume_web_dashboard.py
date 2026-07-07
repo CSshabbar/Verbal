@@ -145,6 +145,122 @@ class FlumeWebDashboard:
 
         # keep the sidebar device list fresh
         threading.Thread(target=self._device_refresh_loop, daemon=True).start()
+        # realtime canvas updates from other devices
+        threading.Thread(target=self._canvas_listen_loop, daemon=True).start()
+
+    # ── realtime canvas (WS) ─────────────────────────────────────────────────────
+    def _canvas_listen_loop(self):
+        import time
+        while self._window is not None:
+            try:
+                self._canvas_listen_once()
+            except Exception as e:
+                logger.debug("canvas listener failed: %s", e)
+            time.sleep(5)
+
+    def _canvas_listen_once(self):
+        import time
+        user_id = self.app.config.get("sync_user_id", "")
+        device_name = self.app.config.get("sync_device_name", "") or ""
+        if not user_id:
+            time.sleep(5)
+            return
+        import websocket
+        from app.sync import SUPABASE_KEY, WS_URL
+
+        def on_open(ws):
+            ws.send(json.dumps({
+                "topic": "realtime:*", "event": "phx_join",
+                "payload": {"config": {"postgres_changes": [
+                    {"event": "*", "schema": "public", "table": "canvas",
+                     "filter": f"user_id=eq.{user_id}"}]}},
+                "ref": "flume_canvas"}))
+
+        def on_message(ws, raw):
+            try:
+                msg = json.loads(raw)
+                if msg.get("event") != "postgres_changes":
+                    return
+                rec = msg.get("payload", {}).get("data", {}).get("record", {})
+                if rec.get("device_name") == device_name:
+                    return  # ignore our own writes
+                self._emit("canvasRemote", {
+                    "content": rec.get("content", "") or "",
+                    "image_url": rec.get("image_url"),
+                    "device_name": rec.get("device_name", "device"),
+                })
+            except Exception as e:
+                logger.debug("canvas msg ignored: %s", e)
+
+        ws = websocket.WebSocketApp(
+            WS_URL, header={"Authorization": f"Bearer {SUPABASE_KEY}"},
+            on_open=on_open, on_message=on_message)
+        ws.run_forever(ping_interval=25, ping_timeout=10)
+
+    # ── native image helpers (WKWebView can't do JS file-pick / image-paste) ─────
+    def pick_image_native(self):
+        """Open a native NSOpenPanel (on the main thread) and return
+        {"path": ...} | {"cancelled": True} | {"error": ...}."""
+        box = {}
+        done = threading.Event()
+
+        def run():
+            try:
+                from AppKit import NSOpenPanel
+                panel = NSOpenPanel.openPanel()
+                panel.setCanChooseFiles_(True)
+                panel.setCanChooseDirectories_(False)
+                panel.setAllowsMultipleSelection_(False)
+                panel.setAllowedFileTypes_(["png", "jpg", "jpeg", "webp", "gif"])
+                if int(panel.runModal()) == 1:  # NSModalResponseOK
+                    urls = panel.URLs()
+                    if urls and len(urls):
+                        box["path"] = urls[0].path()
+                    else:
+                        box["cancelled"] = True
+                else:
+                    box["cancelled"] = True
+            except Exception as e:
+                box["error"] = str(e)
+            finally:
+                done.set()
+
+        self.app._on_main(run)
+        done.wait(180)
+        return box
+
+    def clipboard_image_native(self):
+        """Read an image from the macOS clipboard (NSPasteboard). Returns
+        {"bytes": ..., "ext": "png"} | {} | {"error": ...}."""
+        box = {}
+        done = threading.Event()
+
+        def run():
+            try:
+                from AppKit import (
+                    NSPasteboard, NSPasteboardTypePNG, NSPasteboardTypeTIFF,
+                    NSBitmapImageRep, NSBitmapImageFileTypePNG,
+                )
+                pb = NSPasteboard.generalPasteboard()
+                data = pb.dataForType_(NSPasteboardTypePNG)
+                if data is None:
+                    tiff = pb.dataForType_(NSPasteboardTypeTIFF)
+                    if tiff is not None:
+                        rep = NSBitmapImageRep.imageRepWithData_(tiff)
+                        if rep is not None:
+                            data = rep.representationUsingType_properties_(
+                                NSBitmapImageFileTypePNG, {})
+                if data is not None:
+                    box["bytes"] = bytes(data)
+                    box["ext"] = "png"
+            except Exception as e:
+                box["error"] = str(e)
+            finally:
+                done.set()
+
+        self.app._on_main(run)
+        done.wait(30)
+        return box
 
     # ── JS bridge dispatch ──────────────────────────────────────────────────────
     def _dispatch(self, mid, method, args):

@@ -148,12 +148,39 @@ export function useCanvas() {
   }, []);
 
   const addText = useCallback(async () => {
-    let text = '';
+    // Start with an empty, editable draft so the user can type.
+    setItems(prev => [{ id: `c_${Date.now()}`, kind: 'text', state: 'draft', text: '' }, ...prev]);
+  }, []);
+
+  const updateText = useCallback((id: string, text: string) => {
+    setItems(prev => prev.map(i => (i.id === id && i.kind === 'text' ? { ...i, text } : i)));
+  }, []);
+
+  /** Manually pull the current shared canvas row (in case realtime missed it). */
+  const refresh = useCallback(async () => {
     try {
-      const clip = await Clipboard.getStringAsync();
-      if (clip && !/^https?:\/\//i.test(clip)) text = clip;
-    } catch { /* ignore */ }
-    setItems(prev => [{ id: `c_${Date.now()}`, kind: 'text', state: 'draft', text }, ...prev]);
+      if (!(await getSyncEnabled())) return;
+      const userId = await getUserId();
+      const { data } = await supabase
+        .from('canvas').select('content,image_url,device_name')
+        .eq('user_id', userId).maybeSingle();
+      if (!data) return;
+      const id = `c_${Date.now()}`;
+      if (data.image_url) {
+        setItems(prev => [{ id, kind: 'image', state: 'sent', sentAt: nowHHmm(), uri: data.image_url, filename: 'shared.jpg' }, ...prev]);
+      } else if (data.content) {
+        const isLink = /^https?:\/\//i.test(data.content);
+        setItems(prev => [
+          isLink
+            ? { id, kind: 'link', state: 'sent', sentAt: nowHHmm(), url: data.content }
+            : { id, kind: 'text', state: 'sent', sentAt: nowHHmm(), text: data.content },
+          ...prev,
+        ]);
+        await Clipboard.setStringAsync(data.content);
+      }
+    } catch (err) {
+      console.error('Canvas refresh failed:', err);
+    }
   }, []);
 
   const addLink = useCallback(async () => {
@@ -183,5 +210,5 @@ export function useCanvas() {
     }
   }, []);
 
-  return { items, save, discard, addText, addLink, addPhoto };
+  return { items, save, discard, addText, addLink, addPhoto, updateText, refresh };
 }

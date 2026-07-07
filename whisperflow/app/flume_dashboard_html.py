@@ -41,6 +41,49 @@ _CSS = """
 html,body{height:100%}
 body{background:var(--bg);font-family:'Geist',-apple-system,system-ui,sans-serif;color:var(--tx);-webkit-font-smoothing:antialiased;overflow:hidden}
 .app{display:grid;grid-template-columns:196px minmax(0,1fr);height:100vh}
+/* ── sign-in (two-pane) ── */
+#signin{position:fixed;inset:0;z-index:50;background:var(--bg);display:grid;grid-template-columns:1fr 1fr}
+#signin[hidden]{display:none}
+.siLeft{padding:52px 56px;display:flex;flex-direction:column;border-right:1px solid var(--bd)}
+.siBrand{display:flex;align-items:center;gap:12px;margin-bottom:auto}
+.siLogo{width:44px;height:44px;border-radius:50%;background:#000;overflow:hidden;display:flex;align-items:center;justify-content:center;color:var(--acc);font:600 20px 'Geist'}
+.siLogo img{width:100%;height:100%;object-fit:cover}
+.siWord{font:700 18px 'Geist';letter-spacing:.04em}
+.siHeadline{font:700 46px/1.05 'Geist';letter-spacing:-.02em;margin-bottom:20px}
+.siHeadline .acc{color:var(--acc)}
+.siLead{font:400 15px/1.6 'Geist';color:var(--mut);max-width:420px;margin-bottom:auto}
+.siFoot{font:600 11px 'JetBrains Mono';letter-spacing:.14em;color:var(--sub)}
+.siRight{padding:52px 56px;display:flex;flex-direction:column;justify-content:center;max-width:520px}
+.siTitle{font:700 30px 'Geist';letter-spacing:-.01em;margin-bottom:8px}
+.siSub{font:400 14px/1.5 'Geist';color:var(--mut);margin-bottom:26px;max-width:380px}
+.siGoogle{display:flex;align-items:center;justify-content:center;gap:11px;background:#f2f2f2;color:#111;border:0;border-radius:14px;padding:16px;cursor:pointer;font:600 15px 'Geist';max-width:400px}
+.siGoogle:hover{filter:brightness(.96)}.siGoogle:disabled{opacity:.6;cursor:default}
+.siSkip{background:0;border:0;color:var(--mut);cursor:pointer;font:500 13px 'Geist';padding:16px 0;text-align:left;max-width:400px}
+.siSkip:hover{color:var(--tx)}
+.siTerms{font:400 12px/1.5 'Geist';color:var(--sub);margin-top:8px;max-width:400px}
+/* ── get-started wizard ── */
+#getstarted{position:fixed;inset:0;z-index:50;background:var(--bg);overflow-y:auto;display:flex;justify-content:center}
+#getstarted[hidden]{display:none}
+.gsInner{width:100%;max-width:720px;padding:48px 40px}
+.gsstep{font:600 11px 'JetBrains Mono';letter-spacing:.18em;color:var(--mut);margin-bottom:12px}
+.gsbar{height:4px;border-radius:2px;background:rgba(240,240,240,.08);overflow:hidden;margin-bottom:30px}
+.gsbar>i{display:block;height:100%;background:var(--acc);transition:width .3s}
+.gstitle{font:700 30px 'Geist';letter-spacing:-.01em;margin-bottom:8px}
+.gslead{font:400 14.5px/1.55 'Geist';color:var(--mut);margin-bottom:28px;max-width:520px}
+.permrow{display:flex;align-items:center;gap:16px;background:var(--card);border:1px solid var(--bd);border-radius:16px;padding:18px 20px;margin-bottom:12px}
+.permrow.need{border-color:var(--acc-bd)}
+.permicon{width:46px;height:46px;border-radius:12px;background:rgba(240,240,240,.06);display:flex;align-items:center;justify-content:center;flex:none;color:var(--tx)}
+.permicon.ok{background:rgba(74,209,90,.16);color:var(--on)}
+.permicon.need{background:var(--acc-soft);color:var(--acc)}
+.permicon svg{width:22px;height:22px;stroke:currentColor}
+.perminfo{flex:1;min-width:0}
+.permname{font:600 15.5px 'Geist'}.permname .opt{font:500 12px 'Geist';color:var(--sub);margin-left:8px}
+.permsub{font:400 12.5px 'Geist';color:var(--mut);margin-top:2px}
+.permpill{font:600 12px 'Geist';color:var(--on);border:1px solid rgba(74,209,90,.4);border-radius:999px;padding:6px 12px;display:flex;align-items:center;gap:7px;flex:none}
+.permpill .pdot{width:7px;height:7px;border-radius:50%;background:var(--on)}
+.gsnav{display:flex;align-items:center;gap:10px;margin-top:26px}
+.gsnav .grow{flex:1}
+.acctav{width:38px;height:38px;border-radius:50%;background:var(--acc);color:#fff5ea;display:flex;align-items:center;justify-content:center;font:600 15px 'Geist';flex:none}
 .sidebar{background:var(--chrome);border-right:1px solid var(--bd);display:flex;flex-direction:column;padding:18px 12px}
 .brand{display:flex;align-items:center;gap:11px;padding:2px 6px 0}
 .brandmark{color:var(--acc);font:600 20px 'Geist'}.brandname{font:700 15px 'Geist';letter-spacing:.02em}
@@ -123,6 +166,11 @@ body{background:var(--bg);font-family:'Geist',-apple-system,system-ui,sans-serif
 .dzicon{width:52px;height:52px;border-radius:12px;background:var(--acc-soft);color:var(--acc);display:flex;align-items:center;justify-content:center}.dzicon svg{width:22px;height:22px}
 .dztitle{font:600 15px 'Geist'}.dzsub{font:400 12px 'Geist';color:var(--mut);margin-top:4px}
 .canvasArea{width:100%;min-height:220px;background:var(--card);border:1px solid var(--bd);border-radius:16px;padding:16px;color:var(--tx);font:400 13px/1.5 'Geist';resize:vertical;outline:0}
+.cvimgwrap{position:relative;display:inline-block;max-width:100%;margin-bottom:12px}
+.cvimg{max-width:100%;max-height:300px;border-radius:14px;border:1px solid var(--bd);display:block}
+.cvimgx{position:absolute;top:8px;right:8px;width:28px;height:28px;border-radius:50%;border:0;background:rgba(0,0,0,.6);color:#fff;cursor:pointer;font:600 13px 'Geist'}
+.cvimgx:hover{background:rgba(0,0,0,.8)}
+.cvmsg{font:500 11px 'JetBrains Mono';color:var(--mut);letter-spacing:.03em;margin-top:10px;min-height:14px}
 .canvasBar{display:flex;gap:8px;align-items:center;margin-top:12px}
 .chipbtn{background:var(--card);border:1px solid var(--bd2);color:var(--tx);border-radius:10px;padding:10px 16px;font:600 12.5px 'Geist';cursor:pointer}
 .ncard{border-radius:14px;padding:14px;margin-bottom:10px;cursor:pointer}
@@ -221,8 +269,27 @@ def flume_html() -> str:
       </div>
     </aside>"""
 
+    from app.flume_popover_html import _mark_data_uri
+    _mark = _mark_data_uri()
+    _logo = f'<img src="{_mark}" alt="Flume"/>' if _mark else "✳"
+    _googleg = ('<svg viewBox="0 0 48 48" width="17" height="17"><path fill="#EA4335" d="M24 9.5c3.5 0 6.6 1.2 9 3.6l6.7-6.7C35.6 2.6 30.2 0 24 0 14.6 0 6.5 5.4 2.6 13.2l7.8 6.1C12.2 13.4 17.6 9.5 24 9.5z"/><path fill="#4285F4" d="M46.1 24.5c0-1.6-.1-3.1-.4-4.5H24v9h12.4c-.5 2.9-2.1 5.3-4.6 6.9l7.1 5.5c4.1-3.8 6.5-9.4 6.5-16.9z"/><path fill="#FBBC05" d="M10.4 28.3c-.5-1.4-.7-2.9-.7-4.3s.3-2.9.7-4.3l-7.8-6.1C1 16.8 0 20.3 0 24s1 7.2 2.6 10.4l7.8-6.1z"/><path fill="#34A853" d="M24 48c6.2 0 11.5-2 15.3-5.5l-7.1-5.5c-2 1.4-4.6 2.2-8.2 2.2-6.4 0-11.8-3.9-13.6-9.3l-7.8 6.1C6.5 42.6 14.6 48 24 48z"/></svg>')
     body = f"""
-    <div class="app">
+    <div id="signin" hidden>
+      <div class="siLeft">
+        <div class="siBrand"><span class="siLogo">{_logo}</span><span class="siWord">FLUME</span></div>
+        <div class="siHeadline">Speak on your phone.<br>Land on <span class="acc">your Mac.</span></div>
+        <p class="siLead">Sign in once — Flume keeps your phone and computer in sync for voice typing, canvas, notes, and meeting transcripts.</p>
+        <div class="siFoot">END-TO-END ENCRYPTED&nbsp;&nbsp;&middot;&nbsp;&nbsp;MAC + WINDOWS</div>
+      </div>
+      <div class="siRight">
+        <h1 class="siTitle">Sign in</h1>
+        <p class="siSub">Continue with Google — we'll match you across your devices.</p>
+        <button class="siGoogle" id="siGoogleBtn" onclick="signInGoogle()">{_googleg}<span>Continue with Google</span></button>
+        <p class="siTerms">By continuing you agree to our Terms and Privacy.</p>
+      </div>
+    </div>
+    <div id="getstarted" hidden><div class="gsInner" id="gsInner"></div></div>
+    <div class="app" id="appRoot">
       {sidebar}
       <section class="screen" id="scr-home"><div class="main" id="homeMain"></div></section>
       <section class="screen" id="scr-history" hidden><div class="threepane" id="historyMain"></div></section>
@@ -421,18 +488,40 @@ function saveHistEdit(oldText){
   api('edit_text', oldText, nt).then(()=>{ EDITH=false; load(); });
 }
 
+const SVG_REFRESH='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg>';
 function renderCanvas(){
+  const img = CANVAS.image_url
+    ? `<div class="cvimgwrap"><img class="cvimg" src="${esc(CANVAS.image_url)}"/><button class="cvimgx" title="Remove image" onclick="clearCanvasImage()">✕</button></div>` : '';
+  const from = CANVAS.from ? `<span class="pvsub" style="margin-left:auto">From ${esc(CANVAS.from)}</span>` : '';
   document.getElementById('canvasMain').innerHTML = `
-    <div class="mhead"><div><div class="eyebrow">Shared clipboard</div><h1 class="title">Canvas</h1></div>${statusPill()}</div>
-    <div class="dropzone"><div class="dzicon">${SVG.grid}</div><div><div class="dztitle">Type or paste to send to your devices</div><div class="dzsub">Saving syncs it everywhere</div></div></div>
-    <textarea class="canvasArea" id="canvasArea" placeholder="Paste or type here…">${esc(CANVAS.content||'')}</textarea>
+    <div class="mhead"><div><div class="eyebrow">Shared clipboard</div><h1 class="title">Canvas</h1></div>
+      <button class="roundbtn" title="Refresh" onclick="loadCanvas()">${SVG_REFRESH}</button></div>
+    <div class="dropzone" onclick="pickCanvasImage()"><div class="dzicon">${SVG.grid}</div><div><div class="dztitle">Type below, or add an image</div><div class="dzsub">Paste an image (⌘V), or click to choose a file · syncs to your devices</div></div></div>
+    ${img}
+    <textarea class="canvasArea" id="canvasArea" placeholder="Type or paste text here…" oninput="canvasDirty()">${esc(CANVAS.content||'')}</textarea>
     <div class="canvasBar">
       <button class="chipbtn" onclick="saveCanvas()">Save &amp; Sync</button>
-      <button class="chipbtn" onclick="api('choose_canvas_image').then(loadCanvas)">Image…</button>
-      <button class="chipbtn" onclick="api('save_canvas','').then(loadCanvas)">Clear</button></div>`;
+      <button class="chipbtn" onclick="pickCanvasImage()">Add image…</button>
+      <button class="chipbtn" onclick="pasteCanvasImage()">Paste image</button>
+      <button class="chipbtn" onclick="clearCanvas()">Clear</button>${from}</div>
+    <div class="cvmsg" id="cvMsg"></div>`;
 }
-function saveCanvas(){ const v=document.getElementById('canvasArea').value; api('save_canvas', v, CANVAS.image_url||null).then(loadCanvas); }
-function loadCanvas(){ api('fetch_canvas').then(r=>{ if(r&&r.ok){ CANVAS={content:r.content||'',image_url:r.image_url||null}; if(ACTIVE==='canvas')renderCanvas(); } }); }
+function cvMsg(t){ const el=document.getElementById('cvMsg'); if(el) el.textContent=t||''; }
+function canvasText(){ return (document.getElementById('canvasArea')||{}).value||CANVAS.content||''; }
+function canvasDirty(){ const a=document.getElementById('canvasArea'); if(a) CANVAS.content=a.value; }
+function saveCanvas(){ const v=canvasText(); api('save_canvas', v, CANVAS.image_url||null).then(()=>{ CANVAS.content=v; cvMsg('Saved & synced'); }); }
+function loadCanvas(){ api('fetch_canvas').then(r=>{ if(r&&r.ok){ CANVAS={content:r.content||'',image_url:r.image_url||null,from:CANVAS.from}; if(ACTIVE==='canvas')renderCanvas(); } }); }
+function clearCanvas(){ api('save_canvas','',null).then(()=>{ CANVAS={content:'',image_url:null}; if(ACTIVE==='canvas')renderCanvas(); }); }
+function clearCanvasImage(){ const v=canvasText(); api('save_canvas', v, null).then(()=>{ CANVAS.image_url=null; CANVAS.content=v; if(ACTIVE==='canvas')renderCanvas(); }); }
+function pickCanvasImage(){ cvMsg('Choose an image…'); api('canvas_add_image_file', canvasText()).then(applyCanvasImage); }
+function pasteCanvasImage(){ cvMsg('Pasting image…'); api('canvas_paste_image', canvasText()).then(applyCanvasImage); }
+function applyCanvasImage(r){
+  if(r&&r.ok&&r.image_url){ CANVAS.image_url=r.image_url; CANVAS.content=canvasText(); if(ACTIVE==='canvas')renderCanvas(); }
+  else if(r&&r.cancelled){ cvMsg(''); }
+  else { cvMsg((r&&r.error)||'Could not add image'); }
+}
+// JS clipboard path (works on some WKWebView builds); native pasteCanvasImage is the reliable fallback.
+function sendCanvasImage(dataUri){ const txt=canvasText(); api('save_canvas_image_data', dataUri, txt).then(applyCanvasImage); }
 
 let NOTE_REC=false, _noteTimer=null;
 function notePreview(n){ return (n.content||'').replace(/<[^>]*>/g,' ').replace(/&nbsp;/g,' ').replace(/\s+/g,' ').trim().slice(0,80); }
@@ -649,8 +738,21 @@ function stopPairing(){
 function renderSettings(){
   const s = (STATE&&STATE.settings)||{};
   const model = (STATE&&STATE.model)||'base';
+  const u = STATE && STATE.user;
+  const account = u ? `
+    <div class="ssection"><h3>Account</h3>
+      <div class="scard" style="flex-direction:row;align-items:center;gap:12px">
+        <div class="acctav">${esc((u.name||u.email||'?').slice(0,1).toUpperCase())}</div>
+        <div style="flex:1;min-width:0"><div style="font:600 13.5px 'Geist'">${esc(u.name||'Signed in')}</div>
+          <div style="font:400 12px 'Geist';color:var(--mut)">${esc(u.email||'')}</div></div>
+        <button class="btn ghost" style="flex:none" onclick="api('sign_out_account')">Sign out</button>
+      </div></div>` : `
+    <div class="ssection"><h3>Account</h3>
+      <div class="scard"><div class="ssub" style="margin:0 0 10px">Sign in to sync across your devices.</div>
+        <button class="btn primary" style="width:180px" onclick="api('sign_in_google')">Sign in with Google</button></div></div>`;
   document.getElementById('settingsMain').innerHTML = `
     <div class="eyebrow">General</div><h1 class="title">Preferences</h1>
+    ${account}
     <div class="ssection"><h3>API keys</h3><p class="ssub">Groq powers transcription; Gemini is a formatting fallback.</p>
       <div class="scard">
         <div class="field"><label>GROQ API KEYS</label><textarea id="groqKeys" rows="2">${esc(keyText(s.groq_api_keys))}</textarea></div>
@@ -686,14 +788,98 @@ function saveSettings(){
 // Native → JS events
 window.VerbalNative = function(event, payload){
   if(event==='recordingState'){ if(STATE) STATE.recording=payload.recording; if(ACTIVE==='home')renderHome(); if(ACTIVE==='canvas')renderCanvas(); }
-  else if(event==='state'){ STATE=payload; renderSidebar(); renderActive(); }
+  else if(event==='state'){ STATE=payload; applyAuthGate(); renderSidebar(); renderActive(); }
   else if(event==='selectTab'){ if(payload && payload.tab) show(payload.tab); }
   else if(event==='result'){ load(); }
+  else if(event==='canvasRemote'){ CANVAS={content:payload.content||'', image_url:payload.image_url||null, from:payload.device_name}; if(ACTIVE==='canvas')renderCanvas(); }
 };
+document.addEventListener('paste', function(e){
+  if(ACTIVE!=='canvas') return;
+  const items=(e.clipboardData&&e.clipboardData.items)||[];
+  for(let i=0;i<items.length;i++){
+    if(items[i].type && items[i].type.indexOf('image')===0){
+      const blob=items[i].getAsFile();
+      if(blob){ const rd=new FileReader(); rd.onload=()=>sendCanvasImage(rd.result); rd.readAsDataURL(blob); e.preventDefault(); return; }
+    }
+  }
+  // No image in the JS clipboard payload — if the user isn't typing text, try
+  // the native clipboard (WKWebView often hides image data from JS).
+  const inText = document.activeElement && document.activeElement.id==='canvasArea'
+    && e.clipboardData && (e.clipboardData.getData('text')||'').length>0;
+  if(!inText){ e.preventDefault(); pasteCanvasImage(); }
+});
+
+let WSTEP=1, PERMS={};
+const WIZ_ICON={
+  check:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>',
+  mic:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="22"/></svg>',
+  speaker:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M18.5 5.5a9 9 0 0 1 0 13"/></svg>',
+  bell:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>',
+  phone:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="7" y="2" width="10" height="20" rx="2.5"/><line x1="11" y1="18" x2="13" y2="18"/></svg>'
+};
+const PERM_META=[
+  {key:'accessibility',name:'Accessibility',sub:'Lets Flume paste text into other apps.',icon:'check'},
+  {key:'microphone',name:'Microphone',sub:'Captures your voice for dictation and meetings.',icon:'mic'},
+  {key:'system_audio',name:'System audio',sub:'Records other participants in meetings.',icon:'speaker',optional:true},
+  {key:'notifications',name:'Notifications',sub:'Alerts when a transcription finishes.',icon:'bell',optional:true}
+];
+function applyAuthGate(){
+  const si=document.getElementById('signin'), gs=document.getElementById('getstarted'), app=document.getElementById('appRoot');
+  if(!STATE){ if(si)si.hidden=true; if(gs)gs.hidden=true; if(app)app.style.display=''; return; }
+  let mode='app';
+  if(STATE.signed_in===false) mode='signin';
+  else if(STATE.onboarded===false) mode='wizard';
+  if(si) si.hidden = mode!=='signin';
+  if(gs) gs.hidden = mode!=='wizard';
+  if(app) app.style.display = mode==='app' ? '' : 'none';
+  if(mode==='wizard'){ if(!Object.keys(PERMS).length) loadPerms(); else renderWizard(); }
+}
+function signInGoogle(){
+  const b=document.getElementById('siGoogleBtn');
+  if(b){ b.disabled=true; const s=b.querySelector('span'); if(s)s.textContent='Opening browser…'; }
+  api('sign_in_google').then(r=>{
+    if(!r || r.ok===false){ if(b){ b.disabled=false; const s=b.querySelector('span'); if(s)s.textContent='Continue with Google'; } }
+  });
+}
+window.__resetOnboarding=function(){ WSTEP=1; PERMS={}; load(); };
+function loadPerms(){ api('get_permissions').then(r=>{ PERMS=(r&&r.ok&&r.perms)||{}; renderWizard(); }).catch(()=>renderWizard()); }
+function reqPerm(which){ api('request_permission', which).then(r=>{ if(r&&r.ok&&r.perms){ PERMS=r.perms; renderWizard(); } setTimeout(loadPerms, 1500); }); }
+function wizNext(){ if(WSTEP<3){ WSTEP++; renderWizard(); } else finishOnboarding(); }
+function wizBack(){ if(WSTEP>1){ WSTEP--; renderWizard(); } }
+function finishOnboarding(){ api('complete_onboarding').then(()=>{ if(STATE) STATE.onboarded=true; applyAuthGate(); load(); }); }
+function renderWizard(){
+  const el=document.getElementById('gsInner'); if(!el) return;
+  const pct=Math.round(WSTEP/3*100);
+  let content='';
+  if(WSTEP===1){
+    const rows=PERM_META.map(p=>{
+      const ok=(PERMS[p.key]==='granted');
+      const right = ok ? '<span class="permpill"><span class="pdot"></span>Granted</span>'
+        : `<button class="btn ${p.optional?'ghost':'primary'}" style="flex:none;min-width:78px" onclick="reqPerm('${p.key}')">Grant</button>`;
+      return `<div class="permrow${(!ok&&!p.optional)?' need':''}"><div class="permicon ${ok?'ok':(p.optional?'':'need')}">${WIZ_ICON[p.icon]}</div>
+        <div class="perminfo"><div class="permname">${p.name}${p.optional?'<span class="opt">Optional</span>':''}</div><div class="permsub">${p.sub}</div></div>${right}</div>`;
+    }).join('');
+    content=`<div class="gstitle">A few permissions.</div><div class="gslead">Flume needs these to paste transcriptions and record meetings on this Mac.</div>${rows}`;
+  } else if(WSTEP===2){
+    const u=STATE&&STATE.user;
+    const right = u ? '<span class="permpill"><span class="pdot"></span>Active</span>'
+      : `<button class="btn primary" style="flex:none" onclick="api('sign_in_google')">Sign in</button>`;
+    content=`<div class="gstitle">Sync across your devices.</div>
+      <div class="gslead">${u?('Signed in as '+esc(u.email)+'. '):''}Your dictation, notes and canvas stay in sync everywhere you sign in.</div>
+      <div class="permrow"><div class="permicon ok">${WIZ_ICON.phone}</div><div class="perminfo"><div class="permname">This Mac</div><div class="permsub">${u?'Synced to your account':'Local only — sign in to sync across devices'}</div></div>${right}</div>`;
+  } else {
+    content=`<div class="gstitle">You're all set.</div>
+      <div class="gslead">Hold your hotkey anywhere to dictate — it lands in your clipboard and pastes automatically. Open Flume from the menu bar any time.</div>
+      <div class="permrow"><div class="permicon ok">${WIZ_ICON.check}</div><div class="perminfo"><div class="permname">Ready to go</div><div class="permsub">Everything is configured.</div></div></div>`;
+  }
+  const back = WSTEP>1?`<button class="btn ghost" style="flex:none" onclick="wizBack()">Back</button>`:'';
+  el.innerHTML=`<div class="gsstep">STEP ${WSTEP} OF 3</div><div class="gsbar"><i style="width:${pct}%"></i></div>${content}
+    <div class="gsnav">${back}<span class="grow"></span><button class="btn primary" style="flex:none;min-width:160px" onclick="wizNext()">${WSTEP<3?'Continue':'Start using Flume'}</button></div>`;
+}
 
 async function load(){
   const r = await api('get_state');
-  if(r && r.ok){ STATE=r; renderSidebar(); }
+  if(r && r.ok){ STATE=r; applyAuthGate(); renderSidebar(); }
   await new Promise(res=>{ api('fetch_notes').then(rn=>{ if(rn&&rn.ok)NOTES=rn.notes||rn.data||[]; res(); }); });
   loadCanvas();
   renderActive();

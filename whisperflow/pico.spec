@@ -41,6 +41,8 @@ a = Analysis(
         'app.overlay_html',
         'app.fonts_css',
         'app.recordings',
+        'app.auth',
+        'app.permissions',
         'app.flume_dashboard_html',
         'Foundation',
         'AppKit',

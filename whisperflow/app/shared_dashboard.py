@@ -257,7 +257,44 @@ class DashboardApi:
             sync_connected=bool(self.app._sync and self.app._sync.connected),
             devices=self.dashboard._known_devices,
             target_device_id=self.dashboard._target_device_id,
+            signed_in=bool(cfg.get("auth") and cfg.get("auth", {}).get("user_id")),
+            user=({"email": cfg["auth"].get("email", ""),
+                   "name": cfg["auth"].get("name", ""),
+                   "avatar_url": cfg["auth"].get("avatar_url", "")}
+                  if cfg.get("auth", {}).get("user_id") else None),
+            onboarded=bool(cfg.get("onboarded")),
         )
+
+    def get_permissions(self):
+        try:
+            from app import permissions
+            return _ok(perms=permissions.all_status())
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def request_permission(self, which):
+        try:
+            from app import permissions
+            return _ok(perms=permissions.request(which))
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def complete_onboarding(self):
+        self.app.config["onboarded"] = True
+        save_config(self.app.config)
+        return _ok()
+
+    def sign_in_google(self):
+        if hasattr(self.app, "_sign_in"):
+            self.app._on_main(self.app._sign_in)
+            return _ok()
+        return {"ok": False, "error": "not supported"}
+
+    def sign_out_account(self):
+        if hasattr(self.app, "_sign_out"):
+            self.app._on_main(self.app._sign_out)
+            return _ok()
+        return {"ok": False, "error": "not supported"}
 
     def start_recording(self):
         self.app._on_record_start()
@@ -771,6 +808,67 @@ class DashboardApi:
         except Exception as e:
             logger.error(f"Canvas save failed: {e}")
             return _err(str(e))
+
+    def save_canvas_image_data(self, data_uri, content=""):
+        """Accept an image as a base64 data-URI (from a file picker or paste in
+        the WebView), upload it, and save the canvas row. Cross-platform."""
+        try:
+            if not data_uri:
+                return _err("No image data")
+            header, _, b64 = data_uri.partition(",")
+            if not b64:
+                b64 = header
+                header = "image/png"
+            ext = "png"
+            if "image/" in header:
+                sub = header.split("image/")[1].split(";")[0].strip().lower()
+                ext = {"jpeg": "jpg"}.get(sub, sub) or "png"
+                if ext not in ("png", "jpg", "jpeg", "webp", "gif"):
+                    ext = "png"
+            data = base64.b64decode(b64)
+            up = self._upload_image_bytes(data, ext)
+            if not up.get("ok"):
+                return up
+            url = up.get("image_url")
+            self.save_canvas(content or "", url)
+            return _ok(image_url=url)
+        except Exception as e:
+            logger.error(f"Canvas image data upload failed: {e}")
+            return _err(str(e))
+
+    def canvas_add_image_file(self, content=""):
+        """Native file picker (WKWebView can't reliably open a JS <input file>)."""
+        dash = self.dashboard
+        if not hasattr(dash, "pick_image_native"):
+            return self.choose_canvas_image()  # pywebview fallback (Windows)
+        box = dash.pick_image_native()
+        if box.get("error"):
+            return _err(box["error"])
+        if box.get("cancelled") or not box.get("path"):
+            return _ok(cancelled=True)
+        up = self._upload_image_path(box["path"])
+        if not up.get("ok"):
+            return up
+        self.save_canvas(content or "", up.get("image_url"))
+        return _ok(image_url=up.get("image_url"))
+
+    def canvas_paste_image(self, content=""):
+        """Read an image from the system clipboard natively, upload + save."""
+        dash = self.dashboard
+        box = dash.clipboard_image_native() if hasattr(dash, "clipboard_image_native") else {}
+        if box.get("error"):
+            return _err(box["error"])
+        if box.get("bytes"):
+            up = self._upload_image_bytes(box["bytes"], box.get("ext", "png"))
+            if not up.get("ok"):
+                return up
+            self.save_canvas(content or "", up.get("image_url"))
+            return _ok(image_url=up.get("image_url"))
+        # Fallback: PIL clipboard grab (Windows / no native helper)
+        r = self.paste_canvas_image_from_clipboard()
+        if r.get("ok") and r.get("image_url"):
+            self.save_canvas(content or "", r["image_url"])
+        return r if r.get("ok") else _err("No image found in the clipboard")
 
     def choose_canvas_image(self):
         try:

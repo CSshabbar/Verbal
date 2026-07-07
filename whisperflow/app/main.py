@@ -19,6 +19,7 @@ from app.config import (
 from app.recorder import Recorder
 from app.transcriber import transcribe, transcribe_with_status
 from app import recordings
+from app import auth
 from app.ai_cleanup import process_text
 from app.injector import inject_text, save_focused_app, get_focused_app_name
 from app.hotkey import HotkeyListener
@@ -107,6 +108,8 @@ class VerbalApp(rumps.App):
         self.status_item.set_callback(None)
 
         self.record_btn = rumps.MenuItem("Start Recording", callback=self._toggle_recording)
+        self.signin_item = rumps.MenuItem("Sign in with Google", callback=self._sign_in)
+        self.reset_onb_item = rumps.MenuItem("Reset Onboarding (dev)", callback=self._reset_onboarding)
 
         mode_menu = rumps.MenuItem("Recording Mode")
         self.mode_hold = rumps.MenuItem("Hold Key to Record", callback=self._set_mode_hold)
@@ -127,6 +130,9 @@ class VerbalApp(rumps.App):
         self.menu = [
             self.status_item,
             self.record_btn,
+            None,
+            self.signin_item,
+            self.reset_onb_item,
             None,
             rumps.MenuItem("Open Verbal", callback=self._open_dashboard),
             rumps.MenuItem("Open Canvas", callback=self._open_canvas),
@@ -187,6 +193,19 @@ class VerbalApp(rumps.App):
         self.dashboard.show()
         from AppKit import NSApplication
         NSApplication.sharedApplication().setActivationPolicy_(0)
+
+        # Reflect sign-in state + offer sign-in once on first run.
+        self._update_auth_menu()
+        if not auth.current_user() and not self.config.get("welcomed"):
+            self.config["welcomed"] = True
+            save_config(self.config)
+            r = rumps.alert(
+                title="Welcome to Verbal",
+                message=("Sign in with Google to save your dictation, notes and canvas "
+                         "to the cloud and sync them across your devices."),
+                ok="Sign in with Google", cancel="Later")
+            if r == 1:
+                self._sign_in()
 
     def _preload_model(self):
         # Cloud transcription is primary — local model loads on first fallback use
@@ -257,6 +276,107 @@ class VerbalApp(rumps.App):
                 timer.stop()
             except Exception:
                 pass
+
+    # ── Google auth ───────────────────────────────────────────────────────────
+    def _update_auth_menu(self):
+        u = auth.current_user()
+        if u:
+            self.signin_item.title = f"Sign out ({u.get('email', 'account')})"
+            self.signin_item.set_callback(self._sign_out)
+        else:
+            self.signin_item.title = "Sign in with Google"
+            self.signin_item.set_callback(self._sign_in)
+
+    def _sign_in(self, _=None):
+        def work():
+            try:
+                a = auth.sign_in_with_google()
+                self._on_main(lambda: self._after_sign_in(a))
+            except Exception as e:
+                logger.error(f"Sign-in failed: {e}")
+                self._on_main(lambda: rumps.alert("Sign-in failed", str(e)))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _after_sign_in(self, auth_info):
+        self.config = load_config()  # picks up sync_user_id set during sign-in
+        self._update_auth_menu()
+        threading.Thread(target=self._detect_and_prompt, args=(auth_info,), daemon=True).start()
+
+    def _detect_and_prompt(self, auth_info):
+        others = []
+        try:
+            import platform
+            from app.sync import fetch_devices
+            others = fetch_devices(auth_info.get("user_id", ""), platform.node()) or []
+        except Exception as e:
+            logger.debug(f"device detect failed: {e}")
+        self._on_main(lambda: self._finish_sign_in(others))
+
+    def _finish_sign_in(self, others):
+        enable = True
+        if others:
+            names = ", ".join(d.get("device_name", "a device") for d in others[:3])
+            r = rumps.alert(
+                title="New device detected",
+                message=(f"Your account is already signed in on: {names}.\n\n"
+                         "Sync your dictation, notes and canvas across your devices?"),
+                ok="Sync", cancel="Not now")
+            enable = (r == 1)
+        self.config["sync_enabled"] = enable
+        save_config(self.config)
+        if self._sync:
+            try:
+                self._sync.stop()
+            except Exception:
+                pass
+            self._sync = None
+        if enable:
+            self._init_sync()
+        try:
+            self.dashboard.show()  # bring Flume to the front after sign-in
+            self.dashboard._refresh()
+            if self.popover:
+                self.popover._refresh()
+        except Exception:
+            pass
+
+    def _sign_out(self, _=None):
+        if self._sync:
+            try:
+                self._sync.stop()
+            except Exception:
+                pass
+            self._sync = None
+        auth.sign_out()
+        self.config = load_config()
+        self._update_auth_menu()
+        try:
+            self.dashboard._refresh()
+            if self.popover:
+                self.popover._refresh()
+        except Exception:
+            pass
+
+    def _reset_onboarding(self, _=None):
+        """Dev helper — clears auth + onboarding so the flow replays from sign-in."""
+        for k in ("auth", "onboarded", "welcomed"):
+            self.config.pop(k, None)
+        self.config["sync_enabled"] = False
+        self.config["sync_user_id"] = ""
+        save_config(self.config)
+        if self._sync:
+            try:
+                self._sync.stop()
+            except Exception:
+                pass
+            self._sync = None
+        self._update_auth_menu()
+        try:
+            self.dashboard.show()
+            if hasattr(self.dashboard, "_eval"):
+                self.dashboard._eval("if(window.__resetOnboarding)window.__resetOnboarding();")
+        except Exception:
+            pass
 
     def _open_dashboard(self, _=None):
         self.dashboard.show()

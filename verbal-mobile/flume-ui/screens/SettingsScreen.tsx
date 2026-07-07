@@ -1,12 +1,13 @@
 import React, { useEffect, useState } from 'react';
 import {
-  View, StyleSheet, ScrollView, TextInput, Switch, Alert, Pressable,
+  View, StyleSheet, ScrollView, TextInput, Switch, Pressable,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Haptics from 'expo-haptics';
 import { Text, Card, ListRow, Button } from '../components';
+import { confirm } from '../components/ConfirmDialog';
 import { colors, radius, type } from '../theme';
 import { useAuth } from '../hooks/useAuth';
 import {
@@ -71,32 +72,33 @@ export const SettingsScreen: React.FC<Props> = ({ onOpenDevices }) => {
     await setSyncEnabled(v);
   };
 
-  const confirmClearHistory = () => {
-    Alert.alert('Clear history?', 'This removes all saved transcriptions on this device.', [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Clear',
-        style: 'destructive',
-        onPress: async () => { await clearHistory(); },
-      },
-    ]);
+  const confirmClearHistory = async () => {
+    const ok = await confirm({
+      title: 'Clear history?',
+      message: 'This removes all saved transcriptions on this device.',
+      confirmLabel: 'Clear', cancelLabel: 'Cancel', destructive: true,
+    });
+    if (ok) await clearHistory();
   };
 
-  const replayOnboarding = () => {
-    Alert.alert('Replay onboarding?', 'The intro will show next time you open the app.', [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'OK',
-        onPress: async () => { await AsyncStorage.removeItem('flume_onboarded'); },
-      },
-    ]);
+  const replayOnboarding = async () => {
+    const ok = await confirm({
+      title: 'Replay onboarding?',
+      message: 'The intro will show next time you open the app.',
+      confirmLabel: 'OK', cancelLabel: 'Cancel',
+    });
+    if (ok) await AsyncStorage.removeItem('flume_onboarded');
   };
 
-  const confirmSignOut = () => {
-    Alert.alert('Sign out?', undefined, [
-      { text: 'Cancel', style: 'cancel' },
-      { text: 'Sign out', style: 'destructive', onPress: () => signOut() },
-    ]);
+  const confirmSignOut = async () => {
+    const ok = await confirm({
+      title: 'Sign out?',
+      message: 'You can sign back in with Google any time.',
+      confirmLabel: 'Sign out',
+      cancelLabel: 'Cancel',
+      destructive: true,
+    });
+    if (ok) signOut();
   };
 
   return (

@@ -1,8 +1,8 @@
 import React from 'react';
-import { View, StyleSheet, Pressable } from 'react-native';
+import { View, StyleSheet } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Text, Button, LogoMark, GoogleG } from '../components';
-import { colors, space } from '../theme';
+import { colors } from '../theme';
 import { useAuth } from '../hooks/useAuth';
 
 /**
@@ -11,7 +11,7 @@ import { useAuth } from '../hooks/useAuth';
  */
 export const WelcomeScreen: React.FC = () => {
   const insets = useSafeAreaInsets();
-  const { signInWithGoogle, signInWithApple, signInWithEmail } = useAuth();
+  const { signInWithGoogle } = useAuth();
 
   return (
     <View
@@ -42,14 +42,6 @@ export const WelcomeScreen: React.FC = () => {
           icon={<GoogleG size={16} />}
           onPress={signInWithGoogle}
         />
-        <Button label="Continue with Apple" variant="ghost" onPress={signInWithApple} />
-
-        <Pressable
-          onPress={signInWithEmail}
-          style={({ pressed }) => [styles.textBtn, { opacity: pressed ? 0.7 : 1 }]}
-        >
-          <Text variant="buttonSm" color={colors.textSecondary}>Use email instead</Text>
-        </Pressable>
 
         <Text variant="caption" color={colors.textDisabled} align="center" style={{ paddingHorizontal: 14, paddingTop: 6 }}>
           By continuing you agree to our{' '}

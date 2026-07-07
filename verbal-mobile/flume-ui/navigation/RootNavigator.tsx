@@ -26,6 +26,7 @@ import {
 import * as Clipboard from 'expo-clipboard';
 import { colors, type } from '../theme';
 import { useAuth } from '../hooks/useAuth';
+import { ConfirmHost } from '../components/ConfirmDialog';
 import { useHistory } from '../hooks/useHistory';
 import { useDevices } from '../hooks/useDevices';
 import { consumeLastRecording } from '../hooks/useRecorder';
@@ -397,6 +398,7 @@ export const RootNavigator: React.FC = () => {
           </>
         )}
       </Root.Navigator>
+      <ConfirmHost />
     </NavigationContainer>
   );
 };

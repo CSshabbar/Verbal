@@ -1,5 +1,5 @@
 import React from 'react';
-import { View, StyleSheet, FlatList, Pressable, Image } from 'react-native';
+import { View, StyleSheet, FlatList, Pressable, Image, TextInput } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
@@ -18,14 +18,23 @@ type Props = {};
  */
 export const CanvasScreen: React.FC<Props> = () => {
   const insets = useSafeAreaInsets();
-  const { items, save, discard, addText, addLink, addPhoto } = useCanvas();
+  const { items, save, discard, addText, addLink, addPhoto, updateText, refresh } = useCanvas();
   const { target } = useDevices();
 
   return (
     <View style={[styles.root, { paddingTop: insets.top + 10 }]}>
       <View style={styles.header}>
         <Text variant="titleSm">Canvas</Text>
-        <Chip label={target?.name ?? 'No device'} active leading={<ChipDot />} />
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+          <Pressable
+            onPress={() => { Haptics.selectionAsync(); refresh(); }}
+            style={({ pressed }) => [styles.refreshBtn, pressed && { opacity: 0.7 }]}
+            hitSlop={8}
+          >
+            <Ionicons name="refresh" size={18} color={colors.textSecondary} />
+          </Pressable>
+          <Chip label={target?.name ?? 'No device'} active leading={<ChipDot />} />
+        </View>
       </View>
 
       <Text variant="bodyXs" color={colors.textMuted} style={{ marginBottom: 14 }}>
@@ -35,7 +44,7 @@ export const CanvasScreen: React.FC<Props> = () => {
       <FlatList
         data={items}
         keyExtractor={i => i.id}
-        renderItem={({ item }) => <Item item={item} onSave={save} onDiscard={discard} targetName={target?.name ?? ''} />}
+        renderItem={({ item }) => <Item item={item} onSave={save} onDiscard={discard} onEditText={updateText} targetName={target?.name ?? ''} />}
         ItemSeparatorComponent={() => <View style={{ height: 10 }} />}
         contentContainerStyle={{ paddingBottom: insets.bottom + 16 }}
         showsVerticalScrollIndicator={false}
@@ -66,15 +75,28 @@ const Item: React.FC<{
   item: CanvasItem;
   onSave: (id: string) => void;
   onDiscard: (id: string) => void;
+  onEditText: (id: string, text: string) => void;
   targetName: string;
-}> = ({ item, onSave, onDiscard, targetName }) => {
+}> = ({ item, onSave, onDiscard, onEditText, targetName }) => {
   const isDraft = item.state === 'draft';
   const isSent  = item.state === 'sent';
 
   return (
     <Card padding={12} emphasis={isDraft ? 'draft' : 'default'}>
       {item.kind === 'text' && (
-        <Text variant="bodySm" style={{ marginBottom: 8 }}>"{item.text}"</Text>
+        isDraft ? (
+          <TextInput
+            value={item.text}
+            onChangeText={(t) => onEditText(item.id, t)}
+            placeholder="Type text to send…"
+            placeholderTextColor={colors.textMuted}
+            multiline
+            autoFocus={item.text === ''}
+            style={styles.textInput}
+          />
+        ) : (
+          <Text variant="bodySm" style={{ marginBottom: 8 }}>"{item.text}"</Text>
+        )
       )}
       {item.kind === 'link' && (
         <View style={{ flexDirection: 'row', gap: 10, marginBottom: 8 }}>
@@ -141,6 +163,19 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     marginBottom: 14,
+  },
+  refreshBtn: {
+    width: 34, height: 34, borderRadius: 10,
+    backgroundColor: colors.surface2,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  textInput: {
+    color: colors.textPrimary,
+    fontSize: 15,
+    lineHeight: 21,
+    minHeight: 44,
+    marginBottom: 8,
+    padding: 0,
   },
   actionBar: {
     flexDirection: 'row',
