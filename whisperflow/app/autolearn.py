@@ -717,7 +717,10 @@ COMMON_WORDS = _load_common_words()
 
 # Poll/debounce/deadline tuning (seconds).
 _EW_POLL_INTERVAL = 0.15       # how often we sample AXValue
-_EW_DEBOUNCE = 0.7            # value must be stable this long after a change
+_EW_DEBOUNCE = 1.6            # value must be stable this long after a change —
+                              # long enough that a mid-word pause (erase "ee",
+                              # then type "iz") doesn't finalize an intermediate
+                              # state like "Ramz"
 _EW_OVERALL_DEADLINE = 30.0    # stop watching after this (bad-path safety valve)
 _EW_SETTLE_BEFORE_BASELINE = 0.12  # let the paste land before the first read
 _EW_AX_MSG_TIMEOUT = 0.5       # per-element AX messaging timeout (hard cap)
