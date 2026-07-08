@@ -206,11 +206,10 @@ max-width:580px;opacity:0;transform:translateY(10px) scale(.97)}
 .pill.out{animation:pout .16s ease forwards}
 @keyframes pout{to{opacity:0;transform:translateY(8px) scale(.97)}}
 .body{display:flex;flex-direction:column;gap:3px;min-width:0}
-.title{font:600 13.5px 'Geist';color:var(--ink);letter-spacing:-.01em}
-.pair{font:500 12.5px 'Geist';color:var(--ink-mut);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:320px}
-.old{color:var(--ink-mut);text-decoration:line-through;text-decoration-color:rgba(42,31,24,.4)}
-.arrow{color:var(--ink-mut);padding:0 4px}
-.new{color:var(--ink);font-weight:700}
+.title{font:600 13.5px 'Geist';color:var(--ink);letter-spacing:-.01em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:360px}
+.tword{font-weight:700;color:var(--ink)}
+.pair{font:500 12px 'Geist';color:var(--ink-mut);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:360px}
+.old{color:var(--ink);font-weight:600}
 .add{border:0;border-radius:11px;padding:9px 16px;background:var(--dark);color:var(--cream);cursor:pointer;
 font:600 12.5px 'Geist';flex:none;transition:filter .12s;margin-left:2px;white-space:nowrap}
 .add:hover{filter:brightness(1.25)}
@@ -225,8 +224,8 @@ function esc(s){return String(s==null?'':s).replace(/[&<>]/g,c=>({'&':'&amp;','<
 function api(m){ try{ return window.pywebview.api[m](); }catch(e){} }
 window.VerbalAutolearn=function(d){
   d=d||{};
+  document.getElementById('titleword').textContent = '\\u201C'+(d.new||'')+'\\u201D';
   document.getElementById('oldw').textContent = '\\u201C'+(d.old||'')+'\\u201D';
-  document.getElementById('neww').textContent = '\\u201C'+(d.new||'')+'\\u201D';
   var c=document.getElementById('pill');
   c.classList.remove('out'); c.classList.remove('in'); void c.offsetWidth; c.classList.add('in');
 };
@@ -242,8 +241,8 @@ def autolearn_widget_html():
     body = """
     <div class="pill in" id="pill">
       <div class="body">
-        <div class="title">Add this word to your dictionary?</div>
-        <div class="pair"><span class="old" id="oldw"></span><span class="arrow">&#8594;</span><span class="new" id="neww"></span></div>
+        <div class="title">Add <span class="tword" id="titleword"></span> to your dictionary?</div>
+        <div class="pair">Replaces <span class="old" id="oldw"></span> when misheard</div>
       </div>
       <button class="add" onclick="api('autolearn_add')">Add to dictionary</button>
       <button class="x" title="Dismiss" onclick="api('autolearn_close')">{x}</button>
