@@ -213,6 +213,7 @@ cases = [
     ("com.microsoft.VSCodeInsiders", "Visual Studio Code - Insiders", "vscode"),
     (None, "Code", "vscode"),
     ("com.google.antigravity", "Antigravity", "antigravity"),
+    ("com.google.antigravity-ide", "Antigravity IDE", "antigravity"),
     (None, "Antigravity", "antigravity"),
     (None, "Anti-Gravity", "antigravity"),
     ("dev.kiro.desktop", "Kiro", "kiro"),

@@ -32,9 +32,8 @@ logger = logging.getLogger("verbal.filetags")
 _CURSOR_BUNDLES = {"com.todesktop.230313mzl4w4u92"}
 _WINDSURF_BUNDLES = {"com.exafunction.windsurf", "com.codeium.windsurf"}
 _VSCODE_BUNDLES = {"com.microsoft.VSCode", "com.microsoft.VSCodeInsiders"}
-_ANTIGRAVITY_BUNDLES = {"com.google.antigravity", "dev.antigravity.app",
-                        "com.google.antigravity.app"}
-_KIRO_BUNDLES = {"dev.kiro.desktop", "com.amazon.kiro", "aws.kiro", "com.kiro.desktop"}
+_ANTIGRAVITY_BUNDLES = {"com.google.antigravity", "com.google.antigravity-ide"}
+_KIRO_BUNDLES = {"dev.kiro.desktop"}
 
 # Every recognized IDE gets FULL tagging (harvest + rewrite + @-mention injection).
 TAGGING_IDES = {"cursor", "windsurf", "vscode", "antigravity", "kiro"}
