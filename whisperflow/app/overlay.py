@@ -33,8 +33,11 @@ from app.overlay_html import overlay_html
 
 logger = logging.getLogger("verbal.overlay")
 
-PANEL_W = 560
-PANEL_H = 96
+# Generously larger than the widest pill + its drop-shadow. The panel is
+# transparent, so the extra area is invisible — it just stops the pill's rounded
+# corners / shadow from being clipped at the panel edges.
+PANEL_W = 720
+PANEL_H = 150
 
 _OVERLAY_ACTIONS = {"overlay_stop", "overlay_cancel", "overlay_pause",
                     "overlay_copy", "overlay_dismiss"}
@@ -121,8 +124,21 @@ class OverlayBar:
         rect = NSMakeRect(0, 0, PANEL_W, PANEL_H)
         self._webview = WKWebView.alloc().initWithFrame_configuration_(rect, config)
         self._webview.setAutoresizingMask_(0x02 | 0x10)
+        # Make the web view fully transparent so only the CSS pill shows (no dark
+        # square backing behind the rounded corners).
         try:
-            self._webview.setValue_forKey_(False, "drawsBackground")  # transparent
+            self._webview.setValue_forKey_(False, "drawsBackground")
+        except Exception:
+            pass
+        try:
+            self._webview.setOpaque_(False)
+        except Exception:
+            pass
+        try:
+            from AppKit import NSColor as _NSColor
+            self._webview.setWantsLayer_(True)
+            self._webview.layer().setBackgroundColor_(_NSColor.clearColor().CGColor())
+            self._webview.layer().setOpaque_(False)
         except Exception:
             pass
         self._webview.loadHTMLString_baseURL_(overlay_html(), None)

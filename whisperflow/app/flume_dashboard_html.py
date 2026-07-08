@@ -26,6 +26,7 @@ _IC = {
     "play":   '<path d="M7 4v16l13-8z"/>',
     "plus":   '<path d="M12 5v14M5 12h14"/>',
     "edit":   '<path d="M17 3 21 7l-13 13H4v-4z"/><path d="m14 6 4 4"/>',
+    "book":   '<path d="M4 5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2z"/><path d="M4 19h15"/><path d="M9 7h6"/>',
     "phone":  '<rect x="6" y="2.5" width="12" height="19" rx="2.4"/><path d="M11 18.5h2"/>',
     "dots":   '<circle cx="5" cy="12" r=".9"/><circle cx="12" cy="12" r=".9"/><circle cx="19" cy="12" r=".9"/>',
 }
@@ -229,6 +230,23 @@ body{background:var(--bg);font-family:'Geist',-apple-system,system-ui,sans-serif
 .statpill.on{background:rgba(74,209,90,.10);border:1px solid rgba(74,209,90,.32);color:#8ee69a}
 .statpill.offl{background:rgba(240,240,240,.05);border:1px solid var(--bd);color:var(--mut)}.statpill .pdot{width:6px;height:6px;border-radius:50%;background:currentColor}
 .ssection{margin-top:26px}.ssection h3{font:600 12.5px 'Geist';margin-bottom:4px}.ssub{font:400 11px 'Geist';color:var(--mut);margin-bottom:14px}
+.dlabel2{font:600 10px 'JetBrains Mono';letter-spacing:.1em;color:var(--sub);margin-bottom:9px}
+.dictchips{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px}
+.dchip{display:inline-flex;align-items:center;gap:7px;background:var(--acc-soft);color:var(--acc);border:1px solid var(--acc-bd);border-radius:999px;padding:5px 6px 5px 12px;font:500 12.5px 'Geist'}
+.dchip button{background:0;border:0;color:var(--acc);cursor:pointer;font:600 11px 'Geist';opacity:.7;padding:0 2px}.dchip button:hover{opacity:1}
+.dictadd{display:flex;gap:8px;align-items:center}
+.dictadd{flex-wrap:wrap}
+.dictadd input{flex:1;min-width:0;background:rgba(240,240,240,.05);border:1px solid var(--bd);border-radius:8px;padding:9px 12px;color:var(--tx);font:400 12.5px 'Geist';outline:0}
+.dictadd input:focus{border-color:var(--acc-bd)}
+.reprows{display:flex;flex-direction:column;gap:8px;margin-bottom:12px}
+.reprow{display:flex;align-items:center;gap:10px;background:rgba(240,240,240,.04);border:1px solid var(--bd);border-radius:8px;padding:8px 12px}
+.reprow .rfrom{color:var(--mut);font:400 12.5px 'Geist'}.reprow .rto{color:var(--tx);font:600 12.5px 'Geist'}
+.reprow button{margin-left:auto;background:0;border:0;color:var(--mut);cursor:pointer;font:600 12px 'Geist'}.reprow button:hover{color:var(--acc)}
+.rarrow{color:var(--sub);font:400 13px 'Geist'}
+.dictgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:18px;align-items:start}
+.dictcol{background:var(--card);border:1px solid var(--bd);border-radius:16px;padding:18px}
+.dcolhead{margin-bottom:14px}.dcolhead h3{font:600 14px 'Geist';margin-bottom:3px}
+.dictcol .dictchips,.dictcol .reprows{max-height:340px;overflow-y:auto}
 .scard{background:var(--card);border:1px solid var(--bd);border-radius:14px;padding:16px;margin-bottom:12px}
 .field{margin-bottom:12px}.field label{display:block;font:600 10px 'JetBrains Mono';color:var(--mut);letter-spacing:.08em;margin-bottom:7px}
 .field input,.field textarea,.field select{width:100%;background:rgba(240,240,240,.05);border:1px solid var(--bd);border-radius:8px;padding:10px 12px;color:var(--tx);font:400 12.5px 'Geist';outline:0}
@@ -259,6 +277,7 @@ def flume_html() -> str:
         {_nav("clock","History","history")}
         {_nav("grid","Canvas","canvas", badge="")}
         {_nav("lines","Notes","notes")}
+        {_nav("book","Dictionary","dictionary")}
       </nav>
       <div class="navhead devhead">DEVICES<button class="devadd" onclick="show('devices')" title="Pair a device">+</button></div>
       <div class="devlist" id="sideDevices"></div>
@@ -295,6 +314,7 @@ def flume_html() -> str:
       <section class="screen" id="scr-history" hidden><div class="threepane" id="historyMain"></div></section>
       <section class="screen" id="scr-canvas" hidden><div class="main" id="canvasMain"></div></section>
       <section class="screen" id="scr-notes" hidden><div class="threepane" id="notesMain"></div></section>
+      <section class="screen" id="scr-dictionary" hidden><div class="main" id="dictionaryMain"></div></section>
       <section class="screen" id="scr-devices" hidden><div class="main" id="devicesMain"></div></section>
       <section class="screen" id="scr-settings" hidden><div class="main" id="settingsMain"></div></section>
     </div>"""
@@ -305,6 +325,8 @@ function api(name){ const a=[].slice.call(arguments,1);
   return (window.pywebview && window.pywebview.api && window.pywebview.api[name]) ? window.pywebview.api[name].apply(null,a) : Promise.resolve({ok:false}); }
 let STATE=null, NOTES=[], CANVAS={content:'',image_url:null}, ACTIVE='home', SELH=0, SELN=null, EDITH=false;
 let PAIR={active:false, token:null, svg:'', ttl:0, claimedBy:null, pollTimer:null, tickTimer:null};
+let DICT={vocabulary:[],replacements:[]}, DICT_LOADED=false;
+let FT={enabled:false,seen_count:0}, FT_LOADED=false;
 let retryErr='', retryBusy=false;
 const esc = s => String(s==null?'':s).replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const keyText = v => Array.isArray(v) ? v.join('\n') : (v==null?'':String(v));
@@ -324,6 +346,7 @@ function renderActive(){
     else if(ACTIVE==='history') renderHistory();
     else if(ACTIVE==='canvas') renderCanvas();
     else if(ACTIVE==='notes') renderNotes();
+    else if(ACTIVE==='dictionary') renderDictionary();
     else if(ACTIVE==='devices') renderDevices();
     else if(ACTIVE==='settings') renderSettings();
   } catch(e){
@@ -767,12 +790,66 @@ function renderSettings(){
         <div class="field"><label>DEVICE NAME</label><input id="devName" value="${esc(s.sync_device_name||'This Mac')}"/></div>
         <button class="btn primary" style="flex:none;width:130px" onclick="saveSettings()">Save sync</button>
       </div></div>
+    <div class="ssection"><h3>Custom dictionary</h3><p class="ssub">Teach names &amp; terms so they transcribe correctly, and auto-fix mishearings.</p>
+      <div class="scard" style="flex-direction:row;align-items:center;gap:12px">
+        <div style="flex:1"><div style="font:600 13.5px 'Geist'">${DICT.vocabulary.length} words · ${DICT.replacements.length} rules</div>
+          <div style="font:400 12px 'Geist';color:var(--mut)">Manage your vocabulary and replacement rules</div></div>
+        <button class="btn primary" style="flex:none;width:150px" onclick="show('dictionary')">Open dictionary</button>
+      </div></div>
+    <div class="ssection"><h3>File tagging <span class="ssub" style="display:inline;margin:0">(Cursor / Windsurf)</span></h3>
+      <p class="ssub">When you dictate inside a supported IDE, spoken file names become <b>@name.ext</b> tags.</p>
+      <div class="scard">
+        <div class="saverow"><button class="toggle ftToggleBtn ${FT.enabled?'on':''}" id="ftToggleSettings" onclick="toggleFiletag()"></button><span style="font:500 13px Geist">Enable file tagging</span></div>
+        <div class="ssub" style="margin:10px 0 0">${FT.seen_count||0} file${FT.seen_count===1?'':'s'} remembered.</div>
+      </div></div>
     <div class="ssection"><h3>Hotkeys</h3><p class="ssub">Trigger recording from anywhere.</p>
       <div class="scard hotcard">
         <div class="hotrow"><span>Push-to-talk</span><span class="kbs"><kbd>${esc(s.hotkey_hold||'⌥')}</kbd></span></div>
         <div class="hotrow"><span>Toggle recording</span><span class="kbs"><kbd>${esc(s.hotkey_toggle||'⌥')}</kbd></span></div>
       </div></div>`;
+  if(!DICT_LOADED){ DICT_LOADED=true; loadDict(); }
+  if(!FT_LOADED){ FT_LOADED=true; loadFiletag(); }
 }
+
+function renderDictionary(){
+  const vocab = DICT.vocabulary.map((w,i)=>`<span class="dchip">${esc(w)}<button onclick="removeWord(${i})" title="Remove">✕</button></span>`).join('')
+    || '<span class="ssub" style="margin:0">No words yet — add names, products, acronyms, anything Flume mishears.</span>';
+  const reps = DICT.replacements.map((r,i)=>`<div class="reprow"><span class="rfrom">${esc(r.from)}</span><span class="rarrow">→</span><span class="rto">${esc(r.to)}</span><button onclick="removeRep(${i})" title="Remove">✕</button></div>`).join('')
+    || '<span class="ssub" style="margin:0">No rules yet — or edit a transcription in History and Flume learns one automatically.</span>';
+  document.getElementById('dictionaryMain').innerHTML = `
+    <div class="mhead"><div><div class="eyebrow">Transcription</div><h1 class="title">Dictionary</h1></div>
+      <span class="notesave" id="dictState"></span></div>
+    <div class="dictgrid">
+      <div class="dictcol">
+        <div class="dcolhead"><h3>Vocabulary</h3><p class="ssub">Words &amp; names Flume should recognize and spell correctly.</p></div>
+        <div class="dictchips">${vocab}</div>
+        <div class="dictadd"><input id="dictWord" placeholder="Add a word or name…" onkeydown="if(event.key==='Enter'){event.preventDefault();addWord();}"/><button class="btn primary" style="flex:none;width:80px" onclick="addWord()">Add</button></div>
+      </div>
+      <div class="dictcol">
+        <div class="dcolhead"><h3>Replacement rules</h3><p class="ssub">Always rewrite a misheard word into the correct one.</p></div>
+        <div class="reprows">${reps}</div>
+        <div class="dictadd"><input id="repFrom" placeholder="heard…" style="flex:1"/><span class="rarrow">→</span><input id="repTo" placeholder="correct…" style="flex:1"/><button class="btn primary" style="flex:none;width:80px" onclick="addRep()">Add</button></div>
+      </div>
+    </div>
+    <div class="ssection" style="margin-top:22px">
+      <h3>File tagging <span class="ssub" style="display:inline;margin:0">(Cursor / Windsurf)</span></h3>
+      <p class="ssub">When you dictate inside a supported IDE, spoken file names become <b>@name.ext</b> tags.</p>
+      <div class="saverow"><button class="toggle ftToggleBtn ${FT.enabled?'on':''}" id="ftToggle" onclick="toggleFiletag()"></button><span style="font:500 13px Geist">Enable file tagging</span></div>
+      <p class="ssub" style="margin:10px 0 0">${FT.seen_count||0} file${FT.seen_count===1?'':'s'} remembered.</p>
+    </div>`;
+  if(!DICT_LOADED){ DICT_LOADED=true; loadDict(); }
+  if(!FT_LOADED){ FT_LOADED=true; loadFiletag(); }
+}
+function loadFiletag(){ api('get_filetag_settings').then(r=>{ if(r&&r.ok){ FT={enabled:!!r.enabled,seen_count:r.seen_count||0}; if(ACTIVE==='dictionary'||ACTIVE==='settings') dictReRender(); } }); }
+function toggleFiletag(){ FT.enabled=!FT.enabled; document.querySelectorAll('.ftToggleBtn').forEach(b=>b.classList.toggle('on',FT.enabled)); api('set_filetag_enabled', FT.enabled).then(r=>{ if(r&&r.ok){ FT.enabled=!!r.enabled; document.querySelectorAll('.ftToggleBtn').forEach(b=>b.classList.toggle('on',FT.enabled)); } }); }
+function dictReRender(){ if(ACTIVE==='dictionary') renderDictionary(); else if(ACTIVE==='settings') renderSettings(); }
+function dictSetState(t){ const el=document.getElementById('dictState'); if(el) el.textContent=t||''; }
+function loadDict(){ api('get_dictionary').then(r=>{ if(r&&r.ok){ DICT={vocabulary:r.vocabulary||[],replacements:r.replacements||[]}; dictReRender(); } }); }
+function saveDict(){ dictSetState('Saving…'); api('save_dictionary', DICT.vocabulary, DICT.replacements).then(r=>{ if(r&&r.ok){ DICT={vocabulary:r.vocabulary||DICT.vocabulary,replacements:r.replacements||DICT.replacements}; dictSetState('Saved'); } else dictSetState(''); }); }
+function addWord(){ const el=document.getElementById('dictWord'); if(!el)return; const w=el.value.trim(); if(!w)return; if(!DICT.vocabulary.some(x=>x.toLowerCase()===w.toLowerCase())) DICT.vocabulary.push(w); dictReRender(); saveDict(); setTimeout(()=>{const n=document.getElementById('dictWord'); if(n)n.focus();},0); }
+function removeWord(i){ DICT.vocabulary.splice(i,1); dictReRender(); saveDict(); }
+function addRep(){ const f=document.getElementById('repFrom'),t=document.getElementById('repTo'); if(!f||!t)return; const frm=f.value.trim(),to=t.value.trim(); if(!frm||!to)return; DICT.replacements=DICT.replacements.filter(r=>r.from.toLowerCase()!==frm.toLowerCase()); DICT.replacements.push({from:frm,to:to}); dictReRender(); saveDict(); setTimeout(()=>{const n=document.getElementById('repFrom'); if(n)n.focus();},0); }
+function removeRep(i){ DICT.replacements.splice(i,1); dictReRender(); saveDict(); }
 function saveSettings(){
   const g=document.getElementById('groqKeys').value.split('\n').map(x=>x.trim()).filter(Boolean);
   const gm=document.getElementById('gemKeys').value.split('\n').map(x=>x.trim()).filter(Boolean);

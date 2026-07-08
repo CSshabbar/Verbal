@@ -152,6 +152,7 @@ class VerbalApp(rumps.App):
             on_esc=self._on_esc_pressed,
             hold_key=self.config.get("hotkey_hold", 54),
             toggle_key=self.config.get("hotkey_toggle", 54),
+            mode=self._mode,
         )
 
         self._ui_timer = rumps.Timer(self._drain_ui_queue, 0.1)
@@ -182,6 +183,7 @@ class VerbalApp(rumps.App):
             self._popover_hook_timer.start()
         threading.Thread(target=self._preload_model, daemon=True).start()
         threading.Thread(target=self._check_update, daemon=True).start()
+        threading.Thread(target=self._load_dictionary_once, daemon=True).start()
 
         # Request accessibility permission on first launch
         from app.injector import request_accessibility
@@ -206,6 +208,14 @@ class VerbalApp(rumps.App):
                 ok="Sign in with Google", cancel="Later")
             if r == 1:
                 self._sign_in()
+
+    def _load_dictionary_once(self):
+        """Pull the custom dictionary from the cloud once at startup (best-effort)."""
+        try:
+            from app import dictionary
+            dictionary.fetch_remote(self.config, save_config)
+        except Exception as e:
+            logger.debug(f"dictionary load failed: {e}")
 
     def _preload_model(self):
         # Cloud transcription is primary — local model loads on first fallback use
@@ -395,6 +405,8 @@ class VerbalApp(rumps.App):
         self.mode_toggle.state = 0
         self.config["recording_mode"] = MODE_HOLD
         save_config(self.config)
+        if self.hotkey_listener:
+            self.hotkey_listener.set_mode(MODE_HOLD)
 
     def _set_mode_toggle(self, _):
         self._mode = MODE_TOGGLE
@@ -402,6 +414,8 @@ class VerbalApp(rumps.App):
         self.mode_toggle.state = 1
         self.config["recording_mode"] = MODE_TOGGLE
         save_config(self.config)
+        if self.hotkey_listener:
+            self.hotkey_listener.set_mode(MODE_TOGGLE)
 
     def _on_hotkey_press(self):
         """Called by HotkeyListener for Hold Key Down."""
@@ -437,6 +451,18 @@ class VerbalApp(rumps.App):
             return
         try:
             save_focused_app()  # Remember where user was typing
+            # File tagging: start a deep AX harvest of the IDE's open files NOW,
+            # in the background, so it finishes while the user speaks (Cursor's
+            # tree is too slow to walk on the transcription critical path).
+            if self.config.get("filetag_enabled", False):
+                try:
+                    from app import filetags as _ft
+                    from app.injector import get_focused_app_pid, get_focused_app_bundle, get_focused_app_name
+                    from app.config import save_config as _save_config
+                    if _ft.supported_ide(get_focused_app_bundle(), get_focused_app_name()):
+                        _ft.harvest_async(get_focused_app_pid(), self.config, _save_config)
+                except Exception as e:
+                    logger.debug(f"filetag harvest kickoff skipped: {e}")
             self._is_recording = True
             self._cancel_flag.clear()
             self.recorder.start()
@@ -591,7 +617,7 @@ class VerbalApp(rumps.App):
             if self._cancel_flag.is_set():
                 return
 
-            success = inject_text(result)
+            success = inject_text(result, allow_mentions=self.config.get("filetag_enabled", False))
             play_done()
 
             # Push to other devices if sync is enabled

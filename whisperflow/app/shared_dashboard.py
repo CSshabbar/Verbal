@@ -362,7 +362,58 @@ class DashboardApi:
                 entries.append(e)
             cfg[key] = entries
         save_config(cfg)
+        # Auto-learn: a single clean word swap becomes a replacement rule.
+        try:
+            self._learn_from_edit(old_text, new_text, cfg)
+        except Exception as e:
+            logger.debug("dictionary auto-learn skipped: %s", e)
         return self.get_state()
+
+    def _learn_from_edit(self, old_text, new_text, cfg):
+        ow, nw = (old_text or "").split(), (new_text or "").split()
+        if len(ow) != len(nw):
+            return  # only learn from same-length one-word corrections
+        diffs = [(o, n) for o, n in zip(ow, nw) if o != n]
+        if len(diffs) != 1:
+            return
+        o, n = diffs[0]
+        o2 = "".join(c for c in o if c.isalnum())
+        n2 = "".join(c for c in n if c.isalnum())
+        if len(o2) >= 2 and len(n2) >= 2 and o2.lower() != n2.lower():
+            from app import dictionary
+            dictionary.add_replacement(cfg, o2, n2, save_config)
+
+    # ── custom dictionary ─────────────────────────────────────────────────────
+    def get_dictionary(self):
+        from app import dictionary
+        d = dictionary.fetch_remote(self.app.config, save_config)
+        return _ok(vocabulary=d["vocabulary"], replacements=d["replacements"])
+
+    def save_dictionary(self, vocabulary, replacements):
+        from app import dictionary
+        d = dictionary.save(self.app.config, vocabulary or [], replacements or [], save_config)
+        return _ok(vocabulary=d["vocabulary"], replacements=d["replacements"])
+
+    # ── file tagging (Cursor/Windsurf) ─────────────────────────────────────────
+    def get_filetag_settings(self):
+        """Toggle state + how many open-file names we've remembered so far."""
+        try:
+            from app import filetags
+            cfg = self.app.config
+            seen = filetags.get_seen_files(cfg)
+            return _ok(enabled=bool(cfg.get("filetag_enabled", False)),
+                       seen_count=len(seen), files=seen[:50])
+        except Exception as e:
+            logger.debug("get_filetag_settings failed: %s", e)
+            return _ok(enabled=bool(self.app.config.get("filetag_enabled", False)),
+                       seen_count=0, files=[])
+
+    def set_filetag_enabled(self, value):
+        cfg = self.app.config
+        cfg["filetag_enabled"] = bool(value)
+        save_config(cfg)
+        self.app.config = cfg
+        return _ok(enabled=cfg["filetag_enabled"])
 
     def clear_history(self):
         self.app.config["history"] = []
@@ -580,6 +631,11 @@ class DashboardApi:
         save_config(cfg)
         self.app.config = cfg
         self.app._mode = cfg["recording_mode"]
+        if getattr(self.app, "hotkey_listener", None):
+            try:
+                self.app.hotkey_listener.set_mode(cfg["recording_mode"])
+            except Exception:
+                pass
         if hasattr(self.app, '_restart_sync'):
             self.app._restart_sync()
         elif hasattr(self.app, '_init_sync'):

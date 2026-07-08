@@ -1,3 +1,5 @@
+import { getDictionary, buildPrompt, applyReplacements } from './dictionary';
+
 const GROQ_API = 'https://api.groq.com/openai/v1';
 
 export const NOTES_FORMATTER_PROMPT = `You are a NOTE FORMATTER, not an AI assistant.
@@ -36,6 +38,11 @@ export async function transcribeAudio(
   formData.append('language', 'en');
   formData.append('temperature', '0');
 
+  // Custom dictionary: bias Whisper toward the user's vocabulary.
+  const dict = await getDictionary();
+  const prompt = buildPrompt(dict);
+  if (prompt) formData.append('prompt', prompt);
+
   const res = await fetch(`${GROQ_API}/audio/transcriptions`, {
     method: 'POST',
     headers: {
@@ -50,7 +57,8 @@ export async function transcribeAudio(
   }
 
   const data = await res.json();
-  return data.text?.trim() ?? '';
+  // Apply the user's replacement rules to fix persistent mishearings.
+  return applyReplacements((data.text?.trim() ?? ''), dict);
 }
 
 export async function formatText(

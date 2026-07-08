@@ -12,13 +12,15 @@ VK_ESCAPE = 0x35
 
 
 class HotkeyListener:
-    def __init__(self, on_start, on_stop, on_toggle, on_esc=None, hold_key=54, toggle_key=54):
+    def __init__(self, on_start, on_stop, on_toggle, on_esc=None, hold_key=54, toggle_key=54,
+                 mode="toggle"):
         self._on_start = on_start
         self._on_stop = on_stop
         self._on_toggle = on_toggle
         self._on_esc = on_esc
         self._hold_key = hold_key
         self._toggle_key = toggle_key
+        self._mode = mode  # 'toggle' = tap to start/stop; 'hold' = press-and-hold
         self._monitors = []
         self._pressed = False
         self._last_event_time = 0.0
@@ -27,6 +29,11 @@ class HotkeyListener:
         self._hold_key = hold_key
         self._toggle_key = toggle_key
         logger.info(f"Hotkey keys updated: hold={hold_key}, toggle={toggle_key}")
+
+    def set_mode(self, mode):
+        self._mode = mode
+        self._pressed = False
+        logger.info(f"Hotkey mode set to: {mode}")
 
     def start(self):
         mask = (Quartz.NSEventMaskFlagsChanged | 
@@ -99,8 +106,8 @@ class HotkeyListener:
                     is_down = bool(flags & 0xFFFF0000) # Check all device-independent flags
                     is_up = not is_down
 
-            # Handle Hold Key
-            if keycode == self._hold_key:
+            # Hold-to-talk — only in HOLD mode (press to start, release to stop)
+            if self._mode == "hold" and keycode == self._hold_key:
                 if is_down and not self._pressed:
                     self._pressed = True
                     logger.debug(f"Hold key DOWN: {keycode}")
@@ -109,18 +116,15 @@ class HotkeyListener:
                     self._pressed = False
                     logger.debug(f"Hold key UP: {keycode}")
                     self._on_stop()
-                
-                # If Hold and Toggle are the same, don't also fire toggle logic
-                if self._hold_key == self._toggle_key:
-                    return
+                return
 
-            # Handle Toggle Key
-            if keycode == self._toggle_key:
-                if is_down:
-                    if now - self._last_event_time > 0.3:
-                        self._last_event_time = now
-                        logger.debug(f"Toggle key triggered: {keycode}")
-                        self._on_toggle()
+            # Tap-to-toggle — only in TOGGLE mode (tap to start, tap again to stop)
+            if self._mode != "hold" and keycode == self._toggle_key:
+                if is_down and now - self._last_event_time > 0.3:
+                    self._last_event_time = now
+                    logger.debug(f"Toggle key triggered: {keycode}")
+                    self._on_toggle()
+                return
 
         except Exception as e:
             logger.error(f"Hotkey event error: {e}")

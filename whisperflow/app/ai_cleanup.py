@@ -219,11 +219,16 @@ def process_text(text: str, config: dict) -> str:
     """
     Full processing pipeline:
     1. Local cleanup (always) — remove hallucinations, fillers, repeats
-    2. File tag conversion (always)
-    3. LLM formatting — tries in order:
+    2. LLM formatting — tries in order:
          a. Groq LLaMA (free, uses existing Groq keys)
          b. Gemini (if Gemini keys configured)
        Falls back to local-only if no keys or all APIs fail.
+
+    NOTE: file @mention tagging is handled earlier, in transcriber.finalize()
+    via the guarded app.filetags module (toggle-gated, IDE-aware, only tags
+    files actually open in the editor). The old unconditional apply_file_tags()
+    was removed here to avoid a second, context-blind tagger running on every
+    transcript. apply_file_tags() is kept for reference/tests only.
     """
     from app.config import get_active_gemini_key, rotate_gemini_key
 
@@ -232,10 +237,7 @@ def process_text(text: str, config: dict) -> str:
     if not text:
         return text
 
-    # Step 2: file tags
-    text = apply_file_tags(text)
-
-    # Step 3a: Groq LLaMA formatting (uses same keys as transcription — already set up)
+    # Step 2: Groq LLaMA formatting (uses same keys as transcription — already set up)
     groq_keys = config.get("groq_api_keys", [])
     for key in groq_keys:
         logger.info("Formatting with Groq LLaMA...")
@@ -247,7 +249,7 @@ def process_text(text: str, config: dict) -> str:
             return result
         logger.warning("Groq LLaMA formatting failed, trying next key")
 
-    # Step 3b: Gemini fallback
+    # Step 2b: Gemini fallback
     gemini_keys = config.get("gemini_api_keys", [])
     if gemini_keys:
         tried = set()

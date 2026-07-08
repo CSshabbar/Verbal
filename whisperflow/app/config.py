@@ -1,9 +1,15 @@
 import json
 import os
 import platform
+import tempfile
+import threading
 from pathlib import Path
 
 from dotenv import load_dotenv
+
+# Serializes config writes so concurrent threads (sync, dictionary, device
+# refresh, dashboard) never race on the same temp file.
+_config_lock = threading.Lock()
 
 APP_VERSION = "1.0.10"
 PLATFORM = "mac" if platform.system() == "Darwin" else "win" if platform.system() == "Windows" else "linux"
@@ -80,10 +86,20 @@ def load_config() -> dict:
 
 def save_config(config: dict):
     ensure_dirs()
-    tmp = CONFIG_FILE.with_suffix(".tmp")
-    with open(tmp, "w") as f:
-        json.dump(config, f, indent=2)
-    tmp.replace(CONFIG_FILE)
+    # Unique temp file per write + a lock → safe under concurrent writers
+    # (a shared "config.tmp" name caused rename races: config.tmp -> config.json).
+    with _config_lock:
+        fd, tmp_path = tempfile.mkstemp(dir=str(CONFIG_DIR), prefix=".config-", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump(config, f, indent=2)
+            os.replace(tmp_path, CONFIG_FILE)
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
 
 
 def add_gemini_key(config: dict, key: str) -> dict:

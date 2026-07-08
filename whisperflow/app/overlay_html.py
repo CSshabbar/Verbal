@@ -17,7 +17,8 @@ _CSS = """
 --pill:rgba(22,20,18,.96);--bd:rgba(240,240,240,.09)}
 html,body{height:100%;background:transparent}
 body{font-family:'Geist',-apple-system,system-ui,sans-serif;-webkit-font-smoothing:antialiased;
-display:flex;flex-direction:column;align-items:center;justify-content:flex-end;overflow:hidden;padding-bottom:5px}
+display:flex;flex-direction:column;align-items:center;justify-content:flex-end;overflow:visible;
+padding:22px 46px 40px}
 .statelabel{font:600 9px 'JetBrains Mono';letter-spacing:.24em;color:var(--mut);margin-bottom:9px;text-transform:uppercase}
 .pill{display:none;align-items:center;gap:10px;background:var(--pill);border:1px solid var(--bd);
 border-radius:22px;padding:7px 8px 7px 14px;box-shadow:0 10px 32px rgba(0,0,0,.5);white-space:nowrap}
