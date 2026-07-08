@@ -797,6 +797,11 @@ function renderSettings(){
           <div style="font:400 12px 'Geist';color:var(--mut)">Manage your vocabulary and replacement rules</div></div>
         <button class="btn primary" style="flex:none;width:150px" onclick="show('dictionary')">Open dictionary</button>
       </div></div>
+    <div class="ssection"><h3>Auto-learn from corrections</h3>
+      <p class="ssub">When you fix a misheard word right after dictating, Flume offers to remember it (marked <span style="opacity:.75">✨</span> in the dictionary). Works best in native text fields.</p>
+      <div class="scard">
+        <div class="saverow"><button class="toggle alToggleBtn ${AL.enabled?'on':''}" id="alToggleSettings" onclick="toggleAutolearn()"></button><span style="font:500 13px Geist">Enable auto-learn</span></div>
+      </div></div>
     <div class="ssection"><h3>File tagging <span class="ssub" style="display:inline;margin:0">(Cursor, Windsurf, VS Code, Antigravity, Kiro)</span></h3>
       <p class="ssub">When you dictate inside a supported IDE, spoken file names become <b>@name.ext</b> tags.</p>
       <div class="scard">
@@ -810,6 +815,7 @@ function renderSettings(){
       </div></div>`;
   if(!DICT_LOADED){ DICT_LOADED=true; loadDict(); }
   if(!FT_LOADED){ FT_LOADED=true; loadFiletag(); }
+  if(!AL_LOADED){ AL_LOADED=true; loadAutolearn(); }
 }
 
 function renderDictionary(){

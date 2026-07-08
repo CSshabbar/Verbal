@@ -8,6 +8,11 @@ import soundfile as sf
 
 logger = logging.getLogger("verbal.transcriber")
 
+# Groq's Whisper API rejects a bias prompt longer than 896 chars. The dictionary
+# glossary + open-file list can exceed that in a large project, which 400s every
+# Groq call and fails transcription. Keep the combined prompt safely under it.
+_GROQ_PROMPT_CHAR_CAP = 850
+
 
 def transcribe(audio: np.ndarray, config: dict, sample_rate: int = 48000) -> str:
     """Transcribe audio. Priority: Groq -> Gemini -> Local Whisper.
@@ -81,6 +86,17 @@ def transcribe_with_status(audio: np.ndarray, config: dict, sample_rate: int = 4
     except Exception as e:
         logger.debug("[filetag] setup skipped: %s", e)
         _filetags = None
+
+    # Cap the combined bias prompt under Groq's 896-char limit. Glossary comes
+    # first (user vocab preserved); excess file names are trimmed at a comma
+    # boundary. Harmless for Gemini/local, which have no such limit.
+    if prompt and len(prompt) > _GROQ_PROMPT_CHAR_CAP:
+        clipped = prompt[:_GROQ_PROMPT_CHAR_CAP]
+        cut = clipped.rfind(",")
+        if cut > 40:
+            clipped = clipped[:cut]
+        prompt = clipped.rstrip(" ,") + "."
+        logger.debug("[filetag] bias prompt capped to %d chars", len(prompt))
 
     def finalize(t):
         # Dictionary replacements first; track whether they changed the text.

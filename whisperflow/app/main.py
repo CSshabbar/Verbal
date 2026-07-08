@@ -27,6 +27,7 @@ from app.injector import (
 )
 from app.hotkey import HotkeyListener
 from app.overlay import OverlayBar
+from app.autolearn_widget import AutoLearnWidget
 from app.sounds import play_start, play_stop, play_done
 from app.dashboard import DashboardWindow           # legacy AppKit dashboard (fallback)
 from app.flume_web_dashboard import FlumeWebDashboard
@@ -80,6 +81,7 @@ class VerbalApp(rumps.App):
         self._last_toggle_time = 0.0
 
         self.overlay = OverlayBar(self)
+        self.autolearn_widget = AutoLearnWidget(self)
         self._last_result_text = ""
         # Flume desktop dashboard (WKWebView). Falls back to the legacy AppKit
         # dashboard if the web view can't be created.
@@ -689,8 +691,9 @@ class VerbalApp(rumps.App):
         )
 
     def _offer_autolearn(self, decision):
-        """Non-modal-ish confirm (rumps.alert first cut) for a learned rule.
-        Fully guarded; respects declined/offered memory so it never nags."""
+        """Show the styled, non-activating auto-learn widget for a correction
+        (never steals focus from the app being dictated into). Respects the
+        declined/offered memory so it never nags."""
         try:
             if not decision or decision.get("action") != "offer":
                 return
@@ -698,25 +701,27 @@ class VerbalApp(rumps.App):
             new = (decision.get("new") or "").strip()
             if not old or not new:
                 return
+            from app import autolearn
+            if autolearn.is_declined(self.config, new):
+                return
+            self.autolearn_widget.show(old, new)
+        except Exception as e:
+            logger.debug("autolearn offer failed: %s", e)
+
+    def _autolearn_result(self, old, new, added):
+        """Widget callback (main thread): user clicked Add or closed. Record the
+        word either way so we never nag again (F9); on Add, persist the rule and
+        refresh the dashboards so the ✨ entry shows up."""
+        try:
             from app import autolearn, dictionary
             cfg = self.config
-            if autolearn.is_declined(cfg, new):
-                return
-            resp = rumps.alert(
-                "Add to dictionary?",
-                f"Learn the correction “{old}” → “{new}” "
-                "so Verbal spells it right next time?",
-                ok="Add",
-                cancel="No",
-            )
-            # Either way, remember we offered this word so we never nag again (F9).
             autolearn.record_offered(cfg, new, save_config)
-            if resp == 1:
+            if added:
                 dictionary.add_replacement(cfg, old, new, save_config, auto=True)
                 self.config = cfg
                 self._refresh_dashboards()
         except Exception as e:
-            logger.debug("autolearn offer failed: %s", e)
+            logger.debug("autolearn result failed: %s", e)
 
     def _reset_to_ready(self):
         try:
