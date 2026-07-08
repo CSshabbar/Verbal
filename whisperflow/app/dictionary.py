@@ -28,7 +28,11 @@ def normalize(d):
     reps = []
     for r in (d.get("replacements") or []):
         if isinstance(r, dict) and str(r.get("from", "")).strip() and str(r.get("to", "")).strip():
-            reps.append({"from": str(r["from"]).strip(), "to": str(r["to"]).strip()})
+            rule = {"from": str(r["from"]).strip(), "to": str(r["to"]).strip()}
+            # Preserve the optional auto-learn flag without breaking {from,to} rules.
+            if r.get("auto"):
+                rule["auto"] = True
+            reps.append(rule)
     return {"vocabulary": vocab, "replacements": reps}
 
 
@@ -75,15 +79,22 @@ def save(config, vocabulary, replacements, save_config_fn):
     return d
 
 
-def add_replacement(config, frm, to, save_config_fn):
-    """Append one replacement rule (used by auto-learn on edits)."""
+def add_replacement(config, frm, to, save_config_fn, auto=False):
+    """Append one replacement rule (used by auto-learn on edits).
+
+    `auto=True` tags the rule as auto-learned (surfaced with a ✨ marker in the
+    audit list); it is preserved by normalize() and does not affect existing
+    {from,to} rules."""
     d = get(config)
     frm, to = (frm or "").strip(), (to or "").strip()
     if not frm or not to or frm.lower() == to.lower():
         return d
     # de-dupe by 'from'
     d["replacements"] = [r for r in d["replacements"] if r["from"].lower() != frm.lower()]
-    d["replacements"].append({"from": frm, "to": to})
+    rule = {"from": frm, "to": to}
+    if auto:
+        rule["auto"] = True
+    d["replacements"].append(rule)
     config["dictionary"] = d
     save_config_fn(config)
     _push_remote(config, d)

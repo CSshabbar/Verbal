@@ -21,7 +21,10 @@ from app.transcriber import transcribe, transcribe_with_status
 from app import recordings
 from app import auth
 from app.ai_cleanup import process_text
-from app.injector import inject_text, save_focused_app, get_focused_app_name
+from app.injector import (
+    inject_text, save_focused_app, get_focused_app_name,
+    get_focused_app_pid, get_focused_app_bundle,
+)
 from app.hotkey import HotkeyListener
 from app.overlay import OverlayBar
 from app.sounds import play_start, play_stop, play_done
@@ -620,6 +623,15 @@ class VerbalApp(rumps.App):
             success = inject_text(result, allow_mentions=self.config.get("filetag_enabled", False))
             play_done()
 
+            # Auto-learn: watch the target field for a manual correction, off the
+            # recording/injection critical path. Fully guarded — any failure is a
+            # silent no-op that never affects transcription.
+            try:
+                if success and self.config.get("autolearn_enabled"):
+                    self._arm_autolearn(result)
+            except Exception as e:
+                logger.debug("autolearn arm skipped: %s", e)
+
             # Push to other devices if sync is enabled
             if self._sync:
                 target = self.dashboard._target_device_id if self.dashboard else "__all__"
@@ -656,6 +668,55 @@ class VerbalApp(rumps.App):
                 self.popover._refresh()
         except Exception as e:
             logger.error(f"_show_result error: {e}\n{traceback.format_exc()}")
+
+    def _arm_autolearn(self, inserted_text):
+        """Arm the EditWatcher on the dictation target (daemon thread). On a
+        confident single-word correction, offer to add it to the dictionary."""
+        from app import autolearn
+        pid = get_focused_app_pid()
+        bundle = get_focused_app_bundle()
+        if not pid or not inserted_text:
+            return
+        watcher = getattr(self, "_edit_watcher", None)
+        if watcher is None:
+            watcher = self._edit_watcher = autolearn.EditWatcher()
+        watcher.arm(
+            pid=pid,
+            bundle=bundle,
+            inserted_text=inserted_text,
+            on_decision_callback=lambda decision: self._on_main(
+                lambda: self._offer_autolearn(decision)),
+        )
+
+    def _offer_autolearn(self, decision):
+        """Non-modal-ish confirm (rumps.alert first cut) for a learned rule.
+        Fully guarded; respects declined/offered memory so it never nags."""
+        try:
+            if not decision or decision.get("action") != "offer":
+                return
+            old = (decision.get("old") or "").strip()
+            new = (decision.get("new") or "").strip()
+            if not old or not new:
+                return
+            from app import autolearn, dictionary
+            cfg = self.config
+            if autolearn.is_declined(cfg, new):
+                return
+            resp = rumps.alert(
+                "Add to dictionary?",
+                f"Learn the correction “{old}” → “{new}” "
+                "so Verbal spells it right next time?",
+                ok="Add",
+                cancel="No",
+            )
+            # Either way, remember we offered this word so we never nag again (F9).
+            autolearn.record_offered(cfg, new, save_config)
+            if resp == 1:
+                dictionary.add_replacement(cfg, old, new, save_config, auto=True)
+                self.config = cfg
+                self._refresh_dashboards()
+        except Exception as e:
+            logger.debug("autolearn offer failed: %s", e)
 
     def _reset_to_ready(self):
         try:

@@ -327,6 +327,7 @@ let STATE=null, NOTES=[], CANVAS={content:'',image_url:null}, ACTIVE='home', SEL
 let PAIR={active:false, token:null, svg:'', ttl:0, claimedBy:null, pollTimer:null, tickTimer:null};
 let DICT={vocabulary:[],replacements:[]}, DICT_LOADED=false;
 let FT={enabled:false,seen_count:0}, FT_LOADED=false;
+let AL={enabled:false}, AL_LOADED=false;
 let retryErr='', retryBusy=false;
 const esc = s => String(s==null?'':s).replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const keyText = v => Array.isArray(v) ? v.join('\n') : (v==null?'':String(v));
@@ -814,7 +815,7 @@ function renderSettings(){
 function renderDictionary(){
   const vocab = DICT.vocabulary.map((w,i)=>`<span class="dchip">${esc(w)}<button onclick="removeWord(${i})" title="Remove">✕</button></span>`).join('')
     || '<span class="ssub" style="margin:0">No words yet — add names, products, acronyms, anything Flume mishears.</span>';
-  const reps = DICT.replacements.map((r,i)=>`<div class="reprow"><span class="rfrom">${esc(r.from)}</span><span class="rarrow">→</span><span class="rto">${esc(r.to)}</span><button onclick="removeRep(${i})" title="Remove">✕</button></div>`).join('')
+  const reps = DICT.replacements.map((r,i)=>`<div class="reprow"><span class="rfrom">${esc(r.from)}</span><span class="rarrow">→</span><span class="rto">${esc(r.to)}${r.auto?' <span title="Auto-learned from a correction" style="opacity:.75">✨</span>':''}</span><button onclick="removeRep(${i})" title="Remove">✕</button></div>`).join('')
     || '<span class="ssub" style="margin:0">No rules yet — or edit a transcription in History and Flume learns one automatically.</span>';
   document.getElementById('dictionaryMain').innerHTML = `
     <div class="mhead"><div><div class="eyebrow">Transcription</div><h1 class="title">Dictionary</h1></div>
@@ -832,6 +833,11 @@ function renderDictionary(){
       </div>
     </div>
     <div class="ssection" style="margin-top:22px">
+      <h3>Auto-learn from corrections</h3>
+      <p class="ssub">When you fix a misheard word right after dictating, Flume offers to remember it. Auto-learned rules are marked <span style="opacity:.75">✨</span> above.</p>
+      <div class="saverow"><button class="toggle alToggleBtn ${AL.enabled?'on':''}" id="alToggle" onclick="toggleAutolearn()"></button><span style="font:500 13px Geist">Enable auto-learn</span></div>
+    </div>
+    <div class="ssection" style="margin-top:22px">
       <h3>File tagging <span class="ssub" style="display:inline;margin:0">(Cursor, Windsurf, VS Code, Antigravity, Kiro)</span></h3>
       <p class="ssub">When you dictate inside a supported IDE, spoken file names become <b>@name.ext</b> tags.</p>
       <div class="saverow"><button class="toggle ftToggleBtn ${FT.enabled?'on':''}" id="ftToggle" onclick="toggleFiletag()"></button><span style="font:500 13px Geist">Enable file tagging</span></div>
@@ -839,7 +845,10 @@ function renderDictionary(){
     </div>`;
   if(!DICT_LOADED){ DICT_LOADED=true; loadDict(); }
   if(!FT_LOADED){ FT_LOADED=true; loadFiletag(); }
+  if(!AL_LOADED){ AL_LOADED=true; loadAutolearn(); }
 }
+function loadAutolearn(){ api('get_autolearn_enabled').then(r=>{ if(r&&r.ok){ AL={enabled:!!r.enabled}; if(ACTIVE==='dictionary'||ACTIVE==='settings') dictReRender(); } }); }
+function toggleAutolearn(){ AL.enabled=!AL.enabled; document.querySelectorAll('.alToggleBtn').forEach(b=>b.classList.toggle('on',AL.enabled)); api('set_autolearn_enabled', AL.enabled).then(r=>{ if(r&&r.ok){ AL.enabled=!!r.enabled; document.querySelectorAll('.alToggleBtn').forEach(b=>b.classList.toggle('on',AL.enabled)); } }); }
 function loadFiletag(){ api('get_filetag_settings').then(r=>{ if(r&&r.ok){ FT={enabled:!!r.enabled,seen_count:r.seen_count||0}; if(ACTIVE==='dictionary'||ACTIVE==='settings') dictReRender(); } }); }
 function toggleFiletag(){ FT.enabled=!FT.enabled; document.querySelectorAll('.ftToggleBtn').forEach(b=>b.classList.toggle('on',FT.enabled)); api('set_filetag_enabled', FT.enabled).then(r=>{ if(r&&r.ok){ FT.enabled=!!r.enabled; document.querySelectorAll('.ftToggleBtn').forEach(b=>b.classList.toggle('on',FT.enabled)); } }); }
 function dictReRender(){ if(ACTIVE==='dictionary') renderDictionary(); else if(ACTIVE==='settings') renderSettings(); }

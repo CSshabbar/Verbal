@@ -370,6 +370,22 @@ class DashboardApi:
         return self.get_state()
 
     def _learn_from_edit(self, old_text, new_text, cfg):
+        # Preferred path: delegate to the autolearn classifier so the history-view
+        # edit path gets the SAME intelligence as the in-place watcher (§2 pipeline
+        # — correction vs. deletion/insertion/rephrase/common-word). A confident
+        # single-word correction becomes an auto-learned replacement rule.
+        try:
+            from app import autolearn, dictionary
+            decision = autolearn.classify(old_text, new_text, cfg)
+            if decision.get("action") in ("offer", "silent_learn"):
+                old, new = decision.get("old"), decision.get("new")
+                if old and new:
+                    dictionary.add_replacement(cfg, old, new, save_config, auto=True)
+            return
+        except Exception as e:
+            logger.debug("autolearn classify unavailable, simple heuristic: %s", e)
+
+        # Fallback (preserves prior behavior): same-length one-word correction.
         ow, nw = (old_text or "").split(), (new_text or "").split()
         if len(ow) != len(nw):
             return  # only learn from same-length one-word corrections
@@ -393,6 +409,17 @@ class DashboardApi:
         from app import dictionary
         d = dictionary.save(self.app.config, vocabulary or [], replacements or [], save_config)
         return _ok(vocabulary=d["vocabulary"], replacements=d["replacements"])
+
+    # ── auto-learn from corrections ─────────────────────────────────────────────
+    def get_autolearn_enabled(self):
+        return _ok(enabled=bool(self.app.config.get("autolearn_enabled", False)))
+
+    def set_autolearn_enabled(self, value):
+        cfg = self.app.config
+        cfg["autolearn_enabled"] = bool(value)
+        save_config(cfg)
+        self.app.config = cfg
+        return _ok(enabled=cfg["autolearn_enabled"])
 
     # ── file tagging (Cursor/Windsurf) ─────────────────────────────────────────
     def get_filetag_settings(self):

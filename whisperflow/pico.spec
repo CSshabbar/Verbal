@@ -42,6 +42,7 @@ a = Analysis(
         'app.fonts_css',
         'app.recordings',
         'app.dictionary',
+        'app.autolearn',
         'app.filetags',
         'app.auth',
         'app.permissions',
