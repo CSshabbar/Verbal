@@ -796,7 +796,7 @@ function renderSettings(){
           <div style="font:400 12px 'Geist';color:var(--mut)">Manage your vocabulary and replacement rules</div></div>
         <button class="btn primary" style="flex:none;width:150px" onclick="show('dictionary')">Open dictionary</button>
       </div></div>
-    <div class="ssection"><h3>File tagging <span class="ssub" style="display:inline;margin:0">(Cursor / Windsurf)</span></h3>
+    <div class="ssection"><h3>File tagging <span class="ssub" style="display:inline;margin:0">(Cursor, Windsurf, VS Code, Antigravity, Kiro)</span></h3>
       <p class="ssub">When you dictate inside a supported IDE, spoken file names become <b>@name.ext</b> tags.</p>
       <div class="scard">
         <div class="saverow"><button class="toggle ftToggleBtn ${FT.enabled?'on':''}" id="ftToggleSettings" onclick="toggleFiletag()"></button><span style="font:500 13px Geist">Enable file tagging</span></div>
@@ -832,7 +832,7 @@ function renderDictionary(){
       </div>
     </div>
     <div class="ssection" style="margin-top:22px">
-      <h3>File tagging <span class="ssub" style="display:inline;margin:0">(Cursor / Windsurf)</span></h3>
+      <h3>File tagging <span class="ssub" style="display:inline;margin:0">(Cursor, Windsurf, VS Code, Antigravity, Kiro)</span></h3>
       <p class="ssub">When you dictate inside a supported IDE, spoken file names become <b>@name.ext</b> tags.</p>
       <div class="saverow"><button class="toggle ftToggleBtn ${FT.enabled?'on':''}" id="ftToggle" onclick="toggleFiletag()"></button><span style="font:500 13px Geist">Enable file tagging</span></div>
       <p class="ssub" style="margin:10px 0 0">${FT.seen_count||0} file${FT.seen_count===1?'':'s'} remembered.</p>

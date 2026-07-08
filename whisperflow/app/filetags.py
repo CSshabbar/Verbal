@@ -25,10 +25,19 @@ logger = logging.getLogger("verbal.filetags")
 
 # ── constants ────────────────────────────────────────────────────────────────
 
-# Bundle ids we treat as file-tagging-capable IDEs.
+# Bundle ids we treat as file-tagging-capable IDEs. All are VS Code / Electron
+# forks with an @-file mention picker, so the AX harvest + tag injection are
+# identical across them. Name matching (in _classify) is the robust fallback for
+# newer IDEs whose exact bundle ids may vary by build/channel.
 _CURSOR_BUNDLES = {"com.todesktop.230313mzl4w4u92"}
 _WINDSURF_BUNDLES = {"com.exafunction.windsurf", "com.codeium.windsurf"}
 _VSCODE_BUNDLES = {"com.microsoft.VSCode", "com.microsoft.VSCodeInsiders"}
+_ANTIGRAVITY_BUNDLES = {"com.google.antigravity", "dev.antigravity.app",
+                        "com.google.antigravity.app"}
+_KIRO_BUNDLES = {"dev.kiro.desktop", "com.amazon.kiro", "aws.kiro", "com.kiro.desktop"}
+
+# Every recognized IDE gets FULL tagging (harvest + rewrite + @-mention injection).
+TAGGING_IDES = {"cursor", "windsurf", "vscode", "antigravity", "kiro"}
 
 _AX_BUDGET_S = 0.60           # hard wall-clock budget for the AX tree walk
 _AX_MAX_NODES = 4000          # cap on total elements visited
@@ -97,18 +106,24 @@ def _frontmost_app():
 def _classify(bundle_id, name):
     bundle_id = bundle_id or ""
     name = (name or "").lower()
+    nc = re.sub(r"[\s\-_]+", "", name)  # normalized: 'Anti-Gravity' -> 'antigravity'
     if bundle_id in _CURSOR_BUNDLES or "cursor" in name:
         return "cursor"
     if bundle_id in _WINDSURF_BUNDLES or "windsurf" in name or "codeium" in name:
         return "windsurf"
+    if bundle_id in _ANTIGRAVITY_BUNDLES or "antigravity" in nc:
+        return "antigravity"
+    if bundle_id in _KIRO_BUNDLES or "kiro" in nc:
+        return "kiro"
     if bundle_id in _VSCODE_BUNDLES or "visual studio code" in name or name == "code":
         return "vscode"
     return None
 
 
 def supported_ide(bundle_id=None, name=None):
-    """Classify an app as 'cursor'/'windsurf' (full tagging), 'vscode' (name
-    memory only), or None. Never raises.
+    """Classify an app as a supported IDE ('cursor'/'windsurf'/'vscode'/
+    'antigravity'/'kiro' — all get full tagging, see TAGGING_IDES) or None.
+    Never raises.
 
     Pass the saved dictation-target app's (bundle_id, name) — captured at
     recording start — so classification reflects where the user was typing, not

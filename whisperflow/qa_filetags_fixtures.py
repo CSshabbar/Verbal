@@ -212,6 +212,12 @@ cases = [
     ("com.microsoft.VSCode", "Code", "vscode"),
     ("com.microsoft.VSCodeInsiders", "Visual Studio Code - Insiders", "vscode"),
     (None, "Code", "vscode"),
+    ("com.google.antigravity", "Antigravity", "antigravity"),
+    (None, "Antigravity", "antigravity"),
+    (None, "Anti-Gravity", "antigravity"),
+    ("dev.kiro.desktop", "Kiro", "kiro"),
+    (None, "Kiro", "kiro"),
+    (None, "Kiro Code", "kiro"),
     ("com.apple.Safari", "Safari", None),
     ("com.tinyspeck.slackmacgap", "Slack", None),
     (None, None, None),
@@ -225,7 +231,8 @@ for bid, name, expected in cases:
 try:
     got = filetags.supported_ide()
     check("supported_ide() never raises (got %r)" % got,
-          got in (None, "cursor", "windsurf", "vscode"), "valid class/None", got)
+          got in (None, "cursor", "windsurf", "vscode", "antigravity", "kiro"),
+          "valid class/None", got)
 except Exception as e:
     check("supported_ide() never raises", False, "no exception", repr(e))
 

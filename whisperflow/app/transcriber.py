@@ -74,8 +74,9 @@ def transcribe_with_status(audio: np.ndarray, config: dict, sample_rate: int = 4
         if _enabled:
             logger.debug("[filetag] enabled ide=%s terminal=%s target=%s pid=%s known=%d files=%s",
                          _ide, _is_terminal, get_focused_app_name(), _tgt_pid, len(_known), _known)
-        # Tag rewriting is Cursor/Windsurf only (VS Code = name memory/bias only).
-        if _enabled and _ide in ("cursor", "windsurf"):
+        # Tag rewriting for every recognized IDE (all are VS Code/Electron forks
+        # with an @-file mention picker).
+        if _enabled and _ide in _filetags_mod.TAGGING_IDES:
             _filetags = (_filetags_mod, _known, _is_terminal)
     except Exception as e:
         logger.debug("[filetag] setup skipped: %s", e)

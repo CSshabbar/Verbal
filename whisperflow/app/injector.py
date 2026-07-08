@@ -154,9 +154,10 @@ def inject_text(text: str, allow_mentions: bool = False) -> bool:
         try:
             from app import filetags
             ide = filetags.supported_ide(_previous_app_bundle, _previous_app_name)
+            _tagging = ide in filetags.TAGGING_IDES
         except Exception:
-            ide = None
-        if ide in ("cursor", "windsurf"):
+            _tagging = False
+        if _tagging:
             try:
                 return _inject_with_mentions(text)
             except Exception as e:
