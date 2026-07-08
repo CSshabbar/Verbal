@@ -35,3 +35,14 @@ def play_done():
         )
     except Exception as e:
         logger.debug(f"Sound error: {e}")
+
+
+def play_added():
+    """Satisfying little chime when a word is added to the dictionary."""
+    try:
+        subprocess.Popen(
+            ["afplay", "-v", "0.35", "/System/Library/Sounds/Hero.aiff"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+    except Exception as e:
+        logger.debug(f"Sound error: {e}")

@@ -28,7 +28,7 @@ from app.injector import (
 from app.hotkey import HotkeyListener
 from app.overlay import OverlayBar
 from app.autolearn_widget import AutoLearnWidget
-from app.sounds import play_start, play_stop, play_done
+from app.sounds import play_start, play_stop, play_done, play_added
 from app.dashboard import DashboardWindow           # legacy AppKit dashboard (fallback)
 from app.flume_web_dashboard import FlumeWebDashboard
 from app.flume_popover import FlumePopover
@@ -719,7 +719,14 @@ class VerbalApp(rumps.App):
             if added:
                 dictionary.add_replacement(cfg, old, new, save_config, auto=True)
                 self.config = cfg
+                play_added()  # satisfying confirmation chime
                 self._refresh_dashboards()
+                # Force the Dictionary screen to re-fetch so the new ✨ rule shows
+                # immediately (it's cached behind DICT_LOADED otherwise).
+                try:
+                    self.dashboard._eval("try{ if(window.loadDict) loadDict(); }catch(e){}")
+                except Exception:
+                    pass
         except Exception as e:
             logger.debug("autolearn result failed: %s", e)
 
