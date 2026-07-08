@@ -901,20 +901,23 @@ class EditWatcher:
     # ── the watch loop (daemon thread) ────────────────────────────────────────
     def _run(self, pid, bundle, inserted_text, callback, stop_event):
         try:
+            logger.info("[autolearn] watch armed pid=%s bundle=%s inserted=%r",
+                        pid, bundle, (inserted_text or "")[:60])
             # F12: bundle denylist + terminal focus check up front.
             if bundle in _EW_DENYLIST_BUNDLES:
-                logger.debug("[autolearn] skip denylisted bundle %s", bundle)
+                logger.info("[autolearn] skip: denylisted bundle %s", bundle)
                 return
             try:
                 from app import filetags
                 if filetags.focus_is_terminal():
-                    logger.debug("[autolearn] skip: focus is a terminal")
+                    logger.info("[autolearn] skip: focus is a terminal")
                     return
             except Exception:
                 pass  # can't tell → proceed; other gates still protect us
 
             app_el = self._app_element(pid)
             if app_el is None:
+                logger.info("[autolearn] skip: no AX app element for pid %s", pid)
                 return
 
             # Let the paste land, then grab the focused target element ONCE. We
@@ -924,11 +927,12 @@ class EditWatcher:
                 return
             element = self._focused_element(app_el)
             if element is None:
+                logger.info("[autolearn] skip: no focused UI element")
                 return
 
             # F3: never touch secure/password fields.
             if self._is_secure(element):
-                logger.debug("[autolearn] skip: secure text field")
+                logger.info("[autolearn] skip: secure text field")
                 return
 
             # ── baseline read + F13 sanity check ─────────────────────────────
@@ -945,9 +949,11 @@ class EditWatcher:
             if baseline is None:
                 # F13: the field never contained our inserted text — wrong/stale/
                 # flaky (Electron, web) read. Prefer under-triggering: do nothing.
-                logger.debug("[autolearn] skip: inserted text not found in field "
-                             "(F13 sanity check failed)")
+                _probe = self._read_value(element)
+                logger.info("[autolearn] skip: inserted text not found in field "
+                            "(F13). field read=%r", (_probe or "")[:80])
                 return
+            logger.info("[autolearn] baseline captured (%d chars); watching for edit", len(baseline))
 
             # Locate WHERE our text sits, disambiguating repeats via the caret
             # (F6/F11) so we can bound the diff to just the insertion window.
@@ -1047,6 +1053,9 @@ class EditWatcher:
             decision = apply_observation_guard(
                 decision, keystrokes_observed=False,
                 ms_since_insert=ms_since_insert)
+            logger.info("[autolearn] finalize: inserted=%r edited=%r -> %s (%s->%s) %s",
+                        old_region, edited_region, decision.get("action"),
+                        decision.get("old"), decision.get("new"), decision.get("reason"))
 
             if stop_event.is_set():
                 return

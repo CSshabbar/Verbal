@@ -703,7 +703,9 @@ class VerbalApp(rumps.App):
                 return
             from app import autolearn
             if autolearn.is_declined(self.config, new):
+                logger.info("[autolearn] not offering %r — already offered/declined", new)
                 return
+            logger.info("[autolearn] showing widget: %r -> %r", old, new)
             self.autolearn_widget.show(old, new)
         except Exception as e:
             logger.debug("autolearn offer failed: %s", e)
