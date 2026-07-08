@@ -194,31 +194,32 @@ class AutoLearnWidget:
 # ── HTML ──────────────────────────────────────────────────────────────────────
 _CSS = """
 *{box-sizing:border-box;margin:0;padding:0}
-:root{--tx:#f4f3f1;--mut:rgba(244,243,241,.5);--acc:#E8522A;
---pill:rgba(22,20,18,.97);--bd:rgba(244,243,241,.10);--chip:rgba(244,243,241,.06)}
+:root{--tx:#f4f3f1;--mut:rgba(244,243,241,.52);--acc:#E8522A;
+--pill:rgba(22,20,18,.97);--bd:rgba(244,243,241,.10);--chip:rgba(244,243,241,.07)}
 html,body{height:100%;background:transparent}
 body{font-family:'Geist',-apple-system,system-ui,sans-serif;-webkit-font-smoothing:antialiased;
-display:flex;align-items:flex-end;justify-content:center;overflow:visible;padding:14px 40px 34px}
-.pill{display:flex;align-items:center;gap:10px;background:var(--pill);border:1px solid var(--bd);
-border-radius:20px;padding:7px 8px 7px 14px;box-shadow:0 12px 34px rgba(0,0,0,.5);
-white-space:nowrap;max-width:100%;opacity:0;transform:translateY(10px) scale(.96)}
+display:flex;align-items:flex-end;justify-content:center;overflow:visible;padding:14px 40px 32px}
+.pill{display:flex;align-items:center;gap:13px;background:var(--pill);border:1px solid var(--bd);
+border-radius:18px;padding:11px 12px 11px 16px;box-shadow:0 14px 38px rgba(0,0,0,.52);
+max-width:560px;opacity:0;transform:translateY(10px) scale(.97)}
 .pill.in{animation:pin .24s cubic-bezier(.2,.8,.2,1) forwards}
 @keyframes pin{to{opacity:1;transform:none}}
 .pill.out{animation:pout .16s ease forwards}
 @keyframes pout{to{opacity:0;transform:translateY(8px) scale(.97)}}
-.spark{font-size:13px;line-height:1;flex:none;filter:saturate(1.2)}
-.txt{font:500 12.5px 'Geist';color:var(--mut);overflow:hidden;text-overflow:ellipsis;max-width:360px}
-.old{color:var(--mut);text-decoration:line-through;text-decoration-color:rgba(244,243,241,.35)}
-.arrow{color:var(--mut);padding:0 2px}
+.spark{font-size:18px;line-height:1;flex:none;filter:saturate(1.15)}
+.body{display:flex;flex-direction:column;gap:2px;min-width:0}
+.title{font:600 13.5px 'Geist';color:var(--tx);letter-spacing:-.01em}
+.pair{font:500 12.5px 'Geist';color:var(--mut);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:300px}
+.old{color:var(--mut);text-decoration:line-through;text-decoration-color:rgba(244,243,241,.38)}
+.arrow{color:var(--mut);padding:0 3px}
 .new{color:var(--tx);font-weight:600}
 .new .dot{color:var(--acc)}
-.vbar{width:1px;height:18px;background:rgba(244,243,241,.12);flex:none;margin:0 1px}
-.add{border:0;border-radius:13px;padding:6px 14px;background:var(--acc);color:#fff;cursor:pointer;
-font:600 12.5px 'Geist';flex:none;transition:filter .12s}
+.add{border:0;border-radius:12px;padding:8px 15px;background:var(--acc);color:#fff;cursor:pointer;
+font:600 12.5px 'Geist';flex:none;transition:filter .12s;margin-left:4px}
 .add:hover{filter:brightness(1.09)}
-.x{width:26px;height:26px;border-radius:50%;border:0;background:var(--chip);color:var(--tx);
+.x{width:28px;height:28px;border-radius:50%;border:0;background:var(--chip);color:var(--tx);
 cursor:pointer;display:flex;align-items:center;justify-content:center;flex:none}
-.x:hover{background:rgba(244,243,241,.14)}
+.x:hover{background:rgba(244,243,241,.15)}
 .x svg{width:11px;height:11px}
 """
 
@@ -227,11 +228,10 @@ function esc(s){return String(s==null?'':s).replace(/[&<>]/g,c=>({'&':'&amp;','<
 function api(m){ try{ return window.pywebview.api[m](); }catch(e){} }
 window.VerbalAutolearn=function(d){
   d=d||{};
-  document.getElementById('oldw').textContent = d.old || '';
+  document.getElementById('oldw').textContent = '\\u201C'+(d.old||'')+'\\u201D';
   var n=d.new||'', i=n.lastIndexOf('.');
-  document.getElementById('neww').innerHTML = i>0
-    ? esc(n.slice(0,i))+'<span class="dot">'+esc(n.slice(i))+'</span>'
-    : esc(n);
+  var inner = i>0 ? esc(n.slice(0,i))+'<span class="dot">'+esc(n.slice(i))+'</span>' : esc(n);
+  document.getElementById('neww').innerHTML = '\\u201C'+inner+'\\u201D';
   var c=document.getElementById('pill');
   c.classList.remove('out'); c.classList.remove('in'); void c.offsetWidth; c.classList.add('in');
 };
@@ -247,9 +247,11 @@ def autolearn_widget_html():
     body = """
     <div class="pill in" id="pill">
       <span class="spark">&#10024;</span>
-      <span class="txt">Learn <span class="old" id="oldw"></span> <span class="arrow">&#8594;</span> <span class="new" id="neww"></span></span>
-      <span class="vbar"></span>
-      <button class="add" onclick="api('autolearn_add')">Add</button>
+      <div class="body">
+        <div class="title">Add this word to your dictionary?</div>
+        <div class="pair"><span class="old" id="oldw"></span><span class="arrow">&#8594;</span><span class="new" id="neww"></span></div>
+      </div>
+      <button class="add" onclick="api('autolearn_add')">Add word</button>
       <button class="x" title="Dismiss" onclick="api('autolearn_close')">{x}</button>
     </div>
     """.format(x=x)
