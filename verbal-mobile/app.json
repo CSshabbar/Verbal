@@ -33,6 +33,12 @@
         "android.permission.FOREGROUND_SERVICE",
         "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK",
         "android.permission.CAMERA",
+        "android.permission.READ_MEDIA_IMAGES",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.MODIFY_AUDIO_SETTINGS",
+        "android.permission.FOREGROUND_SERVICE",
+        "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK",
+        "android.permission.CAMERA",
         "android.permission.READ_MEDIA_IMAGES"
       ],
       "package": "com.verbal.app"
@@ -67,6 +73,12 @@
         "projectId": "2dcb3386-32d8-46ae-860f-21cac7826038"
       }
     },
-    "owner": "shabbar26"
+    "owner": "shabbar26",
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/2dcb3386-32d8-46ae-860f-21cac7826038"
+    }
   }
 }
