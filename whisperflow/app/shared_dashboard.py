@@ -410,6 +410,40 @@ class DashboardApi:
         d = dictionary.save(self.app.config, vocabulary or [], replacements or [], save_config)
         return _ok(vocabulary=d["vocabulary"], replacements=d["replacements"])
 
+    # ── snippets (spoken trigger → longer text expansion) ──────────────────────
+    def fetch_snippets(self):
+        from app import dictionary
+        try:
+            dictionary.fetch_remote(self.app.config, save_config)
+        except Exception as e:
+            logger.debug("snippets remote fetch skipped: %s", e)
+        return _ok(snippets=dictionary.get_snippets(self.app.config))
+
+    def add_snippet(self, snippet):
+        from app import dictionary
+        s = snippet or {}
+        dictionary.add_snippet(self.app.config, s.get("trigger", ""),
+                               s.get("expansion", ""), s.get("label", ""), save_config)
+        return _ok(snippets=dictionary.get_snippets(self.app.config))
+
+    def update_snippet(self, snippet):
+        from app import dictionary
+        s = snippet or {}
+        sid = s.get("id")
+        if not sid:
+            return _err("missing snippet id")
+        fields = {}
+        for k in ("trigger", "expansion", "label"):
+            if s.get(k) is not None:
+                fields[k] = s.get(k)
+        dictionary.update_snippet(self.app.config, sid, save_config, **fields)
+        return _ok(snippets=dictionary.get_snippets(self.app.config))
+
+    def delete_snippet(self, snippet_id):
+        from app import dictionary
+        dictionary.remove_snippet(self.app.config, snippet_id, save_config)
+        return _ok(snippets=dictionary.get_snippets(self.app.config))
+
     # ── auto-learn from corrections ─────────────────────────────────────────────
     def get_autolearn_enabled(self):
         return _ok(enabled=bool(self.app.config.get("autolearn_enabled", False)))

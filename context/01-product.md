@@ -30,6 +30,7 @@ All three share **one Supabase backend** (project `ovpcthjingugwvpxlsna`) — se
 | Recording + transcription (Groq→Gemini→local) | ✅ | ✅ (Groq only) | ✅ | Fallback chain desktop; mobile = Groq `whisper-large-v3-turbo` |
 | AI cleanup / formatting | ✅ | ✅ (on retry) | ✅ | Desktop `process_text`; mobile `formatText` |
 | Custom dictionary (vocab bias + replacement rules) | ✅ | ✅ | ✅ | Synced, one row/user |
+| **Snippets** (spoken trigger → text expansion) | ✅ | ✅ | ⚠️ | On the `dictionary` row; longest-first, single-pass |
 | **Auto-learn** dictionary from corrections | ✅ | ❌ | ❌ | Desktop-only (AX read-back + cream pill widget) |
 | **File tagging** (`@name.ext` in IDEs) | ✅ | ❌ | ❌ | Desktop-only (macOS Accessibility) |
 | Recordings save / playback / retry | ✅ | ✅ | ⚠️ partial | Local + cloud (`recordings` bucket) |

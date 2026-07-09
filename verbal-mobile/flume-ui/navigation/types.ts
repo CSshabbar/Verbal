@@ -43,4 +43,5 @@ export type SettingsStackParamList = {
   Settings: undefined;
   Devices: undefined;
   PairDevice: undefined;
+  Snippets: undefined;
 };

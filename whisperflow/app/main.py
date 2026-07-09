@@ -607,6 +607,16 @@ class VerbalApp(rumps.App):
             if self._cancel_flag.is_set():
                 return
 
+            # Expand spoken snippet triggers into their saved text. Runs AFTER AI
+            # cleanup and immediately BEFORE injection. Fully guarded / fail-closed:
+            # any error leaves the transcription untouched and never breaks the
+            # record → transcribe → inject pipeline.
+            try:
+                from app import dictionary
+                result = dictionary.apply_snippets(result, self.config, save_config)
+            except Exception as e:
+                logger.debug("apply_snippets skipped: %s", e)
+
             self._last_result_text = result
             self.config = add_to_history(
                 self.config, result, get_focused_app_name(),

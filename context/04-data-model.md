@@ -18,12 +18,13 @@
 
 ### Tables with committed SQL (in `whisperflow/`)
 
-**`dictionary`** — `supabase_dictionary.sql`. One row/user.
+**`dictionary`** — `supabase_dictionary.sql` (+ `supabase_snippets.sql` for the `snippets` column). One row/user.
 | col | type | notes |
 |---|---|---|
 | `user_id` | text | **PK** |
 | `vocabulary` | jsonb | default `'[]'` |
 | `replacements` | jsonb | default `'[]'` — `[{"from","to","auto"?}]` |
+| `snippets` | jsonb | default `'[]'` — `[{id,trigger,expansion,label,used,created_at,updated_at}]` (spoken trigger → text expansion; caps 40/500) |
 | `updated_at` | timestamptz | default `now()` |
 
 RLS on; policy `dictionary anon rw`: `FOR ALL TO anon USING(true) WITH CHECK(true)`.
@@ -78,7 +79,8 @@ default `'done'`, `target_device_id` text, `edited_text` text (read as `edited_t
 - **Mobile history entry** (`lib/storage.ts HistoryEntry`): `{id, text, device_name, device_id,
   is_pinned, created_at, source:'local'|'remote', audio_uri?, audio_url?, status?}`.
 - **Replacement rule** (`dictionary.py`): `{from, to, auto?:true}` (`auto` = auto-learned, ✨ in UI).
-- **Dictionary**: `{vocabulary:[str], replacements:[{from,to,auto?}]}`.
+- **Snippet** (`dictionary.py` / `lib/dictionary.ts`): `{id, trigger, expansion, label, used, created_at, updated_at}` (caps: trigger 40, expansion 500).
+- **Dictionary**: `{vocabulary:[str], replacements:[{from,to,auto?}], snippets:[Snippet]}`.
 - **Note** (matches `notes` table); mobile `NoteEntry` adds `source:'local'|'remote'`.
 - **Device**: `{user_id, device_id, device_name, device_type, last_seen}`.
 - **Canvas** (mobile UI item): `{id, state:'draft'|'sent', kind:'text'|'link'|'image', …}` → collapsed to the

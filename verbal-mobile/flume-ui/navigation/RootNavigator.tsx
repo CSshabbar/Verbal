@@ -18,6 +18,7 @@ import {
   HistoryDetailScreen,
   PairDeviceScreen,
   DevicesScreen,
+  SnippetsScreen,
   NotesListScreen,
   NoteEditorScreen,
   CanvasScreen,
@@ -135,7 +136,13 @@ function SettingsNavigator() {
         {({ navigation }) => (
           <SettingsScreen
             onOpenDevices={() => navigation.navigate('Devices')}
+            onOpenSnippets={() => navigation.navigate('Snippets')}
           />
+        )}
+      </SettingsStack.Screen>
+      <SettingsStack.Screen name="Snippets">
+        {({ navigation }) => (
+          <SnippetsScreen onBack={() => navigation.goBack()} />
         )}
       </SettingsStack.Screen>
       <SettingsStack.Screen name="Devices">

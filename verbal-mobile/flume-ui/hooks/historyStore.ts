@@ -23,6 +23,7 @@ import {
   HistoryEntry,
 } from '../../lib/storage';
 import { transcribeAudio, formatText } from '../../lib/groq';
+import { getSnippets, applySnippets } from '../../lib/dictionary';
 import * as recordings from '../../lib/recordings';
 
 export type HistoryItem = {
@@ -261,6 +262,11 @@ export async function retryEntry(id: string): Promise<{ ok: boolean; error?: str
     if (!raw.trim()) return { ok: false, error: 'Still failing — check your connection' };
     let formatted = raw;
     try { formatted = await formatText(raw, apiKey); } catch { /* keep raw */ }
+    // Expand snippet triggers AFTER cleanup, before the transcript is stored.
+    try {
+      const snippets = await getSnippets();
+      if (snippets.length) formatted = applySnippets(formatted, snippets);
+    } catch { /* fail closed */ }
     await updateEntry(id, { text: formatted, status: 'done' });
     if (!id.startsWith('local_')) {
       try {

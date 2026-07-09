@@ -27,6 +27,7 @@ _IC = {
     "plus":   '<path d="M12 5v14M5 12h14"/>',
     "edit":   '<path d="M17 3 21 7l-13 13H4v-4z"/><path d="m14 6 4 4"/>',
     "book":   '<path d="M4 5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2z"/><path d="M4 19h15"/><path d="M9 7h6"/>',
+    "bolt":   '<path d="M13 2 4 14h7l-1 8 9-12h-7z"/>',
     "phone":  '<rect x="6" y="2.5" width="12" height="19" rx="2.4"/><path d="M11 18.5h2"/>',
     "dots":   '<circle cx="5" cy="12" r=".9"/><circle cx="12" cy="12" r=".9"/><circle cx="19" cy="12" r=".9"/>',
 }
@@ -258,6 +259,59 @@ body{background:var(--bg);font-family:'Geist',-apple-system,system-ui,sans-serif
 .kbs{display:flex;gap:6px}kbd{font:500 10.5px 'JetBrains Mono';background:rgba(240,240,240,.05);border:1px solid var(--bd2);border-radius:6px;padding:5px 9px;min-width:26px;text-align:center}
 .toggle{width:40px;height:22px;border-radius:11px;background:rgba(240,240,240,.12);position:relative;cursor:pointer;border:0}
 .toggle.on{background:var(--acc)}.toggle:after{content:'';position:absolute;top:2px;left:2px;width:18px;height:18px;border-radius:50%;background:#fff;transition:transform .15s}.toggle.on:after{transform:translateX(18px)}
+/* ── snippets ── */
+.snactions{display:flex;align-items:center;gap:10px}
+.snsearch{display:flex;align-items:center;gap:8px;background:rgba(240,240,240,.05);border:1px solid var(--bd2);border-radius:999px;padding:8px 14px}
+.snsearch svg{width:14px;height:14px;color:var(--mut);flex:none}
+.snsearch input{background:0;border:0;outline:0;color:var(--tx);font:400 12.5px 'Geist';width:130px}
+.snnew{flex:none;padding:9px 16px}.snnew svg{width:13px;height:13px}
+.snmeta{font:500 11px 'JetBrains Mono';color:var(--mut);letter-spacing:.04em;margin:-10px 0 18px}
+.snbody{position:relative}
+.sniptable{width:100%;border-collapse:collapse}
+.sniptable thead th{text-align:left;font:600 10px 'JetBrains Mono';letter-spacing:.1em;color:var(--sub);padding:0 12px 10px;border-bottom:1px solid var(--bd);white-space:nowrap}
+.sniptable th.th-trig{color:var(--acc);cursor:pointer}
+.sniptable th.th-used{text-align:right}
+.sniptable .scaret{opacity:.7;font-size:9px}
+.sniprow{cursor:pointer;border-bottom:1px solid var(--bd)}
+.sniprow:hover{background:rgba(240,240,240,.04)}
+.sniprow.active{background:var(--acc-soft)}
+.sniprow td{padding:12px;font:400 12.5px 'Geist';color:var(--tx);vertical-align:middle}
+.sniprow .td-trig{font:500 12.5px 'JetBrains Mono';color:var(--acc);white-space:nowrap}
+.sniprow .td-exp{color:var(--mut);max-width:320px}
+.sniprow .td-label{color:var(--sub)}
+.sniprow .td-used{text-align:right;font:500 12px 'JetBrains Mono';color:var(--mut);width:60px}
+.sniprow.active .td-used{color:var(--acc)}
+.sniprow .td-menu{width:40px;text-align:right;position:relative}
+.sndots{background:0;border:0;color:var(--mut);cursor:pointer;font-size:16px;line-height:1;padding:2px 6px;border-radius:6px}
+.sndots:hover{color:var(--tx);background:rgba(240,240,240,.06)}
+.snmenu{position:absolute;top:32px;right:8px;z-index:10;background:var(--card);border:1px solid var(--bd2);border-radius:10px;box-shadow:0 10px 30px rgba(0,0,0,.4);padding:5px;min-width:120px;display:flex;flex-direction:column}
+.snmenu button{background:0;border:0;text-align:left;color:var(--tx);cursor:pointer;font:500 12px 'Geist';padding:8px 12px;border-radius:6px}
+.snmenu button:hover{background:rgba(240,240,240,.06)}
+.snmenu button.del{color:#e5665a}
+/* slide-in edit pane (no scrim) */
+.snpane{position:fixed;top:0;right:0;height:100vh;width:390px;max-width:82vw;background:var(--chrome);border-left:1px solid var(--bd2);box-shadow:-24px 0 50px rgba(0,0,0,.35);padding:22px;display:flex;flex-direction:column;gap:16px;animation:snslide .18s ease-out;z-index:40;overflow-y:auto}
+@keyframes snslide{from{transform:translateX(24px);opacity:.3}to{transform:translateX(0);opacity:1}}
+.snpanehead{display:flex;align-items:center;justify-content:space-between}
+.snpanehead h3{font:600 15px 'Geist'}
+.snx{background:0;border:0;color:var(--mut);cursor:pointer;font-size:15px;padding:4px 8px;border-radius:6px}.snx:hover{color:var(--tx);background:rgba(240,240,240,.06)}
+.snfield label{display:block;font:600 10px 'JetBrains Mono';color:var(--mut);letter-spacing:.08em;margin-bottom:7px}
+.snfield input,.snfield textarea{width:100%;background:rgba(240,240,240,.05);border:1px solid var(--bd);border-radius:8px;padding:10px 12px;color:var(--tx);font:400 12.5px 'Geist';outline:0}
+.snfield input.sntrig{font:500 13px 'JetBrains Mono';border:0;border-bottom:1.5px solid var(--acc-bd);border-radius:0;background:0;padding:8px 2px}
+.snfield input.sntrig:focus{border-bottom-color:var(--acc)}
+.snfield textarea{min-height:120px;resize:vertical;font:400 12.5px/1.5 'Geist'}
+.snfield input:focus,.snfield textarea:focus{border-color:var(--acc-bd)}
+.snhelp{display:flex;align-items:center;justify-content:space-between;margin-top:7px;font:400 10.5px 'Geist';color:var(--sub)}
+.sncount{font:500 10px 'JetBrains Mono';color:var(--sub);letter-spacing:.04em}
+.snpanefoot{display:flex;align-items:center;gap:8px;margin-top:auto;padding-top:8px}
+.sndel{background:0;border:0;color:#e5665a;cursor:pointer;font:600 12.5px 'Geist';padding:8px 4px}.sndel:hover{text-decoration:underline}
+.snpanefoot .grow{flex:1}
+/* empty state */
+.snempty{padding:20px 0;max-width:560px}
+.sneyebrow{font:600 11px 'JetBrains Mono';letter-spacing:.18em;color:var(--acc);margin-bottom:16px}
+.snbig{font:600 26px/1.3 'Geist';letter-spacing:-.01em;margin-bottom:26px}
+.snbig .snq{color:var(--acc);font-family:'JetBrains Mono'}
+.snchips{display:flex;flex-wrap:wrap;gap:8px;margin-top:34px}
+.snchips span{font:500 11.5px 'Geist';color:var(--mut);background:rgba(240,240,240,.05);border:1px solid var(--bd);border-radius:999px;padding:7px 14px}
 """
 
 
@@ -278,6 +332,7 @@ def flume_html() -> str:
         {_nav("grid","Canvas","canvas", badge="")}
         {_nav("lines","Notes","notes")}
         {_nav("book","Dictionary","dictionary")}
+        {_nav("bolt","Snippets","snippets")}
       </nav>
       <div class="navhead devhead">DEVICES<button class="devadd" onclick="show('devices')" title="Pair a device">+</button></div>
       <div class="devlist" id="sideDevices"></div>
@@ -315,6 +370,7 @@ def flume_html() -> str:
       <section class="screen" id="scr-canvas" hidden><div class="main" id="canvasMain"></div></section>
       <section class="screen" id="scr-notes" hidden><div class="threepane" id="notesMain"></div></section>
       <section class="screen" id="scr-dictionary" hidden><div class="main" id="dictionaryMain"></div></section>
+      <section class="screen" id="scr-snippets" hidden><div class="main" id="snippetsMain"></div></section>
       <section class="screen" id="scr-devices" hidden><div class="main" id="devicesMain"></div></section>
       <section class="screen" id="scr-settings" hidden><div class="main" id="settingsMain"></div></section>
     </div>"""
@@ -326,6 +382,7 @@ function api(name){ const a=[].slice.call(arguments,1);
 let STATE=null, NOTES=[], CANVAS={content:'',image_url:null}, ACTIVE='home', SELH=0, SELN=null, EDITH=false;
 let PAIR={active:false, token:null, svg:'', ttl:0, claimedBy:null, pollTimer:null, tickTimer:null};
 let DICT={vocabulary:[],replacements:[]}, DICT_LOADED=false;
+let SNIPS=[], SNIPS_LOADED=false, SNIP_EDIT=null, SNIP_SEARCH='', SNIP_MENU=null, SNIP_SORT=1;
 let FT={enabled:false,seen_count:0}, FT_LOADED=false;
 let AL={enabled:false}, AL_LOADED=false;
 let retryErr='', retryBusy=false;
@@ -348,6 +405,7 @@ function renderActive(){
     else if(ACTIVE==='canvas') renderCanvas();
     else if(ACTIVE==='notes') renderNotes();
     else if(ACTIVE==='dictionary') renderDictionary();
+    else if(ACTIVE==='snippets') renderSnippets();
     else if(ACTIVE==='devices') renderDevices();
     else if(ACTIVE==='settings') renderSettings();
   } catch(e){
@@ -865,6 +923,125 @@ function addWord(){ const el=document.getElementById('dictWord'); if(!el)return;
 function removeWord(i){ DICT.vocabulary.splice(i,1); dictReRender(); saveDict(); }
 function addRep(){ const f=document.getElementById('repFrom'),t=document.getElementById('repTo'); if(!f||!t)return; const frm=f.value.trim(),to=t.value.trim(); if(!frm||!to)return; DICT.replacements=DICT.replacements.filter(r=>r.from.toLowerCase()!==frm.toLowerCase()); DICT.replacements.push({from:frm,to:to}); dictReRender(); saveDict(); setTimeout(()=>{const n=document.getElementById('repFrom'); if(n)n.focus();},0); }
 function removeRep(i){ DICT.replacements.splice(i,1); dictReRender(); saveDict(); }
+
+// ── Snippets ──────────────────────────────────────────────────────────────
+function loadSnips(){ api('fetch_snippets').then(r=>{ if(r&&r.ok){ SNIPS=r.snippets||[]; if(ACTIVE==='snippets') renderSnippets(); } }); }
+function snipSearch(v){ SNIP_SEARCH=v; renderSnippets(); }
+function snipSort(){ SNIP_SORT=-SNIP_SORT; renderSnippets(); }
+function snipEmptyHtml(){
+  return `
+    <div class="mhead"><div><div class="eyebrow">Transcription</div><h1 class="title">Snippets</h1><p class="ssub" style="margin-top:6px">Say a phrase, get the full text.</p></div></div>
+    <div class="snempty">
+      <div class="sneyebrow">TRY ONE</div>
+      <div class="snbig">Say <span class="snq">"my linkedin"</span> — get your full URL every time.</div>
+      <button class="btn primary snnew" style="margin:0" onclick="openSnip('')">${SVG.plus}<span>Create your first snippet</span></button>
+      <div class="snchips"><span>Calendar link</span><span>Email signature</span><span>Home address</span><span>Product blurb</span></div>
+    </div>`;
+}
+function snipRowHtml(s){
+  const prev=(s.expansion||'').replace(/\s+/g,' ').trim();
+  const shown=prev.length>40? esc(prev.slice(0,40))+'…' : esc(prev);
+  const active=SNIP_EDIT && SNIP_EDIT.id===s.id;
+  const menu = SNIP_MENU===s.id
+    ? `<div class="snmenu"><button onclick="event.stopPropagation();openSnip('${esc(s.id)}')">Edit</button><button class="del" onclick="event.stopPropagation();deleteSnip('${esc(s.id)}')">Delete</button></div>`
+    : '';
+  return `<tr class="sniprow${active?' active':''}" onclick="openSnip('${esc(s.id)}')">
+    <td class="td-trig">${esc(s.trigger||'')}</td>
+    <td class="td-exp">${shown}</td>
+    <td class="td-label">${esc(s.label||s.trigger||'')}</td>
+    <td class="td-used">${s.used||0}</td>
+    <td class="td-menu"><button class="sndots" onclick="event.stopPropagation();toggleSnipMenu('${esc(s.id)}')">⋯</button>${menu}</td>
+  </tr>`;
+}
+function snipPaneHtml(){
+  const s=SNIP_EDIT||{id:'',trigger:'',expansion:'',label:''};
+  const isNew=!s.id;
+  const tlen=(s.trigger||'').length, elen=(s.expansion||'').length;
+  return `<div class="snpane">
+    <div class="snpanehead"><h3>${isNew?'New snippet':'Edit snippet'}</h3><button class="snx" onclick="closeSnip()">✕</button></div>
+    <div class="snfield">
+      <label>TRIGGER</label>
+      <input class="sntrig" id="snipTrig" maxlength="40" placeholder="Say this to trigger…" value="${esc(s.trigger||'')}" oninput="snipEditField('trigger',this.value)"/>
+      <div class="snhelp"><span>Say naturally, mid-sentence.</span><span class="sncount" id="snipTrigCount">${tlen}/40</span></div>
+    </div>
+    <div class="snfield">
+      <label>EXPANSION</label>
+      <textarea id="snipExp" maxlength="500" placeholder="What Flume should type instead…" oninput="snipEditField('expansion',this.value)">${esc(s.expansion||'')}</textarea>
+      <div class="snhelp"><span></span><span class="sncount" id="snipExpCount">${elen} / 500</span></div>
+    </div>
+    <div class="snfield">
+      <label>LABEL</label>
+      <input id="snipLabel" placeholder="optional" value="${esc(s.label||'')}" oninput="snipEditField('label',this.value)"/>
+    </div>
+    <div class="snpanefoot">
+      ${isNew?'':`<button class="sndel" onclick="deleteSnip('${esc(s.id)}')">Delete</button>`}
+      <span class="grow"></span>
+      <button class="btn ghost" style="flex:none" onclick="closeSnip()">Cancel</button>
+      <button class="btn primary" style="flex:none" onclick="saveSnip()">Save</button>
+    </div>
+  </div>`;
+}
+function renderSnippets(){
+  if(!SNIPS_LOADED){ SNIPS_LOADED=true; loadSnips(); }
+  const main=document.getElementById('snippetsMain'); if(!main) return;
+  const all=SNIPS||[];
+  if(!all.length){ main.innerHTML = snipEmptyHtml() + (SNIP_EDIT!==null? snipPaneHtml() : ''); if(SNIP_EDIT!==null) setTimeout(()=>{const el=document.getElementById('snipTrig'); if(el)el.focus();},0); return; }
+  const q=SNIP_SEARCH.trim().toLowerCase();
+  let list = q ? all.filter(s=>((s.trigger||'')+' '+(s.label||'')+' '+(s.expansion||'')).toLowerCase().includes(q)) : all.slice();
+  list.sort((a,b)=>(a.trigger||'').toLowerCase()<(b.trigger||'').toLowerCase()? -SNIP_SORT : SNIP_SORT);
+  const totalUsed=all.reduce((a,s)=>a+(s.used||0),0);
+  const rows = list.length ? list.map(snipRowHtml).join('') : `<tr><td colspan="5"><div class="empty">No snippets match "${esc(SNIP_SEARCH)}".</div></td></tr>`;
+  const caret = SNIP_SORT>0 ? '▲' : '▼';
+  main.innerHTML = `
+    <div class="mhead">
+      <div><div class="eyebrow">Transcription</div><h1 class="title">Snippets</h1><p class="ssub" style="margin-top:6px">Say a phrase, get the full text.</p></div>
+      <div class="snactions">
+        <div class="snsearch">${SVG.search}<input id="snipSearch" placeholder="Search" value="${esc(SNIP_SEARCH)}" oninput="snipSearch(this.value)"/></div>
+        <button class="btn primary snnew" onclick="openSnip('')">${SVG.plus}<span>New</span></button>
+      </div>
+    </div>
+    <div class="snmeta">${all.length} saved · used ${totalUsed} time${totalUsed===1?'':'s'}</div>
+    <div class="snbody">
+      <table class="sniptable">
+        <thead><tr>
+          <th class="th-trig" onclick="snipSort()">TRIGGER <span class="scaret">${caret}</span></th>
+          <th>EXPANSION</th><th>LABEL</th><th class="th-used">USED</th><th></th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+    ${SNIP_EDIT!==null? snipPaneHtml() : ''}`;
+  if(q){ const el=document.getElementById('snipSearch'); if(el){ el.focus(); try{ el.setSelectionRange(el.value.length,el.value.length); }catch(e){} } }
+}
+function snipEditField(k,v){
+  if(!SNIP_EDIT) return;
+  SNIP_EDIT[k]=v;
+  if(k==='trigger'){ const el=document.getElementById('snipTrigCount'); if(el) el.textContent=v.length+'/40'; }
+  else if(k==='expansion'){ const el=document.getElementById('snipExpCount'); if(el) el.textContent=v.length+' / 500'; }
+}
+function openSnip(id){
+  SNIP_MENU=null;
+  if(id){ const s=(SNIPS||[]).find(x=>x.id===id); SNIP_EDIT = s ? {id:s.id,trigger:s.trigger||'',expansion:s.expansion||'',label:s.label||''} : {id:'',trigger:'',expansion:'',label:''}; }
+  else SNIP_EDIT={id:'',trigger:'',expansion:'',label:''};
+  renderSnippets();
+  setTimeout(()=>{ const el=document.getElementById('snipTrig'); if(el) el.focus(); },0);
+}
+function closeSnip(){ SNIP_EDIT=null; renderSnippets(); }
+function toggleSnipMenu(id){ SNIP_MENU = (SNIP_MENU===id? null : id); renderSnippets(); }
+function saveSnip(){
+  if(!SNIP_EDIT) return;
+  const t=(SNIP_EDIT.trigger||'').trim(), e=(SNIP_EDIT.expansion||'').trim(), l=(SNIP_EDIT.label||'').trim();
+  if(!t||!e) return;
+  const isNew=!SNIP_EDIT.id;
+  const call = isNew
+    ? api('add_snippet', {trigger:t, expansion:e, label:l})
+    : api('update_snippet', {id:SNIP_EDIT.id, trigger:t, expansion:e, label:l});
+  call.then(r=>{ if(r&&r.ok){ SNIPS=r.snippets||SNIPS; SNIP_EDIT=null; renderSnippets(); } });
+}
+function deleteSnip(id){
+  if(!id) return;
+  api('delete_snippet', id).then(r=>{ if(r&&r.ok){ SNIPS=r.snippets||SNIPS; if(SNIP_EDIT&&SNIP_EDIT.id===id) SNIP_EDIT=null; SNIP_MENU=null; renderSnippets(); } });
+}
 function saveSettings(){
   const g=document.getElementById('groqKeys').value.split('\n').map(x=>x.trim()).filter(Boolean);
   const gm=document.getElementById('gemKeys').value.split('\n').map(x=>x.trim()).filter(Boolean);

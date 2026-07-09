@@ -49,6 +49,32 @@ Each feature: **what it does · desktop impl · mobile impl · backend · status
 - **Backend:** `dictionary` table (`user_id` PK, `vocabulary` jsonb, `replacements` jsonb, `updated_at`).
 - **Status:** full parity. Rule shape `{from, to, auto?}`.
 
+## Snippets (spoken trigger → text expansion)
+
+- **What:** a generalization of replacement rules — a spoken `trigger` **phrase** expands into a longer
+  saved `expansion` block (LinkedIn URL, email signature, scheduling link, disclaimer). Spoken naturally
+  inside normal speech (no command syntax); expands in place, rest of the sentence untouched. Stored on
+  the same per-user `dictionary` row (third array beside vocabulary + replacements).
+- **Desktop:** `dictionary.py` — `apply_snippets(text, config, save_config_fn=None)` (phrase-boundary,
+  case-insensitive, multi-word aware) plus CRUD `add_snippet`/`update_snippet`/`remove_snippet`/
+  `get_snippets` (dedupe by trigger, mirror `add_replacement`). Runs in `main.py` **after**
+  `ai_cleanup.process_text` and **before** injection. Match rules: **longest trigger first** (so a
+  substring trigger can't shadow a longer one) and **single pass only** — an inserted expansion is never
+  re-scanned (no recursive/nested expansion, no cascades or loops). On each match the snippet's `used`
+  counter is bumped and persisted. Dashboard **Snippets** tab in `flume_dashboard_html.py`. Assertion
+  harness `snippets_fixtures.py`.
+- **Mobile:** `lib/dictionary.ts` — direct mirror (`applySnippets`, `getSnippets`, `addSnippet`,
+  `updateSnippet`, `removeSnippet`, `Snippet` type), same longest-first/single-pass algorithm and `used`
+  bump; `flume-ui/screens/SnippetsScreen.tsx` + `flume-ui/hooks/useSnippets.ts` (mock contract
+  `useSnippets.mock.ts`).
+- **Backend:** `dictionary.snippets` jsonb column (default `'[]'`), `supabase_snippets.sql` (idempotent
+  `ADD COLUMN IF NOT EXISTS`). Snippet shape `{id, trigger, expansion, label, used, created_at, updated_at}`.
+  Same sync path as the rest of the dictionary (one row/user, last-write-wins). `_push_remote` preserves
+  the sibling `snippets` array so a vocab/replacement save never wipes it.
+- **Caps:** `trigger` ≤ 40 chars, `expansion` ≤ 500 chars (match the design mockups; enforced both sides on normalize + CRUD + UI counters).
+- **Status:** full parity (desktop + mobile). Fails closed — any `apply_snippets` error returns the text
+  unchanged, never breaking the transcribe → inject path.
+
 ## Auto-learn from corrections (desktop only)
 
 - **What:** after inserting a transcript, if you fix a mis-transcribed word in the target field, offer to

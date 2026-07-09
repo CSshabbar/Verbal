@@ -11,6 +11,7 @@ import {
 } from 'expo-audio';
 import * as Haptics from 'expo-haptics';
 import { transcribeAudio } from '../../lib/groq';
+import { getSnippets, applySnippets } from '../../lib/dictionary';
 import { getGroqKey } from '../../lib/storage';
 import * as recordings from '../../lib/recordings';
 
@@ -144,6 +145,16 @@ export function useRecorder() {
         console.warn('Transcription failed — saved for retry:', tErr);
         txStatus = 'failed';
       }
+
+      // Expand snippet triggers AFTER cleanup, immediately before the transcript
+      // is handed off for insert/append. Fully guarded — snippet expansion must
+      // never break the recording→transcribe→insert path.
+      try {
+        if (txStatus === 'ok' && text) {
+          const snippets = await getSnippets();
+          if (snippets.length) text = applySnippets(text, snippets);
+        }
+      } catch { /* fail closed */ }
 
       await Haptics.notificationAsync(
         txStatus === 'ok'

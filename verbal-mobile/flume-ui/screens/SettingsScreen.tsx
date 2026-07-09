@@ -19,13 +19,13 @@ import {
   clearHistory,
 } from '../../lib/storage';
 
-type Props = { onOpenDevices: () => void };
+type Props = { onOpenDevices: () => void; onOpenSnippets: () => void };
 
 /**
  * Settings — keys & preferences, in the Flume visual language.
  * Reads/writes the local settings store directly (lib/storage).
  */
-export const SettingsScreen: React.FC<Props> = ({ onOpenDevices }) => {
+export const SettingsScreen: React.FC<Props> = ({ onOpenDevices, onOpenSnippets }) => {
   const insets = useSafeAreaInsets();
   const { user, signOut } = useAuth();
 
@@ -181,6 +181,23 @@ export const SettingsScreen: React.FC<Props> = ({ onOpenDevices }) => {
           </Card>
         </Section>
 
+        {/* Voice — snippets (spoken phrase → full text) */}
+        <Section label="VOICE">
+          <Pressable onPress={onOpenSnippets} style={styles.snippetCard}>
+            <View style={styles.snippetIcon}>
+              <Ionicons name="flash" size={20} color={colors.primary} />
+            </View>
+            <View style={{ flex: 1, minWidth: 0 }}>
+              <Text variant="button">Snippets</Text>
+              <Text variant="caption" color={colors.textMuted} style={{ marginTop: 2 }}>
+                Say a phrase, get the full text
+              </Text>
+            </View>
+            <Text variant="metaSm" color={colors.textSubtle}>{dict.snippets?.length ?? 0}</Text>
+            <Ionicons name="chevron-forward" size={20} color={colors.textSubtle} />
+          </Pressable>
+        </Section>
+
         {/* Custom dictionary */}
         <Section label="CUSTOM DICTIONARY">
           <Card padding={14}>
@@ -332,6 +349,19 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: colors.bgScreen,
     paddingHorizontal: 18,
+  },
+  snippetCard: {
+    flexDirection: 'row', alignItems: 'center', gap: 14,
+    padding: 14,
+    borderRadius: radius.lg,
+    backgroundColor: colors.surface1,
+    borderWidth: 1, borderColor: colors.borderSubtle,
+  },
+  snippetIcon: {
+    width: 42, height: 42, borderRadius: radius.md,
+    alignItems: 'center', justifyContent: 'center',
+    backgroundColor: colors.primarySoft,
+    borderWidth: 1, borderColor: colors.primaryBorder,
   },
   chipWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 10 },
   chip: {
