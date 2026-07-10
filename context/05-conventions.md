@@ -55,6 +55,20 @@
    this is what broke dictionary/snippet sync to signed-in phones (fixed via
    `whisperflow/supabase_dictionary_rls_fix.sql`). `pairings` still has the latent `TO anon` pattern.
 
+11. **Preserve unknown fields verbatim on write-back (forward-compat sync).** A client must never replace a
+   synced row with only the fields it knows about — a newer client's columns would be silently dropped.
+   Notes v2 enforces this: desktop keeps a `_NOTE_KNOWN_FIELDS` allowlist and re-attaches every unknown key
+   to the cloud upsert (`shared_dashboard.py`); mobile relies on `NoteEntry`'s index signature + spreading
+   the whole row before overwriting known fields (`useNotes.ts`/`notesStorage.ts`). Apply the same pattern
+   to any new synced table/column.
+
+12. **Notes cleanup runs once, not on every save (cost control).** An LLM call per note save = runaway
+   cost. Cleanup fires only on the initial dictated save (and on explicit Reformat/Retry); typed edits
+   never auto-format; appended dictation cleans only the newly-appended segment. The LLM notes call has an
+   **8 s hard timeout** → fall back to saving raw + surface "Retry formatting" (never block the editor).
+   The structure-detection rules live on `NOTES_FORMATTER_SYSTEM_PROMPT`/mobile `formatNotes` (the **LLM**
+   system prompt) — Hard Rule #6's 896-char cap is the **Whisper** bias prompt only; don't conflate them.
+
 ## Design system (Flume)
 
 Single source: desktop `app/theme.py` + `app/fonts_css.py`; mobile `flume-ui/theme/`. Also
@@ -95,6 +109,8 @@ Single source: desktop `app/theme.py` + `app/fonts_css.py`; mobile `flume-ui/the
   — dead; live UI is under `flume-ui/`.
 - `lib/useSync.ts` (superseded by `historyStore.ts`), `lib/useDeviceSelector.ts` (superseded by
   `flume-ui/hooks/useDevices.ts`), `lib/MarkdownText.tsx`, `lib/theme.ts` — not imported by live code.
+  **Do not revive `lib/MarkdownText.tsx`** (it depends on stale `lib/theme.ts`); the live notes markdown/
+  checklist renderer is `flume-ui/components/MarkdownNote.tsx` (Notes v2), styled off `flume-ui/theme/`.
 - all `flume-ui/hooks/*.mock.ts` — contract references, never imported at runtime.
 - `dist/` — stale web export.
 - `flume-ui/components/ConfirmDialog.tsx` **is live** (imported directly by `useAuth`, `SettingsScreen`,

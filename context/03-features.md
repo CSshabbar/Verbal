@@ -31,10 +31,16 @@ Each feature: **what it does · desktop impl · mobile impl · backend · status
 - **Desktop:** `ai_cleanup.py::process_text` — ① `clean_raw_transcript` (regex: strip hallucinations,
   fillers, doubled words; capitalize; terminal punctuation), ② LLM format via Groq
   `llama-3.3-70b-versatile` (`cleanup_with_groq`) → Gemini fallback with key rotation. `SYSTEM_PROMPT` =
-  17 rules ("you are a TEXT FORMATTER, not an assistant"). Separate `NOTES_FORMATTER_SYSTEM_PROMPT`.
+  17 rules ("you are a TEXT FORMATTER, not an assistant"). Separate `NOTES_FORMATTER_SYSTEM_PROMPT`;
+  `build_notes_system_prompt(structure_detection, autotitle)` appends the checklist/structure-detection
+  and `TITLE:` rules only when those flags are on (see §Notes). `format_note(text, cfg, …)` returns
+  `{title, formatted_content}`; `_parse_note_response` peels a leading `TITLE:` line.
 - **Mobile:** `lib/groq.ts::formatText` (same `llama-3.3-70b-versatile`) — used on **retry** and where
-  screens call it. `formatNotes` exists but is **not wired** into the note editor (mobile notes stored raw).
-- **Status:** desktop runs cleanup on every dictation; mobile is lighter (copy raw, format on retry).
+  screens call it. `formatNotes` / `formatNoteWithTitle(text, apiKey, {timeoutMs, detectStructure,
+  withTitle})` are now **wired into the note editor** via `useNotes.saveDictation` (see §Notes) — mobile
+  notes are no longer stored raw-only.
+- **Status:** desktop runs cleanup on every dictation. Notes cleanup (both platforms) runs **once** per
+  dictated save, not on every edit (Decision 2 — see §Notes).
 
 ## Custom dictionary (vocabulary + replacement rules)
 
@@ -139,14 +145,47 @@ Each feature: **what it does · desktop impl · mobile impl · backend · status
 
 ## Notes
 
-- **What:** synced, voice-first notes.
+- **What:** synced, voice-first notes. **v2** (spec `NOTES_ENHANCEMENT_SWARM.md`) adds full-text search,
+  auto-titling, structure detection (voice → interactive checklists), note ↔ source-recording linkage,
+  raw+formatted dual storage, cost-controlled cleanup, four per-user feature flags, and conflict-pair sync.
+- **Raw + formatted (Decision 1):** a dictated note stores **both** the raw transcript (`raw_content`) and
+  the AI-formatted `content`; the toolbar's **"show original"** reveals the raw text. Pre-existing/typed
+  notes have `raw_content` null → the affordance is hidden.
+- **Cost control (Decision 2):** cleanup runs **once**, on the initial dictated save (creates formatted
+  content + title). Typed edits never auto-format. Appended dictation cleans **only the new segment** and
+  concatenates it. Re-running cleanup is explicit only: toolbar **"Reformat"** (or **"Retry formatting"**
+  when the first cleanup failed/timed out — 8 s hard timeout → save raw + set the retry affordance).
+- **Auto-title (Decision/Feature 2):** fires only on the first save of a note whose title is still empty;
+  **never overwrites a manually-set title**.
+- **Structure detection (Feature 3):** enumerable speech becomes markdown task-list items (`- [ ]`);
+  checkboxes are interactive (toggle `- [ ]`↔`- [x]` in the underlying content, persisted immediately) and
+  carry a real checkbox role/label. Flag-off still formats but keeps prose/plain bullets.
+- **Audio linkage (Feature 4):** each dictation persists its recording and appends `{id,url,created_at}` to
+  the note's `audio_segments`; a labeled per-segment play control appears (typed notes show none).
+- **Feature flags (Decision 4, default on):** `notes_search_enabled`, `notes_autotitle_enabled`,
+  `notes_structure_detection_enabled`, `notes_audio_linkage_enabled` — toggled in Settings; desktop reads
+  via `feature_flag(cfg,…)` (`config`), mobile via `getNotesFeatureFlags`/`setNotesFeatureFlag`
+  (AsyncStorage). First-run does **not** backfill existing notes (Decision 5); only new notes get v2
+  behaviors, but search covers everything.
 - **Desktop:** `DashboardApi.fetch_notes/save_note/delete_note/toggle_note_pin` — local-first
-  (`config['notes']`) merged with Supabase `notes` (newest `updated_at` wins). `note_dictate_start/stop`
-  = in-note voice dictation; `format_note_with_ai` (Groq notes formatter).
-- **Mobile:** `flume-ui/hooks/useNotes.ts` + `lib/notesStorage.ts` (AsyncStorage cache) + `notes` table.
-  `NoteEditorScreen` appends dictation into the body (`useRecorder`); shows live `partialText`.
-- **Backend:** `notes` table (`id,user_id,title,content,folder,is_pinned,device_name,created_at,updated_at`).
-- **Known limit:** mobile `isVoice` flag isn't persisted (no `is_voice` column); mobile notes not auto-formatted.
+  (`config['notes']`) merged with Supabase `notes` via `merge_remote_note` (union + conflict-pair, see
+  `04-data-model.md`). `note_dictate_start/stop` = in-note dictation (stop persists the recording +
+  appends to `audio_segments` when linkage is on); `format_note_with_ai(text)` returns
+  `{title, formatted_content}` in one LLM call; `search_notes(query)` = case-insensitive substring,
+  title-over-content ranked, recency tiebreak. Dashboard UI (`flume_dashboard_html.py`): search field,
+  hand-rolled markdown/checklist renderer (`role="checkbox"`), per-segment playback, show-original/reformat/
+  retry affordances, and Notes feature-flag toggles in Settings.
+- **Mobile:** `flume-ui/hooks/useNotes.ts` + `lib/notesStorage.ts` (AsyncStorage cache, `mergeRemoteNote`)
+  + `notes` table. `useNotes.saveDictation` wires `formatNoteWithTitle` into the save path (first-vs-append,
+  8 s timeout → `format_failed`); `reformatNote` = explicit Reformat/Retry. Search via
+  `lib/notesSearch.ts::searchNotes` (same ranking). `NoteEditorScreen` renders markdown/checklists through
+  the fresh `flume-ui/components/MarkdownNote.tsx` (NOT the legacy `lib/MarkdownText.tsx`), with
+  show-original, reformat/retry chips, and per-segment playback (`expo-audio` via `lib/recordings.ts`).
+- **Backend:** `notes` table — base cols `id,user_id,title,content,folder,is_pinned,device_name,created_at,
+  updated_at` **plus v2** `raw_content text` (nullable) and `audio_segments jsonb '[]'` (see
+  `supabase_notes_v2.sql`; details + conflict-pair/union/unknown-field sync in `04-data-model.md`).
+- **Known limit:** still no `is_voice` column — `isVoice` is inferred from `raw_content`/non-empty
+  `audio_segments` (survives reloads for dictated notes).
 
 ## Canvas — shared clipboard
 

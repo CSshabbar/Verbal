@@ -17,6 +17,8 @@ import {
   getSyncEnabled, setSyncEnabled,
   getUserId, setUserId,
   clearHistory,
+  getNotesFeatureFlags, setNotesFeatureFlag,
+  DEFAULT_NOTES_FLAGS, type NotesFeatureFlags,
 } from '../../lib/storage';
 
 type Props = { onOpenDevices: () => void; onOpenSnippets: () => void };
@@ -43,6 +45,8 @@ export const SettingsScreen: React.FC<Props> = ({ onOpenDevices, onOpenSnippets 
   const [repFrom, setRepFrom] = useState('');
   const [repTo, setRepTo] = useState('');
 
+  const [notesFlags, setNotesFlags] = useState<NotesFeatureFlags>(DEFAULT_NOTES_FLAGS);
+
   useEffect(() => {
     (async () => {
       setGroqKeyState(await getGroqKey());
@@ -50,8 +54,14 @@ export const SettingsScreen: React.FC<Props> = ({ onOpenDevices, onOpenSnippets 
       setUserIdState(await getUserId());
       setSync(await getSyncEnabled());
       setDict(await fetchRemote());
+      setNotesFlags(await getNotesFeatureFlags());
     })();
   }, []);
+
+  const toggleNotesFlag = async (key: keyof NotesFeatureFlags, val: boolean) => {
+    setNotesFlags(prev => ({ ...prev, [key]: val }));
+    await setNotesFeatureFlag(key, val);
+  };
 
   const persistDict = async (d: Dictionary) => { setDict(d); await saveDictionary(d); };
   const addWord = async () => {
@@ -198,6 +208,38 @@ export const SettingsScreen: React.FC<Props> = ({ onOpenDevices, onOpenSnippets 
           </Pressable>
         </Section>
 
+        {/* Notes features (Notes v2 — per-user feature flags) */}
+        <Section label="NOTES">
+          <FlagRow
+            icon="search-outline"
+            title="Search"
+            subtitle="Full-text search across your notes"
+            value={notesFlags.search}
+            onChange={v => toggleNotesFlag('search', v)}
+          />
+          <FlagRow
+            icon="pricetag-outline"
+            title="Auto-titling"
+            subtitle="Name a dictated note automatically"
+            value={notesFlags.autotitle}
+            onChange={v => toggleNotesFlag('autotitle', v)}
+          />
+          <FlagRow
+            icon="checkbox-outline"
+            title="Structure detection"
+            subtitle="Turn spoken lists into checklists"
+            value={notesFlags.structure}
+            onChange={v => toggleNotesFlag('structure', v)}
+          />
+          <FlagRow
+            icon="mic-outline"
+            title="Audio linkage"
+            subtitle="Keep the recording behind a voice note"
+            value={notesFlags.audio}
+            onChange={v => toggleNotesFlag('audio', v)}
+          />
+        </Section>
+
         {/* Custom dictionary */}
         <Section label="CUSTOM DICTIONARY">
           <Card padding={14}>
@@ -342,6 +384,29 @@ const Section: React.FC<{ label: string; children: React.ReactNode }> = ({ label
     <Text variant="meta" color={colors.textSubtle} style={{ marginLeft: 2 }}>{label}</Text>
     {children}
   </View>
+);
+
+const FlagRow: React.FC<{
+  icon: keyof typeof Ionicons.glyphMap;
+  title: string;
+  subtitle: string;
+  value: boolean;
+  onChange: (v: boolean) => void;
+}> = ({ icon, title, subtitle, value, onChange }) => (
+  <ListRow
+    icon={icon}
+    title={title}
+    subtitle={subtitle}
+    trailing={
+      <Switch
+        value={value}
+        onValueChange={onChange}
+        trackColor={{ false: colors.surface3, true: colors.primary }}
+        thumbColor="#fff"
+        accessibilityLabel={title}
+      />
+    }
+  />
 );
 
 const styles = StyleSheet.create({

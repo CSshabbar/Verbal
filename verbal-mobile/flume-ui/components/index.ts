@@ -20,3 +20,7 @@ export { PageDots } from './PageDots';
 export { GoogleG } from './GoogleG';
 export { SuccessBadge } from './SuccessBadge';
 export { LogoMark } from './LogoMark';
+export { MarkdownNote } from './MarkdownNote';
+export type { MarkdownNoteProps } from './MarkdownNote';
+export { AudioSegmentPlayer } from './AudioSegmentPlayer';
+export type { AudioSegmentPlayerProps } from './AudioSegmentPlayer';

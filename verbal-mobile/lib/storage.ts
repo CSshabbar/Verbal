@@ -7,6 +7,11 @@ const KEYS = {
   SYNC_ON:     'verbal_sync_enabled',
   HISTORY:     'verbal_history',
   PINNED:      'verbal_pinned',
+  // Notes v2 per-user feature flags (Design Decision 4). Default ON.
+  NOTES_SEARCH:    'notes_search_enabled',
+  NOTES_AUTOTITLE: 'notes_autotitle_enabled',
+  NOTES_STRUCTURE: 'notes_structure_detection_enabled',
+  NOTES_AUDIO:     'notes_audio_linkage_enabled',
 };
 
 export interface HistoryEntry {
@@ -64,6 +69,43 @@ export async function getSyncEnabled(): Promise<boolean> {
 }
 export async function setSyncEnabled(val: boolean) {
   await AsyncStorage.setItem(KEYS.SYNC_ON, val ? 'true' : 'false');
+}
+
+// ── Notes v2 feature flags ──────────────────────────────────────────────────────
+// Four per-user toggles, default true, individually disable-able in Settings
+// (Design Decision 4). Stored as 'false' only when explicitly turned off, so an
+// absent key reads as ON.
+export interface NotesFeatureFlags {
+  search:    boolean;   // notes_search_enabled          — full-text search UI
+  autotitle: boolean;   // notes_autotitle_enabled       — auto-title dictated notes
+  structure: boolean;   // notes_structure_detection_enabled — checklist detection
+  audio:     boolean;   // notes_audio_linkage_enabled   — note ↔ recording linkage
+}
+
+export const DEFAULT_NOTES_FLAGS: NotesFeatureFlags = {
+  search: true, autotitle: true, structure: true, audio: true,
+};
+
+const NOTES_FLAG_KEY: Record<keyof NotesFeatureFlags, string> = {
+  search:    KEYS.NOTES_SEARCH,
+  autotitle: KEYS.NOTES_AUTOTITLE,
+  structure: KEYS.NOTES_STRUCTURE,
+  audio:     KEYS.NOTES_AUDIO,
+};
+
+export async function getNotesFeatureFlags(): Promise<NotesFeatureFlags> {
+  try {
+    const pairs = await AsyncStorage.multiGet(Object.values(NOTES_FLAG_KEY));
+    const map = new Map(pairs);
+    const read = (k: keyof NotesFeatureFlags) => map.get(NOTES_FLAG_KEY[k]) !== 'false';
+    return { search: read('search'), autotitle: read('autotitle'), structure: read('structure'), audio: read('audio') };
+  } catch {
+    return { ...DEFAULT_NOTES_FLAGS };
+  }
+}
+
+export async function setNotesFeatureFlag(key: keyof NotesFeatureFlags, val: boolean): Promise<void> {
+  await AsyncStorage.setItem(NOTES_FLAG_KEY[key], val ? 'true' : 'false');
 }
 
 // ── History (local cache) ─────────────────────────────────────────────────────

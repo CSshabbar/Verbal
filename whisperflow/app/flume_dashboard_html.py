@@ -312,6 +312,22 @@ body{background:var(--bg);font-family:'Geist',-apple-system,system-ui,sans-serif
 .snbig .snq{color:var(--acc);font-family:'JetBrains Mono'}
 .snchips{display:flex;flex-wrap:wrap;gap:8px;margin-top:34px}
 .snchips span{font:500 11.5px 'Geist';color:var(--mut);background:rgba(240,240,240,.05);border:1px solid var(--bd);border-radius:999px;padding:7px 14px}
+/* ── notes v2: search, checklists, segment playback, original view ── */
+.notecount{font:500 10px 'JetBrains Mono';color:var(--sub);letter-spacing:.06em;margin:-12px 0 14px;min-height:12px}
+.ncaudio{color:var(--acc)}.ncaudio svg{width:11px;height:11px;vertical-align:-1px}
+.notebody ul.chk li{list-style:none;display:flex;align-items:flex-start;gap:6px}
+.chkbox{flex:none;cursor:pointer;color:var(--mut);user-select:none;line-height:1.55}
+.chkbox.on{color:var(--acc)}
+.chkbox:focus{outline:2px solid var(--acc-bd);outline-offset:2px;border-radius:4px}
+.chktext{flex:1;min-width:0}
+.noteorig{flex:1;overflow-y:auto;white-space:pre-wrap;color:rgba(240,240,240,.72);font:400 14px/1.7 'Geist';border:1px solid var(--bd);border-radius:12px;padding:14px;background:rgba(240,240,240,.03);min-height:200px}
+.segbar{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px}
+.segbtn{display:inline-flex;align-items:center;gap:8px;background:var(--card);border:1px solid var(--bd2);color:var(--tx);border-radius:999px;padding:7px 14px 7px 12px;cursor:pointer;font:500 12px 'Geist'}
+.segbtn:hover{border-color:var(--acc-bd);color:var(--acc)}
+.segbtn svg{width:14px;height:14px}
+.fmtbtn.ftxt{width:auto;padding:0 10px;font:600 11.5px 'Geist'}
+.fmtbtn.retry{color:var(--acc);border-color:var(--acc-bd)}
+.nflags .saverow{margin:0 0 12px}.nflags .saverow:last-child{margin-bottom:0}
 """
 
 
@@ -605,19 +621,83 @@ function applyCanvasImage(r){
 // JS clipboard path (works on some WKWebView builds); native pasteCanvasImage is the reliable fallback.
 function sendCanvasImage(dataUri){ const txt=canvasText(); api('save_canvas_image_data', dataUri, txt).then(applyCanvasImage); }
 
-let NOTE_REC=false, _noteTimer=null;
-function notePreview(n){ return (n.content||'').replace(/<[^>]*>/g,' ').replace(/&nbsp;/g,' ').replace(/\s+/g,' ').trim().slice(0,80); }
+let NOTE_REC=false, _noteTimer=null, NOTE_QUERY='', SHOW_ORIG=false, NOTE_SEG_ID=null;
+function notePreview(n){ return (n.content||'').replace(/<[^>]*>/g,' ').replace(/&nbsp;/g,' ').replace(/\[( |x|X)\]/g,'').replace(/[*#`>]/g,'').replace(/\s+/g,' ').trim().slice(0,80); }
+function curNote(){ return NOTES.find(x=>x.id===SELN) || filteredNotes()[0] || NOTES[0] || null; }
+function notesFlag(name){ return !(STATE&&STATE.settings) || STATE.settings[name]!==false; }
+function isHtmlContent(s){ return /<(\w|\/)/.test(s||''); }
+function noteBodyHtml(n){ const c=n.content||''; if(!c.trim()) return ''; return isHtmlContent(c) ? c : mdToHtml(c); }
+function rankNote(n,q){
+  if((n.title||'').toLowerCase().includes(q)) return 0;
+  if((n.content||'').toLowerCase().includes(q) || (n.raw_content||'').toLowerCase().includes(q)) return 1;
+  return 2;
+}
+function filteredNotes(){
+  // Conflict copies are internal; never surface them in the notes list.
+  let arr=NOTES.filter(n=>String(n.id||'').indexOf('::conflict::')<0);
+  const q=(NOTE_QUERY||'').trim().toLowerCase();
+  if(!q || !notesFlag('notes_search_enabled')) return arr;
+  // Mirrors search_notes ranking (Agent A): title>content/raw, recency tiebreak.
+  arr=arr.filter(n=>rankNote(n,q)<2);
+  arr=arr.slice().sort((a,b)=>String(b.updated_at||'').localeCompare(String(a.updated_at||'')));
+  arr.sort((a,b)=>rankNote(a,q)-rankNote(b,q));
+  return arr;
+}
 
 function renderNotes(){
-  const list = NOTES.map(n=>`
-    <div class="ncard${(SELN===n.id)?' active':''}" onclick="selectNote(${JSON.stringify(n.id)})">
+  const n = curNote();
+  const searchBox = notesFlag('notes_search_enabled') ? `
+      <div class="searchbox">${SVG.search}<input id="noteSearch" type="search" aria-label="Search notes" placeholder="Search notes…" value="${esc(NOTE_QUERY)}" oninput="noteSearchInput(this.value)"/></div>
+      <div class="notecount" id="noteCount" role="status" aria-live="polite"></div>` : '';
+  const editor = n ? noteEditorHtml(n) : '<div class="empty">Select or create a note.</div>';
+  document.getElementById('notesMain').innerHTML = `
+    <div class="listcol"><div class="mhead"><div><div class="eyebrow">${NOTES.length} notes</div><h1 class="title">Notes</h1></div>
+      <button class="roundbtn" aria-label="New note" onclick="newNote()">${SVG.plus}</button></div>
+      ${searchBox}
+      <div id="noteList"></div></div>
+    <div class="editor">${editor}</div>`;
+  renderNoteList();
+  if(n && !SHOW_ORIG){ const b=document.getElementById('noteBody'); if(b) b.innerHTML=noteBodyHtml(n); updateDictateBtn(); }
+  updateSegIcons();
+}
+// List column only — re-rendered on every keystroke so the search input keeps focus.
+function renderNoteList(){
+  const flist=filteredNotes();
+  const q=(NOTE_QUERY||'').trim();
+  const cnt=document.getElementById('noteCount');
+  if(cnt) cnt.textContent = q ? (flist.length+' result'+(flist.length===1?'':'s')) : '';
+  const listEl=document.getElementById('noteList'); if(!listEl) return;
+  if(!flist.length){
+    listEl.innerHTML = q
+      ? `<div class="empty">No notes match “${esc(q)}”. <span class="link" onclick="clearNoteSearch()">Clear search</span></div>`
+      : (NOTES.length ? '<div class="empty">No notes match.</div>'
+                      : '<div class="empty">No notes yet — dictate one to get started.</div>');
+    return;
+  }
+  listEl.innerHTML = flist.map(n=>{
+    const audio=(n.audio_segments&&n.audio_segments.length)?` <span class="ncaudio" title="Has recording">${SVG.mic}</span>`:'';
+    return `<div class="ncard${(SELN===n.id)?' active':''}" onclick="selectNote(${JSON.stringify(n.id)})">
       <div class="nctitle">${esc(n.title||'Untitled')}</div>
       <div class="ncprev">${esc(notePreview(n))||'Empty note'}</div>
-      <div class="ncmeta">${esc((n.updated_at||'').slice(0,10))}</div></div>`).join('')
-    || '<div class="empty">No notes yet. Tap ＋ to create one.</div>';
-  const n = NOTES.find(x=>x.id===SELN) || NOTES[0];
-  const editor = n ? `
-      <input class="edtitle" id="noteTitle" value="${esc(n.title||'')}" placeholder="Untitled note" oninput="noteChanged()"/>
+      <div class="ncmeta">${esc((n.updated_at||'').slice(0,10))}${audio}</div></div>`;
+  }).join('');
+}
+function noteSearchInput(v){ NOTE_QUERY=v; renderNoteList(); }
+function clearNoteSearch(){ NOTE_QUERY=''; const i=document.getElementById('noteSearch'); if(i) i.value=''; renderNoteList(); const j=document.getElementById('noteSearch'); if(j) j.focus(); }
+
+function noteEditorHtml(n){
+  const hasRaw = (n.raw_content!=null) && String(n.raw_content).trim()!=='';
+  const failed = hasRaw && !String(n.content||'').trim();   // dictated but no formatted content yet
+  const origBtn = hasRaw
+    ? `<button class="fmtbtn ftxt" title="${SHOW_ORIG?'Show formatted note':'Show original transcript'}" onclick="toggleShowOrig()">${SHOW_ORIG?'Formatted':'Original'}</button>` : '';
+  const retryBtn = failed
+    ? `<button class="fmtbtn ftxt retry" title="Retry AI formatting" onclick="retryFormatting()">Retry formatting</button>` : '';
+  const body = SHOW_ORIG
+    ? `<div class="noteorig" id="noteOrig" aria-label="Original transcript">${esc(n.raw_content||'')}</div>`
+    : `<div class="notebody" id="noteBody" contenteditable="true" role="textbox" aria-multiline="true" aria-label="Note content" data-ph="Tap Dictate to speak, or start typing…" oninput="noteChanged()"></div>`;
+  return `
+      <input class="edtitle" id="noteTitle" value="${esc(n.title||'')}" placeholder="Untitled note" aria-label="Note title" oninput="noteChanged()"/>
+      ${noteSegBar(n)}
       <div class="notetoolbar">
         <button class="fmtbtn" title="Bold" onmousedown="fmt(event,'bold')"><b>B</b></button>
         <button class="fmtbtn" title="Italic" onmousedown="fmt(event,'italic')"><i>I</i></button>
@@ -625,39 +705,90 @@ function renderNotes(){
         <span class="fmtsep"></span>
         <button class="fmtbtn" title="Bullet list" onmousedown="fmt(event,'insertUnorderedList')">&bull;</button>
         <button class="fmtbtn" title="Clean up with AI" onmousedown="event.preventDefault();formatNote()">&#10024;</button>
+        ${origBtn}${retryBtn}
         <button class="dictate" id="dictateBtn" onclick="toggleDictate()">${SVG.mic}Dictate</button>
         <span class="notesave" id="noteSaveState"></span>
       </div>
-      <div class="notebody" id="noteBody" contenteditable="true" data-ph="Tap Dictate to speak, or start typing…" oninput="noteChanged()"></div>
+      ${body}
       <div class="pvactions" style="margin-top:12px">
-        <button class="btn ghost" style="flex:none;color:#f0b39a" onclick="delNote()">Delete note</button></div>`
-    : '<div class="empty">Select or create a note.</div>';
-  document.getElementById('notesMain').innerHTML = `
-    <div class="listcol"><div class="mhead"><div><div class="eyebrow">${NOTES.length} notes</div><h1 class="title">Notes</h1></div>
-      <button class="roundbtn" onclick="newNote()">${SVG.plus}</button></div>${list}</div>
-    <div class="editor">${editor}</div>`;
-  if(n){ const b=document.getElementById('noteBody'); if(b) b.innerHTML = n.content||''; updateDictateBtn(); }
+        <button class="btn ghost" style="flex:none;color:#f0b39a" onclick="delNote()">Delete note</button></div>`;
 }
+// Per-segment playback control at the top of a note (Feature 4). No control at all
+// when the note has no audio segments (Decision 6).
+function noteSegBar(n){
+  const segs=(n.audio_segments||[]).filter(s=>s&&s.id);
+  if(!segs.length) return '';
+  const rows=segs.map((s,i)=>{
+    const t=(s.created_at||'').slice(11,16);
+    const lbl='Play recording'+(t?(' from '+t):(' '+(i+1)));
+    return `<button class="segbtn" data-id="${esc(s.id)}" aria-label="${esc(lbl)}" onclick="noteSegPlay(this)"><span class="segic">${SVG.play}</span><span>${esc(lbl)}</span></button>`;
+  }).join('');
+  return `<div class="segbar" role="group" aria-label="Note recordings">${rows}</div>`;
+}
+let _noteAudio=null;
+function _noteAudioEl(){
+  let a=document.getElementById('noteAudio');
+  if(!a){ a=document.createElement('audio'); a.id='noteAudio'; document.body.appendChild(a);
+    a.addEventListener('play',updateSegIcons); a.addEventListener('pause',updateSegIcons); a.addEventListener('ended',updateSegIcons); }
+  return a;
+}
+function updateSegIcons(){
+  const a=document.getElementById('noteAudio');
+  document.querySelectorAll('.segbtn').forEach(b=>{
+    const playing = a && a.src && !a.paused && b.getAttribute('data-id')===NOTE_SEG_ID;
+    const ic=b.querySelector('.segic'); if(ic) ic.innerHTML = playing?SVG_PAUSE:SVG.play;
+  });
+}
+function noteSegPlay(btn){
+  const id=btn.getAttribute('data-id'); if(!id) return;
+  const a=_noteAudioEl();
+  if(NOTE_SEG_ID===id && a.src){ if(a.paused) a.play().catch(()=>{}); else a.pause(); updateSegIcons(); return; }
+  NOTE_SEG_ID=id; try{a.pause();}catch(e){}
+  api('get_audio', id).then(r=>{
+    if(NOTE_SEG_ID!==id) return;
+    if(r&&r.ok&&r.data_uri){ a.src=r.data_uri; a.load(); a.play().catch(()=>{}); }
+    else setSaveState('No audio');
+    updateSegIcons();
+  });
+  updateSegIcons();
+}
+function stopNoteAudio(){ const a=document.getElementById('noteAudio'); if(a){ try{a.pause();}catch(e){} } NOTE_SEG_ID=null; }
 
-function selectNote(id){ flushNoteSave(); SELN=id; NOTE_REC=false; renderNotes(); }
+function selectNote(id){ flushNoteSave(); stopNoteAudio(); SELN=id; NOTE_REC=false; SHOW_ORIG=false; renderNotes(); }
 function newNote(){
-  flushNoteSave();
+  flushNoteSave(); stopNoteAudio(); NOTE_QUERY=''; SHOW_ORIG=false;
   api('save_note', {title:'', content:''}).then(r=>{
     if(r&&r.ok){ NOTES=r.notes||NOTES; SELN=r.id||SELN; renderNotes();
       const b=document.getElementById('noteBody'); if(b) b.focus(); }
   });
 }
-function fmt(ev, cmd){ ev.preventDefault(); const b=document.getElementById('noteBody'); if(b) b.focus(); document.execCommand(cmd,false,null); noteChanged(); }
+function toggleShowOrig(){ SHOW_ORIG=!SHOW_ORIG; renderNotes(); }
+function fmt(ev, cmd){ ev.preventDefault(); if(SHOW_ORIG) return; const b=document.getElementById('noteBody'); if(b) b.focus(); document.execCommand(cmd,false,null); noteChanged(); }
 
-function noteChanged(){ setSaveState('Saving…'); if(_noteTimer) clearTimeout(_noteTimer); _noteTimer=setTimeout(saveCurrentNote, 700); }
+// Interactive checklist checkbox (Decision 8): toggles the item and persists.
+function toggleChk(ev, el){
+  ev.preventDefault(); ev.stopPropagation();
+  const on = el.getAttribute('data-checked')!=='1';
+  el.setAttribute('data-checked', on?'1':'0');
+  el.setAttribute('aria-checked', on?'true':'false');
+  el.classList.toggle('on', on);
+  el.textContent = on?'☑':'☐';
+  noteChanged();
+}
+function chkKey(ev, el){ if(ev.key===' '||ev.key==='Enter'){ toggleChk(ev, el); } }
+
+function noteChanged(){ if(SHOW_ORIG) return; setSaveState('Saving…'); if(_noteTimer) clearTimeout(_noteTimer); _noteTimer=setTimeout(saveCurrentNote, 700); }
 function setSaveState(s){ const el=document.getElementById('noteSaveState'); if(el) el.textContent=s; }
 function saveCurrentNote(){
   _noteTimer=null;
-  const n=NOTES.find(x=>x.id===SELN)||NOTES[0]; if(!n) return;
+  const n=curNote(); if(!n) return;
   const t=document.getElementById('noteTitle'), b=document.getElementById('noteBody');
-  if(!t||!b) return;
+  if(!t||!b) return;   // no editable body (e.g. viewing the original) — nothing to persist
   n.title=t.value; n.content=b.innerHTML;
-  api('save_note', {id:n.id, title:n.title, content:n.content}).then(r=>{
+  const payload={id:n.id, title:n.title, content:n.content};
+  if(n.raw_content!=null) payload.raw_content=n.raw_content;
+  if(n.audio_segments&&n.audio_segments.length) payload.audio_segments=n.audio_segments;
+  api('save_note', payload).then(r=>{
     if(r&&r.ok){ if(r.id) n.id=r.id; if(r.notes) NOTES=r.notes; setSaveState('Saved'); updateListCard(n); }
     else setSaveState('');
   });
@@ -670,9 +801,10 @@ function updateListCard(n){
   if(p) p.textContent=notePreview(n)||'Empty note';
 }
 function delNote(){
-  const n=NOTES.find(x=>x.id===SELN)||NOTES[0]; if(!n) return;
+  const n=curNote(); if(!n) return;
   if(_noteTimer){ clearTimeout(_noteTimer); _noteTimer=null; }
-  api('delete_note', n.id).then(r=>{ NOTES=(r&&r.notes)||NOTES.filter(x=>x.id!==n.id); SELN=null; renderNotes(); });
+  stopNoteAudio();
+  api('delete_note', n.id).then(r=>{ NOTES=(r&&r.notes)||NOTES.filter(x=>x.id!==n.id); SELN=null; SHOW_ORIG=false; renderNotes(); });
 }
 
 function updateDictateBtn(){
@@ -681,11 +813,17 @@ function updateDictateBtn(){
   b.innerHTML = NOTE_REC ? '<span class="pulse"></span>Stop' : SVG.mic+'Dictate';
 }
 function toggleDictate(){
+  const n=curNote();
   if(NOTE_REC){
     NOTE_REC=false; updateDictateBtn(); setSaveState('Transcribing…');
-    api('note_dictate_stop').then(r=>{
-      if(r&&r.ok&&r.text){ appendToNote(r.text); }
-      else setSaveState(r&&r.text===''?'No speech':'');
+    api('note_dictate_stop', n?n.id:null).then(r=>{
+      if(!(r&&r.ok)){ setSaveState('Mic error'); return; }
+      if(!(r.text||'').trim() && !(r.raw_text||'').trim()){
+        setSaveState('No speech');
+        if(r.segment && n){ n.audio_segments=(n.audio_segments||[]).concat([r.segment]); renderNotes(); }
+        return;
+      }
+      onDictation(r);
     });
   } else {
     api('note_dictate_start').then(r=>{
@@ -694,17 +832,42 @@ function toggleDictate(){
     });
   }
 }
-function appendToNote(text){
-  const b=document.getElementById('noteBody'); if(!b){ return; }
-  b.focus();
-  const sep = (b.innerText && !/\s$/.test(b.innerText)) ? ' ' : '';
-  b.appendChild(document.createTextNode(sep+text+' '));
-  const rng=document.createRange(); rng.selectNodeContents(b); rng.collapse(false);
-  const sel=window.getSelection(); sel.removeAllRanges(); sel.addRange(rng);
-  noteChanged();
+// A dictated segment arrived. Store both raw + cleaned (Decision 1), union the audio
+// segment (Feature 4). On the FIRST dictation into an empty note we save with empty
+// content so the server runs cleanup ONCE (title + structure, Decision 2); further
+// dictation just appends the already-cleaned chunk without re-formatting.
+function onDictation(r){
+  const n=curNote(); if(!n) return;
+  const rawSeg=((r.raw_text||r.text||'')).trim();
+  const hadContent=!!String(n.content||'').trim();
+  n.raw_content=((n.raw_content?n.raw_content+'\n':'')+rawSeg).trim();
+  if(r.segment){ n.audio_segments=(n.audio_segments||[]).concat([r.segment]); }
+  if(!hadContent){
+    setSaveState('Formatting…'); SHOW_ORIG=false;
+    api('save_note', {id:n.id, title:n.title||'', content:'', raw_content:n.raw_content,
+                      audio_segments:n.audio_segments||[], run_cleanup:true}).then(r2=>{
+      if(r2&&r2.ok){ if(r2.notes) NOTES=r2.notes; if(r2.id) SELN=r2.id; renderNotes(); setSaveState('Saved'); }
+      else setSaveState('');
+    });
+  } else {
+    const b=document.getElementById('noteBody');
+    if(b){ b.focus();
+      const sep=(b.innerText && !/\s$/.test(b.innerText))?' ':'';
+      b.appendChild(document.createTextNode(sep+(r.text||rawSeg)+' '));
+      const rng=document.createRange(); rng.selectNodeContents(b); rng.collapse(false);
+      const sel=window.getSelection(); sel.removeAllRanges(); sel.addRange(rng);
+    }
+    // refresh the segment bar without wiping the freshly appended text
+    const bar=document.querySelector('#notesMain .editor .segbar');
+    const barHtml=noteSegBar(n);
+    if(bar){ bar.outerHTML=barHtml; } else if(barHtml){ const tb=document.querySelector('#notesMain .notetoolbar'); if(tb) tb.insertAdjacentHTML('beforebegin', barHtml); }
+    updateSegIcons();
+    noteChanged();
+  }
 }
 function mdToHtml(md){
   const e=s=>s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  const attr=s=>e(s).replace(/"/g,'&quot;');
   const inl=s=>{ s=e(s);
     s=s.replace(/`([^`]+)`/g,'<code>$1</code>');
     s=s.replace(/\*\*(.+?)\*\*/g,'<b>$1</b>');
@@ -718,7 +881,8 @@ function mdToHtml(md){
     if(inCode){ out.push(e(ln)); continue; }
     let m;
     if(m=ln.match(/^\s*[-*]\s+\[( |x|X)\]\s+(.*)/)){ if(list!=='ul'){closeList();out.push('<ul class="chk">');list='ul';}
-      out.push('<li>'+(m[1].toLowerCase()==='x'?'☑ ':'☐ ')+inl(m[2])+'</li>'); continue; }
+      const on=m[1].toLowerCase()==='x'; const lbl=attr(m[2].replace(/[*`]/g,''));
+      out.push('<li><span class="chkbox'+(on?' on':'')+'" role="checkbox" aria-checked="'+(on?'true':'false')+'" aria-label="'+lbl+'" tabindex="0" contenteditable="false" data-checked="'+(on?'1':'0')+'" onclick="toggleChk(event,this)" onkeydown="chkKey(event,this)">'+(on?'☑':'☐')+'</span> <span class="chktext">'+inl(m[2])+'</span></li>'); continue; }
     if(m=ln.match(/^\s*[-*]\s+(.*)/)){ if(list!=='ul'){closeList();out.push('<ul>');list='ul';} out.push('<li>'+inl(m[1])+'</li>'); continue; }
     if(m=ln.match(/^\s*\d+\.\s+(.*)/)){ if(list!=='ol'){closeList();out.push('<ol>');list='ol';} out.push('<li>'+inl(m[1])+'</li>'); continue; }
     closeList();
@@ -728,13 +892,35 @@ function mdToHtml(md){
   if(inCode) out.push('</pre>'); closeList();
   return out.join('');
 }
+// Explicit Reformat (the ✨ toolbar button) — Decision 2: re-run cleanup on demand.
 function formatNote(){
-  const b=document.getElementById('noteBody'); if(!b) return;
+  if(SHOW_ORIG) return;
+  const n=curNote(); const b=document.getElementById('noteBody'); if(!n||!b) return;
   const plain=b.innerText.trim(); if(!plain){ return; }
   setSaveState('Formatting…');
   api('format_note_with_ai', plain).then(r=>{
-    if(r&&r.ok&&r.content){ b.innerHTML=mdToHtml(r.content); noteChanged(); }
-    else setSaveState((r&&r.error)||'');
+    if(r&&r.ok&&r.content){
+      b.innerHTML=mdToHtml(r.content);
+      if(r.title && !String(n.title||'').trim()){ const t=document.getElementById('noteTitle'); if(t) t.value=r.title; }
+      noteChanged();
+    } else setSaveState((r&&r.error)||'');
+  });
+}
+// Retry formatting after a failed/absent cleanup (Decision 6): re-run over the raw
+// transcript, filling in title + formatted content, then persist.
+function retryFormatting(){
+  const n=curNote(); if(!n || !String(n.raw_content||'').trim()) return;
+  setSaveState('Formatting…'); SHOW_ORIG=false;
+  api('format_note_with_ai', n.raw_content).then(r=>{
+    if(r&&r.ok&&r.content){
+      n.content=mdToHtml(r.content);
+      if(r.title && !String(n.title||'').trim()) n.title=r.title;
+      api('save_note', {id:n.id, title:n.title||'', content:n.content, raw_content:n.raw_content,
+                        audio_segments:n.audio_segments||[]}).then(r2=>{
+        if(r2&&r2.ok){ if(r2.notes) NOTES=r2.notes; renderNotes(); setSaveState('Saved'); }
+        else { renderNotes(); setSaveState(''); }
+      });
+    } else setSaveState((r&&r.error)||'Format failed');
   });
 }
 function loadNotes(){ api('fetch_notes').then(r=>{ if(r&&r.ok){ NOTES=r.notes||r.data||[]; if(ACTIVE==='notes')renderNotes(); if(ACTIVE==='home')renderHome(); } }); }
@@ -865,6 +1051,13 @@ function renderSettings(){
       <div class="scard">
         <div class="saverow"><button class="toggle ftToggleBtn ${FT.enabled?'on':''}" id="ftToggleSettings" onclick="toggleFiletag()"></button><span style="font:500 13px Geist">Enable file tagging</span></div>
         <div class="ssub" style="margin:10px 0 0">${FT.seen_count||0} file${FT.seen_count===1?'':'s'} remembered.</div>
+      </div></div>
+    <div class="ssection nflags"><h3>Notes features</h3><p class="ssub">Turn individual Notes enhancements on or off. Each is on by default.</p>
+      <div class="scard">
+        <div class="saverow"><button class="toggle ${s.notes_search_enabled!==false?'on':''}" aria-label="Search across notes" onclick="toggleNoteFlag('notes_search_enabled',this)"></button><span style="font:500 13px Geist">Search across notes</span></div>
+        <div class="saverow"><button class="toggle ${s.notes_autotitle_enabled!==false?'on':''}" aria-label="Auto-title dictated notes" onclick="toggleNoteFlag('notes_autotitle_enabled',this)"></button><span style="font:500 13px Geist">Auto-title dictated notes</span></div>
+        <div class="saverow"><button class="toggle ${s.notes_structure_detection_enabled!==false?'on':''}" aria-label="Detect lists and checklists" onclick="toggleNoteFlag('notes_structure_detection_enabled',this)"></button><span style="font:500 13px Geist">Detect lists &amp; checklists</span></div>
+        <div class="saverow"><button class="toggle ${s.notes_audio_linkage_enabled!==false?'on':''}" aria-label="Link source recordings" onclick="toggleNoteFlag('notes_audio_linkage_enabled',this)"></button><span style="font:500 13px Geist">Link source recordings to notes</span></div>
       </div></div>
     <div class="ssection"><h3>Hotkeys</h3><p class="ssub">Trigger recording from anywhere.</p>
       <div class="scard hotcard">
@@ -1052,6 +1245,26 @@ function saveSettings(){
     sync_user_id:document.getElementById('userId').value,
     sync_device_name:document.getElementById('devName').value,
   }).then(load);
+}
+// Notes v2 feature flags (Decision 4). Toggle immediately; send a FULL settings
+// payload built from the persisted STATE so a partial write never clobbers API keys
+// or sync fields (save_settings only overwrites flags that are present).
+function toggleNoteFlag(name, btn){
+  btn.classList.toggle('on');
+  const on=btn.classList.contains('on');
+  const s=(STATE&&STATE.settings)||{};
+  const payload={
+    groq_api_keys:s.groq_api_keys||[], gemini_api_keys:s.gemini_api_keys||[],
+    whisper_model:(STATE&&STATE.model)||'base',
+    sync_enabled:!!s.sync_enabled, sync_user_id:s.sync_user_id||'', sync_device_name:s.sync_device_name||'',
+    notes_search_enabled:s.notes_search_enabled!==false,
+    notes_autotitle_enabled:s.notes_autotitle_enabled!==false,
+    notes_structure_detection_enabled:s.notes_structure_detection_enabled!==false,
+    notes_audio_linkage_enabled:s.notes_audio_linkage_enabled!==false,
+  };
+  payload[name]=on;
+  if(STATE&&STATE.settings) STATE.settings[name]=on;
+  api('save_settings', payload);
 }
 
 // Native → JS events

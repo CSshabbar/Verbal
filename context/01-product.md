@@ -28,13 +28,13 @@ All three share **one Supabase backend** (project `ovpcthjingugwvpxlsna`) — se
 | Feature | macOS | iOS | Windows | Notes |
 |---|:--:|:--:|:--:|---|
 | Recording + transcription (Groq→Gemini→local) | ✅ | ✅ (Groq only) | ✅ | Fallback chain desktop; mobile = Groq `whisper-large-v3-turbo` |
-| AI cleanup / formatting | ✅ | ✅ (on retry) | ✅ | Desktop `process_text`; mobile `formatText` |
+| AI cleanup / formatting | ✅ | ✅ | ✅ | Desktop `process_text`; mobile `formatText`. Notes cleanup now wired on both (mobile `formatNotes`/`formatNoteWithTitle`) |
 | Custom dictionary (vocab bias + replacement rules) | ✅ | ✅ | ✅ | Synced, one row/user |
 | **Snippets** (spoken trigger → text expansion) | ✅ | ✅ | ⚠️ | On the `dictionary` row; longest-first, single-pass |
 | **Auto-learn** dictionary from corrections | ✅ | ❌ | ❌ | Desktop-only (AX read-back + cream pill widget) |
 | **File tagging** (`@name.ext` in IDEs) | ✅ | ❌ | ❌ | Desktop-only (macOS Accessibility) |
 | Recordings save / playback / retry | ✅ | ✅ | ⚠️ partial | Local + cloud (`recordings` bucket) |
-| Notes (voice-first, synced) | ✅ | ✅ | ⚠️ | Supabase `notes` table |
+| Notes (voice-first, synced) | ✅ | ✅ | ⚠️ | Supabase `notes` table. **v2:** search, auto-title, structure/checklists, audio linkage, raw+formatted, conflict-pair sync; 4 flags (`notes_search/autotitle/structure_detection/audio_linkage_enabled`, default on) |
 | Canvas (shared clipboard: text/link/image) | ✅ | ✅ | ⚠️ | Supabase `canvas` row + realtime |
 | Cross-device sync (history/notes/canvas) | ✅ | ✅ | ✅ | Supabase realtime, keyed by `user_id` |
 | Device pairing (QR) | ✅ | ✅ | ✅ | `pairings` table, single-use token |

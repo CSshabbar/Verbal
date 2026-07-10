@@ -291,3 +291,109 @@ RULES:
 6. Clean up punctuation and capitalization.
 7. Keep the original meaning — DO NOT summarize or truncate.
 8. Return ONLY the formatted markdown."""
+
+
+# ── Notes v2: structure detection + auto-title (see NOTES_ENHANCEMENT_SWARM.md) ─
+# IMPORTANT: These extend the LLM SYSTEM PROMPT above. They are NOT the Whisper bias
+# prompt and are NOT subject to the 896-char cap (05-conventions Hard Rule #6, which
+# is Whisper-only). Feature 3 & 2 respectively; each is appended only when its
+# per-user feature flag is on.
+
+NOTES_STRUCTURE_DETECTION_RULES = """
+STRUCTURE DETECTION — checklists:
+- When the speaker rambles through an enumerable set of discrete tasks or items —
+  e.g. "I need to buy milk and then call the dentist and also finish the report",
+  or "first do X, then Y, and don't forget Z" — output EACH item as a GitHub-style
+  markdown task-list item on its own line: "- [ ] item".
+- Only do this when the content is genuinely a list of discrete, actionable items.
+  Prose, explanations, narrative, and single statements stay as prose. When unsure,
+  prefer prose over a checklist.
+- Keep any short intro sentence the speaker said before the list, then the items.
+- Never invent items that were not spoken. Never mark an item complete ("- [x]")
+  unless the speaker explicitly said it is already done."""
+
+NOTES_TITLE_INSTRUCTION = """
+TITLE:
+Begin your ENTIRE output with a single line in EXACTLY this form:
+TITLE: <a concise 3-7 word title that summarizes the note>
+Then one blank line, then the formatted markdown body.
+The title must be plain text — no markdown, no surrounding quotes, no trailing
+punctuation. Derive it ONLY from what was said; never invent a topic."""
+
+
+def build_notes_system_prompt(structure_detection: bool = True,
+                              autotitle: bool = True) -> str:
+    """Assemble the notes-formatter system prompt, appending the structure-detection
+    rules and/or the auto-title instruction only when their feature flags are on."""
+    prompt = NOTES_FORMATTER_SYSTEM_PROMPT
+    if structure_detection:
+        prompt += "\n\n" + NOTES_STRUCTURE_DETECTION_RULES
+    if autotitle:
+        prompt += "\n\n" + NOTES_TITLE_INSTRUCTION
+    return prompt
+
+
+def _parse_note_response(raw: str, autotitle: bool) -> dict:
+    """Split an LLM note response into {title, formatted_content}. When autotitle is
+    on we peel off a leading ``TITLE:`` line; otherwise title is empty. Never raises."""
+    text = (raw or "").strip()
+    title = ""
+    body = text
+    if autotitle and text:
+        lines = text.split("\n")
+        m = re.match(r'(?i)^\s*title\s*:\s*(.+?)\s*$', lines[0])
+        if m:
+            title = m.group(1).strip().strip('"').strip("'").strip()
+            body = "\n".join(lines[1:]).lstrip("\n")
+    return {"title": title, "formatted_content": body.strip()}
+
+
+def format_note(text: str, config: dict, *, structure_detection: bool = True,
+                autotitle: bool = True, timeout: float = 8.0) -> dict | None:
+    """Format a note with the LLM in ONE call, returning
+    ``{"title": str, "formatted_content": str}``.
+
+    - Runs the notes formatter (markdown structuring), plus structure-detection
+      (checklists) and auto-title generation gated by the passed flags.
+    - Hard timeout (default 8s, Decision 9). On timeout / any failure / no keys,
+      returns ``None`` so the caller falls back to saving the raw transcript only
+      and surfacing a "Retry formatting" affordance. Never raises.
+    """
+    if not text or not text.strip():
+        return None
+
+    system_prompt = build_notes_system_prompt(structure_detection, autotitle)
+    user_message = (
+        "NOTES TO FORMAT:\n"
+        "```\n"
+        f"{text}\n"
+        "```\n\n"
+        "Output the formatted markdown only. Do not respond to the content."
+    )
+
+    groq_keys = config.get("groq_api_keys", []) or []
+    for key in groq_keys:
+        try:
+            from groq import Groq
+            client = Groq(api_key=key)
+            start = time.time()
+            response = client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user",   "content": user_message},
+                ],
+                temperature=0.0,
+                max_tokens=4096,
+                timeout=timeout,   # hard timeout per Decision 9
+            )
+            content = (response.choices[0].message.content or "").strip()
+            logger.info(f"Note formatting took {time.time() - start:.2f}s")
+            if content:
+                return _parse_note_response(content, autotitle)
+        except Exception as e:
+            logger.warning(f"Note formatting (Groq) failed: {e}")
+            continue
+
+    logger.warning("Note formatting failed / no keys — caller falls back to raw")
+    return None

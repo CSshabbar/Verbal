@@ -38,10 +38,16 @@ to signed-in devices.
 (~2 min TTL) · `claimed_by` text (null until claimed) · `claimed_at`. Index on `(token)`. RLS on;
 anon insert/select/update all `true` (safe because tokens are random, short-lived, single-use).
 
-**`notes`** — `notes_migration.sql`.
-`id` uuid PK · `user_id` text · `title` text `''` · `content` text `''` · `folder` text `''` ·
+**`notes`** — `notes_migration.sql` (base) + `supabase_notes_v2.sql` (voice-native v2 columns).
+`id` uuid PK · `user_id` text · `title` text `''` · `content` text `''` (AI-formatted) · `folder` text `''` ·
 `is_pinned` bool `false` · `device_name` text · `created_at` · `updated_at`. Indexes on `(user_id)` and
-`(user_id, updated_at DESC)`. In the `supabase_realtime` publication. **No RLS statement in this file.**
+`(user_id, updated_at DESC)`. In the `supabase_realtime` publication.
+**v2 columns** (`supabase_notes_v2.sql`, idempotent): `raw_content` text nullable (raw Whisper transcript;
+NULL for typed/pre-existing notes — `content` holds the formatted version, "show original" reveals this);
+`audio_segments` jsonb `'[]'` (append-only list of source recordings, shape `[{id,url,created_at}]`,
+**UNION-on-merge** during sync). **RLS:** base file writes none. `supabase_notes_v2.sql` has a guarded
+`DO` block that broadens an existing anon-only policy to `TO public` (the dictionary/snippets lesson) —
+but only if `notes` already has RLS enabled; if it has no RLS, it leaves it untouched.
 
 **`app_versions`** — `supabase_migrations/001_app_versions.sql`. Auto-update manifest.
 `id` bigserial PK · `platform` text (`mac`/`win`/`ios`) · `version` text · `changelog` · `file_url` ·
@@ -85,7 +91,12 @@ default `'done'`, `target_device_id` text, `edited_text` text (read as `edited_t
 - **Replacement rule** (`dictionary.py`): `{from, to, auto?:true}` (`auto` = auto-learned, ✨ in UI).
 - **Snippet** (`dictionary.py` / `lib/dictionary.ts`): `{id, trigger, expansion, label, used, created_at, updated_at}` (caps: trigger 40, expansion 500).
 - **Dictionary**: `{vocabulary:[str], replacements:[{from,to,auto?}], snippets:[Snippet]}`.
-- **Note** (matches `notes` table); mobile `NoteEntry` adds `source:'local'|'remote'`.
+- **Note** (matches `notes` table) — v2 shape: `{id, title, content, raw_content?:string|null,
+  audio_segments?:[{id,url,created_at}], folder, is_pinned, device_name, created_at, updated_at}` plus
+  sync markers `conflict?:bool` / `conflict_of?:string|null` (set on the two members of a conflict pair).
+  Mobile `NoteEntry` adds `source:'local'|'remote'` and an index signature so **unknown/newer-client
+  fields are preserved verbatim** (forward-compat). Mobile UI `Note` maps these to camelCase
+  (`rawContent`, `audioSegments`, `conflict`, `conflictOf`).
 - **Device**: `{user_id, device_id, device_name, device_type, last_seen}`.
 - **Canvas** (mobile UI item): `{id, state:'draft'|'sent', kind:'text'|'link'|'image', …}` → collapsed to the
   single shared `{content, image_url}` row on save.
@@ -131,8 +142,19 @@ and `verbal://auth-callback` (mobile). Consent screen in "Testing" mode. No sepa
   source of truth; remote merges in (dedup by row id).
 - **Dictionary:** REST pull/push, one row/user; `fetch_remote` writes config only on change; `_push_remote`
   upsert `on_conflict=user_id`, `resolution=merge-duplicates`. Last-write-wins on `updated_at`.
-- **Notes:** desktop REST (`on_conflict=id`) + mobile SDK CRUD; both merge with a local cache; newest
-  `updated_at` wins. (Table is in the realtime publication but code polls/merges here.)
+- **Notes:** desktop REST (`on_conflict=id`) + mobile SDK CRUD; both merge with a local cache.
+  **v2 merge contract** (desktop `merge_remote_note` in `shared_dashboard.py`; mobile `mergeRemoteNote` in
+  `lib/notesStorage.ts` — kept identical): (a) `audio_segments` **UNION** on every merge (de-dup by
+  `id`→`url`, sorted by `created_at`) so an append on one device is never lost; (b) **conflict pair** — if
+  local & remote edited the same note within **60 s** *and* diverge in `title`/`content`/`raw_content`,
+  keep BOTH: the newer keeps the canonical id (`conflict=true, conflict_of=null`), the older is stored under
+  a deterministic id `<id>::conflict::<updated_at>` (`conflict=true, conflict_of=<id>`) — idempotent across
+  repeated fetches, editor shows a one-time "resolve" prompt, nothing silently discarded; (c) otherwise
+  last-write-wins on known fields; (d) **forward-compat** — unknown/newer-client fields preserved verbatim
+  through both merge and write-back (desktop `_NOTE_KNOWN_FIELDS` allowlist re-attaches them to the cloud
+  upsert; mobile relies on the `NoteEntry` index signature + spread). Conflict copies (id contains
+  `::conflict::`) are **local-only**, never pushed to cloud. (Table is in the realtime publication but code
+  polls/merges here.)
 - **Canvas:** one shared row/user, upsert `on_conflict=user_id`; mobile subscribes `channel('canvas_<uid>')`.
 - **Recordings:** audio → `recordings` bucket under `<user_id>/`; `audio_url` on the row/entry. Failed
   transcriptions `status:'failed'`, retryable from saved audio.
@@ -145,7 +167,9 @@ Pragmatic, matches code + `GOOGLE_AUTH_SETUP.md`:
 - Both apps use the **anon key for all data requests**; users separated purely by the `user_id` value in
   the query/filter. The user's JWT/access_token is stored but **not** used to authorize REST/realtime.
 - RLS: enabled with a wide-open `true` policy on `dictionary` (now **`TO public`**) and `pairings`
-  (still `TO anon`); `transcriptions`/`devices`/`canvas`/`notes` have **no committed RLS**. Any caller who
+  (still `TO anon`); `transcriptions`/`devices`/`canvas` have **no committed RLS** (`notes` also ships none
+  by default — `supabase_notes_v2.sql` only broadens a *pre-existing* anon-only policy if one is present).
+  Any caller who
   knows a `user_id` could read that user's rows — data is scoped, not cryptographically enforced.
 - **RLS role gotcha:** the desktop uses the raw anon key (role `anon`); a *signed-in* client (mobile SDK)
   sends the user's JWT (role `authenticated`). A policy scoped `TO anon` silently filters out the
@@ -165,4 +189,6 @@ Pragmatic, matches code + `GOOGLE_AUTH_SETUP.md`:
   exist, `sync_listen()` as a stub) — its only current value is the base `transcriptions` DDL.
 - `config.py DEFAULT_CONFIG` omits `sync_enabled` and `sync_target_device_id` though both are used —
   desktop sync must be turned on explicitly.
-- Mobile `useNotes` note: `isVoice` isn't persisted (no `is_voice` column).
+- Mobile `useNotes` note: there's still no `is_voice` column, but v2 `toNote` now infers `isVoice` from the
+  presence of `raw_content` or a non-empty `audio_segments` (a voice note has at least one), so it survives
+  reloads for dictated notes without a dedicated column.

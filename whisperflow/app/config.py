@@ -38,7 +38,32 @@ DEFAULT_CONFIG = {
     "auto_update": True,
     "sync_user_id":     "",
     "sync_device_name": "",
+    # Notes v2 per-user feature flags (default ON, toggleable in Settings).
+    # Each gates one of the four Notes-enhancement features; see
+    # NOTES_ENHANCEMENT_SWARM.md Decision 4.
+    "notes_search_enabled": True,
+    "notes_autotitle_enabled": True,
+    "notes_structure_detection_enabled": True,
+    "notes_audio_linkage_enabled": True,
 }
+
+# The four Notes v2 feature flags, in one place so callers can iterate them.
+NOTES_FEATURE_FLAGS = (
+    "notes_search_enabled",
+    "notes_autotitle_enabled",
+    "notes_structure_detection_enabled",
+    "notes_audio_linkage_enabled",
+)
+
+
+def feature_flag(config: dict, name: str, default: bool = True) -> bool:
+    """Read a per-user boolean feature flag, defaulting to ``default`` (True) when
+    absent or malformed. Never raises."""
+    try:
+        val = config.get(name, default)
+    except Exception:
+        return default
+    return bool(val) if isinstance(val, bool) else default
 
 
 def ensure_dirs():

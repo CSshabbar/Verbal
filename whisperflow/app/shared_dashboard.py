@@ -18,8 +18,10 @@ import pyperclip
 
 from app.config import (
     APP_VERSION,
+    NOTES_FEATURE_FLAGS,
     _entry_app,
     _entry_text,
+    feature_flag,
     get_daily_words,
     load_config,
     save_config,
@@ -34,6 +36,123 @@ def _ok(**data):
 
 def _err(message: str):
     return {"ok": False, "error": message}
+
+
+# ── Notes v2 sync contract (see NOTES_ENHANCEMENT_SWARM.md, Agent E) ──────────
+# Two devices that edited the SAME note within this many seconds are treated as a
+# conflict pair: BOTH versions are kept locally (never silently discarded) and both
+# are flagged so the editor can surface a one-time "resolve" prompt.
+NOTES_CONFLICT_WINDOW_SECONDS = 60
+
+# Known note fields. Anything NOT in here is an "unknown" field from a newer client
+# and MUST be preserved verbatim on merge/write-back (forward-compat, Decision 7).
+_NOTE_KNOWN_FIELDS = {
+    "id", "title", "content", "raw_content", "audio_segments", "folder",
+    "is_pinned", "device_name", "created_at", "updated_at",
+    "conflict", "conflict_of", "source",
+}
+
+
+def _parse_iso(s):
+    """Parse an ISO-8601 timestamp; return a datetime or None. Never raises."""
+    if not s:
+        return None
+    try:
+        v = str(s).replace("Z", "+00:00")
+        dt = _dt.datetime.fromisoformat(v)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=_dt.timezone.utc)
+        return dt
+    except Exception:
+        return None
+
+
+def _union_audio_segments(a, b):
+    """UNION two append-only audio-segment lists, de-duped by segment id (then url),
+    ordered by created_at. Malformed entries are dropped. Never raises."""
+    out, seen = [], set()
+    for seg in list(a or []) + list(b or []):
+        if not isinstance(seg, dict):
+            continue
+        sid = seg.get("id") or seg.get("url")
+        if not sid or sid in seen:
+            continue
+        seen.add(sid)
+        out.append(seg)
+    out.sort(key=lambda s: s.get("created_at", "") or "")
+    return out
+
+
+def _notes_conflict(a, b):
+    """True iff a and b were edited within the conflict window AND diverge in a
+    user-meaningful field (title/content/raw_content)."""
+    ta, tb = _parse_iso(a.get("updated_at")), _parse_iso(b.get("updated_at"))
+    if ta is None or tb is None:
+        return False
+    if abs((ta - tb).total_seconds()) > NOTES_CONFLICT_WINDOW_SECONDS:
+        return False
+    return (
+        (a.get("content", "") or "") != (b.get("content", "") or "")
+        or (a.get("title", "") or "") != (b.get("title", "") or "")
+        or (a.get("raw_content") or "") != (b.get("raw_content") or "")
+    )
+
+
+def merge_remote_note(by_id, cand):
+    """Merge one remote note dict `cand` into the {id: note} map `by_id`, in place.
+
+    Contract (mirrored on mobile in lib/notesStorage.ts):
+      • audio_segments UNION on every merge (append-only, never lost).
+      • Unknown fields (newer-client columns) preserved verbatim from both sides.
+      • Conflict pair: if local & remote edited the same note within
+        NOTES_CONFLICT_WINDOW_SECONDS and diverge, keep BOTH — the newer keeps the
+        canonical id (conflict=True, conflict_of=None); the older is stored under a
+        deterministic id "<id>::conflict::<updated_at>" (conflict=True,
+        conflict_of=<id>). Deterministic id => idempotent across repeated fetches.
+      • Otherwise last-write-wins on known fields, unknowns unioned.
+    Never raises.
+    """
+    rid = cand.get("id")
+    if not rid:
+        return
+    ex = by_id.get(rid)
+    if not ex:
+        by_id[rid] = cand
+        return
+
+    merged_segments = _union_audio_segments(ex.get("audio_segments"), cand.get("audio_segments"))
+
+    if _notes_conflict(ex, cand):
+        newer, older = (
+            (cand, ex)
+            if (cand.get("updated_at", "") or "") >= (ex.get("updated_at", "") or "")
+            else (ex, cand)
+        )
+        winner = dict(older)          # preserve older's unknown fields first
+        winner.update(newer)          # newer's known+unknown fields win
+        winner["audio_segments"] = merged_segments
+        winner["conflict"] = True
+        winner["conflict_of"] = None
+        by_id[rid] = winner
+
+        copy_id = f"{rid}::conflict::{older.get('updated_at', '') or ''}"
+        copy = dict(older)
+        copy["id"] = copy_id
+        copy["conflict"] = True
+        copy["conflict_of"] = rid
+        copy["audio_segments"] = _union_audio_segments(older.get("audio_segments"), [])
+        by_id[copy_id] = copy
+        return
+
+    # No conflict: last-write-wins, but preserve unknown fields from both sides.
+    base = dict(ex)
+    if (cand.get("updated_at", "") or "") >= (ex.get("updated_at", "") or ""):
+        base.update(cand)             # remote newer: its values win, adds its unknowns
+    else:
+        for k, v in cand.items():     # local newer: keep local, add only missing keys
+            base.setdefault(k, v)
+    base["audio_segments"] = merged_segments
+    by_id[rid] = base
 
 
 class SharedDashboard:
@@ -253,6 +372,11 @@ class DashboardApi:
                 "sync_device_name": cfg.get("sync_device_name", "Windows"),
                 "hotkey_hold": cfg.get("hotkey_hold", "alt_r"),
                 "hotkey_toggle": cfg.get("hotkey_toggle", "alt_r"),
+                # Notes v2 feature flags (default true) so Settings can toggle each.
+                "notes_search_enabled": feature_flag(cfg, "notes_search_enabled"),
+                "notes_autotitle_enabled": feature_flag(cfg, "notes_autotitle_enabled"),
+                "notes_structure_detection_enabled": feature_flag(cfg, "notes_structure_detection_enabled"),
+                "notes_audio_linkage_enabled": feature_flag(cfg, "notes_audio_linkage_enabled"),
             },
             sync_connected=bool(self.app._sync and self.app._sync.connected),
             devices=self.dashboard._known_devices,
@@ -497,7 +621,8 @@ class DashboardApi:
 
     def fetch_notes(self):
         notes = list(self._local_notes())
-        # Merge any remote notes when sync is on (newest updated_at wins).
+        # Merge any remote notes when sync is on. Uses the v2 merge contract:
+        # conflict-pair preservation, audio_segments UNION, unknown-field passthrough.
         if self._sync_on():
             try:
                 import httpx
@@ -506,26 +631,27 @@ class DashboardApi:
                 resp = httpx.get(
                     f"{SUPABASE_URL}/rest/v1/notes",
                     headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"},
+                    # select=* so raw_content, audio_segments, and any newer-client
+                    # columns come back and can be preserved verbatim (forward-compat).
                     params={"user_id": f"eq.{user_id}", "order": "updated_at.desc",
-                            "limit": "200", "select": "id,title,content,created_at,updated_at"},
+                            "limit": "200", "select": "*"},
                     timeout=8,
                 )
                 if resp.status_code == 200:
                     by_id = {n["id"]: n for n in notes if n.get("id")}
                     for r in resp.json():
-                        rid = r.get("id")
-                        if not rid:
+                        if not isinstance(r, dict) or not r.get("id"):
                             continue
-                        cand = {
-                            "id": rid,
-                            "title": r.get("title", "") or "",
-                            "content": r.get("content", "") or "",
-                            "created_at": r.get("created_at", "") or "",
-                            "updated_at": r.get("updated_at", "") or "",
-                        }
-                        ex = by_id.get(rid)
-                        if not ex or cand["updated_at"] > ex.get("updated_at", ""):
-                            by_id[rid] = cand
+                        cand = dict(r)  # keep ALL remote fields, including unknowns
+                        cand["title"] = r.get("title", "") or ""
+                        cand["content"] = r.get("content", "") or ""
+                        cand["created_at"] = r.get("created_at", "") or ""
+                        cand["updated_at"] = r.get("updated_at", "") or ""
+                        # normalize v2 fields (absent on pre-existing rows)
+                        cand["raw_content"] = r.get("raw_content", None)
+                        segs = r.get("audio_segments")
+                        cand["audio_segments"] = segs if isinstance(segs, list) else []
+                        merge_remote_note(by_id, cand)
                     notes = sorted(by_id.values(), key=lambda n: n.get("updated_at", ""), reverse=True)
                     self._save_local_notes(notes)
             except Exception as e:
@@ -534,37 +660,102 @@ class DashboardApi:
 
     def save_note(self, note):
         import uuid
+        note = note or {}
+        cfg = self.app.config
         notes = list(self._local_notes())
         now = _dt.datetime.now(_dt.timezone.utc).isoformat()
-        nid = (note or {}).get("id") or uuid.uuid4().hex
-        title = (note or {}).get("title", "") or ""
-        content = (note or {}).get("content", "") or ""
+        nid = note.get("id") or uuid.uuid4().hex
+        title = note.get("title", "") or ""
+        content = note.get("content", "") or ""
+        raw_content = note.get("raw_content", None)
+        # Explicit caller intent to (re)format now. Reformat and the initial dictated
+        # save set this; typed edits leave it off. Control field — never stored.
+        run_cleanup = bool(note.get("run_cleanup"))
+        incoming_segments = note.get("audio_segments")
+        if not isinstance(incoming_segments, list):
+            incoming_segments = None
+
+        existing = next((n for n in notes if n.get("id") == nid), None)
+
+        # ── Cost control (Decision 2): run AI cleanup AT MOST ONCE per dictated note.
+        # Fires only on the initial dictated save — a raw transcript is present, no
+        # formatted content exists yet (neither incoming nor already-stored), and the
+        # note has never been formatted — OR when the caller explicitly asks
+        # (run_cleanup, i.e. Reformat). Typed edits and every subsequent save skip it.
+        raw_str = (raw_content or "").strip()
+        existing_content = (existing.get("content", "") if existing else "") or ""
+        is_initial_dictated = bool(raw_str) and not content.strip() and not existing_content.strip()
+        if raw_str and (run_cleanup or is_initial_dictated):
+            try:
+                from app.ai_cleanup import format_note
+                structure_on = feature_flag(cfg, "notes_structure_detection_enabled")
+                autotitle_on = feature_flag(cfg, "notes_autotitle_enabled")
+                source = raw_str if raw_str else content
+                formatted = format_note(
+                    source, cfg,
+                    structure_detection=structure_on,
+                    autotitle=autotitle_on,
+                )
+                if formatted:
+                    content = formatted.get("formatted_content") or content
+                    new_title = (formatted.get("title") or "").strip()
+                    # Auto-title only when the note has no title yet — NEVER overwrite
+                    # a title the user set manually (Decision / Feature 2).
+                    if autotitle_on and new_title and not title.strip():
+                        title = new_title
+                # On failure `content` stays as-is (typically empty) so the raw
+                # transcript is preserved and the UI shows "Retry formatting".
+            except Exception as e:
+                logger.debug(f"Note cleanup on save failed: {e}")
+
         found = False
         for n in notes:
             if n.get("id") == nid:
+                # Merge onto the existing dict so unknown/newer-client fields are
+                # preserved verbatim on write-back (forward-compat, Decision 7).
                 n["title"], n["content"], n["updated_at"] = title, content, now
+                if raw_content is not None:
+                    n["raw_content"] = raw_content
+                if incoming_segments is not None:
+                    # UNION so a segment added elsewhere isn't dropped by this edit.
+                    n["audio_segments"] = _union_audio_segments(n.get("audio_segments"), incoming_segments)
+                elif "audio_segments" not in n:
+                    n["audio_segments"] = []
                 found = True
+                saved = n
                 break
         if not found:
-            notes.insert(0, {"id": nid, "title": title, "content": content,
-                             "created_at": now, "updated_at": now})
+            saved = {"id": nid, "title": title, "content": content,
+                     "raw_content": raw_content,
+                     "audio_segments": incoming_segments or [],
+                     "created_at": now, "updated_at": now}
+            notes.insert(0, saved)
         # newest first
         notes = sorted(notes, key=lambda n: n.get("updated_at", ""), reverse=True)
         self._save_local_notes(notes)
-        # push to cloud (best-effort)
-        if self._sync_on():
+        # push to cloud (best-effort). Conflict copies are local-only until resolved.
+        if self._sync_on() and "::conflict::" not in nid:
             try:
                 import httpx
                 from app.sync import SUPABASE_KEY, SUPABASE_URL
+                payload = {"id": nid, "user_id": self.app.config.get("sync_user_id", ""),
+                           "title": title, "content": content,
+                           "audio_segments": saved.get("audio_segments", []),
+                           "device_name": self.app.config.get("sync_device_name", ""),
+                           "updated_at": now}
+                if raw_content is not None:
+                    payload["raw_content"] = raw_content
+                # Forward-compat: preserve any unknown fields we're holding for this
+                # note verbatim, so an older client never strips a newer column.
+                for k, v in saved.items():
+                    if k not in _NOTE_KNOWN_FIELDS and k not in payload:
+                        payload[k] = v
                 httpx.post(
                     f"{SUPABASE_URL}/rest/v1/notes?on_conflict=id",
                     headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}",
                              "Content-Type": "application/json",
                              "Prefer": "resolution=merge-duplicates,return=minimal"},
-                    json={"id": nid, "user_id": self.app.config.get("sync_user_id", ""),
-                          "title": title, "content": content,
-                          "device_name": self.app.config.get("sync_device_name", ""),
-                          "updated_at": now},
+                    json=payload,
                     timeout=10,
                 )
             except Exception as e:
@@ -602,7 +793,7 @@ class DashboardApi:
         except Exception as e:
             return {"ok": False, "error": str(e)}
 
-    def note_dictate_stop(self):
+    def note_dictate_stop(self, note_id=None):
         rec = getattr(self.app, "recorder", None)
         if rec is None:
             return {"ok": False, "error": "no recorder"}
@@ -614,14 +805,113 @@ class DashboardApi:
             text, status = transcribe_with_status(audio, self.app.config, rec.sample_rate)
             if status != "ok" or not text:
                 return _ok(text="", status=status)
+            raw_text = text
+            # Per-segment cleanup only (Decision 2): the newly-dictated chunk is
+            # cleaned; the whole note is NOT re-formatted here.
             try:
                 from app.ai_cleanup import process_text
                 text = process_text(text, self.app.config)
             except Exception:
                 pass
-            return _ok(text=text)
+            # Audio linkage (Feature 4) — gated + fail-closed: never let recording
+            # persistence break the transcribe path. Returns the appended segment so
+            # the editor can attach it; when a note_id is given we also append locally.
+            segment = None
+            if feature_flag(self.app.config, "notes_audio_linkage_enabled"):
+                try:
+                    segment = self._persist_note_recording(audio, rec.sample_rate, note_id)
+                    if segment and note_id:
+                        self._append_audio_segment(note_id, segment)
+                except Exception as e:
+                    logger.debug(f"note audio linkage failed: {e}")
+            result = _ok(text=text, raw_text=raw_text)
+            if segment:
+                result["segment"] = segment
+            return result
         except Exception as e:
             return {"ok": False, "error": str(e)}
+
+    # ── note audio-segment persistence (Feature 4) ────────────────────────────
+    def _persist_note_recording(self, audio, sample_rate, note_id=None):
+        """Save the note's recording as a local WAV (reusing recordings.py) and
+        return an audio-segment dict {id, url, created_at}. Upload to the cloud runs
+        in the background; local playback works immediately via recordings.path_for.
+        Returns None on failure. Never raises out (caller also guards)."""
+        from app import recordings
+        rec_id = recordings.new_id()
+        local_path = recordings.save_wav(audio, sample_rate, rec_id)
+        if not local_path:
+            return None
+        segment = {
+            "id": rec_id,
+            "url": "",
+            "created_at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+        }
+        user_id = self.app.config.get("sync_user_id", "")
+        if user_id:
+            def _upload():
+                try:
+                    url = recordings.upload_cloud(local_path, user_id, rec_id)
+                    if url and note_id:
+                        self._set_segment_url(note_id, rec_id, url)
+                except Exception as e:
+                    logger.debug(f"note recording upload failed: {e}")
+            threading.Thread(target=_upload, daemon=True).start()
+        return segment
+
+    def _append_audio_segment(self, note_id, segment):
+        """UNION-append one audio segment onto a local note's audio_segments and
+        bump updated_at. Idempotent (union dedups by id)."""
+        notes = list(self._local_notes())
+        for n in notes:
+            if n.get("id") == note_id:
+                n["audio_segments"] = _union_audio_segments(n.get("audio_segments"), [segment])
+                n["updated_at"] = _dt.datetime.now(_dt.timezone.utc).isoformat()
+                self._save_local_notes(notes)
+                return True
+        return False
+
+    def _set_segment_url(self, note_id, rec_id, url):
+        """Fill in the cloud URL on an already-appended segment once upload finishes."""
+        notes = list(self._local_notes())
+        changed = False
+        for n in notes:
+            if n.get("id") == note_id:
+                for seg in n.get("audio_segments", []) or []:
+                    if isinstance(seg, dict) and seg.get("id") == rec_id and not seg.get("url"):
+                        seg["url"] = url
+                        changed = True
+        if changed:
+            self._save_local_notes(notes)
+        return changed
+
+    def search_notes(self, query):
+        """Case-insensitive substring search over local notes. Title matches rank
+        above content/raw matches; recency (updated_at desc) breaks ties. Linear scan
+        — trivially <100ms to well past 1,000 notes, so no separate index is needed.
+        When the search flag is off, returns all notes unfiltered. Never raises."""
+        notes = list(self._local_notes())
+        # Conflict copies are internal; don't surface them as search hits.
+        notes = [n for n in notes if "::conflict::" not in (n.get("id") or "")]
+        if not feature_flag(self.app.config, "notes_search_enabled"):
+            return _ok(notes=notes, query=query or "")
+        q = (query or "").strip().lower()
+        if not q:
+            return _ok(notes=notes, query="")
+
+        def rank(n):
+            if q in (n.get("title") or "").lower():
+                return 0
+            if q in (n.get("content") or "").lower() or q in (n.get("raw_content") or "").lower():
+                return 1
+            return 2
+
+        matched = [n for n in notes if rank(n) < 2]
+        # Two stable passes: recency desc first, then rank asc → title beats content,
+        # newest wins ties.
+        matched.sort(key=lambda n: n.get("updated_at", "") or "", reverse=True)
+        matched.sort(key=rank)
+        return _ok(notes=matched, query=query or "")
 
     def toggle_note_pin(self, note_id):
         try:
@@ -651,31 +941,25 @@ class DashboardApi:
             return _err(str(e))
 
     def format_note_with_ai(self, text):
+        """Explicit Reformat (Decision 2): (re)format `text` in ONE LLM call and
+        return {title, formatted_content} (also `content` for the existing UI).
+        Structure detection and auto-title follow their feature flags. On failure
+        returns _err so the caller keeps the current content unchanged."""
+        cfg = self.app.config
+        if not (cfg.get("groq_api_keys") or []):
+            return _err("No Groq API key configured")
         try:
-            from app.ai_cleanup import NOTES_FORMATTER_SYSTEM_PROMPT
-            api_keys = self.app.config.get("groq_api_keys", [])
-            if not api_keys:
-                return _err("No Groq API key configured")
-            import httpx
-            resp = httpx.post(
-                "https://api.groq.com/openai/v1/chat/completions",
-                headers={"Authorization": f"Bearer {api_keys[0]}", "Content-Type": "application/json"},
-                json={
-                    "model": "llama-3.3-70b-versatile",
-                    "messages": [
-                        {"role": "system", "content": NOTES_FORMATTER_SYSTEM_PROMPT},
-                        {"role": "user", "content": f"NOTES TO FORMAT:\n```\n{text}\n```\n\nOutput the formatted markdown only."},
-                    ],
-                    "temperature": 0,
-                    "max_tokens": 4096,
-                },
-                timeout=30,
+            from app.ai_cleanup import format_note
+            result = format_note(
+                text, cfg,
+                structure_detection=feature_flag(cfg, "notes_structure_detection_enabled"),
+                autotitle=feature_flag(cfg, "notes_autotitle_enabled"),
             )
-            if resp.status_code != 200:
-                return _err(f"AI format failed: {resp.status_code}")
-            data = resp.json()
-            content = data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
-            return _ok(content=content or text)
+            if not result:
+                return _err("AI format failed")
+            content = result.get("formatted_content") or text
+            return _ok(title=result.get("title", ""), content=content,
+                       formatted_content=content)
         except Exception as e:
             logger.error(f"AI note format failed: {e}")
             return _err(str(e))
@@ -689,6 +973,11 @@ class DashboardApi:
         cfg["sync_enabled"] = bool(settings.get("sync_enabled"))
         cfg["sync_user_id"] = settings.get("sync_user_id", "").strip()
         cfg["sync_device_name"] = settings.get("sync_device_name", "").strip() or "Windows"
+        # Notes v2 feature flags — only overwrite when present so a partial settings
+        # payload never clobbers a flag back to its default.
+        for flag in NOTES_FEATURE_FLAGS:
+            if flag in settings:
+                cfg[flag] = bool(settings[flag])
         save_config(cfg)
         self.app.config = cfg
         self.app._mode = cfg["recording_mode"]
@@ -782,6 +1071,20 @@ class DashboardApi:
         for e in self.app.config.get("history", []):
             if isinstance(e, dict) and e.get("id") == entry_id:
                 return e
+        # Fall back to note audio segments (Feature 4) so get_audio/play_recording
+        # serve note recordings the same way. Synthesizes a minimal entry pointing at
+        # the local WAV (recordings.path_for) with the cloud URL for download-if-missing.
+        # Fail-closed: never raises out of the lookup.
+        try:
+            from app import recordings
+            for n in self._local_notes():
+                for seg in (n.get("audio_segments") or []):
+                    if isinstance(seg, dict) and seg.get("id") == entry_id:
+                        return {"id": entry_id,
+                                "audio": recordings.path_for(entry_id),
+                                "audio_url": seg.get("url", "") or ""}
+        except Exception:
+            pass
         return None
 
     def _ensure_local_audio(self, entry):
