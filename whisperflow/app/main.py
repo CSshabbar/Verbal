@@ -179,6 +179,48 @@ class VerbalApp(rumps.App):
     def _status_text(self):
         return f"{self._total_transcriptions} transcriptions | {self._total_words} words"
 
+    def _install_edit_menu(self):
+        """rumps/menubar apps ship no standard Edit menu, so the system paste
+        shortcut (Cmd+V — and Cmd+C/X/A/Z) never reaches the focused field: those
+        shortcuts are delivered via the Edit menu's key equivalents down the
+        responder chain. Without it, Cmd+V silently does nothing inside Verbal's
+        own windows (dashboard/canvas/notes) even though right-click → Paste works.
+        Build a minimal Edit menu so the shortcuts route to the WKWebView / text
+        fields normally."""
+        try:
+            from AppKit import NSApplication, NSMenu, NSMenuItem
+            app = NSApplication.sharedApplication()
+            main_menu = app.mainMenu()
+            if main_menu is None:
+                main_menu = NSMenu.alloc().init()
+                app.setMainMenu_(main_menu)
+            # Don't add twice.
+            for i in range(main_menu.numberOfItems()):
+                sub = main_menu.itemAtIndex_(i).submenu()
+                if sub and sub.title() == "Edit":
+                    return
+            edit_item = NSMenuItem.alloc().init()
+            main_menu.addItem_(edit_item)
+            edit_menu = NSMenu.alloc().initWithTitle_("Edit")
+            edit_item.setSubmenu_(edit_menu)
+            for title, action, key in (
+                ("Undo", "undo:", "z"),
+                ("Redo", "redo:", "Z"),
+                (None, None, None),           # separator
+                ("Cut", "cut:", "x"),
+                ("Copy", "copy:", "c"),
+                ("Paste", "paste:", "v"),
+                ("Select All", "selectAll:", "a"),
+            ):
+                if title is None:
+                    edit_menu.addItem_(NSMenuItem.separatorItem())
+                    continue
+                it = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(title, action, key)
+                edit_menu.addItem_(it)
+            logger.info("Edit menu installed (Cmd+C/V/X/A/Z)")
+        except Exception as e:
+            logger.warning(f"Could not install Edit menu: {e}")
+
     def _start_app(self, _=None):
         logger.info("Starting Verbal")
         self.overlay.setup()
@@ -200,6 +242,7 @@ class VerbalApp(rumps.App):
         self.dashboard.show()
         from AppKit import NSApplication
         NSApplication.sharedApplication().setActivationPolicy_(0)
+        self._install_edit_menu()
 
         # Reflect sign-in state + offer sign-in once on first run.
         self._update_auth_menu()

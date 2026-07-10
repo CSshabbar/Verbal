@@ -10,6 +10,7 @@ logger = logging.getLogger("verbal.injector")
 
 VK_V = 0x09
 VK_RETURN = 0x24
+VK_COMMAND = 0x37  # left Command key
 
 # An '@name.ext' file tag produced by app.filetags.tag(). Used to drive Cursor's
 # @-mention picker so the reference becomes a real chip, not literal text. The
@@ -73,15 +74,30 @@ def restore_focused_app():
 
 
 def _paste_via_cgevent():
-    """Simulate Cmd+V using Quartz CGEvents."""
+    """Simulate Cmd+V using Quartz CGEvents.
+
+    Posts a BALANCED left-Command key down/up around the V, and clears the flags
+    on the final Command-up event. The old approach set only the Command *flag*
+    on the V events (with an HID-system-state source) and never posted a matching
+    Command key up — which could leave a phantom Command modifier in the session
+    state and break the user's own real Cmd+V afterward (right-click Paste still
+    worked because it doesn't use the keyboard). Left Command (0x37) is used so it
+    never collides with the default Right-Command (0x36) recording hotkey.
+    """
     src = Quartz.CGEventSourceCreate(Quartz.kCGEventSourceStateHIDSystemState)
-    cmd_down = Quartz.CGEventCreateKeyboardEvent(src, VK_V, True)
-    Quartz.CGEventSetFlags(cmd_down, Quartz.kCGEventFlagMaskCommand)
-    Quartz.CGEventPost(Quartz.kCGAnnotatedSessionEventTap, cmd_down)
-    time.sleep(0.05)
-    cmd_up = Quartz.CGEventCreateKeyboardEvent(src, VK_V, False)
-    Quartz.CGEventSetFlags(cmd_up, Quartz.kCGEventFlagMaskCommand)
-    Quartz.CGEventPost(Quartz.kCGAnnotatedSessionEventTap, cmd_up)
+    tap = Quartz.kCGAnnotatedSessionEventTap
+    cmd = Quartz.kCGEventFlagMaskCommand
+
+    def _post(vk, down, flags):
+        e = Quartz.CGEventCreateKeyboardEvent(src, vk, down)
+        Quartz.CGEventSetFlags(e, flags)
+        Quartz.CGEventPost(tap, e)
+
+    _post(VK_COMMAND, True, cmd)     # Command down
+    _post(VK_V, True, cmd)           # V down (Command held)
+    time.sleep(0.03)
+    _post(VK_V, False, cmd)          # V up
+    _post(VK_COMMAND, False, 0)      # Command up — flags cleared, no phantom modifier
 
 
 def _event_source():
