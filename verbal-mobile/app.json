@@ -65,7 +65,8 @@
           "cameraPermission": "Verbal needs your camera to scan a pairing code on your computer."
         }
       ],
-      "expo-web-browser"
+      "expo-web-browser",
+      "./plugins/withFlumeKeyboard"
     ],
     "scheme": "verbal",
     "extra": {
