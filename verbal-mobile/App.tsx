@@ -3,6 +3,7 @@ import React from 'react';
 import { View, Text, StyleSheet, ScrollView } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { useFonts } from 'expo-font';
+import { syncKeyboardConfig } from './lib/keyboardBridge';
 import {
   Geist_400Regular,
   Geist_500Medium,
@@ -62,6 +63,9 @@ export default function App() {
     JetBrainsMono_500Medium,
     JetBrainsMono_600SemiBold,
   });
+
+  // Write the native keyboard's config snapshot (Groq key + dictionary) on launch.
+  React.useEffect(() => { syncKeyboardConfig(); }, []);
 
   if (!fontsLoaded) return null;
 

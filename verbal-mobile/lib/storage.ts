@@ -54,6 +54,8 @@ export async function getGroqKey(): Promise<string> {
 }
 export async function setGroqKey(key: string) {
   await AsyncStorage.setItem(KEYS.GROQ_KEY, key);
+  // Keep the native keyboard's config in sync with the current Groq key.
+  import('./keyboardBridge').then((m) => m.syncKeyboardConfig()).catch(() => {});
 }
 
 // ── Sync ──────────────────────────────────────────────────────────────────────

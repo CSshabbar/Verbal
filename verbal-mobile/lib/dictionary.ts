@@ -85,6 +85,9 @@ export async function saveDictionary(d: Dictionary): Promise<Dictionary> {
   const norm = normalize(d);
   await AsyncStorage.setItem(KEY, JSON.stringify(norm));
   pushRemote(norm).catch(() => {});
+  // Refresh the native keyboard's config snapshot (dynamic import avoids a
+  // circular dependency: keyboardBridge imports getDictionary from here).
+  import('./keyboardBridge').then((m) => m.syncKeyboardConfig()).catch(() => {});
   return norm;
 }
 
