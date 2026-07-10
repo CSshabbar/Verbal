@@ -27,7 +27,11 @@
 | `snippets` | jsonb | default `'[]'` — `[{id,trigger,expansion,label,used,created_at,updated_at}]` (spoken trigger → text expansion; caps 40/500) |
 | `updated_at` | timestamptz | default `now()` |
 
-RLS on; policy `dictionary anon rw`: `FOR ALL TO anon USING(true) WITH CHECK(true)`.
+RLS on; policy `dictionary rw`: `FOR ALL TO public USING(true) WITH CHECK(true)`
+(`supabase_dictionary_rls_fix.sql`). **Must be `TO public`, not `TO anon`** — a
+signed-in client (mobile SDK) sends an authenticated JWT (role `authenticated`), and a
+`TO anon` policy would filter its rows out, silently breaking dictionary/snippet sync
+to signed-in devices.
 
 **`pairings`** — `supabase_pairings.sql`. Short-lived single-use device-pairing tokens.
 `id` uuid PK · `token` text unique · `user_id` text · `host_device` text · `created_at` · `expires_at`
@@ -140,9 +144,14 @@ and `verbal://auth-callback` (mobile). Consent screen in "Testing" mode. No sepa
 Pragmatic, matches code + `GOOGLE_AUTH_SETUP.md`:
 - Both apps use the **anon key for all data requests**; users separated purely by the `user_id` value in
   the query/filter. The user's JWT/access_token is stored but **not** used to authorize REST/realtime.
-- RLS: enabled with wide-open anon `true` on `dictionary`/`pairings`; `transcriptions`/`devices`/`canvas`/
-  `notes` have **no committed RLS**. Any anon caller who knows a `user_id` could read that user's rows —
-  data is scoped, not cryptographically enforced.
+- RLS: enabled with a wide-open `true` policy on `dictionary` (now **`TO public`**) and `pairings`
+  (still `TO anon`); `transcriptions`/`devices`/`canvas`/`notes` have **no committed RLS**. Any caller who
+  knows a `user_id` could read that user's rows — data is scoped, not cryptographically enforced.
+- **RLS role gotcha:** the desktop uses the raw anon key (role `anon`); a *signed-in* client (mobile SDK)
+  sends the user's JWT (role `authenticated`). A policy scoped `TO anon` silently filters out the
+  authenticated client's rows. So any table both clients share must use `TO public` (or include
+  `authenticated`). This bit `dictionary` — fixed in `supabase_dictionary_rls_fix.sql`; `pairings` still
+  has the latent `TO anon` pattern.
 - Proper JWT + `auth.uid()` RLS is a **documented deferred** hardening (the setup doc has the migration).
 - Storage buckets are public; `app_versions` inserts are service_role-gated.
 

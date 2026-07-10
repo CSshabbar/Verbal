@@ -49,6 +49,12 @@
    `config['autolearn_declined']` and never re-offered. (This is why re-testing the *same* word shows
    nothing — test with a fresh word, or clear the list.)
 
+10. **Supabase RLS must be `TO public`, not `TO anon`, on any table both clients share.** The desktop
+   talks to Supabase with the raw anon key (role `anon`); a *signed-in* mobile client sends the user's JWT
+   (role `authenticated`). A policy scoped `TO anon` silently filters out the authenticated client's rows —
+   this is what broke dictionary/snippet sync to signed-in phones (fixed via
+   `whisperflow/supabase_dictionary_rls_fix.sql`). `pairings` still has the latent `TO anon` pattern.
+
 ## Design system (Flume)
 
 Single source: desktop `app/theme.py` + `app/fonts_css.py`; mobile `flume-ui/theme/`. Also
