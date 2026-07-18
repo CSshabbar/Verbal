@@ -14,9 +14,9 @@
 2. **Verify generated web UI:** the WKWebView/pywebview HTML+JS is produced by Python strings. After any
    change, `node --check` the extracted `<script>` blocks. The desktop dashboard JS lives in a **raw
    string** (`flume_dashboard_html.py`) — inside it, JS escapes use a **single** backslash (`\s`, not
-   `\\s`); `shared_dashboard._html()` uses doubled backslashes in places deliberately (e.g. `.split("\\n")`).
-   Mixing the two silently corrupts the injected JS. Always: `py_compile` + `import app.main` +
-   `node --check` the rendered script blocks.
+   `\\s`). (The old `shared_dashboard._html()` — a light-theme Windows-only dashboard that used doubled
+   backslashes — has been **retired**; Windows now renders the same `flume_html()` as macOS.)
+   Always: `py_compile` + `import app.main` + `node --check` the rendered script blocks.
 
 3. **Config writes are atomic + locked.** Only write config via `config.py::save_config` (unique
    `tempfile.mkstemp` name + `os.replace` under `_config_lock`). Never share a temp filename across
@@ -69,6 +69,245 @@
    The structure-detection rules live on `NOTES_FORMATTER_SYSTEM_PROMPT`/mobile `formatNotes` (the **LLM**
    system prompt) — Hard Rule #6's 896-char cap is the **Whisper** bias prompt only; don't conflate them.
 
+13. **Wipe account-scoped caches on sign-out / account switch (data isolation).** Mobile keys all data by
+   `getUserId()`, but the id + local caches persist across sign-ins. If they aren't cleared, a *different*
+   Google account signing in on the same device sees the previous account's history/notes/devices/vocabulary
+   (a real cross-account leak that shipped). `useAuth.signOut` and `afterSignIn` (when the uid changed) must
+   call `clearAccountData()` (`lib/storage.ts` — removes `verbal_user_id`, `verbal_history`, `verbal_pinned`,
+   `verbal_notes_cache`, `flume_dictionary`, `flume_target_device`) **and** `historyStore.reset()` (drops the
+   items singleton + the realtime channel keyed by the old id). Any new per-account cache/singleton must be
+   added to that teardown. Device-level config (Groq key, device name, feature-flag prefs) is preserved.
+   `signOut` uses `supabase.auth.signOut({ scope: 'local' })` so it can't hang on the network.
+
+14. **Don't use the custom `confirm()`/`ConfirmDialog` inside a screen presented as a native-stack MODAL
+   (mobile).** `ConfirmHost` renders a JS `<Modal>` from the root; on iOS a JS modal shown over a
+   native-stack `presentation:'modal'` screen (e.g. **Settings**) doesn't reliably receive touches, so the
+   dialog looks dead — this is why the Sign-out button "did nothing." Inside modal screens use React
+   Native's native `Alert.alert(...)`. `confirm()` is fine on tab/stack screens (e.g. notes multi-select).
+
+15. **All Groq access goes through the `groq-proxy` Edge Function — never a client-side key.** The Groq key
+   is a Supabase **function secret** (`GROQ_API_KEY`), server-side only. Every client POSTs to
+   `<SUPABASE_URL>/functions/v1/groq-proxy` (multipart → transcription, JSON → chat) authenticating with the
+   signed-in user's Supabase JWT (mobile `lib/groq.ts`) or the anon key (desktop `app/groq_proxy.py`, iOS +
+   Android keyboards) plus an `x-flume-device` fallback id. The function (`verify_jwt` on, source in
+   `supabase/functions/groq-proxy/index.ts`) decodes the caller id from the JWT locally (no `getUser`
+   round-trip) and **logs usage** to `groq_usage` fire-and-forget, then streams the Groq response back.
+   It is deliberately lean for latency: **no SDK import, no blocking pre-checks** (a synchronous
+   rate-limit query was removed — re-add a *fast* limiter, e.g. in-isolate/Upstash, if abuse appears).
+   Rotate/revoke centrally: `supabase secrets set GROQ_API_KEY=…` (no app update). The key is **never** in an
+   app bundle, the repo, or a log. The earlier `app_config` key-table / `BUNDLED_GROQ_KEY` idea is
+   **SUPERSEDED** (a client must never be able to read the key); `lib/remoteConfig.ts` is now vestigial. The
+   iOS keyboard's `KeyboardViewController.swift` and desktop still keep a local-key fallback path only for
+   resilience — the proxy is always tried first.
+16. **Keyboard data bridge is App-Group–gated on iOS.** The app hands the keyboard its config
+    (`flume_kbd_config.json`: theme, vocabulary, snippets, recent history) via a JSON snapshot written by
+    `lib/keyboardBridge.ts::syncKeyboardConfig()`. On **Android** the IME reads `context.filesDir`, which is
+    the same dir as Expo's `documentDirectory` — a plain `writeAsStringAsync` works. On **iOS the keyboard
+    extension is a separate sandbox** and can *only* read the shared **App Group** container
+    (`group.com.verbal.app`), never the app's `documentDirectory`. `expo-file-system` can't target group
+    paths, so writes go through the local native module **`modules/flume-shared-store`** (`writeToGroup`);
+    the bridge falls back to `documentDirectory` only when that module is absent (Expo Go / no native build).
+    The Swift extension reads the group via `FileManager.containerURL(forSecurityApplicationGroupIdentifier:)`.
+    Both the app and the `FlumeKeyboard` target must declare the group in their entitlements (they do, via
+    `app.json` `ios.entitlements` + the apple-targets `expo-target.config.js`). **Sync must be re-triggered on
+    every data change**, not just app launch — `addToHistory` / `mergeRemoteEntries` / dictionary edits all
+    fire-and-forget `syncKeyboardConfig()`, else the keyboard panels go stale. Bar icons: **Ionicons**
+    (bundled `plugins/keyboard/ionicons.ttf`, copied to `assets/` by `withFlumeKeyboard.js`) on Android;
+    **SF Symbols** (`bolt.fill`/`square.grid.2x2`/`clock`/`book.closed`/`mic.fill`) on iOS. The keyboard's
+    **dark theme uses the canonical "Minimalist dark" tokens** (`flume-ui/theme/colors.ts` +
+    `CLAUDE_CODE_PROMPT.md`, the authoritative design spec): `bg #0e1012`, keys `#2a2d31`, modifiers `#1e2124`,
+    text `#f2f2f2`, white `#f2f2f2` return/mic, overlay rows `#26282b` — and the accent is **terracotta
+    `#C85A3E`** (NOT orange; `#E0552C` was wrong). **barBg == bg** so the Flume bar blends into the app bottom
+    (no floating grey card) and the keyboard is near-full-bleed (2dp side inset). Source of truth is
+    `lib/keyboardTokens.ts`, mirrored in each native `applyTheme()`. NB: the mobile theme is cool near-black +
+    terracotta; the cream/sage/plum pastels are desktop dashboard feature-card colors only.
+    **Fonts are bundled into the keyboards** (not system): Geist (UI/keys) + JetBrains Mono (numerals/meta) ship
+    as TTFs — Android copies them to `assets/` via `withFlumeKeyboard.js` and loads with `Typeface.createFromAsset`;
+    iOS ships `Geist-Regular/Medium.ttf` + `JetBrainsMono-Medium.ttf` in the target, declared in the target
+    `Info.plist` `UIAppFonts` and registered at runtime via `CTFontManagerRegisterFontsForURL` (PostScript names
+    `Geist-Medium` / `JetBrainsMono-Medium`). **Recording bar** (spec `RECORDING_BAR_PROMPT.md`): tapping the mic
+    fades out AND collapses the overlay icons + the mic, leaving the F wordmark and swapping in — left→right — a
+    **✕ cancel chip** (~38pt, discards), a **24-bar organic waveform** (bars *text-colored*, not terracotta;
+    varied heights via a slow envelope × per-tick pseudo-random spike so it always animates even with no mic
+    input — e.g. the iOS sim; real voice pushes higher on-device), a **`M:SS` mono timer**, and a big
+    **terracotta button** (~42pt). The design has one right-side button, so it's overloaded: **tap = stop &
+    transcribe, long-press = pause/resume** (paused dims the button + freezes waveform/timer). The **F wordmark
+    inverts** (keyText square + terracotta F). Amplitude: Android `MediaRecorder.getMaxAmplitude()`, iOS
+    `AVAudioRecorder.averagePower` (metering), polled ~70ms; timer excludes paused spans.
+    **Sound effects** mirror the desktop (`whisperflow/app/sounds.py`: start / stop / done — no processing-loop
+    sound). The branded `assets/sounds/{start,stop,done}.wav` are bundled three ways: RN in-app recorder plays
+    them via `lib/sounds.ts::playCue()` (expo-audio, wired into `useRecorder`); the Android keyboard plays
+    `flume_{start,stop,done}.wav` from `assets/` via `SoundPool` (copied by `withFlumeKeyboard.js`); the iOS
+    keyboard plays them via `AVAudioPlayer` from the extension bundle. Cancel is silent. All playback is
+    fail-closed and never blocks record→transcribe→insert. iOS needs Full Access + juggles the audio session
+    (`.playAndRecord` for the start cue, `.playback` for stop/done); sim playback is unreliable, device is the test.
+    **Typing suggestions** (completions + next-word + learning; NO autocorrect yet — that's the remaining tier).
+    Two bundled data files (generated offline — `wordfreq` for words, `nltk` corpora bigrams — and bundled to
+    Android `assets/` + the iOS target): `flume_words.txt` (~25k words, most-frequent first, **including ~370 contractions** like
+    `wasn't`/`don't`/`i'm` — the list allows apostrophes, not alphabetic-only) drives prefix **completions**; `flume_bigrams.txt` (`prev<TAB>next1 next2 …`, ~21k prev-words) drives **next-word
+    prediction**. `updateSuggestions()` branches on the current word prefix: **non-empty** → completions ranked
+    personal-learned → vocabulary → dictionary; **empty** (cursor after a space) → next-word for the previous
+    word, personal-bigrams → bundled-bigrams. Both capped at 3, deduped, casing-aware; iterate the lists until 3
+    hits (never sort the whole dictionary). The keyboard **learns your words AND your phrasing**: a personal
+    word→count map and a personal prev→next bigram map, persisted per-keyboard (Android `SharedPreferences`
+    "flume_kbd_learn" keys "words"/"bigrams", bounded ~500/~400; iOS `UserDefaults` "flume_kbd_learned" /
+    "flume_kbd_bigrams"), updated on every finished word / word-pair (boundary char) and accepted suggestion.
+    **Typing feel (Gboard-parity):** keys commit on **touch-DOWN**, NOT `setOnClickListener`/`.touchUpInside` —
+    the click path drops fast taps that slide past touch-slop, which was the "missing keys" bug. Android fires
+    `performHapticFeedback(KEYBOARD_TAP, FLAG_IGNORE_VIEW_SETTING)` on down; **iOS keyboard extensions cannot do
+    haptics** (Apple gates the Taptic Engine to the foreground app — do not attempt `UIFeedbackGenerator`), so
+    iOS uses `UIDevice.playInputClick()` (respects the user's Keyboard Clicks setting) as the substitute. Also:
+    pressed-state highlight on down, a letters-only key-preview bubble (Android `PopupWindow` `isTouchable=false`
+    / iOS overlay `UILabel`), `double-space → ". "`, and auto-capitalization at sentence start (rebuilds only
+    when the shift state flips). The **comma commits on UP** (not down) so its long-press→emoji works without
+    inserting a stray ",". All feedback/preview paths fail closed — they never block the commit. Deferred P2:
+    long-press accent popups, spacebar cursor-swipe, glide typing, and Android key-click sound (default off).
+    **Gapless touch grid:** keys tile edge-to-edge with NO dead-zone margins — a tap between keys still hits the
+    nearest key (Gboard behavior). The visual gap is drawn INSIDE each key: Android `InsetDrawable(rounded,dp3)`
+    + zero margins + row topMargin 0; iOS transparent button filling its cell + a 3pt-inset rounded background
+    subview + row `spacing=0`. **Emoji:** the picker loads a full bundled library `flume_emoji.txt` (~1900 emoji,
+    9 groups + Recents, from Unicode emoji-test.txt) via comma long-press. **Word→emoji suggestions:**
+    `flume_emoji_kw.txt` (~2.3k keywords, Unicode CLDR + curated) maps a typed word to emoji; an EXACT full-word
+    match shows the emoji as the first suggestion cell and tapping REPLACES the word with the emoji + space.
+    **Suggestion bar** is distributed: up to 3 equal-width centered cells with thin dividers spanning the full
+    width (was left-packed). All emoji/dictionary/bigram data files are generated offline and bundled to Android
+    `assets/` (via `withFlumeKeyboard.js`) + the iOS target. **Spacebar-swipe cursor:** dragging horizontally on
+    the space key moves the caret (~1 char per 12dp/pt) instead of typing — Android sends `DPAD_LEFT/RIGHT` key
+    events, iOS uses `adjustTextPosition(byCharacterOffset:)`; a swipe suppresses the space, a plain tap still
+    spaces (double-space→". " intact).
+17. **`historyStore` loads once at app start — you MUST `refresh()` it on sign-in.** The shared singleton
+    (`flume-ui/hooks/historyStore.ts`) has a `started` guard: `ensureLoaded()` runs `load()` a single time,
+    and `RootNavigator` mounts `useHistory()` at app start — i.e. **before sign-in, when sync is off** — which
+    trips the guard. So adopting the account id later does NOT auto-fetch. `useAuth::afterSignIn` therefore
+    calls `historyStore.refresh()` (which re-runs `load()` unconditionally) after `setUserId`/`setSyncEnabled`;
+    without it a fresh install shows an empty History even though the cloud rows exist. Sign-out calls
+    `historyStore.reset()` (clears the guard). Remote history lives in `public.transcriptions` keyed by the
+    Supabase auth `user_id`; its RLS policy is currently permissive (`USING true`, role `public`) — revisit.
+    **`getUserId()` (`lib/storage.ts`) is authoritative from the live Supabase session** — it returns
+    `supabase.auth.getSession()`'s user id (and caches it) whenever signed in, only falling back to a
+    stored/minted local id when signed out. This is load-bearing: it scopes ALL cloud data (notes, dictionary,
+    snippets, history). The earlier bug where a **restored** session (afterSignIn didn't run) read a stray
+    minted id and showed everything as 0 is fixed here — don't revert `getUserId` to a pure AsyncStorage read.
+
+18. **Meetings capture must never touch the dictation `Recorder` — and only ONE process-wide mic stream may
+    exist.** A meeting opens its OWN `sounddevice.InputStream` (meetings.py); but when dictation starts
+    DURING a meeting it must NOT open a second stream on the same device (CoreAudio drops one of them —
+    "my voice gets ignored" — and a failed second open's PortAudio reinit killed the meeting stream).
+    Instead `main._on_record_start` registers a **mic tap**: `MeetingSession.add_mic_tap(recorder.feed_external)`
+    + `recorder.start_external(16000)` — the meeting's callback forwards 16 kHz blocks to the tap (even while
+    the meeting is paused), and the tap is detached in `_on_record_stop`/`_cancel_recording`. `sd._terminate()`
+    is guarded everywhere: never call it while the other subsystem holds a live stream. The scratchpad's
+    Dictate chip rides this same path — the paste lands in the focused scratchpad and the same words
+    legitimately also enter the meeting transcript via the meeting mic. **Cold-start cost lives off the main
+    thread:** the ScreenCaptureKit import (~1 s) is pre-warmed at startup and `_toggle_meeting` runs its
+    permission check on a background thread — main-thread work froze every first click. The summary screen
+    scrolls as ONE page (sticky header, expanded sections grow into the page) — inner-only scroll containers
+    were unusable in small windows.
+    ScreenCaptureKit facts that cost time: SCK **audio** is gated by the *Screen Recording* TCC class
+    (`CGPreflightScreenCaptureAccess`) even when no pixels are read; you must still configure a tiny video
+    stream (2×2 + `CMTimeMake(1,1)` frame interval) and drop the video buffers; set
+    `excludesCurrentProcessAudio` or the app re-captures its own sound cues; a `SCStream` output delegate
+    must never raise into SCK's queue. pyobjc: `CMBlockBufferCopyDataBytes(block, 0, len, None)` returns
+    `(status, bytes)` — the trailing `o^v` arg is an out-buffer. **An ObjC delegate class defined inside a
+    function re-registers with the runtime on every call** — the second meeting in one process died with
+    "_Output is overriding existing Objective-C class"; define such classes ONCE at module scope
+    (`system_audio._output_class()`; the instance carries a `_capture` back-reference, cleared on stop).
+    **PortAudio's device list goes stale after a macOS audio-device change** (e.g. AirPods
+    connect/disconnect): every later `sd.InputStream` open — including hotkey dictation — fails with AUHAL
+    `'!obj'` / `kAudioUnitErr_InvalidPropertyValue` / `paInternalError -9986` until you
+    `sd._terminate(); sd._initialize()` and re-query the CURRENT default input rate. Both
+    `recorder.Recorder.start()` and the meeting mic open do exactly that (reinit + native-rate retry;
+    meetings resample native→16 k inside the callback). **Audio callbacks must be O(block):** the meeting
+    chunker originally concatenated its whole 8–22 s buffer on EVERY callback for a tail-RMS check — that
+    starved PortAudio's realtime thread and the mic stream stalled after ~a minute ("only system audio
+    records me"). The silence check now uses a small rolling tail buffer, the big concat runs on the
+    transcription worker, and a **mic watchdog** in the ticker reopens a stalled stream (no callbacks for
+    >5 s, throttled to one attempt/10 s). The meeting's elapsed clock is **wall-time minus pause spans** —
+    never one source's sample counter, which freezes the timer when that source drops. The dashboard learns
+    about finished meetings via a `meetingsUpdated` VerbalNative event (meetings end in a different window)
+    plus a refresh on `show('meetings'|'home')` — a load-once guard alone left the list stale.
+    **Never emit bridge events into a WKWebView before its JS is ready** — `evaluateJavaScript` against a
+    still-loading page silently drops the call (the `if(window.VerbalMeeting)` guard makes it a no-op), which
+    is why opening a meeting into a fresh window "did nothing". Pattern: the page calls a ready handshake
+    (`api('meeting_page_ready')`) after installing its handler; the controller buffers `emit()`s until then
+    and flushes them (plus re-asserts the current layout) — see `MeetingWindow.page_ready()`.
+    **Never gate critical UI visibility on a CSS animation in a WKWebView.** The meeting window shipped
+    blank because containers had `opacity:0` base styles (and later `from{opacity:0}` + fill-mode `both`)
+    with an entrance animation that WebKit can skip or park at time 0 (occluded/offscreen panels, Reduce
+    Motion, styleMask-flip races) — the element then sits invisible forever. Rule: containers appear
+    instantly (no entrance animation); only decorative per-row elements may animate, always with the default
+    fill mode so a skipped animation leaves them visible. Debug this class of bug by SNAPSHOTTING the real
+    WKWebView headlessly (`takeSnapshotWithConfiguration_completionHandler_` + event injection — see the
+    harness pattern in the session that fixed this) instead of guessing from code.
+    Structured LLM output from Groq must use
+    `response_format={"type":"json_object"}` (strict JSON mode, passed through `chat_via_proxy`; the prompt
+    must contain the word "JSON") — prompt-only "reply with JSON" was not reliable for meeting summaries.
+    **The whisperflow venv's `pip` binary is a
+    mismatched interpreter (py3.14) that installs into the wrong site-packages — always
+    `.venv/bin/python -m pip install …`** (this bit the SCK wrapper install; the venv also carries a stale
+    `lib/python3.14` tree). New deps for meetings: `pyobjc-framework-ScreenCaptureKit` +
+    `pyobjc-framework-CoreMedia` (pinned 12.1; add to PyInstaller hiddenimports when bundling).
+    The meeting window/HUD use dedicated JS namespaces (`VerbalMeeting`, `VerbalMeetingHud`) — never emit
+    meeting events through `VerbalNative`. Meeting summary generation follows the Notes cost rule: ONE
+    structured LLM call per meeting (strict-JSON contract, 24k-char transcript budget, 2 attempts, 45 s),
+    regenerate only on explicit Retry; a failed summary sets row status `failed` but keeps the transcript.
+    Meeting text NEVER goes into analytics (none is emitted at all in v1).
+    **Only CAPTURING states flip the meeting window to the live screen** (`recording|paused|preparing`).
+    'stopping'/'processing' are post-capture: a summary retry re-emits 'processing' and used to hijack the
+    view into a fake in-meeting screen ("retry starts the meeting again"). Related: session broadcasts of
+    `meeting` events must not replace a DIFFERENT meeting the user is reading — explicit opens go through
+    the dedicated `openMeeting` event; the generic handler drops mismatched-id payloads in summary mode.
+    **The meeting window is ONE reused page — reset the live panes on meeting-id change.** Opening a
+    second meeting used to show the first meeting's transcript: `resetLive()` clears
+    UTTS/MARKS/notes/timer/star-count when a `state` event carries a new id, and `utterance`/`moment`
+    events are tagged with `mid` so stragglers from the previous meeting's still-draining worker are
+    dropped.
+    **Every clipboard/regenerate/save button needs visible feedback** (`flashOk`/`toast` in
+    meeting_html) — a working copy button with no feedback reads as broken and gets reported as a bug.
+    Regenerating a summary merges the user's done-checkboxes back in by task text (`merge_action_done`);
+    deleting is blocked while that meeting's pipeline is still draining (zombie-row race).
+    **Voice fingerprints are LOCAL-ONLY** (`config['voice_prints']`) — biometric-adjacent data never goes
+    to Supabase/analytics; only the derived `recognized` name-hit map syncs. The embedding is a numpy
+    log-mel mean+std print (`app/voiceprint.py`), matched at ≥0.92 cosine with a 0.02 margin over the
+    runner-up, and the whole step fails closed (any error → meeting pipeline proceeds unnamed).
+    **Floating panels of this menubar app must opt OUT of Stage Manager and never activate the app**
+    ("buttons are not working", Jul 2026): with Stage Manager on, the expanded meeting panel was swept
+    into the side strip (full-size to x≈-4800, or as a tiny tilted thumbnail at the left edge) seconds
+    after opening — the window "flies away" and every click looks dead. Three rules, all required:
+    (1) collectionBehavior must include `.auxiliary` (1<<17) **and** `.canJoinAllApplications` (1<<18)
+    (macOS 13+ Stage Manager opt-outs) — `Transient`/`Stationary` alone do NOT survive the panel
+    becoming key; (2) never `activateIgnoringOtherApps` and never `makeKeyAndOrderFront` eagerly — use
+    `orderFrontRegardless()` + `setBecomesKeyOnlyIfNeeded_(True)` (the recipe the recording widget and
+    the bar always used; activation creates a Flume "stage" that gets parked on the next app switch);
+    (3) any WKWebView inside an NSPanel must be a subclass overriding `acceptsFirstMouse:` → YES
+    (registered once, Rule-#18 ObjC pattern) — stock WKWebView reports `needsPanelToBecomeKey`, so the
+    first click coming from another app is swallowed by the key-transfer ceremony and buttons feel dead.
+    Also: `setMovableByWindowBackground_` stays False on the expanded window (drag via titlebar region).
+    **Verify bridge methods against the REAL API object, not a fake resolver:** `meeting_page_ready`
+    shipped reading `self._dash` on a class whose attribute is `self.dashboard`; the AttributeError was
+    swallowed by its `except` and the ready-handshake silently never fired in the real app (page stuck on
+    its default `permissions` screen, all buffered `mode`/`meeting` events dropped). The headless harness
+    missed it because it resolved bridge calls itself — unit-test handshakes through `DashboardApi`.
+    "Skip for now" on the permission checklist persists `meetings_skipped_system_audio` and
+    `_toggle_meeting` honors it (skip → pre-meeting modal, capture fails closed to mic-only) — without
+    that, a mic TCC status of notDetermined re-showed the checklist on every open.
+    **Never interpolate `JSON.stringify(x)` bare into a double-quoted onclick attribute** — the emitted
+    double quotes terminate the attribute early and the handler silently becomes a syntax error (this,
+    not just the missing handshake, is why clicking a meeting row "did nothing"). Wrap it:
+    `onclick="fn(${esc(JSON.stringify(x))})"` — `esc()` turns the quotes into `&quot;`, which the HTML
+    parser decodes back into valid JS. Verify by reading `el.getAttribute('onclick')` headlessly.
+    **Never PATCH a jsonb list you didn't actually load.** `set_action_item_done` originally fell back
+    to `[]` when the trimmed local row had no `action_items` key and wiped the cloud items. Rule: if the
+    local copy is missing/empty, fetch the cloud value first, and skip the PATCH entirely when there is
+    nothing real to write.
+    The meeting window + dashboard Meetings list are skinned to the **widget kit v2**
+    (MEETINGS_WIDGETS_HANDOFF.md): dot+label speaker chips (no pill fills), rows inside ONE parent card
+    with `--bd-faint` dividers, glyph-only icon buttons (28px hit target, stroke 1.4), 9.5px/0.16em
+    eyebrows, timer numerals 500-weight with negative tracking, waveform bars in text-primary (not
+    accent), hybrid notes as dot rows with `↳` AI additions + Yours/Merged/AI underline tabs, action
+    items as real persisted checkboxes (`set_action_item_done`). CSS escapes for glyphs in the
+    non-raw `_CSS` string need DOUBLE backslashes (`\\2014`) — `\2014` is an octal escape in Python.
+
 ## Design system (Flume)
 
 Single source: desktop `app/theme.py` + `app/fonts_css.py`; mobile `flume-ui/theme/`. Also
@@ -77,7 +316,7 @@ Single source: desktop `app/theme.py` + `app/fonts_css.py`; mobile `flume-ui/the
 - **Fonts:** **Geist** for all UI text; **JetBrains Mono** only for numerics + meta labels (timers,
   counts, UPPERCASE tags/eyebrows).
 - **Base surface:** near-black (e.g. `#1a1512` / `rgba(22,20,18,…)`), light text `#f4f3f1`.
-- **Accent:** `#E8522A` (orange) — used sparingly.
+- **Accent:** `#C85A3E` (terracotta) — used sparingly. (Historic `#E8522A` is retired; Rule #16.)
 - **Pastel stat-card palette** (dashboard "fcards", and the auto-learn widget matches `cream`):
   - `cream` `#EADFCE` (ink `#2a1f18`) — "Words today"
   - `sage` `#DDE4D3` (ink `#1e2418`)
@@ -91,12 +330,20 @@ Single source: desktop `app/theme.py` + `app/fonts_css.py`; mobile `flume-ui/the
 **Desktop (`whisperflow/app/`):**
 - `dashboard.py` (`DashboardWindow`, ~3178 lines) — legacy AppKit dashboard, only a fallback if
   `FlumeWebDashboard` fails to construct. Superseded by the WKWebView Flume dashboard.
+- `meeting_hud.py` + `meeting_hud_html.py` — the original separate floating meeting HUD; **superseded** by
+  the morphing bar layout of `meeting_window.py` (one panel: bar ⇄ expanded). Not wired anymore.
 - `history_window.py` — legacy standalone AppKit history window; not referenced.
 - `canvas_window.py` (`CanvasWindow`) — instantiated but menu routes to the web dashboard tab; effectively
   unused.
 - `transcriber._transcribe_local` has an unreachable duplicate VAD `_run()` block after its `return`.
-- `flume_dashboard_html.py` docstring ("pywebview window / SharedDashboard.show()") is **stale** — it's
-  loaded into a WKWebView by `FlumeWebDashboard`.
+- `flume_dashboard_html.py` is **dual-target**: loaded into a WKWebView by `FlumeWebDashboard` on macOS
+  and into a pywebview window by `SharedDashboard.show()` on Windows (its docstring is accurate again).
+- `shared_dashboard._html()` (the old light-theme Windows dashboard) and `win_dashboard.py`
+  (`WinDashboard`, tkinter) are **retired** — `_html()` is removed; `WinDashboard` remains only as a
+  last-resort fallback if `import webview` fails. Windows renders the Flume UI.
+- `whisperflow/WINDOWS_PARITY_PLAN.md` + `whisperflow/windows_specs/W3–W9*.md` are the **active** handoff
+  specs for the remaining Windows-native workstreams (overlay/popover/injection/meetings/auto-learn/
+  file-tagging/visual-QA) — not legacy; execute on a Windows dev session.
 - Three near-identical macOS specs (`verbal.spec`/`pico.spec`/`whisperflow.spec`) with **drifting version
   strings** (plist 1.3.0 vs 1.0.0) and slightly different `hiddenimports`; `config.APP_VERSION` is 1.0.10 —
   none match. `pico.spec` bundles `groq`+`scipy`; `verbal`/`whisperflow` bundle `pyautogui`.

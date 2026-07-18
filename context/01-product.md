@@ -19,7 +19,7 @@ Core loop (all platforms): **hotkey → record → transcribe → AI-clean → i
 |---|---|---|---|
 | **macOS desktop** | `whisperflow/` | Python 3, PyObjC/AppKit, `rumps` menubar, WKWebView UIs, cloud + local Whisper | Primary, most complete (`APP_VERSION` 1.0.10) |
 | **iOS mobile** | `verbal-mobile/` | Expo SDK 55 / React Native 0.83, `flume-ui`, Supabase JS SDK | Active; feature-parity for core, minus desktop-only features |
-| **Windows desktop** | `whisperflow/app/win_*.py` | `pystray` tray + `pynput` + tkinter/pywebview, shares core modules | Secondary variant; fewer features wired |
+| **Windows desktop** | `whisperflow/app/win_*.py` | `pystray` tray + `pynput` + pywebview (WebView2), shares core modules **and now the same Flume UI** | Being brought to full parity — renders the identical Flume dashboard (`flume_html()`); auth/dictation-pipeline/sync/notes/canvas wired. Native-heavy features (meetings, auto-learn, file-tagging) specced for a Windows dev session — see `whisperflow/WINDOWS_PARITY_PLAN.md` |
 
 All three share **one Supabase backend** (project `ovpcthjingugwvpxlsna`) — see `04-data-model.md`.
 
@@ -30,18 +30,19 @@ All three share **one Supabase backend** (project `ovpcthjingugwvpxlsna`) — se
 | Recording + transcription (Groq→Gemini→local) | ✅ | ✅ (Groq only) | ✅ | Fallback chain desktop; mobile = Groq `whisper-large-v3-turbo` |
 | AI cleanup / formatting | ✅ | ✅ | ✅ | Desktop `process_text`; mobile `formatText`. Notes cleanup now wired on both (mobile `formatNotes`/`formatNoteWithTitle`) |
 | Custom dictionary (vocab bias + replacement rules) | ✅ | ✅ | ✅ | Synced, one row/user |
-| **Snippets** (spoken trigger → text expansion) | ✅ | ✅ | ⚠️ | On the `dictionary` row; longest-first, single-pass |
-| **Auto-learn** dictionary from corrections | ✅ | ❌ | ❌ | Desktop-only (AX read-back + cream pill widget) |
-| **File tagging** (`@name.ext` in IDEs) | ✅ | ❌ | ❌ | Desktop-only (macOS Accessibility) |
-| Recordings save / playback / retry | ✅ | ✅ | ⚠️ partial | Local + cloud (`recordings` bucket) |
-| Notes (voice-first, synced) | ✅ | ✅ | ⚠️ | Supabase `notes` table. **v2:** search, auto-title, structure/checklists, audio linkage, raw+formatted, conflict-pair sync; 4 flags (`notes_search/autotitle/structure_detection/audio_linkage_enabled`, default on) |
-| Canvas (shared clipboard: text/link/image) | ✅ | ✅ | ⚠️ | Supabase `canvas` row + realtime |
+| **Snippets** (spoken trigger → text expansion) | ✅ | ✅ | ✅ | On the `dictionary` row; longest-first, single-pass. Windows expands in-dictation via `dictionary.apply_snippets` |
+| **Auto-learn** dictionary from corrections | ✅ | ❌ | ❌ | macOS AX read-back + cream pill widget. Windows port specced (UIA readback) — `windows_specs/W7-autolearn-uia.md` |
+| **File tagging** (`@name.ext` in IDEs) | ✅ | ❌ | ❌ | macOS Accessibility. Windows port specced (UI Automation harvest) — `windows_specs/W8-filetags-uia.md` |
+| Recordings save / playback / retry | ✅ | ✅ | ✅ | Local + cloud (`recordings` bucket). Windows `_process_audio` now saves WAV, uploads, and writes retryable `failed` entries |
+| Notes (voice-first, synced) | ✅ | ✅ | ✅ | Supabase `notes` table. **v2:** search, auto-title, structure/checklists, audio linkage, raw+formatted, conflict-pair sync; 4 flags (`notes_search/autotitle/structure_detection/audio_linkage_enabled`, default on). Windows uses the shared `DashboardApi` + Flume notes UI |
+| Canvas (shared clipboard: text/link/image) | ✅ | ✅ | ✅ | Supabase `canvas` row + realtime |
 | Cross-device sync (history/notes/canvas) | ✅ | ✅ | ✅ | Supabase realtime, keyed by `user_id` |
 | Device pairing (QR) | ✅ | ✅ | ✅ | `pairings` table, single-use token |
-| Google auth (Supabase) | ✅ | ✅ | ⚠️ | Desktop PKCE loopback; mobile deep link |
-| Onboarding | ✅ | ✅ | — | |
-| Recording overlay / floating HUD | ✅ | ❌ | ✅ | Desktop pill; iOS uses a modal screen |
-| Menubar popover | ✅ | — | ⚠️ | macOS NSPopover |
+| Google auth (Supabase) | ✅ | ✅ | ✅ | Desktop PKCE loopback (shared `auth.py`); mobile deep link. Windows wires `_sign_in`/`_sign_out` + tray item |
+| Onboarding | ✅ | ✅ | ✅ | Windows now renders the same Flume onboarding/`#signin` screens |
+| Recording overlay / floating HUD | ✅ | ❌ | ✅ | Desktop pill; iOS uses a modal screen. Windows currently a tkinter pill; webview parity (`overlay_html()`) specced — `windows_specs/W3-overlay.md` |
+| **Meetings** (capture + live transcript + AI summary) | ✅ | 👁 read-only | ❌ | macOS captures system audio (ScreenCaptureKit) + mic; iOS lists/views/plays synced meetings and can edit the scratchpad; no capture on mobile. Windows port specced (WASAPI loopback) — `windows_specs/W6-meetings-wasapi.md` |
+| Menubar popover | ✅ | — | ⚠️ | macOS NSPopover. Windows equivalent (tray-click pywebview `popover_html()`) specced — `windows_specs/W4-popover.md` |
 
 Legend: ✅ present · ⚠️ partial/legacy · ❌ not present · — N/A.
 
@@ -58,6 +59,9 @@ Legend: ✅ present · ⚠️ partial/legacy · ❌ not present · — N/A.
 - **Notes** — synced, voice-first notes.
 - **Pairing** — linking a new device to your account by scanning a QR code (`flume://pair?t=…`).
 - **Overlay / pill** — the desktop floating HUD shown while recording/transcribing.
+- **Meeting** — a desktop-captured recording of a live call (system audio + mic, no bot), producing a live
+  transcript, a user scratchpad, and a hybrid AI summary (summary + decisions + action items + the user's
+  notes enhanced with transcript context). Mobile views are read-only except the scratchpad.
 - **Popover** — the macOS menubar dropdown (NSPopover) mini-dashboard.
 
 ## Repo layout (top level)

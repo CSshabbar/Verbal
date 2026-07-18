@@ -17,13 +17,15 @@ import faulthandler
 faulthandler.enable()
 
 from app.config import (
-    load_config, save_config, add_to_history, update_daily_words,
-    add_gemini_key, remove_gemini_key,
+    load_config, save_config, add_to_history, update_history_entry,
+    update_daily_words, add_gemini_key, remove_gemini_key,
     _entry_text, _entry_app, LOG_DIR, ensure_dirs, APP_VERSION, PLATFORM,
 )
 from app.recorder import Recorder
-from app.transcriber import transcribe
+from app.transcriber import transcribe, transcribe_with_status
 from app.ai_cleanup import process_text
+from app import recordings
+from app import auth
 
 ensure_dirs()
 
@@ -93,6 +95,31 @@ class VerbalWinApp:
 
         self._init_sync()
 
+    def _on_main(self, fn):
+        """Run `fn` off the hot path — the Windows analogue of the Mac app's
+        main-thread marshaller.
+
+        On macOS the app owns a Cocoa run loop and marshals UI work onto the
+        main thread because WKWebView/AppKit are main-thread-only. Windows has
+        no such run loop here: the pywebview window and pystray tray run their
+        own loops, and none of them require callers to hop to a specific thread.
+
+        So we simply run `fn` on a short-lived daemon thread, fully guarded so a
+        failing callback can never propagate into (or block) whatever invoked it.
+        This is fire-and-forget / non-blocking by design — nothing in the
+        record → transcribe → inject hot path depends on _on_main running
+        synchronously (the pipeline updates state inline and only uses _on_main
+        for peripheral UI refreshes)."""
+        def _run():
+            try:
+                fn()
+            except Exception as e:
+                logger.error(f"_on_main callback failed: {e}", exc_info=True)
+        try:
+            threading.Thread(target=_run, daemon=True).start()
+        except Exception as e:
+            logger.error(f"_on_main dispatch failed: {e}")
+
     def _build_tray_menu(self):
         import pystray
 
@@ -130,6 +157,8 @@ class VerbalWinApp:
             pystray.MenuItem("Whisper Model", model_menu),
             pystray.MenuItem("Groq API Key...", self._tray_manage_groq),
             pystray.MenuItem("Gemini API Key...", self._tray_manage_gemini),
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem(lambda item: self._auth_menu_label(), self._tray_toggle_auth),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem(lambda item: f"Verbal v{APP_VERSION}", self._tray_about),
             pystray.MenuItem("Quit", self._tray_quit),
@@ -299,6 +328,109 @@ class VerbalWinApp:
         )
         root.destroy()
 
+    # ── Google auth ───────────────────────────────────────────────────────
+    def _auth_menu_label(self):
+        """Dynamic tray label reflecting the current sign-in state."""
+        try:
+            u = auth.current_user()
+            if u:
+                return f"Sign out ({u.get('email', 'account')})"
+        except Exception:
+            pass
+        return "Sign in with Google"
+
+    def _update_auth_menu(self):
+        """Refresh the tray so the auth item picks up the new state."""
+        self._update_tray_menu()
+
+    def _tray_toggle_auth(self, icon=None, item=None):
+        try:
+            if auth.current_user():
+                self._sign_out()
+            else:
+                self._sign_in()
+        except Exception as e:
+            logger.error(f"Auth toggle failed: {e}")
+
+    def _sign_in(self, _=None):
+        """Kick off Google sign-in. The PKCE loopback server blocks, so the whole
+        flow runs on a daemon thread — the tray/GUI never freezes. Fail-closed."""
+        def work():
+            try:
+                a = auth.sign_in_with_google()
+                self._on_main(lambda: self._after_sign_in(a))
+            except Exception as e:
+                logger.error(f"Sign-in failed: {e}")
+        try:
+            threading.Thread(target=work, daemon=True).start()
+        except Exception as e:
+            logger.error(f"Sign-in dispatch failed: {e}")
+
+    def _after_sign_in(self, auth_info):
+        try:
+            self.config = load_config()  # picks up sync_user_id set during sign-in
+        except Exception as e:
+            logger.error(f"Reload config after sign-in failed: {e}")
+        self._update_auth_menu()
+        # Detect other signed-in devices off the UI path, then finish.
+        def detect():
+            others = []
+            try:
+                import platform
+                from app.sync import fetch_devices
+                others = fetch_devices(auth_info.get("user_id", ""), platform.node()) or []
+            except Exception as e:
+                logger.debug(f"device detect failed: {e}")
+            self._on_main(lambda: self._finish_sign_in(others))
+        try:
+            threading.Thread(target=detect, daemon=True).start()
+        except Exception as e:
+            logger.error(f"device detect dispatch failed: {e}")
+            self._finish_sign_in([])
+
+    def _finish_sign_in(self, others):
+        """Enable + (re)start sync after sign-in, then refresh the dashboard.
+
+        Unlike the Mac app (which pops a modal asking whether to sync when other
+        devices exist) we default sync ON — the tray has no clean modal moment —
+        while still logging any detected devices. Fully fail-closed."""
+        try:
+            if others:
+                names = ", ".join(d.get("device_name", "a device") for d in others[:3])
+                logger.info(f"Account already signed in on: {names}")
+            self.config["sync_enabled"] = True
+            save_config(self.config)
+        except Exception as e:
+            logger.error(f"finish_sign_in config write failed: {e}")
+        try:
+            self._restart_sync()
+        except Exception as e:
+            logger.error(f"finish_sign_in sync restart failed: {e}")
+        self._update_auth_menu()
+        try:
+            self.dashboard.show()  # bring Flume to the front after sign-in
+            self.dashboard._refresh()
+        except Exception as e:
+            logger.debug(f"dashboard refresh after sign-in skipped: {e}")
+
+    def _sign_out(self, _=None):
+        try:
+            if self._sync:
+                try:
+                    self._sync.stop()
+                except Exception:
+                    pass
+                self._sync = None
+            auth.sign_out()
+            self.config = load_config()
+        except Exception as e:
+            logger.error(f"Sign-out failed: {e}")
+        self._update_auth_menu()
+        try:
+            self.dashboard._refresh()
+        except Exception as e:
+            logger.debug(f"dashboard refresh after sign-out skipped: {e}")
+
     # ── Hotkey (pynput) ──────────────────────────────────────────────────
     def _parse_key(self, key_name):
         from pynput import keyboard
@@ -465,7 +597,12 @@ class VerbalWinApp:
         self._update_tray_menu()
         self.dashboard.update_recording_state(False)
 
-        if audio is None or len(audio) < 8000: # 0.5s at 16kHz
+        # Minimum ~1.0s of audio to avoid accidental clicks / hallucinations —
+        # matches the Mac semantics. The shared Recorder captures at the mic's
+        # NATIVE rate (typically 48kHz), not 16kHz, so derive the sample count
+        # from the actual sample_rate rather than a hard-coded 16k constant.
+        min_samples = int(self.recorder.sample_rate * 1.0)
+        if audio is None or len(audio) < min_samples:
             self.overlay.hide()
             return
 
@@ -479,28 +616,134 @@ class VerbalWinApp:
         _play_sound("stop")
         self._reset_to_ready()
 
+    def _transcribe_with_retry(self, audio, attempts=3):
+        """Transcribe, auto-retrying on 'failed' (transient network/API) with a
+        short backoff. Returns (text, status). Silence returns immediately.
+        Mirrors main.py:_transcribe_with_retry."""
+        text, status = "", "failed"
+        for i in range(attempts):
+            if self._cancel_flag.is_set():
+                return "", "silent"
+            try:
+                text, status = transcribe_with_status(
+                    audio, self.config, self.recorder.sample_rate)
+            except Exception as e:
+                logger.error(f"Transcription attempt {i+1} raised: {e}")
+                text, status = "", "failed"
+            if status in ("ok", "silent"):
+                return text, status
+            if i < attempts - 1:
+                logger.warning(f"Transcription failed (attempt {i+1}) — retrying…")
+                time.sleep(1.5 * (i + 1))
+        return text, status
+
+    def _refresh_dashboards(self):
+        try:
+            self.dashboard._refresh()
+        except Exception:
+            pass
+
+    def _upload_recording_async(self, rec_id, local_path):
+        """Upload the WAV to the cloud + attach its URL to the history entry.
+        Fail-closed peripheral — never blocks or breaks the pipeline."""
+        def work():
+            try:
+                user_id = self.config.get("sync_user_id", "")
+                if not user_id or not local_path:
+                    return
+                url = recordings.upload_cloud(local_path, user_id, rec_id)
+                if url:
+                    self.config = update_history_entry(self.config, rec_id, audio_url=url)
+                    self._on_main(self._refresh_dashboards)
+            except Exception as e:
+                logger.debug(f"recording upload failed: {e}")
+        try:
+            threading.Thread(target=work, daemon=True).start()
+        except Exception as e:
+            logger.debug(f"recording upload dispatch failed: {e}")
+
     def _process_audio(self, audio):
+        # Save the recording locally FIRST (playback backup + retry cache), same
+        # as the Mac app. Fail-closed: a save failure leaves audio_path=None and
+        # never blocks transcription/injection.
+        rec_id = recordings.new_id()
+        try:
+            audio_path = recordings.save_wav(audio, self.recorder.sample_rate, rec_id)
+            logger.info(f"Recording saved: {audio_path} (id={rec_id})")
+        except Exception as e:
+            logger.error(f"save_wav failed: {e}")
+            audio_path = None
+
         try:
             if self._cancel_flag.is_set():
                 return
 
-            text = transcribe(audio, self.config, self.recorder.sample_rate)
+            from app.win_injector import get_focused_app_name
+
+            text, status = self._transcribe_with_retry(audio)
             if self._cancel_flag.is_set():
                 return
-            if not text:
-                self.overlay.hide()
+
+            # "silent" — empty/too-short audio. Discard the WAV, tell the user.
+            if status == "silent":
+                logger.warning("No speech detected — discarding recording")
+                if audio_path:
+                    try:
+                        os.remove(audio_path)
+                    except Exception:
+                        pass
+                try:
+                    self.overlay.show_briefly("No speech detected. Speak louder!", duration=1.5)
+                except Exception:
+                    pass
+                self._reset_to_ready()
+                return
+
+            # "failed" — network/API down. Keep the audio + a retryable entry.
+            if status == "failed":
+                logger.error("Transcription failed after retries — saved for retry")
+                try:
+                    self.config = add_to_history(
+                        self.config, "", get_focused_app_name(),
+                        entry_id=rec_id, audio=audio_path or "", status="failed")
+                except Exception as e:
+                    logger.error(f"failed-entry write failed: {e}")
+                self._upload_recording_async(rec_id, audio_path)
+                try:
+                    self.overlay.show_briefly("Transcription failed — retry from History", duration=2.0)
+                except Exception:
+                    pass
+                self._reset_to_ready()
+                self._refresh_dashboards()
                 return
 
             result = process_text(text, self.config)
             if self._cancel_flag.is_set():
                 return
 
-            from app.win_injector import get_focused_app_name
-            self.config = add_to_history(self.config, result, get_focused_app_name())
+            # Expand spoken snippet triggers into their saved text. Runs AFTER AI
+            # cleanup and immediately BEFORE injection — the same point the Mac
+            # app applies it. Fully guarded / fail-closed: any error leaves the
+            # transcription untouched and never breaks the pipeline.
+            try:
+                from app import dictionary
+                result = dictionary.apply_snippets(result, self.config, save_config)
+            except Exception as e:
+                logger.debug(f"apply_snippets skipped: {e}")
+
+            try:
+                self.config = add_to_history(
+                    self.config, result, get_focused_app_name(),
+                    entry_id=rec_id, audio=audio_path or "", status="done")
+            except Exception as e:
+                logger.error(f"history write failed: {e}")
             word_count = len(result.split())
             self._total_transcriptions += 1
             self._total_words += word_count
-            self.config = update_daily_words(self.config, word_count)
+            try:
+                self.config = update_daily_words(self.config, word_count)
+            except Exception:
+                pass
             self._update_tray_menu()
 
             self.overlay.hide()
@@ -522,6 +765,13 @@ class VerbalWinApp:
                     threading.Thread(
                         target=self._sync.push, args=(result, push_target), daemon=True
                     ).start()
+
+            # Upload the audio to the cloud + attach its URL (async, fail-closed).
+            self._upload_recording_async(rec_id, audio_path)
+
+            # TODO (Windows parity, later workstreams): AX file-tagging, autolearn
+            # edit-watch, and meeting mic-tap sharing are intentionally not wired
+            # here yet (macOS-only for now).
 
             brief = f"Pasted | {word_count}w" if success else f"Copied | {word_count}w"
             self.overlay.show_briefly(brief, duration=2.0)

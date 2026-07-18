@@ -30,7 +30,12 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install Pillow
-          pip install -r whisperflow/requirements.txt
+          # Use the Windows-pinned deps (uiautomation, comtypes, soundcard,
+          # winotify, scipy, etc.) that the frozen exe's hidden imports rely on.
+          pip install -r whisperflow/requirements-win.txt
+          # Offline transcription engine — kept out of the requirements files per
+          # the repo's "install separately" note, but the spec imports it.
+          pip install faster-whisper
           pip install pyinstaller
 
       - name: Convert icon to ICO
@@ -43,11 +48,24 @@ jobs:
           cd whisperflow
           pyinstaller verbal-win.spec --clean --noconfirm
 
+      # updater.py runs the release file with Inno Setup silent switches
+      # (/SILENT /CLOSEAPPLICATIONS /SUPPRESSMSGBOXES /NORESTART), so the file we
+      # publish for Windows MUST be the Inno installer, not the bare Verbal.exe.
+      - name: Install Inno Setup
+        run: choco install innosetup -y
+
+      - name: Build Windows installer
+        run: |
+          cd whisperflow
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" verbal-setup.iss
+
+      # Publish the Inno installer as the Windows release artifact. (Verbal.exe is
+      # bundled inside it; we no longer ship the bare exe as the update payload.)
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: Verbal-Windows
-          path: whisperflow/dist/Verbal.exe
+          path: whisperflow/dist/VerbalSetup.exe
 
   # ── Mac Build ──────────────────────────────────────────────────
   build-mac:
@@ -132,8 +150,10 @@ jobs:
       - name: Compute hashes
         id: hashes
         run: |
-          WIN_HASH=$(sha256sum dist/Verbal.exe | cut -d' ' -f1)
-          WIN_SIZE=$(stat -c%s dist/Verbal.exe)
+          # Windows release payload is the Inno installer (VerbalSetup.exe),
+          # which updater.py runs with silent switches.
+          WIN_HASH=$(sha256sum dist/VerbalSetup.exe | cut -d' ' -f1)
+          WIN_SIZE=$(stat -c%s dist/VerbalSetup.exe)
           MAC_HASH=$(sha256sum dist/Verbal.dmg | cut -d' ' -f1)
           MAC_SIZE=$(stat -c%s dist/Verbal.dmg)
           echo "win_hash=$WIN_HASH" >> $GITHUB_OUTPUT
@@ -158,7 +178,7 @@ jobs:
           project_id = supabase_url.replace('https://', '').replace('.supabase.co', '')
           tus_url = f'https://{project_id}.storage.supabase.co/storage/v1/upload/resumable'
 
-          file_path = 'dist/Verbal.exe'
+          file_path = 'dist/VerbalSetup.exe'
           storage_path = f'win/Verbal-${{ steps.version.outputs.version }}-setup.exe'
           file_size = os.path.getsize(file_path)
           print(f'Uploading {file_path} ({file_size} bytes) via TUS...')
@@ -269,7 +289,7 @@ jobs:
         with:
           tag_name: v${{ steps.version.outputs.version }}
           files: |
-            dist/Verbal.exe
+            dist/VerbalSetup.exe
             dist/Verbal.dmg
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

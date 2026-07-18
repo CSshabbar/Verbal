@@ -40,6 +40,9 @@ a = Analysis(
         ('assets/sounds/start.wav', 'assets/sounds'),
         ('assets/sounds/stop.wav', 'assets/sounds'),
         ('assets/sounds/done.wav', 'assets/sounds'),
+        # Flume UI fonts (Geist + JetBrains Mono). fonts_css.py / theme.py read
+        # them from sys._MEIPASS/app/assets/fonts, so the dest must mirror that.
+        ('app/assets/fonts', 'app/assets/fonts'),
         (fw_dir, 'faster_whisper'),
         (ct2_dir, 'ctranslate2'),
         # Include all dependencies
@@ -66,9 +69,30 @@ a = Analysis(
         'app.updater',
         'app.win_injector',
         'app.win_overlay',
-        'app.win_dashboard',
+        'app.win_dashboard',  # retired tkinter fallback — kept as last-resort UI
         'app.shared_dashboard',
         'app.win_main',
+        # Flume UI renderers (shared with macOS). These build the HTML that the
+        # WebView2-hosted dashboard/popover/overlay/meeting surfaces load.
+        'app.flume_dashboard_html',
+        'app.flume_popover_html',
+        'app.overlay_html',
+        'app.meeting_html',
+        'app.meeting_hud_html',
+        'app.autolearn_widget',
+        'app.fonts_css',
+        # NOTE: app.theme is intentionally NOT listed — it imports AppKit/Foundation
+        # at module load time and is macOS-only. Adding it would break the frozen
+        # Windows exe. Windows uses fonts_css.py (base64 @font-face) instead.
+        # Windows-native modules (added by the native-parity workstream). Listed
+        # ahead of time so the frozen exe bundles them once they land.
+        'app.win_system_audio',
+        'app.win_editwatch',
+        'app.win_ax',
+        # Third-party deps used by the Windows-native modules above.
+        'uiautomation',
+        'comtypes',
+        'comtypes.client',
         'faster_whisper',
         'faster_whisper.utils',
         'faster_whisper.tokenizer',

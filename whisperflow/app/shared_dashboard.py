@@ -182,15 +182,22 @@ class SharedDashboard:
             except Exception:
                 self._window = None
 
+        # Render the SAME dark "Flume" UI the macOS app uses. flume_html() is
+        # already dual-target: it waits for `pywebviewready` and calls the shared
+        # DashboardApi via window.pywebview.api.* (native under pywebview here;
+        # shimmed inside WKWebView on macOS). This is what gives Windows visual
+        # parity with the Mac app instead of the retired light-theme dashboard.
+        from app.flume_dashboard_html import flume_html
+
         api = DashboardApi(self)
         self._window = webview.create_window(
-            "Verbal",
-            html=_html(),
+            "Flume",
+            html=flume_html(),
             js_api=api,
             width=980,
             height=680,
             min_size=(760, 520),
-            background_color="#1A1917",
+            background_color="#0e1012",
         )
         threading.Thread(target=self._device_refresh_loop, daemon=True).start()
         if not self._canvas_listener_started:
@@ -205,8 +212,10 @@ class SharedDashboard:
         self._emit("result", {"text": text})
 
     def _on_tab_select(self, idx):
-        TAB_MAP = {0: "all", 1: "apps", 2: "stats", 3: "canvas", 4: "settings", 5: "notes"}
-        tab_name = TAB_MAP.get(idx, "all")
+        # Map tray indices to Flume screen ids (see flume_dashboard_html.show()).
+        # Indices match the win_main tray callbacks: canvas=3, settings=4, notes=5.
+        TAB_MAP = {0: "history", 1: "history", 2: "home", 3: "canvas", 4: "settings", 5: "notes"}
+        tab_name = TAB_MAP.get(idx, "home")
         self._emit("selectTab", {"tab": tab_name})
 
     def _refresh(self):
@@ -256,6 +265,46 @@ class SharedDashboard:
                 logger.debug(f"Canvas listener failed: {e}")
             time.sleep(5)
 
+    def _notify_native(self, text):
+        """Best-effort Windows toast (fail closed). Gives visible confirmation that
+        canvas content arrived even when the dashboard isn't on the Canvas tab.
+
+        Tries, in order: winotify → win10toast → the pystray tray icon's
+        notify(). Every path is guarded; if all are unavailable we just log at
+        debug. This must NEVER raise."""
+        safe = (text or "").strip()
+        if not safe:
+            return
+        title = "Flume Canvas"
+
+        # 1. winotify (lightweight, no COM server thread)
+        try:
+            from winotify import Notification
+            toast = Notification(app_id="Flume", title=title, msg=safe)
+            toast.show()
+            return
+        except Exception as e:
+            logger.debug(f"winotify notify unavailable: {e}")
+
+        # 2. win10toast
+        try:
+            from win10toast import ToastNotifier
+            ToastNotifier().show_toast(title, safe, duration=5, threaded=True)
+            return
+        except Exception as e:
+            logger.debug(f"win10toast notify unavailable: {e}")
+
+        # 3. Fall back to the pystray tray icon's notify(), if the app exposes one
+        try:
+            icon = getattr(self.app, "_tray_icon", None)
+            if icon is not None and hasattr(icon, "notify"):
+                icon.notify(safe, title)
+                return
+        except Exception as e:
+            logger.debug(f"tray notify unavailable: {e}")
+
+        logger.debug("Native notify: no toast backend available")
+
     def _canvas_listen_once(self):
         import json
         import websocket
@@ -301,14 +350,21 @@ class SharedDashboard:
                     return
                 content = record.get("content", "") or ""
                 image_url = record.get("image_url")
+                from_name = record.get("device_name", "device")
                 if content:
                     pyperclip.copy(content)
+                    self._notify_native(f"Received from {from_name} — copied to clipboard")
+                elif image_url:
+                    # Copy the image URL so it's pasteable regardless of which tab is
+                    # active (the WebView still renders the preview on the Canvas tab).
+                    pyperclip.copy(image_url)
+                    self._notify_native(f"Received image from {from_name} — link copied")
                 self._emit(
                     "canvasRemote",
                     {
                         "content": content,
                         "image_url": image_url,
-                        "device_name": record.get("device_name", "device"),
+                        "device_name": from_name,
                     },
                 )
             except Exception as e:
@@ -402,6 +458,377 @@ class DashboardApi:
             return _ok(perms=permissions.request(which))
         except Exception as e:
             return {"ok": False, "error": str(e)}
+
+    # ── Meetings (MEETINGS_DESIGN_HANDOFF.md) — all fail closed ─────────────────
+    def get_meeting_permissions(self):
+        """Aggregate status for the PermissionChecklistModal (31h)."""
+        try:
+            from app import permissions
+            return permissions.meeting_permissions()
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def meeting_permissions_skipped(self):
+        """User chose 'Skip for now' — proceed to the pre-meeting modal; capture
+        will run mic-only (system audio fails closed)."""
+        try:
+            self.app.config["meetings_skipped_system_audio"] = True
+            save_config(self.app.config)
+            self._meeting_mode("premeeting")
+            return _ok()
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def meeting_permissions_done(self):
+        """All checklist steps complete + test passed → pre-meeting modal."""
+        try:
+            self.app.config.pop("meetings_skipped_system_audio", None)
+            save_config(self.app.config)
+            self._meeting_mode("premeeting")
+            return _ok()
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def _meeting_mode(self, mode):
+        try:
+            win = getattr(self.app, "meeting_window", None)
+            if win:
+                win.set_mode(mode)
+        except Exception:
+            pass
+
+    def close_meeting_window(self):
+        try:
+            win = getattr(self.app, "meeting_window", None)
+            if win:
+                self.app._on_main(win.hide)
+            return _ok()
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def meeting_page_ready(self):
+        """Page-load handshake from the meeting window's JS — flushes any
+        events emitted before the page was ready."""
+        try:
+            d = self.dashboard
+            if hasattr(d, "page_ready"):
+                d.page_ready()
+            return _ok()
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def expand_meeting_window(self):
+        """Bar → full window (fluid morph)."""
+        try:
+            win = getattr(self.app, "meeting_window", None)
+            if win:
+                win.expand()
+            return _ok()
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def collapse_meeting_window(self):
+        """Full window → ambient bar (only while a meeting records)."""
+        try:
+            win = getattr(self.app, "meeting_window", None)
+            if win:
+                win.collapse()
+            return _ok()
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def test_meeting_capture(self):
+        """3-second capture self-test (31h 'Test capture')."""
+        try:
+            from app.system_audio import run_capture_test
+            return run_capture_test(self.app)
+        except ImportError:
+            return {"ok": False, "error": "Capture engine not installed in this build."}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def _meetings(self):
+        """The app's MeetingManager, or None (Windows / disabled)."""
+        return getattr(self.app, "meetings", None)
+
+    def start_meeting(self, title="", use_mic=True, use_system=True):
+        m = self._meetings()
+        if not m:
+            return {"ok": False, "error": "Meetings unavailable on this platform."}
+        return m.start(title or "", use_mic=bool(use_mic), use_system=bool(use_system))
+
+    def open_meeting_launcher(self):
+        """Dashboard/popover 'Start meeting' — routes through the same flow as
+        the menubar item (permission checklist vs pre-meeting modal)."""
+        try:
+            if hasattr(self.app, "_toggle_meeting"):
+                self.app._on_main(self.app._toggle_meeting)
+                return _ok()
+            return {"ok": False, "error": "unavailable"}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def open_meeting(self, meeting_id):
+        """Open a past meeting in the summary view (31e)."""
+        try:
+            m = self._meetings()
+            got = m.get_meeting(meeting_id) if m else {"ok": False, "error": "unavailable"}
+            if not got.get("ok"):
+                return got
+            row = got["meeting"]
+            try:
+                m.mark_meeting_opened(meeting_id)   # clears the NEW indicator
+            except Exception:
+                pass
+
+            def run():
+                win = self.app._meeting_win()
+                if win:
+                    win.show("summary")
+                    # dedicated event: an explicit open must always replace the
+                    # displayed meeting (the generic 'meeting' event is guarded
+                    # against background sessions hijacking the view)
+                    win.emit("openMeeting", row)
+            self.app._on_main(run)
+            return _ok()
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def delete_meeting(self, meeting_id):
+        m = self._meetings()
+        res = m.delete(meeting_id) if m else {"ok": False, "error": "unavailable"}
+        if res.get("ok"):
+            try:  # the dashboard list lives in another window — tell it
+                dash = getattr(self.app, "dashboard", None)
+                if dash and hasattr(dash, "_emit"):
+                    dash._emit("meetingsUpdated", {"deleted": meeting_id})
+            except Exception:
+                pass
+        return res
+
+    _MEETING_SETTING_KEYS = (
+        "meetings_enabled", "meetings_keep_audio", "meetings_keep_audio_days",
+        "meetings_max_minutes", "meetings_hud_enabled", "meetings_speaker_labels",
+        "meetings_sync_enabled",
+    )
+
+    def get_meeting_settings(self):
+        try:
+            from app import permissions
+            cfg = self.app.config
+            vals = {k: cfg.get(k) for k in self._MEETING_SETTING_KEYS}
+            meets = cfg.get("meetings", [])
+            return _ok(settings=vals, perms=permissions.meeting_permissions(),
+                       count=len(meets),
+                       total_seconds=sum(int(m.get("duration_seconds") or 0) for m in meets))
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def set_meeting_setting(self, key, value):
+        try:
+            if key not in self._MEETING_SETTING_KEYS:
+                return {"ok": False, "error": "unknown setting"}
+            self.app.config[key] = value
+            save_config(self.app.config)
+            return _ok()
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def stop_meeting(self):
+        m = self._meetings()
+        return m.stop_async() if m else {"ok": False, "error": "unavailable"}
+
+    def pause_meeting(self):
+        try:
+            m = self._meetings()
+            if m and m.active:
+                m.active.toggle_pause()
+                return _ok(state=m.active.state)
+            return {"ok": False, "error": "No active meeting."}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def mark_moment(self, label=""):
+        try:
+            m = self._meetings()
+            if m and m.active:
+                return _ok(moment=m.active.mark_moment(label))
+            return {"ok": False, "error": "No active meeting."}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def save_meeting_scratchpad(self, text):
+        try:
+            m = self._meetings()
+            if m and m.session:
+                m.session.set_scratchpad(text)
+                return _ok()
+            return {"ok": False, "error": "No meeting."}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def set_meeting_title(self, title):
+        try:
+            m = self._meetings()
+            if m and m.session:
+                m.session.set_title(title)
+                return _ok()
+            return {"ok": False, "error": "No meeting."}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def rename_speaker(self, speaker_id, name):
+        try:
+            m = self._meetings()
+            if m and m.session:
+                m.session.rename_speaker(speaker_id, name)
+                return _ok(speakers=m.session.speakers)
+            return {"ok": False, "error": "No meeting."}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def ask_meetings(self, question):
+        """Chat-style Q&A over the user's recorded meetings (Meetings page)."""
+        try:
+            from app.meetings import ask_meetings
+            return ask_meetings(self.app.config, question)
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def export_meeting(self, meeting_id, fmt="md"):
+        """Export a meeting as .txt or .md via a native save panel (falls back
+        to ~/Downloads if the panel can't be shown)."""
+        try:
+            import os
+            import re
+            import threading
+            m = self._meetings()
+            got = m.get_meeting(meeting_id) if m else {"ok": False, "error": "unavailable"}
+            if not got.get("ok"):
+                return got
+            row = got["meeting"]
+            from app.meetings import export_transcript_txt, export_transcript_md
+            fmt = "txt" if str(fmt).lower() == "txt" else "md"
+            content = export_transcript_txt(row) if fmt == "txt" else export_transcript_md(row)
+            safe = re.sub(r"[^\w\s\-–—]", "", row.get("title") or "Meeting").strip()[:60] or "Meeting"
+            fname = f"{safe}.{fmt}"
+
+            box = {}
+            done = threading.Event()
+
+            def run():
+                try:
+                    from AppKit import NSSavePanel
+                    panel = NSSavePanel.savePanel()
+                    panel.setNameFieldStringValue_(fname)
+                    panel.setCanCreateDirectories_(True)
+                    if int(panel.runModal()) == 1:      # NSModalResponseOK
+                        box["path"] = panel.URL().path()
+                    else:
+                        box["cancelled"] = True
+                except Exception as e:
+                    box["error"] = str(e)
+                finally:
+                    done.set()
+
+            self.app._on_main(run)
+            done.wait(180)
+            path = box.get("path")
+            if box.get("cancelled"):
+                return {"ok": False, "cancelled": True}
+            if not path:                                 # panel failed → Downloads
+                path = os.path.expanduser(f"~/Downloads/{fname}")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(content)
+            return _ok(path=path)
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def retry_meeting_summary(self, meeting_id):
+        m = self._meetings()
+        return m.retry_summary(meeting_id) if m else {"ok": False, "error": "unavailable"}
+
+    def set_action_item_done(self, meeting_id, index, done):
+        """Action-item checkbox on the summary (widget 33c)."""
+        m = self._meetings()
+        return (m.set_action_item_done(meeting_id, index, done)
+                if m else {"ok": False, "error": "unavailable"})
+
+    def set_action_item_text(self, meeting_id, index, text):
+        """Inline action-item edit (widget 33c)."""
+        m = self._meetings()
+        return (m.set_action_item_text(meeting_id, index, text)
+                if m else {"ok": False, "error": "unavailable"})
+
+    def delete_action_item(self, meeting_id, index):
+        """Remove a wrongly-extracted action item (widget 33c)."""
+        m = self._meetings()
+        return (m.delete_action_item(meeting_id, index)
+                if m else {"ok": False, "error": "unavailable"})
+
+    def set_transcript_text(self, meeting_id, index, text):
+        """Inline transcript-segment edit (widget 33a)."""
+        m = self._meetings()
+        return (m.set_transcript_text(meeting_id, index, text)
+                if m else {"ok": False, "error": "unavailable"})
+
+    def delete_marked_moment(self, meeting_id, index):
+        """Delete a bookmark (widget 33b)."""
+        m = self._meetings()
+        return (m.delete_marked_moment(meeting_id, index)
+                if m else {"ok": False, "error": "unavailable"})
+
+    def set_mark_note(self, meeting_id, index, note):
+        """Attach/edit the user note on a bookmark (widget 33b)."""
+        m = self._meetings()
+        return (m.set_mark_note(meeting_id, index, note)
+                if m else {"ok": False, "error": "unavailable"})
+
+    def regenerate_hybrid(self, meeting_id, index):
+        """Regenerate one hybrid-note AI addition (widget 33i)."""
+        m = self._meetings()
+        return (m.regenerate_hybrid(meeting_id, index)
+                if m else {"ok": False, "error": "unavailable"})
+
+    def set_meeting_pinned(self, meeting_id, pinned):
+        """Pin/unpin a meeting in the list (widget 33j)."""
+        m = self._meetings()
+        return (m.set_meeting_pinned(meeting_id, pinned)
+                if m else {"ok": False, "error": "unavailable"})
+
+    def set_speaker_name(self, meeting_id, sid, name):
+        """Rename a speaker from the summary view (widget 33d) + fingerprint learn."""
+        m = self._meetings()
+        return (m.set_speaker_name(meeting_id, sid, name)
+                if m else {"ok": False, "error": "unavailable"})
+
+    def get_meeting_audio(self, meeting_id):
+        """Local WAV as a data-URI when present, else the public cloud URL."""
+        try:
+            import base64
+            import os
+            from app.meetings import MEETINGS_DIR
+            path = os.path.join(MEETINGS_DIR, f"{meeting_id}.wav")
+            if os.path.exists(path) and os.path.getsize(path) < 80 * 1024 * 1024:
+                with open(path, "rb") as f:
+                    b64 = base64.b64encode(f.read()).decode("ascii")
+                return _ok(src=f"data:audio/wav;base64,{b64}")
+            m = self._meetings()
+            got = m.get_meeting(meeting_id) if m else {"ok": False}
+            url = (got.get("meeting") or {}).get("audio_url") if got.get("ok") else None
+            if url:
+                return _ok(src=url)
+            return {"ok": False, "error": "No audio for this meeting."}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def list_meetings(self):
+        m = self._meetings()
+        return m.list_meetings() if m else {"ok": True, "meetings": []}
+
+    def get_meeting(self, meeting_id):
+        m = self._meetings()
+        return m.get_meeting(meeting_id) if m else {"ok": False, "error": "unavailable"}
 
     def complete_onboarding(self):
         self.app.config["onboarded"] = True
@@ -1357,218 +1784,3 @@ class DashboardApi:
             return _err(f"Image upload failed: {upload.status_code}")
         url = f"{SUPABASE_URL}/storage/v1/object/public/canvas-images/{path}"
         return _ok(image_url=url, preview=f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}")
-
-
-def _html() -> str:
-    return r"""
-<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <style>
-    :root{--bg:#1A1917;--sheet:#F2EFE9;--card:#fff;--text:#2C2A27;--muted:#7A7570;--sub:#9A9590;--accent:#E05A2B;--green:#3DAA6E;--line:#E2DDD5}
-    *{box-sizing:border-box} body{margin:0;background:var(--bg);font-family:"Segoe UI",Inter,system-ui,sans-serif;color:var(--text);overflow:hidden}
-    button,input,textarea,select{font:inherit} button{border:0;cursor:pointer}
-    .app{display:grid;grid-template-columns:176px 1fr;height:100vh;background:var(--bg)}
-    .side{padding:24px 16px;border-right:1px solid rgba(255,255,255,.06);color:var(--sheet)}
-    .brand{display:flex;gap:10px;align-items:center;margin-bottom:28px}.star{color:var(--accent);font-size:22px}.brand h1{font-size:20px;margin:0;font-weight:650}
-    .nav{display:grid;gap:8px}.nav button{height:50px;border-radius:8px;background:transparent;color:#C9C2BA;text-align:left;padding:0 12px}.nav button.active{background:rgba(255,255,255,.08);color:#fff}.nav small{display:block;color:#7A7570;margin-top:2px}
-    .main{display:grid;grid-template-rows:150px 1fr;min-width:0}
-    .hero{position:relative;padding:24px 28px;color:var(--sheet);overflow:hidden}.hero h2{font-size:34px;line-height:1;margin:0 0 10px}.hero .stats{display:flex;gap:20px;color:var(--muted);font-size:13px}.hero .stats b{color:var(--accent)}
-    .record{position:absolute;right:28px;bottom:24px;display:flex;align-items:center;gap:14px}.recbtn{height:42px;padding:0 18px;border-radius:8px;background:var(--accent);color:white;font-weight:650}.recbtn.recording{background:#B94320}
-    .device-selector{display:flex;gap:8px;align-items:center}
-    .device-item{height:32px;padding:0 12px;border-radius:20px;color:rgba(255,255,255,.4);font-size:11px;font-weight:600;display:flex;align-items:center;justify-content:center;cursor:pointer;transition:all .2s;border:1px solid rgba(255,255,255,.08);background:transparent}
-    .device-item.active{background:rgba(255,255,255,.1);color:var(--accent);border-color:var(--accent)}
-    .device-item:hover:not(.active){background:rgba(255,255,255,.05);color:rgba(255,255,255,.8)}
-    .sheet{background:var(--sheet);border-top-left-radius:28px;overflow:hidden;min-height:0}.toolbar{height:52px;display:flex;align-items:center;justify-content:space-between;padding:0 20px;border-bottom:1px solid var(--line)}.search{height:34px;width:240px;border:0;border-radius:8px;background:#fff;padding:0 12px;color:var(--text)}
-    .content{height:calc(100vh - 202px);overflow:auto;padding:18px 20px}.grid{display:grid;gap:12px}.card{background:#fff;border-radius:8px;padding:14px;box-shadow:0 2px 8px rgba(0,0,0,.04)}.card.pin{background:#FFF7F2}.cardTop{display:flex;justify-content:space-between;gap:12px}.text{white-space:pre-wrap;line-height:1.45;font-size:14px}.meta{font-size:11px;color:var(--sub);margin-top:8px}.actions{display:flex;gap:6px;flex:none}.icon{width:30px;height:30px;border-radius:7px;background:#F0ECE6;color:var(--text)}.icon.hot{background:rgba(224,90,43,.12);color:var(--accent)}
-    .sectionTitle{font-size:11px;letter-spacing:1px;color:var(--sub);font-weight:750;margin:18px 0 10px}.empty{color:var(--muted);padding:40px;text-align:center}
-    .statsGrid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}.statCard b{display:block;color:var(--accent);font-size:30px}.statCard span{color:var(--muted);font-size:13px}
-    .settings{display:grid;grid-template-columns:1fr 1fr;gap:14px}.field{display:grid;gap:7px;margin:10px 0}.field label{font-size:11px;font-weight:750;color:var(--sub);letter-spacing:.7px}.field input,.field textarea,.field select{border:0;border-radius:8px;background:#F7F5F1;padding:10px;color:var(--text)}.field textarea{min-height:72px;resize:vertical}.save{background:var(--bg);color:var(--sheet);height:38px;border-radius:8px;padding:0 16px;font-weight:650}.danger{background:rgba(224,90,43,.12);color:var(--accent)}
-    .canvasWrap{display:grid;grid-template-rows:auto 1fr auto;gap:12px;min-height:100%}.canvasActions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.canvasText{width:100%;min-height:260px;border:0;border-radius:8px;background:#FAFAF8;padding:16px;line-height:1.5;color:var(--text);resize:vertical}.imagePreview{max-height:190px;max-width:100%;border-radius:8px;background:#ECEAE6;display:block;margin-bottom:8px}.status{font-size:12px;color:var(--muted)}.ok{color:var(--green)}.bad{color:var(--accent)}
-    .modal{position:fixed;inset:0;background:rgba(0,0,0,.45);display:none;align-items:center;justify-content:center}.modal.open{display:flex}.dialog{width:min(640px,90vw);background:white;border-radius:10px;padding:16px}.dialog textarea{width:100%;height:220px;border:1px solid var(--line);border-radius:8px;padding:12px}.dialogBtns{display:flex;justify-content:flex-end;gap:8px;margin-top:12px}
-    .notesWrap{display:grid;grid-template-columns:280px 1fr;gap:0;height:100%;min-height:0}.notesList{overflow:auto;border-right:1px solid var(--line);padding:8px}.notesListItem{cursor:pointer;border-radius:8px;padding:10px 12px;margin-bottom:4px;transition:all .15s}.notesListItem:hover{background:rgba(0,0,0,.03)}.notesListItem.active{background:rgba(224,90,43,.08)}.notesListItem .niTitle{font-size:14px;font-weight:650;color:var(--text);margin-bottom:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.notesListItem .niPreview{font-size:12px;color:var(--sub);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.notesListItem .niMeta{font-size:10px;color:var(--muted);margin-top:4px;display:flex;gap:8px}.notesListItem.pinned{border-left:3px solid var(--accent);padding-left:9px}
-    .notesEditor{display:grid;grid-template-rows:auto 1fr;min-height:0;padding:0}.notesToolbar{display:flex;align-items:center;gap:4px;padding:8px 14px;border-bottom:1px solid var(--line);flex-wrap:wrap}.notesToolbar button{height:32px;padding:0 10px;border-radius:6px;background:#F0ECE6;color:var(--text);font-size:12px;display:flex;align-items:center;gap:4px}.notesToolbar button.primary{background:var(--bg);color:white}.notesToolbar button.accent{background:rgba(224,90,43,.12);color:var(--accent)}.notesToolbar button.mic{background:var(--accent);color:white}.notesToolbar button.mic.recording{background:#B94320}.notesEditorBody{padding:14px;overflow:auto;display:grid;grid-template-rows:auto 1fr;gap:10px}.notesEditorBody input.title{font-size:18px;font-weight:650;border:0;background:transparent;color:var(--text);width:100%;outline:0}.notesEditorBody textarea.content{font-size:14px;border:0;background:transparent;color:var(--text);width:100%;height:100%;min-height:200px;resize:none;outline:0;line-height:1.6;font-family:inherit}.autoAi{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--muted)}.autoAi input[type=checkbox]{accent-color:var(--accent)}
-  </style>
-</head>
-<body>
-<div class="app">
-  <aside class="side">
-    <div class="brand"><div class="star">✳</div><h1>Verbal</h1></div>
-    <div class="nav" id="nav"></div>
-  </aside>
-  <main class="main">
-    <section class="hero">
-      <h2 id="headline">Ready to dictate.</h2>
-      <div class="stats" id="heroStats"></div>
-      <div class="record">
-        <div class="device-selector" id="deviceSelector"></div>
-        <button class="recbtn" id="recordBtn">Start Recording</button>
-      </div>
-    </section>
-    <section class="sheet">
-      <div class="toolbar"><div id="toolbarTitle"></div><input id="search" class="search" placeholder="Search history" /></div>
-      <div class="content" id="content"></div>
-    </section>
-  </main>
-</div>
-<div class="modal" id="modal"><div class="dialog"><h3>Edit transcription</h3><textarea id="editText"></textarea><div class="dialogBtns"><button class="save danger" onclick="closeModal()">Cancel</button><button class="save" onclick="saveEdit()">Save</button></div></div></div>
-<script>
-const tabs=[["all","All","Recent dictation"],["apps","By App","Grouped history"],["stats","Stats","Usage overview"],["canvas","Canvas","Shared clipboard"],["notes","Notes","Voice notes & ideas"],["settings","Settings","Keys & preferences"]];
-let state=null, active="all", query="", editOld="", canvasImage=null, canvasPreview=null, canvasContent="", canvasLoaded=false, notesList=[], selectedNoteId=null, noteAutoFormat=false, noteTranscribing=false;
-const $=id=>document.getElementById(id);
-function esc(s){return (s??"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[m]))}
-function words(t){return (t||"").trim()?t.trim().split(/\s+/).length:0}
-async function api(name,...args){return await window.pywebview.api[name](...args)}
-function nav(){ $("nav").innerHTML=tabs.map(t=>`<button class="${active===t[0]?"active":""}" onclick="active='${t[0]}';render()">${t[1]}<small>${t[2]}</small></button>`).join("")}
-async function load(){ state=await api("get_state"); render(); }
-function render(){ if(!state)return; nav(); $("headline").textContent=state.recording?"Listening...":state.processing?"Transcribing...":"Ready to dictate."; $("recordBtn").textContent=state.recording?"Stop Recording":"Start Recording"; $("recordBtn").className="recbtn"+(state.recording?" recording":""); $("heroStats").innerHTML=`<span><b>${state.total_transcriptions}</b> transcriptions</span><span><b>${state.total_words}</b> words</span><span><b>${state.daily_words}</b> today</span><span>${esc(state.model)} · ${esc(state.mode)}</span>`; renderDevices(); ({all:renderAll,apps:renderApps,stats:renderStats,settings:renderSettings,canvas:renderCanvas,notes:renderNotes}[active])(); }
-function renderDevices(){
-  const target = state.target_device_id || "__all__";
-  const devices = [{id:"__none__", name:"✕ Local"}, {id:"__all__", name:"⊕ All"}].concat((state.devices||[]).map(d=>({id:d.device_id, name:(d.device_type in {iphone:1,ios:1,android:1}?'📱 ':'💻 ')+(d.device_name||'Device')})));
-  // Only show if there are actual devices beyond Local/All
-  if(devices.length <= 2) { $("deviceSelector").innerHTML = ""; return; }
-  $("deviceSelector").innerHTML = devices.map(d=>`<div class="device-item ${target===d.id?'active':''}" onclick="setTarget('${esc(d.id)}')">${esc(d.name)}</div>`).join("");
-}
-async function setTarget(id){ await api("set_target_device", id); state.target_device_id = id; renderDevices(); }
-$("recordBtn").onclick=async()=>{ state.recording?await api("stop_recording"):await api("start_recording"); setTimeout(load,250); };
-$("search").oninput=e=>{query=e.target.value.toLowerCase(); if(active==="all"||active==="apps")render();}
-function filtered(list){return list.filter(e=>(e.text+" "+e.app).toLowerCase().includes(query))}
-function card(e,pin=false){return `<div class="card ${pin?"pin":""}"><div class="cardTop"><div><div class="text">${esc(e.text)}</div><div class="meta">${esc(e.app||"Unknown app")} · ${esc(e.ts||"")} · ${words(e.text)} words</div></div><div class="actions"><button class="icon" title="Copy" onclick="copyText(${esc(JSON.stringify(e.text))})">⎘</button><button class="icon ${pin?"hot":""}" title="${pin?"Unpin":"Pin"}" onclick="pinText(${esc(JSON.stringify(e.text))},${!pin})">⌖</button><button class="icon" title="Edit" onclick="openEdit(${esc(JSON.stringify(e.text))})">✎</button></div></div></div>`}
-function renderAll(){ $("toolbarTitle").textContent="All Transcriptions"; const p=filtered(state.pinned||[]), h=filtered(state.history||[]); $("content").innerHTML=`${p.length?'<div class="sectionTitle">PINNED</div>'+p.map(e=>card(e,true)).join(""):""}${h.length?'<div class="sectionTitle">RECENT</div>'+h.map(e=>card(e,false)).join(""):'<div class="empty">No transcriptions yet.</div>'}`; }
-function renderApps(){ $("toolbarTitle").textContent="By App"; const groups={}; filtered(state.history||[]).forEach(e=>{const k=e.app||"Unknown app";(groups[k]??=[]).push(e)}); $("content").innerHTML=Object.keys(groups).sort().map(k=>`<div class="sectionTitle">${esc(k)}</div>${groups[k].map(e=>card(e,false)).join("")}`).join("")||'<div class="empty">No app history yet.</div>'; }
-function renderStats(){ $("toolbarTitle").textContent="Usage Overview"; $("content").innerHTML=`<div class="statsGrid"><div class="card statCard"><b>${state.total_transcriptions}</b><span>Total transcriptions</span></div><div class="card statCard"><b>${state.total_words}</b><span>Total words</span></div><div class="card statCard"><b>${state.daily_words}</b><span>Words today</span></div></div>`; }
-function renderSettings(){ const s=state.settings; $("toolbarTitle").textContent="Settings"; $("content").innerHTML=`<div class="settings"><div class="card"><div class="field"><label>GROQ API KEYS</label><textarea id="groqKeys">${esc((s.groq_api_keys||[]).join("\\n"))}</textarea></div><div class="field"><label>GEMINI API KEYS</label><textarea id="geminiKeys">${esc((s.gemini_api_keys||[]).join("\\n"))}</textarea></div><button class="save" onclick="saveSettings()">Save Keys</button></div><div class="card"><div class="field"><label>WHISPER MODEL</label><select id="model">${["tiny","base","small","medium"].map(m=>`<option ${state.model===m?"selected":""}>${m}</option>`).join("")}</select></div><div class="field"><label>RECORDING MODE</label><select id="mode"><option ${state.mode==="toggle"?"selected":""}>toggle</option><option ${state.mode==="hold"?"selected":""}>hold</option></select></div><div class="field"><label>PUSH-TO-TALK HOTKEY</label><button class="save ${recordingHotkeyFor==="hold"?"danger":""}" onclick="recordHotkey('hold')">${recordingHotkeyFor==="hold"?"Press any key...":esc(s.hotkey_hold)}</button></div><div class="field"><label>TOGGLE HOTKEY</label><button class="save ${recordingHotkeyFor==="toggle"?"danger":""}" onclick="recordHotkey('toggle')">${recordingHotkeyFor==="toggle"?"Press any key...":esc(s.hotkey_toggle)}</button></div></div><div class="card"><div class="field"><label><input type="checkbox" id="syncEnabled" ${s.sync_enabled?"checked":""}/> Enable cross-device sync</label></div><div class="field"><label>USER ID</label><input id="userId" value="${esc(s.sync_user_id||"")}"/></div><div class="field"><label>DEVICE NAME</label><input id="deviceName" value="${esc(s.sync_device_name||"Windows")}"/></div><button class="save" onclick="saveSettings()">Save Sync</button> <span class="status">${state.sync_connected?"Sync connected":"Sync inactive"}</span></div></div>`; }
-function renderNotes(){ $("toolbarTitle").textContent="Notes"; $("recordBtn").style.display="none";
-  if(!notesList.length){ $("content").innerHTML=`<div class="notesWrap"><div class="notesList" style="display:flex;align-items:center;justify-content:center"><span style="color:var(--muted);font-size:13px">No notes yet</span></div><div class="notesEditor"><div class="notesEditorBody"><input class="title" placeholder="Note title" id="noteTitle"/><textarea class="content" placeholder="Select a note or click New" id="noteContent" readonly></textarea></div></div></div>`; $("recordBtn").style.display=""; return; }
-  const sel=selectedNoteId||"";
-  $("content").innerHTML=`
-    <div class="notesWrap">
-      <div class="notesList">
-        <button class="save" style="width:100%;margin-bottom:8px" onclick="newNote()">+ New Note</button>
-        ${notesList.map(n=>`<div class="notesListItem ${n.is_pinned?'pinned':''} ${n.id===sel?'active':''}" onclick="selectNote('${esc(n.id)}')"><div class="niTitle">${esc(n.title||'Untitled')}</div><div class="niPreview">${esc((n.content||'').replace(/[#*`>_-]/g,'').slice(0,60))}</div><div class="niMeta"><span>${words(n.content)} words</span>${n.device_name?`<span>${esc(n.device_name)}</span>`:''}</div></div>`).join("")}
-      </div>
-      <div class="notesEditor" id="notesEditorPane"></div>
-    </div>`;
-  if(selectedNoteId) selectNote(selectedNoteId,true);
-  $("recordBtn").style.display="";
-}
-function newNote(){ selectedNoteId=null; noteAutoFormat=false; notesPreviewing=false;
-  $("notesEditorPane").innerHTML=`
-    <div class="notesToolbar">
-      <button onclick="notesBold()"><b>B</b></button>
-      <button onclick="notesHeading()">H</button>
-      <button onclick="notesBullet()">•</button>
-      <button onclick="notesNumbered()">1.</button>
-      <span style="flex:1"></span>
-      <label class="autoAi"><input type="checkbox" id="notesAutoAi" ${noteAutoFormat?'checked':''} onchange="noteAutoFormat=this.checked"/> Auto AI</label>
-      <button class="accent" onclick="notesAiFormat()">✨ Format</button>
-      <button class="accent" onclick="notesTogglePreview()">👁</button>
-      <button class="primary" onclick="saveCurrentNote()">Save</button>
-    </div>
-    <div class="notesEditorBody">
-      <input class="title" placeholder="Note title" id="noteTitle" oninput="notesDirty=true"/>
-      <textarea class="content" placeholder="Start typing..." id="noteContent" oninput="notesDirty=true"></textarea>
-    </div>`;
-}
-let notesDirty=false;
-function selectNote(id,silent){ selectedNoteId=id; const n=notesList.find(x=>x.id===id); if(!n)return;
-  if(!silent){ if(notesDirty&&$("noteContent")?.value!==n.content){ if(!confirm('Discard unsaved changes?')){selectedNoteId=null;renderNotes();return} } }
-  notesPreviewing=false;
-  $("notesEditorPane").innerHTML=`
-    <div class="notesToolbar">
-      <button onclick="notesBold()"><b>B</b></button>
-      <button onclick="notesHeading()">H</button>
-      <button onclick="notesBullet()">•</button>
-      <button onclick="notesNumbered()">1.</button>
-      <span style="flex:1"></span>
-      <label class="autoAi"><input type="checkbox" id="notesAutoAi" ${noteAutoFormat?'checked':''} onchange="noteAutoFormat=this.checked"/> Auto AI</label>
-      <button class="accent" onclick="notesAiFormat()">✨ Format</button>
-      <button class="accent" onclick="notesTogglePreview()">👁</button>
-      <button class="primary" onclick="saveCurrentNote()">Save</button>
-      <button class="danger" onclick="notesTogglePin('${esc(id)}')">${n.is_pinned?'Unpin':'Pin'}</button>
-      <button class="danger" onclick="deleteNote('${esc(id)}')">Delete</button>
-    </div>
-    <div class="notesEditorBody">
-      <input class="title" value="${esc(n.title||'')}" id="noteTitle" oninput="notesDirty=true"/>
-      <textarea class="content" id="noteContent" oninput="notesDirty=true">${esc(n.content||'')}</textarea>
-    </div>`; notesDirty=false;
-}
-let notesPreviewing=false;
-function notesTogglePreview(){
-  notesPreviewing=!notesPreviewing;
-  const ta=$('noteContent');
-  if(!ta)return;
-  if(notesPreviewing){
-    ta.style.display='none';
-    let md=ta.value;
-    md=md.replace(/^### (.+)/gm,'<h3>$1</h3>');
-    md=md.replace(/^## (.+)/gm,'<h2>$1</h2>');
-    md=md.replace(/^# (.+)/gm,'<h1>$1</h1>');
-    md=md.replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>');
-    md=md.replace(/__(.+?)__/g,'<strong>$1</strong>');
-    md=md.replace(/\*(.+?)\*/g,'<em>$1</em>');
-    md=md.replace(/_(.+?)_/g,'<em>$1</em>');
-    md=md.replace(/`(.+?)`/g,'<code>$1</code>');
-    md=md.replace(/- \[ \]/g,'☐ ');
-    md=md.replace(/- \[x\]/g,'☑ ');
-    md=md.replace(/\n/g,'<br>');
-    let pv=$('notePreview');
-    if(!pv){ pv=document.createElement('div'); pv.id='notePreview'; pv.style.cssText='font-size:15px;color:var(--text);line-height:1.6;white-space:pre-wrap;padding:4px 0'; ta.parentNode.insertBefore(pv,ta.nextSibling); }
-    pv.innerHTML=md; pv.style.display='block';
-  } else {
-    ta.style.display=''; let pv=$('notePreview'); if(pv)pv.style.display='none';
-  }
-}
-function notesHeading(){ insMark('## '); }
-function notesBold(){ insMark('**','**'); }
-function notesBullet(){ insMark('- '); }
-function notesNumbered(){ insMark('1. '); }
-function insMark(pre,suf=''){
-  const ta=$('noteContent'); if(!ta)return; const s=ta.selectionStart, v=ta.value;
-  const sel=v.substring(s,ta.selectionEnd);
-  ta.value=v.substring(0,s)+pre+sel+(suf||'')+v.substring(ta.selectionEnd);
-  ta.focus(); ta.selectionStart=ta.selectionEnd=s+pre.length+(sel?sel.length:0);
-}
-async function saveCurrentNote(){
-  const title=$('noteTitle')?.value?.trim()||'';
-  const content=$('noteContent')?.value||'';
-  const r=await api('save_note',{id:selectedNoteId||undefined,title,content});
-  if(r.ok){ notesList=r.notes||notesList; selectedNoteId=r.id||selectedNoteId; notesDirty=false; renderNotes(); }
-  else alert(r.error||'Save failed');
-}
-async function deleteNote(id){ if(!confirm('Delete this note?'))return; const r=await api('delete_note',id); if(r.ok){ notesList=r.notes||notesList; selectedNoteId=null; renderNotes(); } }
-async function notesTogglePin(id){ const r=await api('toggle_note_pin',id); if(r.ok){ notesList=r.notes||notesList; renderNotes(); } }
-async function notesAiFormat(){
-  const ta=$('noteContent'); if(!ta||!ta.value.trim())return;
-  const original=ta.value; ta.value='Formatting with AI...'; ta.disabled=true;
-  const r=await api('format_note_with_ai',ta.value);
-  if(r.ok&&r.content) ta.value=r.content; else ta.value=original;
-  ta.disabled=false;
-}
-function renderCanvas(){ $("toolbarTitle").textContent="Canvas"; const existing=$("canvasText")?.value; if(existing!==undefined) canvasContent=existing; $("content").innerHTML=`<div class="canvasWrap"><div class="canvasActions"><button class="save" onclick="saveCanvas()">Save & Sync</button><button class="save" onclick="loadCanvas(true)">Refresh</button><button class="save" onclick="pasteIntoCanvas()">Paste Text</button><button class="save" onclick="chooseImage()">Choose Image</button><button class="save" onclick="pasteImage()">Paste Image</button><button class="save danger" onclick="clearCanvas()">Clear</button><span class="status" id="canvasStatus"></span></div><div><div id="imageBox"></div><textarea class="canvasText" id="canvasText" placeholder="Paste or type here..."></textarea></div></div>`; $("canvasText").value=canvasContent; setCanvasImage(canvasPreview||canvasImage); if(!canvasLoaded) loadCanvas(false); }
-async function copyText(t){await api("copy_text",t)}
-async function pinText(t,p){state=await api("pin_text",t,p);render()}
-function openEdit(t){editOld=t;$("editText").value=t;$("modal").classList.add("open")}
-function closeModal(){$("modal").classList.remove("open")}
-async function saveEdit(){state=await api("edit_text",editOld,$("editText").value);closeModal();render()}
-let recordingHotkeyFor=null;
-function recordHotkey(m){ recordingHotkeyFor=m; render(); }
-window.addEventListener("keydown",e=>{ if(recordingHotkeyFor){ e.preventDefault(); let k=e.key; if(k===" ")k="space"; if(k==="Control")k="ctrl_l"; if(k==="Alt")k="alt_l"; if(k==="Shift")k="shift_l"; api("save_hotkey",recordingHotkeyFor,k.toLowerCase()).then(ns=>{state=ns;recordingHotkeyFor=null;render()}); } });
-async function saveSettings(){state=await api("save_settings",{groq_api_keys:$("groqKeys")?$("groqKeys").value.split("\\n"):state.settings.groq_api_keys,gemini_api_keys:$("geminiKeys")?$("geminiKeys").value.split("\\n"):state.settings.gemini_api_keys,whisper_model:$("model")?$("model").value:state.model,recording_mode:$("mode")?$("mode").value:state.mode,sync_enabled:$("syncEnabled")?$("syncEnabled").checked:state.settings.sync_enabled,sync_user_id:$("userId")?$("userId").value:state.settings.sync_user_id,sync_device_name:$("deviceName")?$("deviceName").value:state.settings.sync_device_name});render()}
-async function loadCanvas(force){ if(active!=="canvas")return; if(canvasLoaded&&!force)return; const r=await api("fetch_canvas"); if(!r.ok){$("canvasStatus").textContent=r.error;return} canvasContent=r.content||""; $("canvasText").value=canvasContent; canvasImage=r.image_url; canvasPreview=null; canvasLoaded=true; setCanvasImage(canvasImage); $("canvasStatus").textContent=r.status||"Loaded"; }
-function setCanvasImage(url){ const box=$("imageBox"); if(!box)return; box.innerHTML=url?`<img class="imagePreview" src="${esc(url)}"/><div><button class="save danger" onclick="removeImage()">Remove image</button></div>`:""; }
-async function saveCanvas(){ canvasContent=$("canvasText").value; const r=await api("save_canvas",canvasContent,canvasImage); $("canvasStatus").textContent=r.ok?"Saved & synced":r.error; }
-async function pasteIntoCanvas(){ const t=await navigator.clipboard.readText().catch(()=>""); $("canvasText").value= $("canvasText").value ? $("canvasText").value+"\\n\\n"+t : t; canvasContent=$("canvasText").value; }
-async function chooseImage(){ const r=await api("choose_canvas_image"); if(r.cancelled)return; if(!r.ok){$("canvasStatus").textContent=r.error;return} canvasImage=r.image_url; canvasPreview=r.preview||r.image_url; setCanvasImage(canvasPreview); $("canvasStatus").textContent="Image ready. Save to sync."; }
-async function pasteImage(){ const r=await api("paste_canvas_image_from_clipboard"); if(!r.ok){$("canvasStatus").textContent=r.error;return} canvasImage=r.image_url; canvasPreview=r.preview||r.image_url; setCanvasImage(canvasPreview); $("canvasStatus").textContent="Image ready. Save to sync."; }
-function removeImage(){canvasImage=null;canvasPreview=null;setCanvasImage(null)}
-async function clearCanvas(){ $("canvasText").value=""; canvasContent=""; canvasImage=null; canvasPreview=null; setCanvasImage(null); await saveCanvas(); }
-window.VerbalNative=(event,payload)=>{ if(event==="recordingState"){state.recording=payload.recording;render()} if(event==="result"){load()} if(event==="devices"){state.devices=payload.devices;renderDevices()} if(event==="canvasRemote"&&active==="canvas"){canvasContent=payload.content||""; $("canvasText").value=canvasContent; canvasImage=payload.image_url; canvasPreview=null; canvasLoaded=true; setCanvasImage(canvasImage); $("canvasStatus").textContent=`From ${payload.device_name}`;} if(event==="notesUpdated"){notesList=payload.notes||[]; if(active==="notes")renderNotes()} if(event==="selectTab"){active=payload.tab;if(payload.tab==="notes")loadNotes();render()} };
-setInterval(()=>{ if(active!=="canvas"&&active!=="notes"&&active!=="settings") load(); if(active==="notes"&&!notesList.length) loadNotes(); },10000); window.addEventListener("pywebviewready",load);
-async function loadNotes(){ const r=await api("fetch_notes"); if(r.ok&&r.notes){notesList=r.notes;if(active==="notes")renderNotes()} }
-</script>
-</body>
-</html>
-"""

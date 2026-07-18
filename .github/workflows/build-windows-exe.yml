@@ -21,7 +21,10 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install "setuptools<75" wheel
-          pip install -r whisperflow/requirements.txt
+          # Windows-pinned deps required by verbal-win.spec's hidden imports.
+          pip install -r whisperflow/requirements-win.txt
+          # Offline transcription engine (see requirements note; spec imports it).
+          pip install faster-whisper
           pip install pyinstaller numpy
 
       - name: Generate modern sounds
