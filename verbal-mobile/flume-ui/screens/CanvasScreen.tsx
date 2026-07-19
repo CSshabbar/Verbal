@@ -18,11 +18,17 @@ type Props = {};
  */
 export const CanvasScreen: React.FC<Props> = () => {
   const insets = useSafeAreaInsets();
-  const { items, save, discard, addText, addLink, addPhoto, updateText, refresh } = useCanvas();
+  const { items, save, discard, addText, addLink, addPhoto, updateText, refresh, toast, dismissToast } = useCanvas();
   const { target } = useDevices();
 
   return (
     <View style={[styles.root, { paddingTop: insets.top + 10 }]}>
+      {toast ? (
+        <Pressable onPress={dismissToast} style={[styles.toast, { top: insets.top + 6 }]} accessibilityRole="button" accessibilityLabel={toast}>
+          <Ionicons name="checkmark-circle" size={16} color={colors.online} />
+          <Text variant="buttonSm" style={{ flex: 1 }} numberOfLines={2}>{toast}</Text>
+        </Pressable>
+      ) : null}
       <View style={styles.header}>
         <Text variant="titleSm">Canvas</Text>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
@@ -168,6 +174,12 @@ const styles = StyleSheet.create({
     width: 34, height: 34, borderRadius: 10,
     backgroundColor: colors.surface2,
     alignItems: 'center', justifyContent: 'center',
+  },
+  toast: {
+    position: 'absolute', left: 18, right: 18, zIndex: 20,
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    paddingVertical: 10, paddingHorizontal: 14, borderRadius: radius.lg,
+    backgroundColor: colors.surface2, borderWidth: 1, borderColor: colors.borderSubtle,
   },
   textInput: {
     color: colors.textPrimary,

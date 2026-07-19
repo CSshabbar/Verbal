@@ -64,6 +64,10 @@ border:0;border-radius:14px;padding:15px 16px;cursor:pointer;margin-bottom:12px;
 .record .rlabel{flex:1;font:700 16px 'Geist'}
 .record .kbd{background:rgba(42,23,16,.22);border-radius:8px;padding:6px 10px;font:600 12px 'JetBrains Mono';color:var(--acc-ink);flex:none}
 .record.rec{background:#d96a4e}
+.record.meeting{background:var(--card);border:1px solid var(--bd);color:#f2f2f2;padding:11px 16px;margin-top:-4px}
+.record.meeting .mic{background:rgba(200,90,62,.16)}
+.record.meeting .mic svg{stroke:#C85A3E}
+.record.meeting .rlabel{font:600 13.5px 'Geist'}
 /* quick cards */
 .qcards{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:6px}
 .qcard{display:flex;align-items:center;gap:9px;background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:11px 12px;cursor:pointer}
@@ -232,6 +236,9 @@ def popover_html():
         <button class="record" id="recordBtn" onclick="toggleRecord()">
           <span class="mic">{mic}</span><span class="rlabel" id="rlabel">Start recording</span>
           <span class="kbd">⌘⌥</span>
+        </button>
+        <button class="record meeting" onclick="api('open_meeting_launcher')">
+          <span class="mic">{mic}</span><span class="rlabel">Start meeting</span>
         </button>
         <div class="qcards">
           <div class="qcard" onclick="go('canvas')"><span class="qicon">{grid}</span><span class="qlabel">Canvas</span><span class="qnum" id="canvasNum"></span></div>

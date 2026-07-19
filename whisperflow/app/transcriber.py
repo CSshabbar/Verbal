@@ -20,11 +20,23 @@ def transcribe(audio: np.ndarray, config: dict, sample_rate: int = 48000) -> str
     return transcribe_with_status(audio, config, sample_rate)[0]
 
 
-def transcribe_with_status(audio: np.ndarray, config: dict, sample_rate: int = 48000):
+def resolve_language(config: dict, override: str | None = None) -> str | None:
+    """Resolve the spoken language: explicit override > config['spoken_language'].
+    Returns an ISO-639-1 code, or None for auto-detect."""
+    lang = (override or config.get("spoken_language") or "en").strip().lower()
+    return None if lang in ("auto", "") else lang
+
+
+def transcribe_with_status(audio: np.ndarray, config: dict, sample_rate: int = 48000,
+                           language: str | None = None):
     """Like transcribe() but returns (text, status) where status is:
       'ok'      — got a transcription
       'silent'  — audio was empty/near-silent (no speech; not an error)
       'failed'  — every method failed (network/API down) — retryable
+
+    `language`: ISO code or 'auto' — overrides config['spoken_language'] (used by
+    the per-meeting language picker). Whisper is natively multilingual; English
+    was previously hard-pinned here, which silently broke every other language.
     """
     start = time.time()
 
@@ -37,11 +49,18 @@ def transcribe_with_status(audio: np.ndarray, config: dict, sample_rate: int = 4
         logger.warning(f"Audio is nearly silent (peak={peak:.4f})")
         return "", "silent"
 
+    lang = resolve_language(config, language)
+
     # Custom dictionary: bias Whisper with the user's vocabulary + fix up the
-    # result with their replacement rules.
+    # result with their replacement rules. The glossary is English text and the
+    # Whisper prompt also HINTS the language — so it is only attached for
+    # English; for auto/other languages it would drag detection toward English.
     try:
         from app import dictionary as _dict
-        prompt = _dict.build_prompt(config)
+        if lang == "en":
+            prompt = _dict.build_prompt(config)
+        else:
+            prompt = None
         _apply_dict = lambda t: _dict.apply_replacements(t, config)
     except Exception:
         prompt, _apply_dict = None, (lambda t: t)
@@ -125,9 +144,21 @@ def transcribe_with_status(audio: np.ndarray, config: dict, sample_rate: int = 4
         sf.write(tmp.name, audio, sample_rate)
         tmp.close()
 
-        # 1. Groq (free Whisper Large V3 — best accuracy)
+        # 1. Groq via the Supabase proxy (key held server-side — no local key needed).
+        # Non-English pinned languages route to full large-v3 — the turbo distil
+        # is noticeably weaker on lower-resource languages.
+        from app.groq_proxy import transcribe_via_proxy
+        _model_id = "whisper-large-v3" if lang not in (None, "en") else "whisper-large-v3-turbo"
+        proxy_text = transcribe_via_proxy(tmp.name, config, prompt=prompt,
+                                          language=lang, model=_model_id)
+        if proxy_text and proxy_text not in (".", "...", "uh", "um", "ah", "hm"):
+            proxy_text = finalize(proxy_text)
+            logger.info(f"[Groq proxy] {time.time()-start:.2f}s: '{proxy_text[:80]}'")
+            return proxy_text, "ok"
+
+        # 1b. Legacy fallback: any local Groq keys still configured
         for key in config.get("groq_api_keys", []):
-            result = _transcribe_groq(tmp.name, key, prompt=prompt)
+            result = _transcribe_groq(tmp.name, key, prompt=prompt, language=lang)
             if result is not None:
                 result = finalize(result)
                 logger.info(f"[Groq] {time.time()-start:.2f}s: '{result[:80]}'")
@@ -135,7 +166,7 @@ def transcribe_with_status(audio: np.ndarray, config: dict, sample_rate: int = 4
 
         # 2. Gemini Flash (user has keys)
         for key in config.get("gemini_api_keys", []):
-            result = _transcribe_gemini(tmp.name, key, prompt=prompt)
+            result = _transcribe_gemini(tmp.name, key, prompt=prompt, language=lang)
             if result is not None:
                 result = finalize(result)
                 logger.info(f"[Gemini] {time.time()-start:.2f}s: '{result[:80]}'")
@@ -144,7 +175,7 @@ def transcribe_with_status(audio: np.ndarray, config: dict, sample_rate: int = 4
         # 3. Local whisper fallback — needs 16kHz (works offline)
         tmp16 = _resample_to_16k(audio, sample_rate)
         try:
-            result = _transcribe_local(tmp16, config.get("whisper_model", "base"))
+            result = _transcribe_local(tmp16, config.get("whisper_model", "base"), language=lang)
             if result:
                 result = finalize(result)
                 logger.info(f"[Local] {time.time()-start:.2f}s: '{result[:80]}'")
@@ -195,17 +226,19 @@ def _resample_to_16k(audio, orig_rate):
     return tmp.name
 
 
-def _transcribe_groq(wav_path: str, api_key: str, prompt: str | None = None) -> str | None:
+def _transcribe_groq(wav_path: str, api_key: str, prompt: str | None = None,
+                     language: str | None = "en") -> str | None:
     try:
         from groq import Groq
         client = Groq(api_key=api_key)
         with open(wav_path, "rb") as f:
             kwargs = dict(
                 file=("audio.wav", f),
-                model="whisper-large-v3-turbo",
-                language="en",
+                model="whisper-large-v3" if language not in (None, "en") else "whisper-large-v3-turbo",
                 temperature=0.0,
             )
+            if language:                     # omit → Whisper auto-detects
+                kwargs["language"] = language
             if prompt:  # custom-dictionary vocabulary biasing
                 kwargs["prompt"] = prompt
             result = client.audio.transcriptions.create(**kwargs)
@@ -232,7 +265,8 @@ def _transcribe_groq(wav_path: str, api_key: str, prompt: str | None = None) -> 
         return None
 
 
-def _transcribe_gemini(wav_path: str, api_key: str, prompt: str | None = None) -> str | None:
+def _transcribe_gemini(wav_path: str, api_key: str, prompt: str | None = None,
+                       language: str | None = "en") -> str | None:
     try:
         import google.generativeai as genai
         genai.configure(api_key=api_key)
@@ -240,9 +274,12 @@ def _transcribe_gemini(wav_path: str, api_key: str, prompt: str | None = None) -
         with open(wav_path, "rb") as f:
             audio_bytes = f.read()
 
-        instruction = ("Transcribe this audio exactly word for word. Return ONLY the "
-                       "transcription, nothing else. If you cannot understand the audio "
-                       "clearly, return an empty response.")
+        instruction = ("Transcribe this audio exactly word for word, in the language "
+                       "actually spoken — never translate. Return ONLY the transcription, "
+                       "nothing else. If you cannot understand the audio clearly, return "
+                       "an empty response.")
+        if language and language != "en":
+            instruction += f" The audio is expected to be in ISO language '{language}'."
         if prompt:  # custom-dictionary vocabulary hint
             instruction += (" Prefer these spellings for names/terms when they occur: "
                             + prompt)
@@ -276,7 +313,8 @@ _model_name = None
 _model_lock = threading.Lock()
 
 
-def _transcribe_local(wav_path: str, model_name: str = "base") -> str | None:
+def _transcribe_local(wav_path: str, model_name: str = "base",
+                      language: str | None = "en") -> str | None:
     global _model, _model_name
     with _model_lock:
         if _model is None or _model_name != model_name:
@@ -295,7 +333,7 @@ def _transcribe_local(wav_path: str, model_name: str = "base") -> str | None:
         
         # Model loaded, proceed with transcription
         try:
-            segments, info = _model.transcribe(wav_path, beam_size=1, language="en")
+            segments, info = _model.transcribe(wav_path, beam_size=1, language=language)
             result = " ".join([segment.text for segment in segments]).strip()
             return result if result else None
         except Exception as e:
@@ -308,7 +346,7 @@ def _transcribe_local(wav_path: str, model_name: str = "base") -> str | None:
             best_of=1,
             temperature=0.0,
             condition_on_previous_text=False,
-            language="en",
+            language=language,
         )
         if vad:
             kwargs["vad_filter"] = True

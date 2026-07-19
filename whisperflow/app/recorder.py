@@ -50,6 +50,17 @@ class Recorder:
     def sample_rate(self):
         return self._sample_rate
 
+    def _open_stream(self):
+        stream = sd.InputStream(
+            samplerate=self._sample_rate,
+            channels=CHANNELS,
+            dtype=DTYPE,
+            callback=self._audio_callback,
+            latency='low',  # Reduce latency for better responsiveness
+        )
+        stream.start()
+        return stream
+
     def start(self):
         with self._lock:
             self._buffer = []
@@ -58,26 +69,66 @@ class Recorder:
             self._paused = False
             self._recording = True
         try:
-            self._stream = sd.InputStream(
-                samplerate=self._sample_rate,
-                channels=CHANNELS,
-                dtype=DTYPE,
-                callback=self._audio_callback,
-                latency='low',  # Reduce latency for better responsiveness
-            )
-            self._stream.start()
-            
+            try:
+                self._stream = self._open_stream()
+            except Exception as e1:
+                # A macOS audio-device change (e.g. AirPods connect/disconnect)
+                # leaves PortAudio's cached device list stale — every open then
+                # fails with AUHAL '!obj' / paInternalError -9986 until PortAudio
+                # is re-initialized. Re-init, refresh the CURRENT default input
+                # rate, and retry once so dictation survives device changes.
+                logger.warning(f"Mic open failed ({e1}) — reinitializing PortAudio")
+                sd._terminate()
+                sd._initialize()
+                try:
+                    self._sample_rate = _get_native_rate()
+                    self._max_samples = int(MAX_RECORDING_SECONDS * self._sample_rate)
+                    logger.info(f"Mic native rate now: {self._sample_rate}Hz")
+                except Exception:
+                    pass
+                self._stream = self._open_stream()
+
             # Wait for stream to fully initialize and start capturing audio
             # This prevents losing the first 1-2 seconds of speech
             time.sleep(0.3)  # 300ms to ensure stream is ready
-            
+
             logger.info("Recording started")
         except Exception as e:
             logger.error(f"Failed to start recording: {e}")
             self._recording = False
             raise
 
+    def start_external(self, sample_rate: int = 16000):
+        """Record from an EXTERNAL feed instead of opening our own InputStream.
+
+        Used while a meeting is running: the meeting owns the one mic stream
+        and forwards blocks here via feed_external() (a second InputStream on
+        the same device makes CoreAudio drop one of them — 'my voice gets
+        ignored' — and a failed open's PortAudio reinit killed the meeting's
+        stream). stop() works unchanged (no stream to tear down).
+        """
+        with self._lock:
+            self._buffer = []
+            self._total_samples = 0
+            self._cap_warned = False
+            self._paused = False
+            self._recording = True
+        self._external = True
+        self._sample_rate = int(sample_rate)
+        self._max_samples = int(MAX_RECORDING_SECONDS * self._sample_rate)
+        logger.info(f"Recording started (external mic tap @{self._sample_rate}Hz)")
+
+    def feed_external(self, block):
+        """Consume one mono float32 block from the external feed (any thread)."""
+        try:
+            if not getattr(self, "_external", False) or not self._recording:
+                return
+            self._audio_callback(block.reshape(-1, 1), len(block), None, None)
+        except Exception:
+            pass  # never throw into the meeting's audio callback
+
     def stop(self) -> Optional[np.ndarray]:
+        self._external = False
         with self._lock:
             self._recording = False
         

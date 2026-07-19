@@ -38,16 +38,57 @@ to signed-in devices.
 (~2 min TTL) · `claimed_by` text (null until claimed) · `claimed_at`. Index on `(token)`. RLS on;
 anon insert/select/update all `true` (safe because tokens are random, short-lived, single-use).
 
-**`notes`** — `notes_migration.sql` (base) + `supabase_notes_v2.sql` (voice-native v2 columns).
-`id` uuid PK · `user_id` text · `title` text `''` · `content` text `''` (AI-formatted) · `folder` text `''` ·
+**`notes`** — `notes_migration.sql` (base) + `supabase_notes_v2.sql` (self-contained: **creates the table if
+missing** — it was never provisioned in the live DB, so Notes was local-only until 2026-07 — then adds v2 cols).
+`id` **text** PK · `user_id` text · `title` text `''` · `content` text `''` (AI-formatted) · `folder` text `''` ·
 `is_pinned` bool `false` · `device_name` text · `created_at` · `updated_at`. Indexes on `(user_id)` and
 `(user_id, updated_at DESC)`. In the `supabase_realtime` publication.
+**`id` is `text`, not uuid** (v2 converts an existing uuid column in-place): desktop writes `uuid4().hex`,
+mobile writes `note_<ts>` (not a valid uuid) — a text column lets each client supply its **own** id so the
+note's local id === its cloud id. That equality is load-bearing: mobile `updateNote` does
+`.update().eq('id', localId)`, and without it every edit matches 0 rows and the pulled-back row duplicates.
+Mobile `createNote` upserts **with** the id (gated on `getSyncEnabled`), and `useNotes.load` **back-fills** any
+locally-cached note missing from the cloud (notes created before the table existed never got pushed otherwise).
 **v2 columns** (`supabase_notes_v2.sql`, idempotent): `raw_content` text nullable (raw Whisper transcript;
 NULL for typed/pre-existing notes — `content` holds the formatted version, "show original" reveals this);
 `audio_segments` jsonb `'[]'` (append-only list of source recordings, shape `[{id,url,created_at}]`,
 **UNION-on-merge** during sync). **RLS:** base file writes none. `supabase_notes_v2.sql` has a guarded
 `DO` block that broadens an existing anon-only policy to `TO public` (the dictionary/snippets lesson) —
 but only if `notes` already has RLS enabled; if it has no RLS, it leaves it untouched.
+
+**`groq_usage`** — `create_groq_usage` migration. Usage + rate-limit ledger for the `groq-proxy` Edge
+Function: one row per successful Groq call — `id`, `identity` (`user:<uuid>`|`device:<id>`|`ip:<addr>`),
+`user_id?`, `kind` (`transcription`|`chat`), `created_at`. **RLS on** (read-your-own for `authenticated`);
+only the function writes, via the service role (fire-and-forget). Metering ledger — rate-limit *enforcement*
+is currently off for latency (see `05-conventions` Hard Rule #15). (The earlier `app_config` key-table idea was dropped — the Groq key must
+never be readable by a client, so it lives only as the function's `GROQ_API_KEY` secret.)
+
+**Edge Functions:** `groq-proxy` (`supabase/functions/groq-proxy/index.ts`) — the only holder of the Groq
+key; brokers all transcription + chat for every client. `verify_jwt` on.
+
+**`meetings`** — `supabase_meetings.sql` (applied live 2026-07 + follow-up `hybrid_notes` column). One row
+per captured meeting.
+| col | type | notes |
+|---|---|---|
+| `id` | uuid | **PK**, desktop-minted `uuid4` (mobile never creates) |
+| `user_id` | text | scoping key |
+| `title`, `scratchpad`, `summary` | text | scratchpad is the ONE mobile-writable field |
+| `started_at`, `ended_at`, `created_at`, `updated_at` | timestamptz | |
+| `duration_seconds` | int | elapsed excluding pauses |
+| `audio_url` | text | public `meeting-audio` URL |
+| `transcript` | jsonb | `[{speaker, t0, t1, text}]` — speaker ∈ `self`/`s<N>` |
+| `speakers` | jsonb | `{speaker_id: display_name}` (`self` = "You") |
+| `decisions` | jsonb | `["…"]` |
+| `action_items` | jsonb | `[{owner: speaker_id\|null, task, done}]` |
+| `marked_moments` | jsonb | `[{t, label}]` (t = secs from start) |
+| `hybrid_notes` | jsonb | `[{user_line, ai_addition}]` — widget #21 (added after the base migration) |
+| `device_id`, `device_name` | text | |
+| `status` | text | `processing` \| `ready` \| `failed` (failed = summary failed, transcript intact) |
+
+Indexes `(user_id)`, `(user_id, started_at desc)`. **Realtime publication: yes** (mobile subscribes
+INSERT+UPDATE on `verbal_meetings_<uid>`). RLS on, policy "meetings rw" `FOR ALL TO public USING(true)`
+(Hard Rule #10 — same deferred-hardening posture as the rest). Desktop also keeps a bounded metadata list
+in `config['meetings']` (`MEETINGS_CAP=30`) and the mixed WAV at `~/.verbal/meetings/<id>.wav`.
 
 **`app_versions`** — `supabase_migrations/001_app_versions.sql`. Auto-update manifest.
 `id` bigserial PK · `platform` text (`mac`/`win`/`ios`) · `version` text · `changelog` · `file_url` ·
@@ -79,8 +120,13 @@ default `'done'`, `target_device_id` text, `edited_text` text (read as `edited_t
   (desktop 16 kHz WAV; mobile m4a/wav/caf). Public URL
   `…/storage/v1/object/public/recordings/<user_id>/<id>.<ext>`. Anon select/insert/update policies scoped
   to `bucket_id='recordings'`.
-- **`canvas-images`** — canvas photo attachments, path `canvas/<userId>_<ts>.<ext>`. No committed SQL.
+- **`canvas-images`** — canvas photo attachments, path `canvas/<userId>_<ts>.<ext>`. Policy in
+  `supabase_canvas_images_policy.sql` (idempotent: ensures the bucket exists + public, and read/insert/update
+  `TO public` scoped to `bucket_id='canvas-images'`). A missing/blocked policy → mobile's anon upload fails
+  silently → the shared photo never reaches the other device (now surfaced as an "Image upload failed" toast).
 - **`releases`** — auto-update binaries, public SELECT.
+- **`meeting-audio`** (`supabase_meetings.sql`) — meeting recordings, path **`<user_id>/<meeting_id>.wav`**
+  (16 kHz mono, mic+system mixed). Public read/insert/update/delete policies scoped to the bucket.
 
 ## Exact data shapes in code
 
@@ -178,6 +224,14 @@ Pragmatic, matches code + `GOOGLE_AUTH_SETUP.md`:
   has the latent `TO anon` pattern.
 - Proper JWT + `auth.uid()` RLS is a **documented deferred** hardening (the setup doc has the migration).
 - Storage buckets are public; `app_versions` inserts are service_role-gated.
+
+
+### meetings — widget-kit-v2 columns (Jul 2026, applied live + in supabase_meetings.sql)
+- `pinned boolean not null default false` — list pinning (33j).
+- `recognized jsonb not null default '{}'` — `{sid:{name,meetings}}` voice-fingerprint hits for that meeting.
+- `action_items[*].due` (inside the existing jsonb) — optional short deadline label from the summary LLM.
+- `marked_moments[*].note` (inside the existing jsonb) — optional user note on a bookmark.
+- Local-only config keys: `voice_prints` (per-name embeddings — NEVER synced), `meetings_opened` (read tracking).
 
 ## Schema gaps & stale docs (important) ⚠️
 

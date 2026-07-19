@@ -4,5 +4,5 @@ export type {
   TabsParamList,
   NotesStackParamList,
   HistoryStackParamList,
-  SettingsStackParamList,
+  MenuStackParamList,
 } from './types';

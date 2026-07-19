@@ -10,7 +10,7 @@ import { useNotes } from '../hooks/useNotes';
 import { useAuth } from '../hooks/useAuth';
 import { DeviceTag } from './HistoryListScreen';
 
-type Props = { onOpenSettings: () => void };
+type Props = { onOpenMenu: () => void };
 
 // Muted pastel feature-card backgrounds (minimalist-dark, wireframe 7a).
 const CARD_CREAM = '#EADFCE';
@@ -22,7 +22,7 @@ const CARD_SAGE_INK = '#1e2418';
  * Screen 7a — Home dashboard (minimalist dark): greeting, device pills,
  * two feature cards, recent list. Recording lives on the center tab-bar mic.
  */
-export const HomeScreen: React.FC<Props> = ({ onOpenSettings }) => {
+export const HomeScreen: React.FC<Props> = ({ onOpenMenu }) => {
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
   const { devices, target, setTarget } = useDevices();
@@ -42,8 +42,8 @@ export const HomeScreen: React.FC<Props> = ({ onOpenSettings }) => {
         </View>
         <View style={{ flexDirection: 'row', gap: 8 }}>
           <View style={styles.iconCircle}><Ionicons name="notifications-outline" size={16} color={colors.textSecondary} /></View>
-          <Pressable onPress={onOpenSettings} style={styles.iconCircle}>
-            <Ionicons name="settings-outline" size={16} color={colors.textSecondary} />
+          <Pressable onPress={onOpenMenu} style={styles.iconCircle} accessibilityRole="button" accessibilityLabel="Open menu">
+            <Ionicons name="menu" size={18} color={colors.textSecondary} />
           </Pressable>
         </View>
       </View>

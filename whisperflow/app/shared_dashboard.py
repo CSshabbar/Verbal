@@ -379,6 +379,17 @@ class SharedDashboard:
         ws.run_forever(ping_interval=25, ping_timeout=10)
 
 
+# Spoken-language options (ISO-639-1) for dictation + meetings. 'auto' lets
+# Whisper detect per request; anything else is pinned (more stable for chunked
+# meeting audio). Non-English pins route to full whisper-large-v3.
+SPOKEN_LANGUAGES = [
+    ("auto", "Auto-detect"), ("en", "English"), ("ur", "Urdu"), ("hi", "Hindi"),
+    ("ar", "Arabic"), ("es", "Spanish"), ("fr", "French"), ("de", "German"),
+    ("pt", "Portuguese"), ("tr", "Turkish"), ("id", "Indonesian"), ("ru", "Russian"),
+    ("zh", "Chinese"), ("ja", "Japanese"),
+]
+
+
 class DashboardApi:
     def __init__(self, dashboard: SharedDashboard):
         self.dashboard = dashboard
@@ -551,11 +562,31 @@ class DashboardApi:
         """The app's MeetingManager, or None (Windows / disabled)."""
         return getattr(self.app, "meetings", None)
 
-    def start_meeting(self, title="", use_mic=True, use_system=True):
+    def start_meeting(self, title="", use_mic=True, use_system=True, language=""):
         m = self._meetings()
         if not m:
             return {"ok": False, "error": "Meetings unavailable on this platform."}
-        return m.start(title or "", use_mic=bool(use_mic), use_system=bool(use_system))
+        return m.start(title or "", use_mic=bool(use_mic), use_system=bool(use_system),
+                       language=str(language or ""))
+
+    def get_spoken_language(self):
+        """Global spoken-language setting + the picker's option list."""
+        try:
+            return _ok(value=str(self.app.config.get("spoken_language", "en")),
+                       options=SPOKEN_LANGUAGES)
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def set_spoken_language(self, value):
+        try:
+            value = str(value or "en").strip().lower()
+            if value not in {c for c, _ in SPOKEN_LANGUAGES}:
+                return {"ok": False, "error": "unknown language"}
+            self.app.config["spoken_language"] = value
+            save_config(self.app.config)
+            return _ok()
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
 
     def open_meeting_launcher(self):
         """Dashboard/popover 'Start meeting' — routes through the same flow as
@@ -629,6 +660,67 @@ class DashboardApi:
             if key not in self._MEETING_SETTING_KEYS:
                 return {"ok": False, "error": "unknown setting"}
             self.app.config[key] = value
+            save_config(self.app.config)
+            return _ok()
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def set_dictation_hotkey(self):
+        """Hotkey picker: capture the next keypress (modifiers allowed — Right ⌘
+        is the classic) and bind it as BOTH hold and toggle key."""
+        try:
+            got = self.app.capture_next_key(allow_modifiers=True)
+            if not got:
+                return {"ok": False, "cancelled": True}
+            kc, label = got["keycode"], got["label"]
+            if kc == self.app.config.get("transform_hotkey"):
+                return {"ok": False, "error": "That key is the Transform hotkey."}
+            self.app.config["hotkey_hold"] = kc
+            self.app.config["hotkey_toggle"] = kc
+            self.app.config["hotkey_label"] = label
+            save_config(self.app.config)
+            self.app.hotkey_listener.update_keys(kc, kc)
+            return _ok(keycode=kc, label=label)
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def set_transform_hotkey(self):
+        """Hotkey picker for Transform: ⌘⇧ + the captured (non-modifier) key."""
+        try:
+            got = self.app.capture_next_key(allow_modifiers=False)
+            if not got:
+                return {"ok": False, "cancelled": True}
+            kc, label = got["keycode"], got["label"]
+            if kc in (self.app.config.get("hotkey_hold"),
+                      self.app.config.get("hotkey_toggle")):
+                return {"ok": False, "error": "That key is the dictation hotkey."}
+            self.app.config["transform_hotkey"] = kc
+            self.app.config["transform_hotkey_label"] = label
+            save_config(self.app.config)
+            self.app.hotkey_listener.set_transform(self.app._on_transform_hotkey, kc)
+            return _ok(keycode=kc, label=label)
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    # ── Transform settings (TRANSFORM_SWARM.md) ──────────────────────────────
+    _TRANSFORM_SETTING_KEYS = (
+        "transform_enabled", "transform_inline_enabled", "transform_selection_enabled",
+    )
+
+    def get_transform_settings(self):
+        try:
+            cfg = self.app.config
+            return _ok(settings={k: bool(cfg.get(k)) for k in self._TRANSFORM_SETTING_KEYS},
+                       hotkey_label=str(cfg.get("transform_hotkey_label", "T")),
+                       dictation_label=str(cfg.get("hotkey_label", "Right ⌘")))
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def set_transform_setting(self, key, value):
+        try:
+            if key not in self._TRANSFORM_SETTING_KEYS:
+                return {"ok": False, "error": "unknown setting"}
+            self.app.config[key] = bool(value)
             save_config(self.app.config)
             return _ok()
         except Exception as e:
@@ -788,6 +880,12 @@ class DashboardApi:
         """Regenerate one hybrid-note AI addition (widget 33i)."""
         m = self._meetings()
         return (m.regenerate_hybrid(meeting_id, index)
+                if m else {"ok": False, "error": "unavailable"})
+
+    def get_meeting_notes(self, meeting_id, regenerate=False):
+        """Full AI meeting notes page (widget: Notes page in the meeting window)."""
+        m = self._meetings()
+        return (m.get_meeting_notes(meeting_id, regenerate)
                 if m else {"ok": False, "error": "unavailable"})
 
     def set_meeting_pinned(self, meeting_id, pinned):

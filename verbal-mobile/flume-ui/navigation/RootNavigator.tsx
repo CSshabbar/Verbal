@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { View, Pressable, StyleSheet, Alert } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { NavigationContainer, DefaultTheme, Theme } from '@react-navigation/native';
+import { NavigationContainer, DefaultTheme, Theme, getFocusedRouteNameFromRoute } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { Ionicons } from '@expo/vector-icons';
@@ -21,8 +21,14 @@ import {
   SnippetsScreen,
   NotesListScreen,
   NoteEditorScreen,
+  MeetingListScreen,
+  MeetingDetailScreen,
+  MeetingPlaybackScreen,
+  MeetingNotesScreen,
   CanvasScreen,
   SettingsScreen,
+  MenuScreen,
+  DictionaryScreen,
 } from '../screens';
 import * as Clipboard from 'expo-clipboard';
 import { colors, type } from '../theme';
@@ -37,7 +43,7 @@ import {
   TabsParamList,
   NotesStackParamList,
   HistoryStackParamList,
-  SettingsStackParamList,
+  MenuStackParamList,
 } from './types';
 
 const flumeTheme: Theme = {
@@ -68,6 +74,7 @@ function NotesNavigator() {
           <NotesListScreen
             onCreate={() => navigation.navigate('NoteEditor', { noteId: null })}
             onOpen={(n) => navigation.navigate('NoteEditor', { noteId: n.id })}
+            onOpenMeetings={() => navigation.navigate('MeetingList')}
           />
         )}
       </NotesStack.Screen>
@@ -75,6 +82,40 @@ function NotesNavigator() {
         {({ route, navigation }) => (
           <NoteEditorScreen
             noteId={route.params.noteId}
+            onBack={() => navigation.goBack()}
+          />
+        )}
+      </NotesStack.Screen>
+      <NotesStack.Screen name="MeetingList">
+        {({ navigation }) => (
+          <MeetingListScreen
+            onBack={() => navigation.goBack()}
+            onOpen={(meetingId) => navigation.navigate('MeetingDetail', { meetingId })}
+          />
+        )}
+      </NotesStack.Screen>
+      <NotesStack.Screen name="MeetingDetail">
+        {({ route, navigation }) => (
+          <MeetingDetailScreen
+            meetingId={route.params.meetingId}
+            onBack={() => navigation.goBack()}
+            onOpenPlayback={(meetingId) => navigation.navigate('MeetingPlayback', { meetingId })}
+            onOpenNotes={(meetingId) => navigation.navigate('MeetingNotes', { meetingId })}
+          />
+        )}
+      </NotesStack.Screen>
+      <NotesStack.Screen name="MeetingPlayback">
+        {({ route, navigation }) => (
+          <MeetingPlaybackScreen
+            meetingId={route.params.meetingId}
+            onBack={() => navigation.goBack()}
+          />
+        )}
+      </NotesStack.Screen>
+      <NotesStack.Screen name="MeetingNotes">
+        {({ route, navigation }) => (
+          <MeetingNotesScreen
+            meetingId={route.params.meetingId}
             onBack={() => navigation.goBack()}
           />
         )}
@@ -128,32 +169,50 @@ const HistoryDetail: React.FC<{ itemId: string; onBack: () => void }> = ({ itemI
   );
 };
 
-const SettingsStack = createNativeStackNavigator<SettingsStackParamList>();
-function SettingsNavigator() {
+const MenuStack = createNativeStackNavigator<MenuStackParamList>();
+function MenuNavigator() {
   return (
-    <SettingsStack.Navigator screenOptions={{ headerShown: false }}>
-      <SettingsStack.Screen name="Settings">
+    <MenuStack.Navigator screenOptions={{ headerShown: false }}>
+      <MenuStack.Screen name="Menu">
+        {({ navigation }) => (
+          <MenuScreen
+            // getParent().goBack() dismisses the whole modal (Menu is this stack's
+            // root, so its own goBack is a no-op).
+            onClose={() => navigation.getParent()?.goBack()}
+            onOpenSettings={() => navigation.navigate('Settings')}
+            onOpenSnippets={() => navigation.navigate('Snippets')}
+            onOpenDictionary={() => navigation.navigate('Dictionary')}
+            onOpenDevices={() => navigation.navigate('Devices')}
+          />
+        )}
+      </MenuStack.Screen>
+      <MenuStack.Screen name="Settings">
         {({ navigation }) => (
           <SettingsScreen
             onOpenDevices={() => navigation.navigate('Devices')}
             onOpenSnippets={() => navigation.navigate('Snippets')}
           />
         )}
-      </SettingsStack.Screen>
-      <SettingsStack.Screen name="Snippets">
+      </MenuStack.Screen>
+      <MenuStack.Screen name="Dictionary">
+        {({ navigation }) => (
+          <DictionaryScreen onBack={() => navigation.goBack()} />
+        )}
+      </MenuStack.Screen>
+      <MenuStack.Screen name="Snippets">
         {({ navigation }) => (
           <SnippetsScreen onBack={() => navigation.goBack()} />
         )}
-      </SettingsStack.Screen>
-      <SettingsStack.Screen name="Devices">
+      </MenuStack.Screen>
+      <MenuStack.Screen name="Devices">
         {({ navigation }) => (
           <DevicesScreen
             onBack={() => navigation.goBack()}
             onAddDevice={() => navigation.navigate('PairDevice')}
           />
         )}
-      </SettingsStack.Screen>
-      <SettingsStack.Screen name="PairDevice" options={{ presentation: 'modal' }}>
+      </MenuStack.Screen>
+      <MenuStack.Screen name="PairDevice" options={{ presentation: 'modal' }}>
         {({ navigation }) => (
           <PairDeviceScreen
             onBack={() => navigation.goBack()}
@@ -177,8 +236,8 @@ function SettingsNavigator() {
             onUseCode={() => {/* TODO: code-entry screen */}}
           />
         )}
-      </SettingsStack.Screen>
-    </SettingsStack.Navigator>
+      </MenuStack.Screen>
+    </MenuStack.Navigator>
   );
 }
 
@@ -190,7 +249,7 @@ const Tabs = createBottomTabNavigator<TabsParamList>();
 
 type TabsNavigatorProps = {
   onRecord: () => void;
-  onOpenSettings: () => void;
+  onOpenMenu: () => void;
 };
 
 const EmptyTab = () => null;
@@ -201,21 +260,25 @@ const EmptyTab = () => null;
  * Recording modal — it's the primary action, so it sits in the center.
  * Settings is reached from the Home header gear.
  */
-function TabsNavigator({ onRecord, onOpenSettings }: TabsNavigatorProps) {
+function TabsNavigator({ onRecord, onOpenMenu }: TabsNavigatorProps) {
   const insets = useSafeAreaInsets();
+  const tabBarStyle = {
+    backgroundColor: colors.bgScreen,
+    borderTopColor: colors.borderSubtle,
+    borderTopWidth: 1,
+    // Sit the icons just above the home indicator. paddingBottom = the safe-area
+    // inset only (+4 breathing room); the previous `insets.bottom + 14` double-
+    // counted the inset and floated the whole bar ~48px off the bottom.
+    height: 56 + insets.bottom,
+    paddingTop: 8,
+    paddingBottom: insets.bottom + 4,
+  } as const;
   return (
     <Tabs.Navigator
       screenOptions={{
         headerShown: false,
         tabBarShowLabel: false,
-        tabBarStyle: {
-          backgroundColor: colors.bgScreen,
-          borderTopColor: colors.borderSubtle,
-          borderTopWidth: 1,
-          height: 72 + insets.bottom,
-          paddingTop: 10,
-          paddingBottom: insets.bottom + 14,
-        },
+        tabBarStyle,
         tabBarActiveTintColor: colors.textPrimary,
         tabBarInactiveTintColor: colors.textDisabled,
       }}
@@ -224,12 +287,20 @@ function TabsNavigator({ onRecord, onOpenSettings }: TabsNavigatorProps) {
         name="HomeTab"
         options={{ tabBarIcon: ({ color }) => <Ionicons name="home-outline" size={24} color={color} /> }}
       >
-        {() => <HomeScreen onOpenSettings={onOpenSettings} />}
+        {() => <HomeScreen onOpenMenu={onOpenMenu} />}
       </Tabs.Screen>
       <Tabs.Screen
         name="NotesTab"
         component={NotesNavigator}
-        options={{ tabBarIcon: ({ color }) => <Ionicons name="reorder-three-outline" size={27} color={color} /> }}
+        options={({ route }) => ({
+          // Hide the whole bottom tab bar (incl. the floating center mic) while a
+          // note is open, so the editor owns the screen and shows a single, centered
+          // mic. Restored automatically on returning to the notes list.
+          tabBarStyle: (getFocusedRouteNameFromRoute(route) ?? 'NotesList') === 'NoteEditor'
+            ? { display: 'none' }
+            : tabBarStyle,
+          tabBarIcon: ({ color }) => <Ionicons name="reorder-three-outline" size={27} color={color} />,
+        })}
       />
       <Tabs.Screen
         name="RecordTab"
@@ -300,6 +371,8 @@ export const RootNavigator: React.FC = () => {
     AsyncStorage.getItem(ONBOARDED_KEY)
       .then(v => setOnboarded(v === '1'))
       .catch(() => setOnboarded(false));
+    // Warm/refresh the shared Groq key cache from app_config (rotatable server-side).
+    import('../../lib/remoteConfig').then(m => m.refreshBundledGroqKey()).catch(() => {});
   }, []);
 
   const completeOnboarding = async () => {
@@ -336,7 +409,7 @@ export const RootNavigator: React.FC = () => {
               {({ navigation }) => (
                 <TabsNavigator
                   onRecord={() => navigation.navigate('Recording')}
-                  onOpenSettings={() => navigation.navigate('Settings')}
+                  onOpenMenu={() => navigation.navigate('Menu')}
                 />
               )}
             </Root.Screen>
@@ -376,8 +449,8 @@ export const RootNavigator: React.FC = () => {
                 />
               )}
             </Root.Screen>
-            <Root.Screen name="Settings" options={{ presentation: 'modal', gestureEnabled: true }}>
-              {() => <SettingsNavigator />}
+            <Root.Screen name="Menu" options={{ presentation: 'modal', gestureEnabled: true }}>
+              {() => <MenuNavigator />}
             </Root.Screen>
             <Root.Screen
               name="Confirmation"

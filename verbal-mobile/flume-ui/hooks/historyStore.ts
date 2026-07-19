@@ -192,6 +192,23 @@ export function ensureLoaded() {
 }
 export function refresh() { loadPromise = load(); return loadPromise; }
 
+/**
+ * Tear down the singleton on sign-out / account switch: drop the cached items,
+ * unsubscribe the realtime channel (keyed by the OLD user id), and reset the
+ * load guard so the next signed-in account reloads from scratch. Without this the
+ * previous account's transcriptions stay on screen after switching accounts.
+ */
+export async function reset() {
+  items = [];
+  started = false;
+  loadPromise = null;
+  if (channel) {
+    try { await supabase.removeChannel(channel); } catch { /* ignore */ }
+    channel = null;
+  }
+  emit();
+}
+
 /** Legacy contract helper — prepend an already-built item. */
 export async function add(item: HistoryItem) {
   items = [item, ...items];

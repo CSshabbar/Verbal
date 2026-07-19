@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import {
-  View, StyleSheet, ScrollView, TextInput, Switch, Pressable,
+  View, StyleSheet, ScrollView, TextInput, Switch, Pressable, Alert,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -12,7 +12,6 @@ import { Dictionary, fetchRemote, saveDictionary } from '../../lib/dictionary';
 import { colors, radius, type } from '../theme';
 import { useAuth } from '../hooks/useAuth';
 import {
-  getGroqKey, setGroqKey,
   getDeviceName, setDeviceName,
   getSyncEnabled, setSyncEnabled,
   getUserId, setUserId,
@@ -31,12 +30,9 @@ export const SettingsScreen: React.FC<Props> = ({ onOpenDevices, onOpenSnippets 
   const insets = useSafeAreaInsets();
   const { user, signOut } = useAuth();
 
-  const [groqKey, setGroqKeyState] = useState('');
   const [deviceName, setDeviceNameState] = useState('');
   const [userId, setUserIdState] = useState('');
   const [sync, setSync] = useState(false);
-  const [showKey, setShowKey] = useState(false);
-  const [savedKey, setSavedKey] = useState(false);
   const [savedName, setSavedName] = useState(false);
   const [savedUser, setSavedUser] = useState(false);
 
@@ -49,7 +45,6 @@ export const SettingsScreen: React.FC<Props> = ({ onOpenDevices, onOpenSnippets 
 
   useEffect(() => {
     (async () => {
-      setGroqKeyState(await getGroqKey());
       setDeviceNameState(await getDeviceName());
       setUserIdState(await getUserId());
       setSync(await getSyncEnabled());
@@ -81,13 +76,6 @@ export const SettingsScreen: React.FC<Props> = ({ onOpenDevices, onOpenSnippets 
   };
   const removeRep = async (i: number) =>
     persistDict({ ...dict, replacements: dict.replacements.filter((_, idx) => idx !== i) });
-
-  const saveKey = async () => {
-    await setGroqKey(groqKey.trim());
-    await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    setSavedKey(true);
-    setTimeout(() => setSavedKey(false), 1600);
-  };
 
   const saveName = async () => {
     await setDeviceName(deviceName.trim());
@@ -126,15 +114,19 @@ export const SettingsScreen: React.FC<Props> = ({ onOpenDevices, onOpenSnippets 
     if (ok) await AsyncStorage.removeItem('flume_onboarded');
   };
 
-  const confirmSignOut = async () => {
-    const ok = await confirm({
-      title: 'Sign out?',
-      message: 'You can sign back in with Google any time.',
-      confirmLabel: 'Sign out',
-      cancelLabel: 'Cancel',
-      destructive: true,
-    });
-    if (ok) signOut();
+  const confirmSignOut = () => {
+    // Native Alert (not the custom confirm modal): Settings is presented as a
+    // native-stack MODAL, and a JS <Modal> shown over it doesn't reliably receive
+    // touches on iOS — the reason the sign-out button appeared dead.
+    Alert.alert(
+      'Sign out?',
+      'You can sign back in with Google any time.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Sign out', style: 'destructive', onPress: () => { signOut(); } },
+      ],
+      { cancelable: true },
+    );
   };
 
   return (
@@ -154,41 +146,6 @@ export const SettingsScreen: React.FC<Props> = ({ onOpenDevices, onOpenSnippets 
             subtitle={user?.email}
             trailing={null}
           />
-        </Section>
-
-        {/* Transcription */}
-        <Section label="TRANSCRIPTION">
-          <Card padding={14}>
-            <View style={styles.cardHeader}>
-              <View style={{ flex: 1 }}>
-                <Text variant="button">Groq API key</Text>
-                <Text variant="bodyXs" color={colors.textMuted}>Powers transcription + formatting</Text>
-              </View>
-            </View>
-            <View style={styles.inputRow}>
-              <TextInput
-                value={groqKey}
-                onChangeText={setGroqKeyState}
-                placeholder="gsk_..."
-                placeholderTextColor={colors.textDisabled}
-                secureTextEntry={!showKey}
-                autoCapitalize="none"
-                autoCorrect={false}
-                style={styles.input}
-              />
-              <Pressable onPress={() => setShowKey(s => !s)} hitSlop={8} style={styles.eyeBtn}>
-                <Ionicons name={showKey ? 'eye-off-outline' : 'eye-outline'} size={22} color={colors.textMuted} />
-              </Pressable>
-            </View>
-            <Button
-              label={savedKey ? 'Saved ✓' : 'Save key'}
-              variant={savedKey ? 'ghost' : 'primary'}
-              onPress={saveKey}
-            />
-            <Text variant="caption" color={colors.textSubtle} style={{ marginTop: 8 }}>
-              Free key at console.groq.com/keys
-            </Text>
-          </Card>
         </Section>
 
         {/* Voice — snippets (spoken phrase → full text) */}

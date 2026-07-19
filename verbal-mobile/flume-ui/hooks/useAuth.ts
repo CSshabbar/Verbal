@@ -12,7 +12,8 @@ import { Linking } from 'react-native';
 import * as WebBrowser from 'expo-web-browser';
 import * as QueryParams from 'expo-auth-session/build/QueryParams';
 import { supabase } from '../../lib/supabase';
-import { setUserId, setSyncEnabled, getDeviceName, getDeviceId } from '../../lib/storage';
+import { setUserId, setSyncEnabled, getDeviceName, getDeviceId, getStoredUserId, clearAccountData } from '../../lib/storage';
+import * as historyStore from './historyStore';
 import { confirm, notify } from '../components/ConfirmDialog';
 
 WebBrowser.maybeCompleteAuthSession();
@@ -84,6 +85,14 @@ async function createSessionFromUrl(url: string) {
 async function afterSignIn(session: any) {
   const uid = session?.user?.id;
   if (!uid) return;
+  // Account switch: if this device was last used by a DIFFERENT account, wipe the
+  // previous account's cached data before adopting the new id — otherwise the new
+  // account inherits the old one's history/notes/devices (the cross-account leak).
+  const prev = await getStoredUserId();
+  if (prev && prev !== uid) {
+    try { await clearAccountData(); } catch { /* ignore */ }
+    try { await historyStore.reset(); } catch { /* ignore */ }
+  }
   await setUserId(uid);
   await setSyncEnabled(true);
   // Register this device + detect other devices on the account.
@@ -111,6 +120,12 @@ async function afterSignIn(session: any) {
   } catch (e) {
     console.warn('device detect failed:', e);
   }
+  // Now that the account id + sync flag are set, (re)pull history from the cloud and
+  // open the realtime channel. RootNavigator's useHistory already ran load() once at
+  // app start — BEFORE sign-in, with sync off — which trips the `started` guard, so
+  // without this explicit refresh the post-login fetch never fires and history stays
+  // empty on a fresh install. refresh() re-runs load() unconditionally.
+  try { await historyStore.refresh(); } catch { /* ignore */ }
 }
 
 export function useAuth() {
@@ -179,8 +194,15 @@ export function useAuth() {
   }, []);
 
   const signOut = useCallback(async () => {
-    try { await supabase.auth.signOut(); } catch { /* ignore */ }
+    // `scope: 'local'` removes the on-device session immediately (no network
+    // round-trip that can hang on a flaky connection) and fires onAuthStateChange
+    // in every useAuth instance → RootNavigator flips to Welcome.
+    try { await supabase.auth.signOut({ scope: 'local' }); } catch { /* ignore */ }
     try { await setSyncEnabled(false); } catch { /* ignore */ }
+    // Clear all account-scoped caches + tear down the history singleton so the
+    // next account that signs in on this device starts clean (no data leak).
+    try { await clearAccountData(); } catch { /* ignore */ }
+    try { await historyStore.reset(); } catch { /* ignore */ }
     setUser(null);
   }, []);
 

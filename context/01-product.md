@@ -41,7 +41,9 @@ All three share **one Supabase backend** (project `ovpcthjingugwvpxlsna`) — se
 | Google auth (Supabase) | ✅ | ✅ | ✅ | Desktop PKCE loopback (shared `auth.py`); mobile deep link. Windows wires `_sign_in`/`_sign_out` + tray item |
 | Onboarding | ✅ | ✅ | ✅ | Windows now renders the same Flume onboarding/`#signin` screens |
 | Recording overlay / floating HUD | ✅ | ❌ | ✅ | Desktop pill; iOS uses a modal screen. Windows currently a tkinter pill; webview parity (`overlay_html()`) specced — `windows_specs/W3-overlay.md` |
-| **Meetings** (capture + live transcript + AI summary) | ✅ | 👁 read-only | ❌ | macOS captures system audio (ScreenCaptureKit) + mic; iOS lists/views/plays synced meetings and can edit the scratchpad; no capture on mobile. Windows port specced (WASAPI loopback) — `windows_specs/W6-meetings-wasapi.md` |
+| **Meetings** (capture + live transcript + AI summary) | ✅ | 👁 full read | ❌ | macOS captures system audio (ScreenCaptureKit) + mic. iOS is full READ parity: list, detail (summary, decisions, action items w/ due + tappable done, marked moments w/ notes), the **full AI Notes page** (renders `notes_md`; can generate on-device if absent), playback+transcript, and edits the scratchpad. No capture on mobile. Windows port specced — `windows_specs/W6-meetings-wasapi.md` |
+| **Transform — inline** (“…so Flume, make it formal”) | ✅ | ❌ (planned) | ❌ (TBD) | Trailing-instruction gate + LLM rewrite before paste; default OFF (`transform_enabled`) |
+| **Transform — selection** (⌘⇧T → preview → replace) | ✅ | ❌ | ❌ (TBD) | Clipboard-captured selection, cream pill (Improvise / spoken / typed), preview + undo |
 | Menubar popover | ✅ | — | ⚠️ | macOS NSPopover. Windows equivalent (tray-click pywebview `popover_html()`) specced — `windows_specs/W4-popover.md` |
 
 Legend: ✅ present · ⚠️ partial/legacy · ❌ not present · — N/A.
@@ -77,3 +79,4 @@ Verbal/
 
 For the "how it fits together" view see `02-architecture.md`; per-feature detail `03-features.md`;
 backend/data `04-data-model.md`; conventions & gotchas `05-conventions.md`.
+

@@ -1,4 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { supabase } from './supabase';   // no cycle: supabase.ts imports only createClient + AsyncStorage
 
 const KEYS = {
   USER_ID:     'verbal_user_id',
@@ -29,6 +30,20 @@ export interface HistoryEntry {
 
 // ── Identity ──────────────────────────────────────────────────────────────────
 export async function getUserId(): Promise<string> {
+  // The signed-in Supabase user id is authoritative — it scopes ALL cloud data
+  // (notes, dictionary, snippets, history). Prefer it (and cache it) so a RESTORED
+  // session — where afterSignIn never ran — still reads the right account instead of
+  // a stray minted id, which showed everything as 0. Falls back to the stored/local
+  // id only when signed out.
+  try {
+    const { data } = await supabase.auth.getSession();
+    const uid = data.session?.user?.id;
+    if (uid) {
+      const stored = await AsyncStorage.getItem(KEYS.USER_ID);
+      if (stored !== uid) await AsyncStorage.setItem(KEYS.USER_ID, uid);
+      return uid;
+    }
+  } catch { /* offline / not ready — fall through to the stored id */ }
   let id = await AsyncStorage.getItem(KEYS.USER_ID);
   if (!id) {
     id = `user_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -38,6 +53,29 @@ export async function getUserId(): Promise<string> {
 }
 export async function setUserId(id: string) {
   await AsyncStorage.setItem(KEYS.USER_ID, id);
+}
+
+// The stored id WITHOUT minting a new one (unlike getUserId, which generates a
+// local fallback when absent). Null if unset — used to detect an account switch.
+export async function getStoredUserId(): Promise<string | null> {
+  return AsyncStorage.getItem(KEYS.USER_ID);
+}
+
+// Wipe every account-scoped local cache so a different signed-in account never
+// inherits the previous account's data (history, notes, vocabulary/snippets,
+// device selection) — the cross-account leak. Removing USER_ID means the next
+// getUserId() mints a fresh local id. Device-level config (Groq key, device name,
+// Notes feature-flag prefs) is intentionally preserved. Call on sign-out and on
+// an account change.
+export async function clearAccountData(): Promise<void> {
+  await AsyncStorage.multiRemove([
+    KEYS.USER_ID,           // verbal_user_id
+    KEYS.HISTORY,           // verbal_history
+    KEYS.PINNED,            // verbal_pinned
+    'verbal_notes_cache',   // lib/notesStorage
+    'flume_dictionary',     // lib/dictionary (vocabulary + snippets)
+    'flume_target_device',  // flume-ui/hooks/useDevices target selection
+  ]);
 }
 
 export async function getDeviceName(): Promise<string> {
@@ -54,8 +92,17 @@ export async function getDeviceId(): Promise<string> {
 }
 
 // ── API keys ──────────────────────────────────────────────────────────────────
+// Resolution order: a user-entered key (Settings) wins; otherwise the shared key we
+// host in Supabase `app_config` (cached locally) so users never have to paste one.
+// The shared key is read-only to clients and rotatable server-side without an app
+// update. It IS readable by anyone with the app (same posture as the anon key);
+// a server proxy is the real hardening.
 export async function getGroqKey(): Promise<string> {
-  return (await AsyncStorage.getItem(KEYS.GROQ_KEY)) ?? '';
+  const userKey = (await AsyncStorage.getItem(KEYS.GROQ_KEY)) ?? '';
+  if (userKey.trim()) return userKey;
+  const { getCachedBundledGroqKey, refreshBundledGroqKey } = await import('./remoteConfig');
+  const cached = await getCachedBundledGroqKey();
+  return cached || (await refreshBundledGroqKey());
 }
 export async function setGroqKey(key: string) {
   await AsyncStorage.setItem(KEYS.GROQ_KEY, key);
@@ -135,6 +182,8 @@ export async function addToHistory(
   };
   const updated = [entry, ...h].slice(0, 100);
   await AsyncStorage.setItem(KEYS.HISTORY, JSON.stringify(updated));
+  // Push the new dictation to the native keyboard's History panel.
+  import('./keyboardBridge').then((m) => m.syncKeyboardConfig()).catch(() => {});
   return updated;
 }
 
@@ -149,6 +198,8 @@ export async function mergeRemoteEntries(remote: HistoryEntry[]): Promise<Histor
     .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
     .slice(0, 100);
   await AsyncStorage.setItem(KEYS.HISTORY, JSON.stringify(merged));
+  // New cloud dictations synced in → refresh the keyboard's History panel.
+  import('./keyboardBridge').then((m) => m.syncKeyboardConfig()).catch(() => {});
   return merged;
 }
 

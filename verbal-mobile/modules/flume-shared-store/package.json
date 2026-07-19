@@ -1,0 +1,6 @@
+{
+  "name": "flume-shared-store",
+  "version": "1.0.0",
+  "description": "Write files into the iOS App Group container so the Flume keyboard extension can read them.",
+  "main": "index.ts"
+}

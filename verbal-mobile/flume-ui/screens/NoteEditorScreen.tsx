@@ -30,7 +30,6 @@ export const NoteEditorScreen: React.FC<Props> = ({ noteId, onBack }) => {
   const [note, setNote] = useState<Note | null>(() => (noteId ? getNote(noteId) : null));
   const [title, setTitle] = useState(note?.title ?? '');
   const [body, setBody] = useState(note?.body ?? '');
-  const [dictating, setDictating] = useState(false);
   const [busy, setBusy] = useState(false);         // AI cleanup call in flight
   const [showOriginal, setShowOriginal] = useState(false);
   const [editingRaw, setEditingRaw] = useState(false);
@@ -57,54 +56,63 @@ export const NoteEditorScreen: React.FC<Props> = ({ noteId, onBack }) => {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [title, body]);
 
-  const { start, stop, durationMs, partialText } = useRecorder();
+  const { start, stop, pause, resume, cancel, status, durationMs, partialText } = useRecorder();
+  const recording = status !== 'idle';   // recording OR paused
+  const paused = status === 'paused';
 
   const hasMarkdown = useMemo(() => MARKDOWN_RE.test(body), [body]);
   const segments = note?.audioSegments ?? [];
   const canReformat = !!(note && ((note.rawContent && note.rawContent.trim()) || body.trim()));
 
-  const toggleDictate = useCallback(async () => {
-    if (dictating) {
-      setDictating(false);
-      let result;
-      try {
-        result = await stop();
-      } catch {
-        return; // recorder already surfaced the error; keep existing content
-      }
-      if (!result?.text) return;
-
-      // Make sure a note row exists to attach the dictation to.
-      let target = note;
-      if (!target) { target = createNote({ title, body }); setNote(target); }
-
-      // Route through the AI-cleanup + audio-linkage save path (runs cleanup once
-      // for this segment, unions the recording into audio_segments).
-      setBusy(true);
-      try {
-        const saved = await saveDictation(target.id, { rawText: result.text, recordingUri: result.uri });
-        if (saved) {
-          setNote(saved);
-          setTitle(saved.title);
-          setBody(saved.body);
-          setEditingRaw(false);
-          setShowOriginal(false);
-        } else {
-          // Fail closed: never lose the transcript even if the save path bailed.
-          setBody(b => (b ? b + ' ' : '') + result!.text);
-        }
-      } finally {
-        setBusy(false);
-      }
-    } else {
-      try {
-        await start();
-        setDictating(true);
-      } catch {
-        /* permission/hardware error already logged by the recorder */
-      }
+  const startDictate = useCallback(async () => {
+    try {
+      await start();
+    } catch {
+      /* permission/hardware error already logged by the recorder */
     }
-  }, [dictating, stop, start, note, title, body, createNote, saveDictation]);
+  }, [start]);
+
+  // Finalize: stop → transcribe → AI-cleanup + audio-linkage save path (runs
+  // cleanup once for this segment, unions the recording into audio_segments).
+  const finishDictate = useCallback(async () => {
+    let result;
+    try {
+      result = await stop();
+    } catch {
+      return; // recorder already surfaced the error; keep existing content
+    }
+    if (!result?.text) return;
+
+    // Make sure a note row exists to attach the dictation to.
+    let target = note;
+    if (!target) { target = createNote({ title, body }); setNote(target); }
+
+    setBusy(true);
+    try {
+      const saved = await saveDictation(target.id, { rawText: result.text, recordingUri: result.uri });
+      if (saved) {
+        setNote(saved);
+        setTitle(saved.title);
+        setBody(saved.body);
+        setEditingRaw(false);
+        setShowOriginal(false);
+      } else {
+        // Fail closed: never lose the transcript even if the save path bailed.
+        setBody(b => (b ? b + ' ' : '') + result!.text);
+      }
+    } finally {
+      setBusy(false);
+    }
+  }, [stop, note, title, body, createNote, saveDictation]);
+
+  const pauseResume = useCallback(() => {
+    if (paused) resume(); else pause();
+  }, [paused, pause, resume]);
+
+  // Discard the in-progress recording — nothing is transcribed or saved.
+  const cancelDictate = useCallback(async () => {
+    try { await cancel(); } catch { /* fail closed */ }
+  }, [cancel]);
 
   const doReformat = useCallback(async () => {
     if (!note) return;
@@ -218,18 +226,18 @@ export const NoteEditorScreen: React.FC<Props> = ({ noteId, onBack }) => {
             accessibilityLabel="Note content"
           />
         )}
-        {dictating && partialText ? (
+        {recording && partialText ? (
           <Text variant="bodySm" style={{ backgroundColor: colors.primarySoft, color: colors.primaryAccent, paddingHorizontal: 2, marginTop: 8 }}>
             {' '}{partialText}
           </Text>
         ) : null}
       </ScrollView>
 
-      {dictating ? (
+      {recording ? (
         <View style={styles.dictStrip}>
-          <Visualizer active heights={[14, 16, 14, 16, 14]} barWidth={3} gap={3} style={{ height: 16 }} />
+          <Visualizer active={!paused} heights={[14, 16, 14, 16, 14]} barWidth={3} gap={3} style={{ height: 16 }} />
           <Text variant="bodyXs" color={colors.primaryAccent} style={{ flex: 1 }}>
-            Listening{partialText ? `… "${partialText.slice(-32)}"` : '…'}
+            {paused ? 'Paused' : `Listening${partialText ? `… "${partialText.slice(-32)}"` : '…'}`}
           </Text>
           <Text variant="metaSm" color={colors.primary}>{fmt(durationMs)}</Text>
         </View>
@@ -241,21 +249,49 @@ export const NoteEditorScreen: React.FC<Props> = ({ noteId, onBack }) => {
       ) : null}
 
       <View style={styles.dock}>
-        <Pressable style={styles.iconDock} accessibilityRole="button" accessibilityLabel="Keyboard">
-          <Ionicons name={'keyboard-outline' as any} size={24} color={colors.textSecondary} />
-        </Pressable>
-        <Pressable
-          onPress={toggleDictate}
-          disabled={busy}
-          style={[styles.micDock, dictating && { transform: [{ scale: 1.05 }] }, busy && { opacity: 0.5 }]}
-          accessibilityRole="button"
-          accessibilityLabel={dictating ? 'Stop dictation' : 'Start dictation'}
-        >
-          <Ionicons name={dictating ? 'square' : 'mic'} size={30} color={colors.primaryInk} />
-        </Pressable>
-        <Pressable onPress={onBack} style={{ padding: 10 }} accessibilityRole="button" accessibilityLabel="Done">
-          <Text variant="button" color={colors.primary}>Done</Text>
-        </Pressable>
+        {recording ? (
+          // While recording/paused: Cancel (discard) · Stop-and-save (center) · Pause/Resume.
+          <>
+            <View style={styles.dockSide}>
+              <Pressable onPress={cancelDictate} style={styles.sideBtn} accessibilityRole="button" accessibilityLabel="Cancel recording">
+                <Ionicons name="close" size={22} color={colors.textSecondary} />
+              </Pressable>
+            </View>
+            <Pressable
+              onPress={finishDictate}
+              disabled={busy}
+              style={[styles.micDock, busy && { opacity: 0.5 }]}
+              accessibilityRole="button"
+              accessibilityLabel="Stop and save"
+            >
+              <Ionicons name="checkmark" size={32} color={colors.primaryInk} />
+            </Pressable>
+            <View style={[styles.dockSide, { alignItems: 'flex-end' }]}>
+              <Pressable onPress={pauseResume} style={styles.sideBtn} accessibilityRole="button" accessibilityLabel={paused ? 'Resume recording' : 'Pause recording'}>
+                <Ionicons name={paused ? 'play' : 'pause'} size={20} color={colors.textSecondary} />
+              </Pressable>
+            </View>
+          </>
+        ) : (
+          // Idle: empty spacers keep the mic perfectly centered; Done at the right.
+          <>
+            <View style={styles.dockSide} />
+            <Pressable
+              onPress={startDictate}
+              disabled={busy}
+              style={[styles.micDock, busy && { opacity: 0.5 }]}
+              accessibilityRole="button"
+              accessibilityLabel="Start dictation"
+            >
+              <Ionicons name="mic" size={30} color={colors.primaryInk} />
+            </Pressable>
+            <View style={[styles.dockSide, { alignItems: 'flex-end' }]}>
+              <Pressable onPress={onBack} hitSlop={8} style={{ padding: 6 }} accessibilityRole="button" accessibilityLabel="Done">
+                <Text variant="button" color={colors.primary}>Done</Text>
+              </Pressable>
+            </View>
+          </>
+        )}
       </View>
     </View>
   );
@@ -332,13 +368,15 @@ const styles = StyleSheet.create({
   dock: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
+    justifyContent: 'center',
     paddingHorizontal: 4,
     paddingTop: 12,
   },
-  iconDock: {
-    width: 40, height: 40, borderRadius: 20,
+  dockSide: { flex: 1, justifyContent: 'center' },
+  sideBtn: {
+    width: 44, height: 44, borderRadius: 22,
     backgroundColor: colors.surface2,
+    borderWidth: 1, borderColor: colors.borderSubtle,
     alignItems: 'center', justifyContent: 'center',
   },
   micDock: {

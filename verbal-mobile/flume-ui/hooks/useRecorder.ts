@@ -14,6 +14,7 @@ import { transcribeAudio } from '../../lib/groq';
 import { getSnippets, applySnippets } from '../../lib/dictionary';
 import { getGroqKey } from '../../lib/storage';
 import * as recordings from '../../lib/recordings';
+import { playCue } from '../../lib/sounds';
 
 export type RecorderStatus = 'idle' | 'recording' | 'paused';
 
@@ -77,6 +78,7 @@ export function useRecorder() {
       await recorder.prepareToRecordAsync();
       recorder.record();
 
+      void playCue('start'); // fire-and-forget; never blocks recording
       await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
 
       accumulatedRef.current = 0;
@@ -110,6 +112,22 @@ export function useRecorder() {
     startTick();
   }, [recorder, startTick]);
 
+  // Discard the in-progress recording without transcribing or saving anything.
+  // Releases the mic and resets to idle. Never sets `lastRecording`.
+  const cancel = useCallback(async () => {
+    if (tickRef.current) clearInterval(tickRef.current);
+    try {
+      await recorder.stop();
+    } catch (err) {
+      console.warn('Failed to stop recorder on cancel:', err);
+    }
+    accumulatedRef.current = 0;
+    setDurationMs(0);
+    setStatus('idle');
+    setPartialText('');
+    try { await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); } catch { /* ignore */ }
+  }, [recorder]);
+
   const stop = useCallback(async (): Promise<StopResult | null> => {
     if (tickRef.current) clearInterval(tickRef.current);
     if (status === 'idle') return null;
@@ -120,6 +138,7 @@ export function useRecorder() {
         : Date.now() - startedAtRef.current + accumulatedRef.current;
 
       await recorder.stop();
+      void playCue('stop'); // fire-and-forget; user stopped recording
       const rawUri = recorder.uri;
       if (!rawUri) {
         throw new Error('No recording URI');
@@ -156,6 +175,9 @@ export function useRecorder() {
         }
       } catch { /* fail closed */ }
 
+      // Transcription finished — chime only on a successful transcript.
+      if (txStatus === 'ok' && text) void playCue('done');
+
       await Haptics.notificationAsync(
         txStatus === 'ok'
           ? Haptics.NotificationFeedbackType.Success
@@ -183,6 +205,7 @@ export function useRecorder() {
     start,
     pause,
     resume,
+    cancel,
     stop,
   };
 }

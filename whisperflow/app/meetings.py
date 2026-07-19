@@ -1,0 +1,1704 @@
+"""
+Meetings — capture state machine + chunked transcription pipeline
+(MEETINGS_DESIGN_HANDOFF.md; macOS only).
+
+A meeting records TWO sources in parallel:
+  - the microphone (you)      → its own sounddevice.InputStream — NEVER the
+                                shared dictation Recorder (Rule #1: hotkey
+                                dictation must keep working during a meeting)
+  - system audio (the call)   → system_audio.SystemAudioCapture (ScreenCaptureKit)
+
+Each source is chunked on silence boundaries (~8–22 s), transcribed through the
+existing transcriber pipeline (Groq→Gemini→local, dictionary bias, 850-char
+prompt cap), and appended to the transcript as an utterance:
+
+    {"speaker": "self"|"s<N>", "t0": secs, "t1": secs, "text": "..."}
+
+Speaker model (v1, approved): source-based. Mic = "self" ("You"); system audio
+starts at "s1" ("Speaker 1") and increments to a new id after a long silence
+gap (>90 s) — a weak "someone else is talking now" heuristic. Rename is
+retroactive per-id (rename_speaker), so mislabels are one double-click away.
+
+States: idle → preparing → recording ⇄ paused → stopping → processing → ready|failed
+
+HARD GUARANTEES (Rule #1): every public method is try/except'd and fails
+closed. A meeting failure never touches the dictation path.
+"""
+import json
+import logging
+import os
+import threading
+import time
+import uuid
+import wave
+
+import numpy as np
+
+from app.config import save_config, MEETINGS_CAP
+
+logger = logging.getLogger("verbal.meetings")
+
+SR = 16000                      # both sources normalized to 16 kHz mono float32
+CHUNK_MIN_S = 8.0               # earliest silence-aligned cut
+CHUNK_MAX_S = 22.0              # hard cut
+SILENCE_RMS = 0.008             # "quiet" threshold for a cut window
+SILENCE_WIN_S = 0.7             # trailing window that must be quiet to cut
+SPEAKER_GAP_S = 90.0            # system-audio silence gap → new speaker id
+MEETINGS_DIR = os.path.expanduser("~/.verbal/meetings")
+TRANSCRIPT_CHAR_BUDGET = 24000  # LLM input cap: head + tail kept, middle elided
+
+# Post-meeting summary — STRICT JSON contract consumed by the 31e renderer and
+# the hybrid-notes widget (#21). The model is a summarizer, never an assistant.
+_SUMMARY_SYSTEM = """You summarize meeting transcripts. Reply with ONE JSON object, no prose, no code fences:
+{"summary": "2-5 sentence plain-language summary of what the meeting covered and concluded",
+ "decisions": ["each explicit decision made, one string each; [] if none"],
+ "action_items": [{"owner": "<speaker id like self/s1, or null if unclear>", "task": "the commitment",
+                   "due": "<short due label like 'Thursday', 'Jul 24', 'EOW' ONLY if a deadline was said, else null>"}],
+ "hybrid_notes": [{"user_line": "<verbatim line from USER NOTES>", "ai_addition": "<ONE short sentence of context from the transcript, or empty string>"}]}
+Rules:
+- Use only information present in the transcript/notes. Never invent facts, names, dates or numbers.
+- decisions are things the participants AGREED or RESOLVED, not topics discussed.
+- action_items owner must be one of the speaker ids given, else null.
+- action_items due: only when the transcript states a deadline for THAT task; keep it under 12
+  characters (weekday, date or shorthand); null otherwise. Never guess a date.
+- hybrid_notes: one entry PER non-empty line of USER NOTES, in order, user_line copied verbatim;
+  ai_addition adds transcript context the note is missing (or "" when the note needs nothing).
+- Write EVERY output field (summary, decisions, tasks, ai_addition) in the OUTPUT
+  LANGUAGE stated in the user message — no other language, never translate.
+- Valid JSON only. No trailing commas."""
+
+# ISO code → name the summary LLM is told to write in. The model must NEVER
+# judge the language itself (it once produced a Russian summary for an English
+# meeting) — we detect/pin it and state it explicitly.
+_LANG_NAMES = {
+    "en": "English", "ur": "Urdu", "hi": "Hindi", "ar": "Arabic", "es": "Spanish",
+    "fr": "French", "de": "German", "pt": "Portuguese", "tr": "Turkish",
+    "id": "Indonesian", "ru": "Russian", "zh": "Chinese", "ja": "Japanese",
+}
+
+# Whisper silence hallucinations — a meeting utterance that is EXACTLY one of
+# these is noise, never content (dictation is untouched: someone may really
+# dictate "Thank you." — but a bare one inside a meeting chunk is hallucination).
+_MEETING_HALLUCINATIONS = {
+    "thank you.", "thank you", "thanks.", "thanks", "you", "you.", "bye.", "bye",
+    "thanks for watching.", "thank you for watching.", ".", "...",
+}
+
+
+def _summary_output_language(config, transcript, session_language=""):
+    """Deterministic output language: per-meeting pin > global pin > script
+    detection over the transcript text > English."""
+    lang = (session_language or config.get("spoken_language") or "en").strip().lower()
+    if lang and lang != "auto":
+        return _LANG_NAMES.get(lang, "English")
+    text = " ".join((u.get("text") or "") for u in (transcript or []))[:4000]
+    counts = {"ar": 0, "hi": 0, "ru": 0, "zh": 0, "ja": 0, "latin": 0}
+    for ch in text:
+        o = ord(ch)
+        if 0x0600 <= o <= 0x06FF:
+            counts["ar"] += 1        # Arabic script (Arabic/Urdu)
+        elif 0x0900 <= o <= 0x097F:
+            counts["hi"] += 1
+        elif 0x0400 <= o <= 0x04FF:
+            counts["ru"] += 1
+        elif 0x4E00 <= o <= 0x9FFF:
+            counts["zh"] += 1
+        elif 0x3040 <= o <= 0x30FF:
+            counts["ja"] += 1
+        elif ch.isalpha():
+            counts["latin"] += 1
+    best = max(counts, key=counts.get)
+    if best == "latin" or counts[best] == 0:
+        return "English"             # Latin-script detail beyond scope of v1
+    return _LANG_NAMES.get("ur" if best == "ar" else best, "English")
+
+
+def _now_iso():
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _transcript_text(transcript, speakers, budget=TRANSCRIPT_CHAR_BUDGET):
+    """Render utterances as '[m:ss] Name: text' lines, eliding the middle when
+    over budget (head + tail preserved — meetings resolve at the ends)."""
+    lines = []
+    for u in transcript:
+        name = speakers.get(u.get("speaker"), u.get("speaker", "?"))
+        t = int(u.get("t0", 0))
+        lines.append(f"[{t//60}:{t%60:02d}] {name}: {u.get('text','')}")
+    text = "\n".join(lines)
+    if len(text) <= budget:
+        return text
+    head = text[: budget // 2]
+    tail = text[-(budget // 2):]
+    return head + "\n[… middle of meeting elided …]\n" + tail
+
+
+def _parse_summary_json(raw):
+    """Parse the model's JSON (tolerating code fences / stray prose). Returns a
+    dict with the four keys or None."""
+    if not raw:
+        return None
+    s = raw.strip()
+    if s.startswith("```"):
+        s = s.strip("`")
+        if s.lower().startswith("json"):
+            s = s[4:]
+    i, j = s.find("{"), s.rfind("}")
+    if i < 0 or j <= i:
+        return None
+    try:
+        data = json.loads(s[i:j + 1])
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    out = {
+        "summary": str(data.get("summary", "") or ""),
+        "decisions": [str(d) for d in data.get("decisions", []) if str(d).strip()],
+        "action_items": [],
+        "hybrid_notes": [],
+    }
+    for it in data.get("action_items", []) or []:
+        if isinstance(it, dict) and str(it.get("task", "")).strip():
+            owner = it.get("owner")
+            due = it.get("due")
+            due = str(due).strip()[:14] if due and str(due).strip().lower() not in ("null", "none") else None
+            out["action_items"].append(
+                {"owner": str(owner) if owner else None,
+                 "task": str(it["task"]).strip(), "done": False, "due": due})
+    for hn in data.get("hybrid_notes", []) or []:
+        if isinstance(hn, dict) and str(hn.get("user_line", "")).strip():
+            out["hybrid_notes"].append(
+                {"user_line": str(hn["user_line"]),
+                 "ai_addition": str(hn.get("ai_addition", "") or "")})
+    return out if out["summary"] else None
+
+
+def _fmt_ts(secs):
+    secs = int(secs or 0)
+    h, m, s = secs // 3600, (secs % 3600) // 60, secs % 60
+    return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+
+
+def export_transcript_txt(row):
+    """Plain-text export of a meeting row: header + [m:ss] Name: text lines."""
+    speakers = row.get("speakers") or {}
+    lines = [
+        row.get("title") or "Meeting",
+        f"{(row.get('started_at') or '')[:16].replace('T', ' ')} · "
+        f"{_fmt_ts(row.get('duration_seconds'))} · "
+        f"{', '.join(speakers.values()) if speakers else 'unknown speakers'}",
+        "",
+    ]
+    if (row.get("summary") or "").strip():
+        lines += ["SUMMARY", row["summary"].strip(), ""]
+    lines.append("TRANSCRIPT")
+    for u in row.get("transcript") or []:
+        name = speakers.get(u.get("speaker"), u.get("speaker", "?"))
+        lines.append(f"[{_fmt_ts(u.get('t0'))}] {name}: {u.get('text', '')}")
+    if not (row.get("transcript") or []):
+        lines.append("(empty)")
+    return "\n".join(lines) + "\n"
+
+
+def export_transcript_md(row):
+    """Markdown export: summary, decisions, action items, marks, transcript."""
+    speakers = row.get("speakers") or {}
+    out = [f"# {row.get('title') or 'Meeting'}", ""]
+    out.append(f"**{(row.get('started_at') or '')[:16].replace('T', ' ')}** · "
+               f"{_fmt_ts(row.get('duration_seconds'))}"
+               + (f" · {', '.join(speakers.values())}" if speakers else ""))
+    out.append("")
+    if (row.get("summary") or "").strip():
+        out += ["## Summary", "", row["summary"].strip(), ""]
+    if row.get("decisions"):
+        out += ["## Decisions", ""] + [f"- {d}" for d in row["decisions"]] + [""]
+    if row.get("action_items"):
+        out += ["## Action items", ""]
+        for it in row["action_items"]:
+            owner = speakers.get(it.get("owner"), "") if it.get("owner") else ""
+            box = "x" if it.get("done") else " "
+            out.append(f"- [{box}] {(owner + ': ') if owner else ''}{it.get('task', '')}")
+        out.append("")
+    if row.get("marked_moments"):
+        out += ["## Marked moments", ""]
+        for m in row["marked_moments"]:
+            out.append(f"- **{_fmt_ts(m.get('t'))}** {m.get('label') or 'Marked moment'}")
+        out.append("")
+    if (row.get("scratchpad") or "").strip():
+        out += ["## Your notes", "", row["scratchpad"].strip(), ""]
+    out += ["## Transcript", ""]
+    for u in row.get("transcript") or []:
+        name = speakers.get(u.get("speaker"), u.get("speaker", "?"))
+        out.append(f"**{name}** `[{_fmt_ts(u.get('t0'))}]` — {u.get('text', '')}")
+        out.append("")
+    if not (row.get("transcript") or []):
+        out.append("_(empty)_")
+    return "\n".join(out).rstrip() + "\n"
+
+
+# ── Ask-your-meetings (chat Q&A with keyword retrieval) ─────────────────────────
+_ASK_SYSTEM = """You answer questions about the user's recorded meetings using ONLY the meeting
+context provided. Rules:
+- Ground every claim in the context; never invent facts, dates, names or numbers.
+- When citing, name the meeting (its title) the information came from.
+- If the context doesn't contain the answer, say so plainly and suggest which
+  meeting to check.
+- Be concise: a few sentences, or a short list when the question asks for items."""
+
+
+def _fetch_meeting_rows(config, limit=25):
+    """Recent meetings WITH transcripts from the cloud (local meta has none)."""
+    try:
+        user_id = config.get("sync_user_id", "")
+        if not user_id:
+            return []
+        import httpx
+        from app.sync import SUPABASE_URL, SUPABASE_KEY
+        r = httpx.get(
+            f"{SUPABASE_URL}/rest/v1/meetings?user_id=eq.{user_id}"
+            f"&order=started_at.desc&limit={limit}",
+            headers={"apikey": SUPABASE_KEY,
+                     "Authorization": f"Bearer {SUPABASE_KEY}"}, timeout=15)
+        return r.json() if r.status_code == 200 else []
+    except Exception as e:
+        logger.debug("ask: fetch rows failed: %s", e)
+        return []
+
+
+def _tokens(text):
+    import re as _re
+    stop = {"the", "a", "an", "and", "or", "of", "in", "on", "at", "to", "is",
+            "was", "we", "i", "it", "what", "who", "when", "did", "do", "does",
+            "about", "for", "with", "my", "our", "me", "that", "this"}
+    return [w for w in _re.findall(r"[a-z0-9']+", (text or "").lower())
+            if len(w) > 1 and w not in stop]
+
+
+def _score_meeting(row, q_tokens):
+    hay_title = " ".join(_tokens(row.get("title", ""))) + " "
+    hay_sum = " ".join(_tokens(row.get("summary", ""))) + " "
+    hay_tx = " ".join(_tokens(" ".join(u.get("text", "")
+                                       for u in (row.get("transcript") or []))))
+    score = 0.0
+    for t in q_tokens:
+        if t in hay_title:
+            score += 4
+        if t in hay_sum:
+            score += 2
+        score += hay_tx.count(t) * 0.5
+    return score
+
+
+def _context_block(row, q_tokens, budget=3200):
+    """One meeting as LLM context: header + summary/decisions/actions + the
+    most question-relevant transcript lines (with neighbors)."""
+    speakers = row.get("speakers") or {}
+    head = [f"MEETING: {row.get('title') or 'Meeting'} "
+            f"({(row.get('started_at') or '')[:10]}, {_fmt_ts(row.get('duration_seconds'))})"]
+    if (row.get("summary") or "").strip():
+        head.append(f"Summary: {row['summary'].strip()}")
+    if row.get("decisions"):
+        head.append("Decisions: " + "; ".join(row["decisions"]))
+    if row.get("action_items"):
+        head.append("Action items: " + "; ".join(
+            f"{speakers.get(it.get('owner'), 'unassigned')}: {it.get('task', '')}"
+            for it in row["action_items"]))
+    tx = row.get("transcript") or []
+    lines = [f"[{_fmt_ts(u.get('t0'))}] {speakers.get(u.get('speaker'), u.get('speaker', '?'))}: "
+             f"{u.get('text', '')}" for u in tx]
+    # pick lines containing question tokens (plus a neighbor each side)
+    keep = set()
+    for i, u in enumerate(tx):
+        low = (u.get("text") or "").lower()
+        if any(t in low for t in q_tokens):
+            keep.update({i - 1, i, i + 1})
+    picked = [lines[i] for i in sorted(k for k in keep if 0 <= k < len(lines))]
+    if not picked:
+        picked = lines[:12]                     # no keyword hits → head of meeting
+    body, used = [], 0
+    for ln in picked:
+        if used + len(ln) > budget:
+            body.append("[…]")
+            break
+        body.append(ln)
+        used += len(ln)
+    return "\n".join(head) + ("\nTranscript excerpts:\n" + "\n".join(body) if body else "")
+
+
+def ask_meetings(config, question, rows=None):
+    """Answer a question over the user's meetings. Returns
+    {'ok', 'answer', 'sources': [titles]} — fails closed with an error dict."""
+    try:
+        q = (question or "").strip()
+        if not q:
+            return {"ok": False, "error": "Empty question."}
+        rows = rows if rows is not None else _fetch_meeting_rows(config)
+        rows = [r for r in rows if (r.get("transcript") or r.get("summary"))]
+        if not rows:
+            return {"ok": False,
+                    "error": "No meetings with content yet — record one first."}
+        q_tokens = _tokens(q)
+        ranked = sorted(rows, key=lambda r: _score_meeting(r, q_tokens), reverse=True)
+        top = ranked[:3]
+        context = "\n\n---\n\n".join(_context_block(r, q_tokens) for r in top)
+        from app.groq_proxy import chat_via_proxy
+        messages = [{"role": "system", "content": _ASK_SYSTEM},
+                    {"role": "user",
+                     "content": f"MEETINGS CONTEXT:\n\n{context}\n\nQUESTION: {q}"}]
+        answer = chat_via_proxy(messages, config, max_tokens=1024, timeout=30.0)
+        if not answer:
+            return {"ok": False, "error": "The model didn't answer — try again."}
+        return {"ok": True, "answer": answer,
+                "sources": [r.get("title") or "Meeting" for r in top]}
+    except Exception as e:
+        logger.error("ask_meetings failed: %s", e)
+        return {"ok": False, "error": str(e)}
+
+
+def generate_meeting_summary(config, transcript, speakers, scratchpad, marked_moments,
+                             session_language=""):
+    """Run the structured summary LLM call (proxy → one retry). Returns the
+    parsed dict or None. Pure function so retry-after-restart can reuse it."""
+    try:
+        from app.groq_proxy import chat_via_proxy
+        notes = "\n".join(l for l in (scratchpad or "").splitlines() if l.strip()) or "(none)"
+        marks = "\n".join(f"- at {int(m.get('t',0))//60}:{int(m.get('t',0))%60:02d} "
+                          f"{m.get('label','') or '(unlabeled)'}"
+                          for m in (marked_moments or [])) or "(none)"
+        spk = ", ".join(f"{sid} = {name}" for sid, name in (speakers or {}).items()) or "(unknown)"
+        out_lang = _summary_output_language(config, transcript, session_language)
+        user = (f"OUTPUT LANGUAGE: {out_lang}. Every field must be written in {out_lang}.\n\n"
+                f"SPEAKERS: {spk}\n\nUSER NOTES:\n{notes}\n\nMARKED MOMENTS:\n{marks}\n\n"
+                f"TRANSCRIPT:\n{_transcript_text(transcript or [], speakers or {})}")
+        messages = [{"role": "system", "content": _SUMMARY_SYSTEM},
+                    {"role": "user", "content": user}]
+        for attempt in (1, 2):
+            # Groq strict JSON mode keeps llama on-contract; attempt 2 drops it
+            # in case the model/proxy ever rejects response_format.
+            raw = chat_via_proxy(
+                messages, config, max_tokens=2048, timeout=45.0,
+                response_format={"type": "json_object"} if attempt == 1 else None)
+            parsed = _parse_summary_json(raw)
+            if parsed:
+                return parsed
+            logger.warning("summary attempt %d unparseable: %r", attempt,
+                           (raw or "")[:180])
+        return None
+    except Exception as e:
+        logger.error("summary generation failed: %s", e)
+        return None
+
+
+def merge_action_done(old_items, new_items):
+    """Regenerating a summary must not wipe the user's checkboxes: carry the
+    done flag over to regenerated items with the same task text."""
+    try:
+        done = {(it.get("task") or "").strip().lower()
+                for it in (old_items or []) if it.get("done")}
+        for it in new_items or []:
+            if (it.get("task") or "").strip().lower() in done:
+                it["done"] = True
+    except Exception:
+        pass
+    return new_items
+
+
+MEETING_NOTES_SYSTEM = """You are a world-class MEETING NOTE-TAKER. From a raw meeting
+transcript (plus the user's own quick notes and marked moments) you write the
+DEFINITIVE notes for the meeting — the document a diligent chief of staff would
+produce: complete, organized, effortless to scan.
+
+THE CONTRACT:
+- A reader who MISSED the meeting must lose nothing that matters: every decision,
+  commitment, number, date, amount, name, reason and open question appears.
+- Organize by TOPIC in the order that makes sense — not strictly the order spoken.
+- Reasons stay attached to their point ("decided X because Y") on the same bullet.
+- Resolve self-corrections to the final version; keep stated uncertainty uncertain.
+- The user's own notes mark what mattered to THEM — weave each one in where it
+  belongs. Marked moments deserve their point in the notes.
+- Write EVERYTHING in the OUTPUT LANGUAGE stated in the user message.
+
+SHAPE (GitHub markdown; include only sections with real content):
+- Start with a 1–2 sentence context line (what this meeting was, who, purpose) —
+  plain text, no heading.
+- ## <Topic> — one short section per discussion topic; one point per bullet;
+  **bold** the key facts (dates, amounts, names, the operative word of a decision).
+- ## Decisions — every agreement, each with its why.
+- ## Action items — "- [ ] task — **owner**, due **date**" (only real commitments;
+  use the speaker NAMES given, never ids; omit owner/due when not said).
+- ## Open questions — unresolved items, disagreements left standing.
+
+NEVER invent content. No meta commentary, no "Here are the notes". Notes only."""
+
+
+def generate_meeting_notes(config, row, session_language=""):
+    """ONE LLM call → full meeting notes (markdown) or None. Cached by the
+    caller in the row's notes_md — generated lazily on first open."""
+    try:
+        from app.groq_proxy import chat_via_proxy
+        transcript = row.get("transcript") or []
+        if not transcript:
+            return None
+        speakers = row.get("speakers") or {}
+        out_lang = _summary_output_language(config, transcript, session_language)
+        notes = "\n".join(l for l in (row.get("scratchpad") or "").splitlines()
+                          if l.strip()) or "(none)"
+        marks = "\n".join(
+            f"- at {int(m.get('t', 0)) // 60}:{int(m.get('t', 0)) % 60:02d} "
+            f"{m.get('label', '') or '(unlabeled)'}"
+            + (f" — user note: {m['note']}" if m.get("note") else "")
+            for m in (row.get("marked_moments") or [])) or "(none)"
+        spk = ", ".join(f"{sid} = {name}" for sid, name in speakers.items()) or "(unknown)"
+        user = (f"OUTPUT LANGUAGE: {out_lang}. Everything must be written in {out_lang}.\n\n"
+                f"SPEAKERS: {spk}\n\nUSER'S OWN NOTES:\n{notes}\n\n"
+                f"MARKED MOMENTS:\n{marks}\n\n"
+                f"TRANSCRIPT:\n{_transcript_text(transcript, speakers)}")
+        raw = chat_via_proxy(
+            [{"role": "system", "content": MEETING_NOTES_SYSTEM},
+             {"role": "user", "content": user}],
+            config, max_tokens=2500, timeout=45.0)
+        text = (raw or "").strip()
+        if text.startswith("```"):
+            text = text.strip("`").strip()
+            if text.lower().startswith("markdown"):
+                text = text[8:].lstrip()
+        logger.info("meeting notes generated: %d chars (%s)", len(text), out_lang)
+        return text or None
+    except Exception as e:
+        logger.warning("meeting notes generation failed: %s", e)
+        return None
+
+
+def regenerate_hybrid_addition(config, transcript, speakers, user_line):
+    """One focused LLM call: regenerate the AI addition for a single hybrid-note
+    line (widget 33i). Returns the new addition string or None."""
+    try:
+        from app.groq_proxy import chat_via_proxy
+        system = ('Given a meeting transcript and ONE line of user notes, reply with ONE JSON '
+                  'object: {"ai_addition": "<ONE short factual sentence of transcript context '
+                  'for that note, or empty string>"} — use only facts from the transcript, '
+                  'never invent. Valid JSON only.')
+        user = (f"USER NOTE LINE: {user_line}\n\n"
+                f"TRANSCRIPT:\n{_transcript_text(transcript or [], speakers or {}, budget=8000)}")
+        raw = chat_via_proxy(
+            [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            config, max_tokens=256, timeout=25.0,
+            response_format={"type": "json_object"})
+        s = (raw or "").strip()
+        i, j = s.find("{"), s.rfind("}")
+        if i < 0 or j <= i:
+            return None
+        data = json.loads(s[i:j + 1])
+        return str(data.get("ai_addition", "") or "")
+    except Exception as e:
+        logger.warning("hybrid regenerate failed: %s", e)
+        return None
+
+
+class _SourceChunker:
+    """Accumulates float32@16k for one source and yields silence-aligned chunks.
+
+    feed() runs inside the AUDIO CALLBACK, so it must be O(block): the silence
+    check uses a small rolling tail buffer — never a concat of the whole
+    accumulation (a full concat per callback starved PortAudio's realtime
+    thread and stalled the mic stream after ~a minute). The one big
+    concatenation happens in the transcription WORKER, not here.
+    """
+
+    def __init__(self, name, on_chunk):
+        self.name = name
+        self._on_chunk = on_chunk        # fn(source, t0_samples, [blocks])
+        self._buf = []
+        self._buf_len = 0
+        self._t0 = 0                     # source-time sample offset of buffer start
+        self._tail = np.zeros(int(SILENCE_WIN_S * SR), dtype=np.float32)
+        self._tail_fill = 0              # how much of _tail is real data
+        self._lock = threading.Lock()
+
+    def feed(self, audio, source_samples):
+        """`source_samples` = this source's total samples at the END of the block."""
+        with self._lock:
+            if self._buf_len == 0:
+                self._t0 = max(0, source_samples - len(audio))
+                self._tail_fill = 0
+            self._buf.append(audio)
+            self._buf_len += len(audio)
+            # rolling tail window (O(block), no big copies)
+            n = len(audio)
+            t = self._tail
+            if n >= len(t):
+                t[:] = audio[-len(t):]
+                self._tail_fill = len(t)
+            else:
+                t[:-n] = t[n:]
+                t[-n:] = audio
+                self._tail_fill = min(len(t), self._tail_fill + n)
+            if self._buf_len / SR < CHUNK_MIN_S:
+                return
+            cut = self._buf_len / SR >= CHUNK_MAX_S
+            if not cut and self._tail_fill >= len(t):
+                cut = float(np.sqrt(np.mean(t * t))) < SILENCE_RMS
+            if cut:
+                self._flush_locked()
+
+    def flush(self):
+        with self._lock:
+            self._flush_locked()
+
+    def _flush_locked(self):
+        if self._buf_len == 0:
+            return
+        blocks = self._buf
+        t0 = self._t0
+        self._buf, self._buf_len, self._tail_fill = [], 0, 0
+        try:
+            self._on_chunk(self.name, t0, blocks)   # worker concatenates
+        except Exception as e:
+            logger.debug("chunk handoff failed: %s", e)
+
+
+class MeetingSession:
+    """One live meeting. Create per meeting via MeetingManager."""
+
+    def __init__(self, app, title="", use_mic=True, use_system=True, language=""):
+        self.app = app
+        self.id = str(uuid.uuid4())
+        self.title = title or f"Meeting — {time.strftime('%b %-d, %H:%M')}"
+        self.use_mic = bool(use_mic)
+        self.use_system = bool(use_system)
+        # spoken language for THIS meeting ('' → global setting; 'auto' → detect)
+        self.language = (language or "").strip().lower()
+        self.state = "idle"
+        self.started_at = None
+        self.transcript = []             # utterances, ordered by t0
+        self.speakers = {"self": "You"}
+        self.marked_moments = []
+        self.scratchpad = ""
+        self.summary = ""
+        self.decisions = []
+        self.action_items = []
+        self.hybrid_notes = []
+        self.recognized = {}          # {sid: {name, meetings}} — voiceprint hits
+        self.audio_url = None
+        self.error = None
+
+        self._mic_stream = None
+        self._sys_cap = None
+        self._mic_chunker = _SourceChunker("self", self._enqueue_chunk)
+        self._sys_chunker = _SourceChunker("sys", self._enqueue_chunk)
+        self._queue = []                 # pending (source, t0_samples, audio)
+        self._queue_lock = threading.Lock()
+        self._queue_evt = threading.Event()
+        self._worker = None
+        self._ticker = None
+        self._stop_evt = threading.Event()
+
+        self._paused = False
+        self._elapsed_samples = 0        # mic-source sample counter (chunk timeline)
+        self._sys_elapsed_samples = 0
+        self._mic_level = 0.0
+        # Wall-clock elapsed (excluding pauses) — independent of the mic stream,
+        # so the timer never freezes if a source drops.
+        self._wall_start = None
+        self._paused_total = 0.0
+        self._pause_started = None
+        # Mic watchdog state
+        self._last_mic_ts = 0.0
+        self._mic_reopen_ts = 0.0
+        self._mic_cb = None
+        # Mic taps: dictation-during-a-meeting SHARES this mic feed instead of
+        # opening a second InputStream on the same device (two owners of one
+        # mic is what made "my voice gets ignored" happen — and a failed second
+        # open's PortAudio reinit killed the meeting's stream process-wide).
+        self._mic_taps = []
+        self._sys_speaker_n = 0          # 0 = none yet
+        self._sys_last_end = None        # last system utterance end (secs)
+        self._audio_parts = []           # (t0_samples, source, audio) for final WAV
+        self._audio_lock = threading.Lock()
+        self._cloud_ok = False
+
+    # ── lifecycle ─────────────────────────────────────────────────────────────
+    def start(self):
+        try:
+            return self._start()
+        except Exception as e:
+            logger.error("meeting start failed: %s", e)
+            self.state = "failed"
+            self.error = str(e)
+            return False
+
+    def _start(self):
+        import sounddevice as sd
+        self.state = "preparing"
+        self.started_at = _now_iso()
+        self._emit_state()
+
+        # mic — own stream, normalized to 16 kHz mono inside the callback
+        def mic_cb(indata, frames, t, status):
+            try:
+                mono = indata[:, 0].astype(np.float32, copy=True)
+                rate = getattr(self, "_mic_rate", SR)
+                if rate != SR and len(mono):   # device-native fallback → resample
+                    n_out = max(1, int(len(mono) * SR / rate))
+                    mono = np.interp(
+                        np.linspace(0.0, len(mono) - 1.0, n_out),
+                        np.arange(len(mono), dtype=np.float64), mono,
+                    ).astype(np.float32)
+                # taps (dictation) get the feed even while the MEETING is paused —
+                # dictation must keep working regardless of meeting state
+                for tap in list(self._mic_taps):
+                    try:
+                        tap(mono)
+                    except Exception:
+                        pass
+                if self._paused or self.state not in ("recording", "preparing"):
+                    return
+                self._elapsed_samples += len(mono)
+                self._last_mic_ts = time.time()
+                try:
+                    self._mic_level = float(min(1.0, float(np.abs(mono).max())))
+                except Exception:
+                    pass
+                with self._audio_lock:
+                    self._audio_parts.append((self._elapsed_samples - len(mono), "self", mono))
+                self._mic_chunker.feed(mono, self._elapsed_samples)
+            except Exception:
+                pass  # never throw into the audio callback
+
+        if self.use_mic:
+            # A macOS audio-device change (AirPods connect/disconnect) leaves
+            # PortAudio's cached device list stale → every open fails with
+            # AUHAL '!obj' / paInternalError -9986 until PortAudio is
+            # re-initialized. Try 16 kHz; on failure re-init PA and retry at the
+            # device's CURRENT native rate, resampling to 16 kHz in the callback.
+            self._mic_rate = SR
+
+            def open_mic(rate):
+                s = sd.InputStream(samplerate=rate, channels=1, dtype="float32",
+                                   callback=mic_cb)
+                s.start()
+                return s
+
+            self._mic_cb = mic_cb  # kept for the watchdog reopen
+            try:
+                self._mic_stream = open_mic(SR)
+            except Exception as e1:
+                logger.warning("meeting mic open failed (%s) — reinit PortAudio + native rate", e1)
+                try:
+                    rec = getattr(self.app, "recorder", None)
+                    if not (rec is not None and getattr(rec, "_stream", None) is not None):
+                        sd._terminate()   # never while dictation holds a stream
+                        sd._initialize()
+                    info = sd.query_devices(kind="input")
+                    native = int(info.get("default_samplerate") or 48000)
+                    self._mic_rate = native
+                    self._mic_stream = open_mic(native)
+                    logger.info("meeting mic opened at native %dHz (resampling to %d)", native, SR)
+                except Exception as e2:
+                    logger.warning("meeting mic retry failed (%s)", e2)
+                    self._mic_stream = None  # meeting can still run system-audio-only
+            self._last_mic_ts = time.time()
+
+        # system audio — fail closed to mic-only
+        def sys_cb(audio):
+            try:
+                if self._paused or self.state not in ("recording", "preparing"):
+                    return
+                self._sys_elapsed_samples += len(audio)
+                with self._audio_lock:
+                    self._audio_parts.append((self._sys_elapsed_samples - len(audio), "sys", audio))
+                self._sys_chunker.feed(audio, self._sys_elapsed_samples)
+            except Exception:
+                pass
+
+        if self.use_system:
+            try:
+                from app.system_audio import SystemAudioCapture, is_supported
+                if is_supported():
+                    self._sys_cap = SystemAudioCapture(sys_cb)
+                    if not self._sys_cap.start():
+                        logger.warning("system audio unavailable: %s", self._sys_cap.error)
+                        self._sys_cap = None
+            except Exception as e:
+                logger.warning("system audio skipped: %s", e)
+                self._sys_cap = None
+
+        if self._mic_stream is None and self._sys_cap is None:
+            self.state = "failed"
+            self.error = "No audio source available."
+            self._emit_state()
+            return False
+
+        # workers
+        self._stop_evt.clear()
+        self._worker = threading.Thread(target=self._transcribe_loop, daemon=True)
+        self._worker.start()
+        self._ticker = threading.Thread(target=self._tick_loop, daemon=True)
+        self._ticker.start()
+
+        self.state = "recording"
+        self._wall_start = time.time()
+        self._emit_state()
+        self._persist_local()
+        threading.Thread(target=self._cloud_insert, daemon=True).start()
+        return True
+
+    def toggle_pause(self):
+        try:
+            now = time.time()
+            if self.state == "recording":
+                self._paused = True
+                self._pause_started = now
+                self.state = "paused"
+            elif self.state == "paused":
+                self._paused = False
+                if self._pause_started:
+                    self._paused_total += now - self._pause_started
+                self._pause_started = None
+                self.state = "recording"
+            self._emit_state()
+        except Exception as e:
+            logger.debug("pause toggle failed: %s", e)
+
+    def stop(self):
+        """Stop capture, drain transcription, assemble + upload audio, push row.
+        Runs synchronously on a daemon thread (MeetingManager.stop_async)."""
+        try:
+            self._stop_impl()
+        except Exception as e:
+            logger.error("meeting stop failed: %s", e)
+            self.state = "failed"
+            self.error = str(e)
+            self._emit_state()
+            self._persist_local()
+
+    def _stop_impl(self):
+        if self.state not in ("recording", "paused", "preparing"):
+            return
+        self.state = "stopping"
+        self._emit_state()
+        # INSTANT feedback: flip the surface to the summary screen right away —
+        # row() maps 'stopping' to status 'processing', so the summary renders
+        # skeletons while transcription drain / upload / LLM finish behind it.
+        try:
+            self._emit("meeting", self.row())
+            win = getattr(self.app, "meeting_window", None)
+            if win and win.visible:
+                win.set_mode("summary")
+        except Exception:
+            pass
+
+        try:
+            if self._mic_stream:
+                self._mic_stream.stop()
+                self._mic_stream.close()
+        except Exception:
+            pass
+        self._mic_stream = None
+        try:
+            if self._sys_cap:
+                self._sys_cap.stop()
+        except Exception:
+            pass
+        self._sys_cap = None
+
+        # flush partial chunks, then drain the queue (bounded wait)
+        self._mic_chunker.flush()
+        self._sys_chunker.flush()
+        deadline = time.time() + 120
+        while time.time() < deadline:
+            with self._queue_lock:
+                empty = not self._queue
+            if empty and not self._busy:
+                break
+            time.sleep(0.25)
+        self._stop_evt.set()
+        self._queue_evt.set()
+
+        self.state = "processing"
+        self._emit_state()
+
+        # audio file → upload (best-effort)
+        try:
+            if self.app.config.get("meetings_keep_audio", True):
+                path = self._write_wav()
+                if path:
+                    self._upload_audio(path)
+        except Exception as e:
+            logger.warning("meeting audio save/upload failed: %s", e)
+
+        # voice fingerprinting (33d) — auto-name unnamed speakers from local
+        # prints BEFORE the summary runs so it uses real names. Local-only,
+        # fails closed; requires the WAV (skipped when keep-audio is off).
+        try:
+            from app import voiceprint
+            rec = voiceprint.process_meeting(self.app.config, self)
+            if rec:
+                self.recognized = rec
+        except Exception as e:
+            logger.debug("voiceprint step skipped: %s", e)
+
+        # post-meeting summary (31e). Silent meeting → ready with empty summary;
+        # LLM failure → 'failed' (Summary card shows Retry; transcript is intact).
+        if not self.transcript:
+            self.summary = ""
+            self.state = "ready"
+        else:
+            parsed = self.run_summary()
+            self.state = "ready" if parsed else "failed"
+            if not parsed:
+                self.error = "Summary generation failed — transcript saved. Retry from the summary view."
+        self._emit_state()
+        self._persist_local()
+        self._cloud_update(final=True)
+        # hand the window the finished meeting + flip it to the summary screen
+        self._emit("meeting", self.row())
+        try:
+            win = getattr(self.app, "meeting_window", None)
+            if win and win.visible:
+                win.set_mode("summary")
+        except Exception:
+            pass
+
+    def run_summary(self):
+        """Generate (or regenerate) the structured summary. True on success."""
+        try:
+            parsed = generate_meeting_summary(
+                self.app.config, self.transcript, self.speakers,
+                self.scratchpad, self.marked_moments,
+                session_language=getattr(self, "language", ""))
+            if not parsed:
+                return False
+            self.summary = parsed["summary"]
+            self.decisions = parsed["decisions"]
+            self.action_items = merge_action_done(self.action_items, parsed["action_items"])
+            self.hybrid_notes = parsed["hybrid_notes"]
+            return True
+        except Exception as e:
+            logger.error("run_summary failed: %s", e)
+            return False
+
+    # ── transcription pipeline ────────────────────────────────────────────────
+    _busy = False
+
+    def _enqueue_chunk(self, source, t0_samples, blocks):
+        with self._queue_lock:
+            self._queue.append((source, t0_samples, blocks))
+        self._queue_evt.set()
+
+    def _transcribe_loop(self):
+        from app.transcriber import transcribe_with_status
+        while not self._stop_evt.is_set() or self._pending():
+            self._queue_evt.wait(0.5)
+            item = None
+            with self._queue_lock:
+                if self._queue:
+                    item = self._queue.pop(0)
+                else:
+                    self._queue_evt.clear()
+            if item is None:
+                continue
+            source, t0_samples, blocks = item
+            self._busy = True
+            try:
+                # heavy concat happens HERE, on the worker — never in the audio callback
+                audio = np.concatenate(blocks) if isinstance(blocks, list) else blocks
+                peak = float(np.abs(audio).max()) if audio.size else 0.0
+                if peak < 0.01:
+                    continue  # silence gate — matches the dictation pipeline
+                text, status = transcribe_with_status(
+                    audio, self.app.config, sample_rate=SR,
+                    language=self.language or None)
+                if text and text.strip().lower() in _MEETING_HALLUCINATIONS:
+                    logger.debug("meeting: dropped hallucination chunk %r", text)
+                    text, status = "", "silent"
+                if status != "ok" or not (text or "").strip():
+                    continue
+                t0 = t0_samples / SR
+                t1 = t0 + len(audio) / SR
+                speaker = self._speaker_for(source, t0, t1)
+                utt = {"speaker": speaker, "t0": round(t0, 2), "t1": round(t1, 2),
+                       "text": text.strip()}
+                self.transcript.append(utt)
+                self.transcript.sort(key=lambda u: u["t0"])
+                self._emit("utterance", dict(utt, speakers=self.speakers, mid=self.id))
+            except Exception as e:
+                logger.debug("chunk transcribe failed: %s", e)
+            finally:
+                self._busy = False
+
+    def _pending(self):
+        with self._queue_lock:
+            return bool(self._queue) or self._busy
+
+    def _speaker_for(self, source, t0, t1):
+        if source == "self":
+            return "self"
+        # system audio: new speaker id after a long silence gap (weak heuristic;
+        # rename is retroactive so a wrong guess costs one double-click)
+        if self._sys_speaker_n == 0 or (
+                self._sys_last_end is not None and t0 - self._sys_last_end > SPEAKER_GAP_S):
+            self._sys_speaker_n += 1
+            sid = f"s{self._sys_speaker_n}"
+            self.speakers.setdefault(sid, f"Speaker {self._sys_speaker_n}")
+        self._sys_last_end = t1
+        return f"s{self._sys_speaker_n}"
+
+    # ── moments / scratchpad / title (bridge surface) ─────────────────────────
+    @property
+    def elapsed(self):
+        """Wall-clock seconds excluding pauses — never freezes if a source drops."""
+        if self._wall_start is None:
+            return 0
+        ref = self._pause_started if (self._paused and self._pause_started) else time.time()
+        return max(0, int(ref - self._wall_start - self._paused_total))
+
+    def mark_moment(self, label=""):
+        m = {"t": self.elapsed, "label": (label or "").strip()[:80]}
+        self.marked_moments.append(m)
+        self._emit("moment", dict(m, mid=self.id))
+        return m
+
+    def set_scratchpad(self, text):
+        self.scratchpad = str(text or "")
+
+    def set_title(self, title):
+        t = (title or "").strip()
+        if t:
+            self.title = t[:120]
+            self._emit_state()
+
+    @property
+    def mic_running(self):
+        try:
+            return self._mic_stream is not None and self._mic_stream.active
+        except Exception:
+            return False
+
+    def add_mic_tap(self, fn):
+        """Register a 16 kHz-mono block consumer (dictation shares the mic)."""
+        try:
+            if fn not in self._mic_taps:
+                self._mic_taps.append(fn)
+        except Exception:
+            pass
+
+    def remove_mic_tap(self, fn):
+        try:
+            self._mic_taps.remove(fn)
+        except Exception:
+            pass
+
+    def rename_speaker(self, speaker_id, name):
+        name = (name or "").strip()[:60]
+        if speaker_id in self.speakers and name:
+            self.speakers[speaker_id] = name
+            self._emit("speakers", self.speakers)
+
+    # ── ticker (elapsed + levels → UI, plus the mic watchdog) ─────────────────
+    def _tick_loop(self):
+        while not self._stop_evt.is_set() and self.state in ("recording", "paused", "preparing"):
+            try:
+                self._emit("elapsed", {
+                    "secs": self.elapsed,
+                    "paused": self.state == "paused",
+                    "mic": round(self._mic_level, 3),
+                    "sys": round(self._sys_cap.level, 3) if self._sys_cap else 0.0,
+                })
+                self._mic_watchdog()
+            except Exception:
+                pass
+            time.sleep(1.0)
+
+    def _mic_watchdog(self):
+        """Reopen the mic if its callbacks went silent (>5 s) while recording —
+        a stalled PortAudio stream otherwise leaves the meeting system-audio-only."""
+        if not self.use_mic or self.state != "recording" or self._mic_cb is None:
+            return
+        now = time.time()
+        stalled = (now - self._last_mic_ts) > 5.0
+        try:
+            inactive = self._mic_stream is None or not self._mic_stream.active
+        except Exception:
+            inactive = True
+        if not (stalled or inactive):
+            return
+        if now - self._mic_reopen_ts < 10.0:   # throttle reopen attempts
+            return
+        self._mic_reopen_ts = now
+
+        def reopen():
+            import sounddevice as sd
+            logger.warning("meeting mic watchdog: stream stalled — reopening")
+            try:
+                if self._mic_stream is not None:
+                    try:
+                        self._mic_stream.stop()
+                        self._mic_stream.close()
+                    except Exception:
+                        pass
+                    self._mic_stream = None
+                # sd._terminate() tears down EVERY PortAudio stream in the
+                # process — never do it while the dictation Recorder has a live
+                # stream (Rule #1).
+                rec = getattr(self.app, "recorder", None)
+                if not (rec is not None and getattr(rec, "_stream", None) is not None):
+                    sd._terminate()
+                    sd._initialize()
+                info = sd.query_devices(kind="input")
+                native = int(info.get("default_samplerate") or 48000)
+                for rate in (SR, native):
+                    try:
+                        s = sd.InputStream(samplerate=rate, channels=1,
+                                           dtype="float32", callback=self._mic_cb)
+                        s.start()
+                        self._mic_rate = rate
+                        self._mic_stream = s
+                        self._last_mic_ts = time.time()
+                        logger.info("meeting mic reopened at %dHz", rate)
+                        return
+                    except Exception:
+                        continue
+                logger.warning("meeting mic reopen failed — continuing system-audio-only")
+            except Exception as e:
+                logger.debug("mic watchdog reopen error: %s", e)
+        threading.Thread(target=reopen, daemon=True).start()
+
+    # ── persistence ───────────────────────────────────────────────────────────
+    def meta(self):
+        return {
+            "id": self.id, "title": self.title, "started_at": self.started_at,
+            "duration_seconds": self.elapsed, "status": self.state,
+            "speakers": self.speakers, "utterances": len(self.transcript),
+            "audio_url": self.audio_url, "cloud": self._cloud_ok,
+        }
+
+    def row(self):
+        cfg = self.app.config
+        return {
+            "id": self.id,
+            "user_id": cfg.get("sync_user_id", "") or "",
+            "title": self.title,
+            "started_at": self.started_at,
+            "ended_at": _now_iso() if self.state in ("ready", "failed", "processing") else None,
+            "duration_seconds": self.elapsed,
+            "audio_url": self.audio_url,
+            "transcript": self.transcript,
+            "speakers": self.speakers,
+            "scratchpad": self.scratchpad,
+            "summary": self.summary,
+            "decisions": self.decisions,
+            "action_items": self.action_items,
+            "marked_moments": self.marked_moments,
+            "hybrid_notes": self.hybrid_notes,
+            "recognized": getattr(self, "recognized", {}) or {},
+            "device_id": cfg.get("sync_device_name", "") or "",
+            "device_name": cfg.get("sync_device_name", "") or "",
+            "status": {"ready": "ready", "failed": "failed"}.get(self.state, "processing"),
+            "updated_at": _now_iso(),
+        }
+
+    def _persist_local(self):
+        try:
+            cfg = self.app.config
+            lst = [m for m in cfg.get("meetings", []) if m.get("id") != self.id]
+            lst.insert(0, self.meta())
+            cfg["meetings"] = lst[:MEETINGS_CAP]
+            save_config(cfg)
+        except Exception as e:
+            logger.debug("meeting local persist failed: %s", e)
+
+    def _cloud_insert(self):
+        try:
+            if not self.app.config.get("sync_user_id"):
+                return
+            import httpx
+            from app.sync import SUPABASE_URL, SUPABASE_KEY
+            r = httpx.post(
+                f"{SUPABASE_URL}/rest/v1/meetings",
+                headers={"apikey": SUPABASE_KEY,
+                         "Authorization": f"Bearer {SUPABASE_KEY}",
+                         "Content-Type": "application/json",
+                         "Prefer": "resolution=merge-duplicates"},
+                content=json.dumps(self.row(), default=str), timeout=15)
+            self._cloud_ok = r.status_code in (200, 201)
+        except Exception as e:
+            logger.debug("meeting cloud insert failed: %s", e)
+
+    def _cloud_update(self, final=False):
+        try:
+            if not self.app.config.get("sync_user_id"):
+                return
+            import httpx
+            from app.sync import SUPABASE_URL, SUPABASE_KEY
+            row = self.row()
+            r = httpx.patch(
+                f"{SUPABASE_URL}/rest/v1/meetings?id=eq.{self.id}",
+                headers={"apikey": SUPABASE_KEY,
+                         "Authorization": f"Bearer {SUPABASE_KEY}",
+                         "Content-Type": "application/json"},
+                content=json.dumps(row, default=str), timeout=20)
+            if r.status_code in (200, 204) and not self._cloud_ok:
+                # row may not exist yet (insert failed earlier) — upsert it
+                self._cloud_insert()
+            self._cloud_ok = self._cloud_ok or r.status_code in (200, 204)
+            self._persist_local()
+        except Exception as e:
+            logger.debug("meeting cloud update failed: %s", e)
+
+    # ── audio assembly ────────────────────────────────────────────────────────
+    def _write_wav(self):
+        """Mix mic + system parts onto one 16 kHz mono timeline → int16 WAV."""
+        try:
+            with self._audio_lock:
+                parts = list(self._audio_parts)
+                self._audio_parts = []
+            if not parts:
+                return None
+            total = max(t0 + len(a) for t0, _s, a in parts)
+            mix = np.zeros(total, dtype=np.float32)
+            for t0, _source, a in parts:
+                mix[t0:t0 + len(a)] += a
+            peak = float(np.abs(mix).max()) or 1.0
+            if peak > 0.98:
+                mix *= 0.98 / peak
+            os.makedirs(MEETINGS_DIR, exist_ok=True)
+            path = os.path.join(MEETINGS_DIR, f"{self.id}.wav")
+            with wave.open(path, "wb") as w:
+                w.setnchannels(1)
+                w.setsampwidth(2)
+                w.setframerate(SR)
+                w.writeframes((mix * 32767).astype(np.int16).tobytes())
+            return path
+        except Exception as e:
+            logger.warning("meeting wav write failed: %s", e)
+            return None
+
+    def _upload_audio(self, path):
+        try:
+            user_id = self.app.config.get("sync_user_id", "")
+            if not user_id:
+                return
+            import httpx
+            from app.sync import SUPABASE_URL, SUPABASE_KEY
+            object_path = f"{user_id}/{self.id}.wav"
+            with open(path, "rb") as f:
+                data = f.read()
+            r = httpx.post(
+                f"{SUPABASE_URL}/storage/v1/object/meeting-audio/{object_path}",
+                headers={"apikey": SUPABASE_KEY,
+                         "Authorization": f"Bearer {SUPABASE_KEY}",
+                         "Content-Type": "audio/wav",
+                         "x-upsert": "true"},
+                content=data, timeout=120)
+            if r.status_code in (200, 201):
+                self.audio_url = (f"{SUPABASE_URL}/storage/v1/object/public/"
+                                  f"meeting-audio/{object_path}")
+        except Exception as e:
+            logger.debug("meeting audio upload failed: %s", e)
+
+    # ── events ────────────────────────────────────────────────────────────────
+    def _emit(self, event, payload):
+        try:
+            win = getattr(self.app, "meeting_window", None)
+            if win:
+                win.emit(event, payload)
+        except Exception:
+            pass
+        try:  # mirror ticker/state to the floating HUD when it's up (31d)
+            hud = getattr(self.app, "meeting_hud", None)
+            if hud and hud.visible and event in ("elapsed", "state"):
+                if event == "state":
+                    hud.push("state", {"state": self.state, "title": self.title})
+                    if self.state in ("ready", "failed"):
+                        hud.hide()
+                else:
+                    hud.push(event, payload)
+        except Exception:
+            pass
+
+    def _emit_state(self):
+        self._emit("state", {
+            "id": self.id, "state": self.state, "title": self.title,
+            "elapsed": self.elapsed, "speakers": self.speakers,
+            "error": self.error,
+        })
+        try:  # keep the menubar item text in sync (main thread)
+            refresh = getattr(self.app, "_refresh_meeting_menu", None)
+            if refresh:
+                self.app._on_main(refresh)
+        except Exception:
+            pass
+        try:  # tell the dashboard (separate window) to refresh its meetings list
+            if self.state in ("recording", "ready", "failed"):
+                dash = getattr(self.app, "dashboard", None)
+                if dash and hasattr(dash, "_emit"):
+                    dash._emit("meetingsUpdated", {"id": self.id, "state": self.state})
+        except Exception:
+            pass
+
+
+class MeetingManager:
+    """App-level singleton: owns the active session + list/get plumbing."""
+
+    def __init__(self, app):
+        self.app = app
+        self.session = None
+
+    @property
+    def active(self):
+        s = self.session
+        return s if s and s.state in ("preparing", "recording", "paused", "stopping") else None
+
+    def start(self, title="", use_mic=True, use_system=True, language=""):
+        try:
+            if self.active:
+                return {"ok": False, "error": "A meeting is already recording."}
+            if not self.app.config.get("meetings_enabled", True):
+                return {"ok": False, "error": "Meetings are disabled in Settings."}
+            self.session = MeetingSession(self.app, title, use_mic=use_mic,
+                                          use_system=use_system, language=language)
+            ok = self.session.start()
+            return {"ok": ok, "id": self.session.id,
+                    "error": self.session.error if not ok else None}
+        except Exception as e:
+            logger.error("manager start failed: %s", e)
+            return {"ok": False, "error": str(e)}
+
+    def delete(self, meeting_id):
+        """Remove a meeting everywhere: cloud row, cloud audio, local WAV, local meta."""
+        try:
+            s = self.session
+            if s and s.id == meeting_id and s.state in (
+                    "preparing", "recording", "paused", "stopping", "processing"):
+                # deleting mid-pipeline races the drain/upload/summary worker,
+                # which would re-upsert a zombie row afterwards
+                return {"ok": False, "error": "Still processing — try again in a moment."}
+            cfg = self.app.config
+            user_id = cfg.get("sync_user_id", "")
+            if user_id:
+                try:
+                    import httpx
+                    from app.sync import SUPABASE_URL, SUPABASE_KEY
+                    hdrs = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}
+                    httpx.delete(f"{SUPABASE_URL}/rest/v1/meetings?id=eq.{meeting_id}",
+                                 headers=hdrs, timeout=10)
+                    httpx.delete(f"{SUPABASE_URL}/storage/v1/object/meeting-audio/"
+                                 f"{user_id}/{meeting_id}.wav", headers=hdrs, timeout=10)
+                except Exception as e:
+                    logger.debug("cloud delete failed: %s", e)
+            try:
+                p = os.path.join(MEETINGS_DIR, f"{meeting_id}.wav")
+                if os.path.exists(p):
+                    os.remove(p)
+            except Exception:
+                pass
+            cfg["meetings"] = [m for m in cfg.get("meetings", [])
+                               if m.get("id") != meeting_id]
+            save_config(cfg)
+            if self.session and self.session.id == meeting_id:
+                self.session = None
+            return {"ok": True}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def stop_async(self):
+        try:
+            s = self.active
+            if not s:
+                return {"ok": False, "error": "No active meeting."}
+            threading.Thread(target=s.stop, daemon=True).start()
+            return {"ok": True, "id": s.id}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def list_meetings(self):
+        try:
+            a = self.active
+            return {"ok": True,
+                    "meetings": list(self.app.config.get("meetings", [])),
+                    "opened": list(self.app.config.get("meetings_opened") or []),
+                    "active_id": a.id if a else None,
+                    "active_title": a.title if a else None,
+                    "active_elapsed": a.elapsed if a else 0,
+                    "active_state": a.state if a else None}
+        except Exception as e:
+            return {"ok": False, "error": str(e), "meetings": []}
+
+    def retry_summary(self, meeting_id):
+        """Regenerate the summary — for the in-memory session when it matches,
+        else from the cloud row (works after an app restart)."""
+        try:
+            s = self.session
+            if s and s.id == meeting_id:
+                def rerun():
+                    s.state = "processing"
+                    s._emit_state()
+                    ok = s.run_summary()
+                    s.state = "ready" if ok else "failed"
+                    s._emit_state()
+                    s._persist_local()
+                    s._cloud_update(final=True)
+                    s._emit("meeting", s.row())
+                threading.Thread(target=rerun, daemon=True).start()
+                return {"ok": True}
+
+            got = self.get_meeting(meeting_id)
+            if not got.get("ok"):
+                return got
+            row = got["meeting"]
+
+            def rerun_row():
+                try:
+                    win = getattr(self.app, "meeting_window", None)
+                    parsed = generate_meeting_summary(
+                        self.app.config, row.get("transcript", []),
+                        row.get("speakers", {}), row.get("scratchpad", ""),
+                        row.get("marked_moments", []))
+                    patch = ({"summary": parsed["summary"], "decisions": parsed["decisions"],
+                              "action_items": merge_action_done(
+                                  row.get("action_items"), parsed["action_items"]),
+                              "hybrid_notes": parsed["hybrid_notes"],
+                              "status": "ready", "updated_at": _now_iso()}
+                             if parsed else {"status": "failed", "updated_at": _now_iso()})
+                    row.update(patch)
+                    if self.app.config.get("sync_user_id"):
+                        import httpx
+                        from app.sync import SUPABASE_URL, SUPABASE_KEY
+                        httpx.patch(
+                            f"{SUPABASE_URL}/rest/v1/meetings?id=eq.{meeting_id}",
+                            headers={"apikey": SUPABASE_KEY,
+                                     "Authorization": f"Bearer {SUPABASE_KEY}",
+                                     "Content-Type": "application/json"},
+                            content=json.dumps(patch, default=str), timeout=20)
+                    # refresh local metadata status
+                    cfg = self.app.config
+                    for m in cfg.get("meetings", []):
+                        if m.get("id") == meeting_id:
+                            m["status"] = patch["status"]
+                    save_config(cfg)
+                    if win:
+                        win.emit("meeting", row)
+                except Exception as e:
+                    logger.error("retry summary (row) failed: %s", e)
+            threading.Thread(target=rerun_row, daemon=True).start()
+            return {"ok": True}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def _mutate_meeting_field(self, meeting_id, field, mutate):
+        """Load → mutate → save one jsonb LIST field of a meeting row.
+
+        `mutate(list) -> list | None` (None = index out of range / no-op).
+        Local trimmed rows are only touched when they actually carry the
+        field; the cloud copy is always fetched before writing so we never
+        overwrite a list we didn't load (the action-items wipe lesson)."""
+        try:
+            wrote = False
+            # live session first (marks/action items can be edited mid-meeting)
+            s = self.session
+            if s and s.id == meeting_id:
+                cur = getattr(s, field, None)
+                if isinstance(cur, list):
+                    new = mutate(list(cur))
+                    if new is not None:
+                        setattr(s, field, new)
+                        wrote = True
+            for m in self.app.config.get("meetings", []):
+                if m.get("id") == meeting_id and m.get(field):
+                    new = mutate(list(m[field]))
+                    if new is not None:
+                        m[field] = new
+                        save_config(self.app.config)
+                        wrote = True
+                    break
+            if self.app.config.get("sync_user_id"):
+                import httpx
+                from app.sync import SUPABASE_URL, SUPABASE_KEY
+                hdrs = {"apikey": SUPABASE_KEY,
+                        "Authorization": f"Bearer {SUPABASE_KEY}"}
+                r = httpx.get(
+                    f"{SUPABASE_URL}/rest/v1/meetings?id=eq.{meeting_id}"
+                    f"&select={field}&limit=1", headers=hdrs, timeout=10)
+                rows = r.json() if r.status_code == 200 else []
+                if rows:
+                    new = mutate(list(rows[0].get(field) or []))
+                    if new is not None:
+                        httpx.patch(
+                            f"{SUPABASE_URL}/rest/v1/meetings?id=eq.{meeting_id}",
+                            headers={**hdrs, "Content-Type": "application/json"},
+                            json={field: new}, timeout=10)
+                        wrote = True
+            return {"ok": True} if wrote else {"ok": False, "error": "not found"}
+        except Exception as e:
+            logger.warning("mutate %s failed: %s", field, e)
+            return {"ok": False, "error": str(e)}
+
+    def set_transcript_text(self, meeting_id, index, text):
+        """Inline transcript edit (widget 33a) — flags the segment `edited`."""
+        index, text = int(index), str(text)
+
+        def mut(items):
+            if 0 <= index < len(items):
+                items[index]["text"] = text
+                items[index]["edited"] = True
+                return items
+            return None
+        return self._mutate_meeting_field(meeting_id, "transcript", mut)
+
+    def delete_marked_moment(self, meeting_id, index):
+        """Delete one bookmark (widget 33b)."""
+        index = int(index)
+
+        def mut(items):
+            if 0 <= index < len(items):
+                items.pop(index)
+                return items
+            return None
+        return self._mutate_meeting_field(meeting_id, "marked_moments", mut)
+
+    def set_speaker_name(self, meeting_id, sid, name):
+        """Rename a speaker from the SUMMARY view (widget 33d). Live sessions go
+        through rename_speaker; finished meetings update local meta + cloud row
+        and feed the voice-fingerprint learner from the local WAV."""
+        try:
+            name = str(name or "").strip()
+            if not name:
+                return {"ok": False, "error": "empty name"}
+            s = self.session
+            if s and s.id == meeting_id:
+                return self.rename_speaker(sid, name)
+            got = self.get_meeting(meeting_id)
+            if not got.get("ok"):
+                return got
+            row = got["meeting"]
+            speakers = dict(row.get("speakers") or {})
+            speakers[sid] = name
+            for m in self.app.config.get("meetings", []):
+                if m.get("id") == meeting_id:
+                    m["speakers"] = speakers
+                    break
+            save_config(self.app.config)
+            if self.app.config.get("sync_user_id"):
+                import httpx
+                from app.sync import SUPABASE_URL, SUPABASE_KEY
+                httpx.patch(
+                    f"{SUPABASE_URL}/rest/v1/meetings?id=eq.{meeting_id}",
+                    headers={"apikey": SUPABASE_KEY,
+                             "Authorization": f"Bearer {SUPABASE_KEY}",
+                             "Content-Type": "application/json"},
+                    json={"speakers": speakers}, timeout=10)
+            learned = False
+            try:
+                from app import voiceprint
+                learned = voiceprint.learn_speaker(
+                    self.app.config, meeting_id, row.get("transcript") or [], sid, name)
+            except Exception:
+                pass
+            return {"ok": True, "learned": bool(learned)}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def get_meeting_notes(self, meeting_id, regenerate=False):
+        """Full AI meeting notes (markdown). Cached in the row's notes_md;
+        generated on first open (cost rule: LLM only for meetings you read)."""
+        try:
+            got = self.get_meeting(meeting_id)
+            if not got.get("ok"):
+                return got
+            row = got["meeting"]
+            if row.get("status") == "processing":
+                return {"ok": False, "error": "Meeting is still processing."}
+            cached = (row.get("notes_md") or "").strip()
+            if cached and not regenerate:
+                return {"ok": True, "notes_md": cached, "cached": True}
+            s = self.session
+            lang = s.language if (s and s.id == meeting_id) else ""
+            notes = generate_meeting_notes(self.app.config, row, session_language=lang)
+            if not notes:
+                return {"ok": False, "error": "Could not generate notes — try again."}
+            if s and s.id == meeting_id:
+                s.notes_md = notes
+            if self.app.config.get("sync_user_id"):
+                try:
+                    import httpx
+                    from app.sync import SUPABASE_URL, SUPABASE_KEY
+                    httpx.patch(
+                        f"{SUPABASE_URL}/rest/v1/meetings?id=eq.{meeting_id}",
+                        headers={"apikey": SUPABASE_KEY,
+                                 "Authorization": f"Bearer {SUPABASE_KEY}",
+                                 "Content-Type": "application/json"},
+                        json={"notes_md": notes}, timeout=15)
+                except Exception as e:
+                    logger.debug("notes_md persist failed: %s", e)
+            return {"ok": True, "notes_md": notes, "cached": False}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def set_meeting_pinned(self, meeting_id, pinned):
+        """Pin/unpin a meeting (widget 33j). Local meta + cloud column."""
+        try:
+            pinned = bool(pinned)
+            for m in self.app.config.get("meetings", []):
+                if m.get("id") == meeting_id:
+                    m["pinned"] = pinned
+                    break
+            save_config(self.app.config)
+            if self.app.config.get("sync_user_id"):
+                import httpx
+                from app.sync import SUPABASE_URL, SUPABASE_KEY
+                httpx.patch(
+                    f"{SUPABASE_URL}/rest/v1/meetings?id=eq.{meeting_id}",
+                    headers={"apikey": SUPABASE_KEY,
+                             "Authorization": f"Bearer {SUPABASE_KEY}",
+                             "Content-Type": "application/json"},
+                    json={"pinned": pinned}, timeout=10)
+            return {"ok": True}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def mark_meeting_opened(self, meeting_id):
+        """Read-tracking for the NEW indicator (widget 33j). Local-only."""
+        try:
+            opened = self.app.config.get("meetings_opened") or []
+            if meeting_id not in opened:
+                opened = ([meeting_id] + opened)[:200]
+                self.app.config["meetings_opened"] = opened
+                save_config(self.app.config)
+            return {"ok": True}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def regenerate_hybrid(self, meeting_id, index):
+        """Regenerate ONE hybrid-note AI addition (widget 33i). Fetches the row
+        (transcript + note line), runs the focused LLM call, persists."""
+        try:
+            index = int(index)
+            got = self.get_meeting(meeting_id)
+            if not got.get("ok"):
+                return got
+            row = got["meeting"]
+            notes = row.get("hybrid_notes") or []
+            if not (0 <= index < len(notes)):
+                return {"ok": False, "error": "no such note"}
+            new = regenerate_hybrid_addition(
+                self.app.config, row.get("transcript") or [],
+                row.get("speakers") or {}, notes[index].get("user_line", ""))
+            if new is None:
+                return {"ok": False, "error": "regenerate failed"}
+
+            def mut(items):
+                if 0 <= index < len(items):
+                    items[index]["ai_addition"] = new
+                    return items
+                return None
+            self._mutate_meeting_field(meeting_id, "hybrid_notes", mut)
+            return {"ok": True, "ai_addition": new}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def set_mark_note(self, meeting_id, index, note):
+        """Attach/edit the user note on a bookmark (widget 33b)."""
+        index, note = int(index), str(note)
+
+        def mut(items):
+            if 0 <= index < len(items):
+                if note.strip():
+                    items[index]["note"] = note.strip()
+                else:
+                    items[index].pop("note", None)
+                return items
+            return None
+        return self._mutate_meeting_field(meeting_id, "marked_moments", mut)
+
+    def set_action_item_text(self, meeting_id, index, text):
+        """Inline action-item edit (widget 33c) — flags the item `edited`."""
+        index, text = int(index), str(text)
+
+        def mut(items):
+            if 0 <= index < len(items):
+                items[index]["task"] = text
+                items[index]["edited"] = True
+                return items
+            return None
+        return self._mutate_meeting_field(meeting_id, "action_items", mut)
+
+    def delete_action_item(self, meeting_id, index):
+        """Remove a wrongly-extracted action item (widget 33c)."""
+        index = int(index)
+
+        def mut(items):
+            if 0 <= index < len(items):
+                items.pop(index)
+                return items
+            return None
+        return self._mutate_meeting_field(meeting_id, "action_items", mut)
+
+    def set_action_item_done(self, meeting_id, index, done):
+        """Persist an action-item checkbox (widget 33c). Local meta always;
+        cloud row too when signed in. Fails closed — never raises."""
+        try:
+            index = int(index)
+            done = bool(done)
+            # Local meta first — but local rows may be trimmed (no action_items
+            # key at all). NEVER write a list we didn't actually load: patching
+            # [] would wipe the cloud's items.
+            items = None
+            for m in self.app.config.get("meetings", []):
+                if m.get("id") == meeting_id:
+                    if m.get("action_items"):
+                        items = m["action_items"]
+                        if 0 <= index < len(items):
+                            items[index]["done"] = done
+                        from app.config import save_config
+                        save_config(self.app.config)
+                    break
+            if self.app.config.get("sync_user_id"):
+                import httpx
+                from app.sync import SUPABASE_URL, SUPABASE_KEY
+                if not items:
+                    r = httpx.get(
+                        f"{SUPABASE_URL}/rest/v1/meetings?id=eq.{meeting_id}"
+                        "&select=action_items&limit=1",
+                        headers={"apikey": SUPABASE_KEY,
+                                 "Authorization": f"Bearer {SUPABASE_KEY}"}, timeout=10)
+                    rows = r.json() if r.status_code == 200 else []
+                    items = (rows[0].get("action_items") if rows else None) or []
+                    if 0 <= index < len(items):
+                        items[index]["done"] = done
+                if items:   # only patch when there is something real to write
+                    httpx.patch(
+                        f"{SUPABASE_URL}/rest/v1/meetings?id=eq.{meeting_id}",
+                        headers={"apikey": SUPABASE_KEY,
+                                 "Authorization": f"Bearer {SUPABASE_KEY}",
+                                 "Content-Type": "application/json"},
+                        json={"action_items": items}, timeout=10)
+            return {"ok": True}
+        except Exception as e:
+            logger.warning("set_action_item_done failed: %s", e)
+            return {"ok": False, "error": str(e)}
+
+    def get_meeting(self, meeting_id):
+        """Active session first, then cloud row, then local metadata."""
+        try:
+            s = self.session
+            if s and s.id == meeting_id:
+                return {"ok": True, "meeting": s.row(), "live": bool(self.active)}
+            if self.app.config.get("sync_user_id"):
+                import httpx
+                from app.sync import SUPABASE_URL, SUPABASE_KEY
+                r = httpx.get(
+                    f"{SUPABASE_URL}/rest/v1/meetings?id=eq.{meeting_id}&limit=1",
+                    headers={"apikey": SUPABASE_KEY,
+                             "Authorization": f"Bearer {SUPABASE_KEY}"}, timeout=10)
+                rows = r.json() if r.status_code == 200 else []
+                if rows:
+                    return {"ok": True, "meeting": rows[0], "live": False}
+            for m in self.app.config.get("meetings", []):
+                if m.get("id") == meeting_id:
+                    return {"ok": True, "meeting": m, "live": False}
+            return {"ok": False, "error": "not found"}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}

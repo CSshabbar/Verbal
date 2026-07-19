@@ -45,7 +45,35 @@ DEFAULT_CONFIG = {
     "notes_autotitle_enabled": True,
     "notes_structure_detection_enabled": True,
     "notes_audio_linkage_enabled": True,
+    # Meetings (MEETINGS_DESIGN_HANDOFF.md). Metadata lives in config["meetings"]
+    # as a bounded list (cap MEETINGS_CAP, like history); full transcripts live in
+    # the Supabase `meetings` row + local per-meeting audio files.
+    "meetings_enabled": True,
+    "meetings_keep_audio": True,          # keep the meeting WAV on disk / in cloud
+    "meetings_keep_audio_days": 30,       # 7 | 30 | 90 | 0 (= never delete)
+    "meetings_max_minutes": 120,          # 30 | 60 | 120 | 180 | 360 | 0 (= no limit)
+    "meetings_hud_enabled": True,         # floating HUD when the window loses focus
+    "meetings_speaker_labels": True,      # source-based Speaker 1..N labeling
+    "meetings_sync_enabled": False,       # push meetings to other devices (default off)
+    "meetings": [],                       # [{id,title,started_at,duration_seconds,status,...}]
+    # Transform (TRANSFORM_SWARM.md) — voice/prompt-driven text reshaping.
+    # Master default OFF (like autolearn); Mode A = trailing "…so Flume, …"
+    # instruction on a dictation; Mode B = selection transform via Cmd+Shift+T.
+    "transform_enabled": False,
+    "transform_inline_enabled": True,     # Mode A (gated by master)
+    "transform_selection_enabled": True,  # Mode B (gated by master)
+    "transform_trigger_words": ["flume", "flumes", "flu me", "plume", "bloom"],
+    "transform_hotkey": 17,               # keycode for T — fires on Cmd+Shift+T
+    "transform_hotkey_label": "T",
+    # Spoken language for transcription (dictation + meetings). ISO-639-1 code
+    # or "auto". Default "en" preserves the original pinned-English behavior;
+    # non-English pins route Groq to full whisper-large-v3.
+    "spoken_language": "en",
+    "hotkey_label": "Right ⌘",            # display label for the dictation key
 }
+
+# Bounded local meeting-metadata list (mirrors the history cap pattern).
+MEETINGS_CAP = 30
 
 # The four Notes v2 feature flags, in one place so callers can iterate them.
 NOTES_FEATURE_FLAGS = (

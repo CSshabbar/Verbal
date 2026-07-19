@@ -97,6 +97,42 @@ def all_status():
     }
 
 
+# ── Meetings (MEETINGS_DESIGN_HANDOFF.md 31h) ───────────────────────────────────
+def system_audio_capture_supported():
+    """True when the ScreenCaptureKit audio path is importable on this machine
+    (macOS 13+ with the pyobjc wrappers installed). Fail-closed: any error
+    means 'not supported' — meetings then run mic-only."""
+    try:
+        from app.system_audio import is_supported
+        return bool(is_supported())
+    except Exception:
+        return False
+
+
+def meeting_permissions():
+    """Aggregate status for the meeting permission checklist (screen 31h).
+
+    Steps map to the modal: 1 = capture support present, 2 = Screen Recording
+    (gates ScreenCaptureKit audio), 3 = microphone.
+    """
+    sys_audio = check_system_audio()
+    mic = check_microphone()
+    supported = system_audio_capture_supported()
+    return {
+        "supported": supported,
+        "system_audio": sys_audio,
+        "microphone": mic,
+        "ready": supported and sys_audio == "granted" and mic == "granted",
+        "steps": [
+            {"id": "support", "done": supported},
+            {"id": "system_audio", "done": sys_audio == "granted",
+             "denied": sys_audio == "denied"},
+            {"id": "microphone", "done": mic == "granted",
+             "denied": mic == "denied"},
+        ],
+    }
+
+
 def request(which):
     {
         "accessibility": request_accessibility,

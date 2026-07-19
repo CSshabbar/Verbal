@@ -22,7 +22,11 @@ Each feature: **what it does · desktop impl · mobile impl · backend · status
   (Groq `whisper-large-v3-turbo` only; no Gemini/local). `stop()` **persists audio first** (so a failed
   transcription is never lost → `status:'failed'`, retryable), transcribes, stashes the full result in a
   module-level `lastRecording` read once via `consumeLastRecording()`.
-- **Backend:** none for transcription itself (API calls to Groq/Gemini). Audio → `recordings` bucket.
+- **Backend:** all Groq calls (transcription + cleanup) now route through the **`groq-proxy` Edge Function**
+  — the Groq key is server-side only, clients hold none, and the **in-app API-key entry has been removed**
+  (mobile Settings card + desktop dashboard field + the menu-bar "Groq/Gemini API Key…" items are all gone).
+  A user's pre-existing local Groq/Gemini key stays only as a silent *fallback*. Audio → `recordings` bucket.
+  See `05-conventions` Hard Rule #15.
 - **Status:** solid. Local Whisper is a desktop-only offline fallback (`faster_whisper` bundled).
 
 ## AI cleanup / formatting
@@ -184,6 +188,16 @@ Each feature: **what it does · desktop impl · mobile impl · backend · status
 - **Backend:** `notes` table — base cols `id,user_id,title,content,folder,is_pinned,device_name,created_at,
   updated_at` **plus v2** `raw_content text` (nullable) and `audio_segments jsonb '[]'` (see
   `supabase_notes_v2.sql`; details + conflict-pair/union/unknown-field sync in `04-data-model.md`).
+- **Multi-select delete (mobile):** long-press a note card in `NotesListScreen` enters selection mode
+  (checkmark affordances, count in the header); tap toggles, the header trash icon deletes the selection
+  after a `confirm()` dialog. Backed by `useNotes.removeNotes(ids)` (one `.in('id',…)` cloud delete +
+  per-id cache eviction). Opening a note is suppressed while selecting.
+- **Sync identity (fixed 2026-07):** notes sync was broken by two bugs — (1) mobile inserted **without** an
+  id so its local `note_<ts>` never matched the server-minted uuid (edits lost, rows duplicated), and (2) no
+  back-fill of notes created before the `notes` table existed. Fixed by the **text `id`** column
+  (`04-data-model.md`), mobile upsert-with-id (gated on sync), and a load-time back-fill. Notes have **no
+  realtime subscription** on either platform (only `transcriptions` do) — they reconcile on notes-tab open
+  (desktop `fetch_notes`) / screen mount (mobile `useNotes.load`), not live.
 - **Known limit:** still no `is_voice` column — `isVoice` is inferred from `raw_content`/non-empty
   `audio_segments` (survives reloads for dictated notes).
 
@@ -193,12 +207,17 @@ Each feature: **what it does · desktop impl · mobile impl · backend · status
 - **Desktop:** `DashboardApi.fetch_canvas/save_canvas` + image support (`save_canvas_image_data`, native
   `NSOpenPanel`/`NSPasteboard` pickers → `canvas-images` bucket). `FlumeWebDashboard._canvas_listen_loop`
   = a `websocket` subscription to `postgres_changes` on `canvas`, emits `canvasRemote` to JS (ignores own
-  writes). `canvas_window.py::CanvasWindow` is a standalone AppKit window but is effectively **legacy**
-  (menu routes to the web dashboard tab instead).
+  writes). On receive it copies **text OR the image URL** to the clipboard and fires a macOS banner
+  (`_notify_native` → `osascript`, fail-closed) — **regardless of the active tab**; the `canvasRemote` JS
+  handler now updates the (always-present, hidden) canvas DOM without gating on `active==="canvas"`, so a
+  photo received in the background is there when you open Canvas. `canvas_window.py::CanvasWindow` is legacy.
 - **Mobile:** `flume-ui/hooks/useCanvas.ts` — `canvas` table (upsert `on_conflict=user_id`) + `canvas-images`
-  bucket + `expo-clipboard` + `expo-image-picker`; realtime channel `canvas_${userId}` (received text copied
-  to clipboard, haptics, skips own writes).
-- **Backend:** `canvas` table (one row/user: `content`, `image_url`, `device_name`, `updated_at`).
+  bucket + `expo-clipboard` + `expo-image-picker`; realtime channel `canvas_${userId}`. On receive it copies
+  text/image-URL to the clipboard and shows a transient **"Received from X — copied to clipboard"** toast
+  (`toast`/`dismissToast`, rendered by `CanvasScreen`); a failed image upload now shows an explicit toast
+  instead of silently no-op'ing. Skips own writes, haptics on receive.
+- **Backend:** `canvas` table (one row/user: `content`, `image_url`, `device_name`, `updated_at`);
+  `canvas-images` bucket policy in `supabase_canvas_images_policy.sql`.
 
 ## Cross-device sync
 
@@ -238,6 +257,78 @@ Each feature: **what it does · desktop impl · mobile impl · backend · status
   `https://ovpcthjingugwvpxlsna.supabase.co/auth/v1/callback`; Supabase Redirect URLs include the loopback
   and the `verbal://` deep link). Details in `04-data-model.md`.
 
+## Meetings — capture, live transcript, hybrid summary
+
+
+> **UI: widget kit v2 — COMPLETE** (`MEETINGS_WIDGETS_HANDOFF.md`, Jul 2026). Dot+label speaker chips,
+> single-parent-card rows with faint dividers, glyph icon buttons (1.4 stroke), ↳ hybrid-note AI additions
+> with Yours/Merged/AI tabs, v2 meeting list on the dashboard AND mobile (compact rows in one parent card,
+> `MeetingListScreen.tsx`). Summary fully editable: transcript hover copy/inline-edit (`edited` flag),
+> action items inline edit/delete/done + **due labels** (extracted by the summary LLM, `due` key), marked
+> moments get **user notes** (`set_mark_note`), jump-to-transcript + delete. Per-row **AI regenerate** on
+> hybrid notes (`regenerate_hybrid` → one focused LLM call). Meeting list: **pinned** (cloud `pinned`
+> column, PINNED group first) and **NEW/unread** (local `meetings_opened`, cleared by `open_meeting`).
+> **Voice fingerprinting** (`app/voiceprint.py`): at meeting end each non-self speaker gets a numpy log-mel
+> mean+std embedding from the meeting WAV; named speakers update rolling prints in `config['voice_prints']`
+> (LOCAL-ONLY, never synced); unnamed speakers auto-name on a decisive cosine match (≥0.92 + 0.02 margin)
+> BEFORE the summary runs; hits land in the `recognized` jsonb column and render the fingerprint banner +
+> avatar corner dot. Speakers are renameable from the SUMMARY too (double-click the header avatar chip
+> or a transcript chip → `set_speaker_name`), which also feeds the fingerprint learner from the local WAV
+> ("⚡ Voice print saved" toast). Scratchpad is a contenteditable with markdown-lite (⌘B/⌘I native, `- `→em-dash bullets
+> with Enter continuation, numbered continuation, `# `→heading) — stored as plain text (`innerText`), and
+> freshly-dictated text flashes accent. All list writes go load-then-patch (never write a list you didn't load).
+- **What:** record a live meeting ON the Mac (system audio + mic — no bot joins the call), see a live
+  transcript beside a personal scratchpad, and get a post-meeting hybrid summary: AI summary + decisions +
+  action items + the user's own notes enhanced with transcript context. Spec: `MEETINGS_DESIGN_HANDOFF.md`
+  (screens 31a–31h); availability: macOS full, iOS read-only (+ scratchpad edit), Windows none.
+- **Desktop:** `meetings.py` (`MeetingManager`/`MeetingSession` state machine: idle→preparing→recording⇄
+  paused→stopping→processing→ready|failed) + `system_audio.py` (SCK audio capture) + `meeting_window.py`/
+  `meeting_html.py` (ONE morphing WKWebView panel: an ambient glassy **bar** top-center — live dot, title,
+  timer, waveform, star/pause/stop, click-to-expand — that fluidly grows into the full window via native
+  frame animation; content modes `permissions` 31h / `premeeting` 31b / `live` 31c / `summary` 31e; while
+  recording, losing focus or closing collapses back to the bar. The separate `meeting_hud.py` is superseded).
+  Dashboard (31a/31f/31g): Home `MeetingLauncherCard`/`ActiveMeetingCard`, a **dedicated "Meetings"
+  sidebar destination** (`scr-meetings`: count header, New-meeting button, active-recording bar, search,
+  Today/This-week/Earlier groups, delete, empty state — user preference; it originally shipped as a folder
+  inside Notes), and a Settings group; popover gets a "Start meeting" row; menubar gets
+  "Start Meeting"/"Return to Meeting". (Mobile keeps its Meetings entry inside the Notes tab — there is no
+  sidebar on mobile.) Bridge methods on `DashboardApi`: `start/stop/pause_meeting`,
+  `mark_moment`, `save_meeting_scratchpad`, `set_meeting_title`, `rename_speaker`, `list_meetings`,
+  `get_meeting`, `open_meeting(_launcher)`, `delete_meeting`, `retry_meeting_summary`, `get_meeting_audio`,
+  `get_meeting_permissions`, `test_meeting_capture`, `get/set_meeting_setting(s)`. Scratchpad dictation
+  reuses the standard dictation path (paste lands in the focused scratchpad).
+- **Summary generation:** `meetings.generate_meeting_summary` — strict-JSON contract
+  `{summary, decisions[], action_items[{owner,task,done}], hybrid_notes[{user_line, ai_addition}]}` via
+  `chat_via_proxy` (2 attempts, 45 s, 24k-char transcript budget head+tail). Failure → status `failed`
+  with explicit Retry (31e); silent meeting → `ready` with empty summary. Runs ONCE per meeting;
+  regenerate is explicit (Notes cleanup cost-control philosophy).
+- **Mobile:** read-only by design (empty states, not errors): `lib/meetings.ts` (fetch/map/realtime/
+  scratchpad update) + `flume-ui/hooks/useMeetings.ts` (+`.mock.ts` contract) + `MeetingListScreen` /
+  `MeetingDetailScreen` / `MeetingPlaybackScreen` (expo-audio playback with transcript highlight + tap-to-
+  seek), reached from a "Meetings" folder row in `NotesListScreen` (routes on the Notes stack). The ONE
+  mobile write: scratchpad edits (optimistic + debounced, last-write-wins).
+- **Export:** the summary header has `TXT`/`MD` buttons → `DashboardApi.export_meeting(id, fmt)` → pure
+  builders `meetings.export_transcript_txt/_md` (txt: header + `[m:ss] Name: text`; md: summary, decisions,
+  checkbox action items, marks, notes, transcript) → native `NSSavePanel` (main thread), fallback
+  `~/Downloads`. **Mark feedback:** pressing ★ pops the button, shows a "★ Marked m:ss" toast (expanded) or
+  flashes the bar title (collapsed) — the marks footer alone was invisible feedback ("star isn't working").
+- **Ask your meetings (chat Q&A):** the dashboard Meetings page has a chat panel → `DashboardApi.ask_meetings`
+  → `meetings.ask_meetings`: fetches the ~25 latest cloud rows, keyword-ranks them against the question
+  (title×4 / summary×2 / transcript×0.5), builds context from the top 3 (summary+decisions+actions + the
+  question-relevant transcript lines ±1 neighbor, ~3.2k chars each), answers via `chat_via_proxy` with a
+  grounded-only system prompt, and cites source meeting titles. Client keeps a 6-turn thread (Q bubbles /
+  A cards / typing dots). Desktop-only for now.
+- **Open/delete:** clicking a row opens the meeting in the summary window — the meeting window buffers
+  events until the page's `meeting_page_ready` handshake (a fresh window used to lose the mode/meeting
+  events → "click does nothing"). Delete: ✕ on each row, plus a two-step confirm trash button in the
+  summary header; deletes emit `meetingsUpdated` so the dashboard list refreshes everywhere.
+- **Backend:** `meetings` table + `meeting-audio` bucket (`supabase_meetings.sql`, realtime on, RLS
+  `TO public`). See `04-data-model.md`.
+- **Status/limitations:** system audio requires macOS 13+ and the Screen & System Audio Recording
+  permission (31h checklist + 3 s capture self-test). Speaker identity is source-based v1 (no diarization);
+  meeting text NEVER goes to analytics; `meetings_max_minutes` enforcement and audio auto-delete are
+  settings stored but not yet enforced by a reaper (v1 known gap).
+
 ## Recording overlay / popover / hotkey / onboarding / updater / permissions / sounds (desktop)
 
 - **Overlay** (`overlay.py`/`overlay_html.py`): non-activating pill (Recording → Transcribing → Done),
@@ -259,3 +350,83 @@ Each feature: **what it does · desktop impl · mobile impl · backend · status
 
 For data shapes, tables, auth internals, and sync push-shape differences → `04-data-model.md`.
 For conventions, gotchas, the design system, and dead/legacy modules → `05-conventions.md`.
+
+
+## Notes — Granola-style note-maker (Jul 2026 upgrade)
+
+The notes LLM prompt (`ai_cleanup.NOTES_FORMATTER_SYSTEM_PROMPT`, mirrored VERBATIM in mobile
+`lib/groq.ts::NOTES_FORMATTER_PROMPT`) is a **world-class note-maker** engineered against six
+explicit criteria and tuned over four live eval iterations (v1 formatter → v4):
+(1) completeness floor — compression removes WORDS never INFORMATION (every fact/number/name/
+commitment/reason/open-question survives; reasons stay ATTACHED to their bullet); (2)
+proportionality — tiny thought = 1–2 clean lines with zero scaffolding, dense debrief = full note;
+(3) 3-second scannability — decisions/dates/owners bolded, consequential line first; (4) scenario
+shapes — debrief (Decisions/Next steps/Open questions/Notes), tasks (owner+due inline), idea dumps
+(rationale on the same bullet, speaker's own ranking kept), journal (prose in the speaker's voice,
+NO bullets/headings), technical (steps+backticks); (5) truth discipline — self-corrections resolve
+to final, "maybe" never upgrades, zero invention; (6) writer-not-stenographer — polished
+capitalization/punctuation, spoken meta-preambles ("remind me…") stripped. Known failure modes each
+rule guards: v1 over-summarized (bare noun-phrase bullets, rationales lost), v3 went verbatim-
+lowercase. Checklist syntax ("- [ ]") stays exclusively in the flag-gated structure-detection
+appendix. Eval harness: scratchpad `notes_eval.py` pattern (4 scenario transcripts); fixtures
+`notes_fixtures.py` 66/66.
+
+## Meeting Notes page (Jul 2026)
+
+Full AI notes of a meeting — a dedicated PAGE inside the meeting window (MODE `notes`), not a new
+window. Generated by `meetings.generate_meeting_notes` (`MEETING_NOTES_SYSTEM`: chief-of-staff-grade
+notes — context line, ## topic sections with reasons attached, ## Decisions, ## Action items with
+owner/due, ## Open questions; written in the deterministically computed OUTPUT LANGUAGE). ONE LLM
+call per meeting, LAZY: generated on first open of the page, cached in the new `meetings.notes_md`
+column (cloud-persisted), Regenerate button re-runs it. Rendered by a self-contained markdown
+renderer in `meeting_html.js::mdRender` (##/###, - and 1. lists, - [ ] checklists, **bold**,
+`code`; first paragraph styled as an accent-bordered context callout). Entry points: "Open notes ↗"
+in the hybrid-notes card header; when the user took no scratchpad notes the card body previews the
+first lines of the AI notes (or offers "Generate meeting notes"). Copy button exports the raw
+markdown to the clipboard.
+
+**Mobile parity (iOS, Jul 2026):** `MeetingNotesScreen.tsx` renders the same `notes_md` with a
+self-contained RN markdown view (context callout, ## sections, bullets, 1. lists, - [ ] tasks,
+**bold**, `code`); when `notes_md` is absent the phone generates it on-device via
+`lib/groq.ts::generateMeetingNotes` (same MEETING_NOTES_SYSTEM prompt + deterministic output
+language) and persists via `updateNotesRemote` so every device gets it. `MeetingDetailScreen` gained
+a Notes entry row, tappable action-item checkboxes (`updateActionItemsRemote`, full-list write),
+due-date labels, and marked-moment user notes. New cloud column `notes_md`; mobile Meeting type +
+`toMeeting` carry `notesMd`/`pinned`/`recognized`.
+
+## Multilingual transcription (Jul 2026)
+
+Whisper was hard-pinned to `language="en"` in four places — the model itself is multilingual (~99
+languages). Now: `config['spoken_language']` (ISO-639-1 or `auto`; default `en` preserves old
+behavior) applies to dictation AND meetings; a per-meeting **Language** picker in the pre-meeting
+modal overrides it (`start_meeting(..., language)` → `MeetingSession.language` → every chunk).
+Resolution + routing live in `transcriber.resolve_language` / `transcribe_with_status(language=…)`:
+`auto` → omit the param (Whisper detects); non-English pins route Groq to full **whisper-large-v3**
+(turbo is weaker on low-resource languages); the English dictionary-glossary bias prompt is attached
+ONLY when the language is English (a Whisper prompt also hints the language). The meeting summary
+LLM now writes all fields in the transcript's dominant language; the dictation formatter carries a
+"same language, never translate" rule. Options list: `shared_dashboard.SPOKEN_LANGUAGES`. Mobile:
+`lib/groq.ts` honors `flume_spoken_language` (default `en`; no picker UI yet). Known limit:
+code-switched meetings resolve per 8–22s chunk in auto mode.
+
+## Transform — voice/prompt-driven text reshaping (TRANSFORM_SWARM.md, Jul 2026)
+
+**What:** reshape text with an instruction instead of just dictating it. Master switch
+`transform_enabled` (default OFF) + per-mode flags, in Settings → Transform.
+
+- **Mode A — inline (Capture):** end a dictation with *“…so Flume, make this formal”*. A free
+  tail-gate (`transform.detect_trailing_instruction` — trigger homophones `transform_trigger_words`,
+  ≥3-word body, instruction must START with an editing verb from `INSTRUCTION_VERBS`) splits body from
+  instruction; `apply_instruction` (TRANSFORM_SYSTEM_PROMPT via groq-proxy) rewrites the body; the
+  overlay shows *“✦ Transformed · <instruction>”* so a wrong split is catchable. ANY failure falls
+  back to the untouched `process_text` path (Rule #1). Hook lives in `main`'s transcribe worker,
+  BEFORE `process_text`.
+- **Mode B — selection (Agentic):** select text anywhere → **⌘⇧T** → `transform.capture_selection`
+  (save clipboard → synth ⌘C → read → ALWAYS restore) → `transform_widget.TransformWidget` cream pill
+  (non-activating, bottom-center): **Improvise** (IMPROVISE_SYSTEM_PROMPT clarity pass), typed
+  instruction, or SPOKEN instruction (reuses Recorder+transcriber; blocked while a meeting holds the
+  mic). Result is a **preview** — Replace pastes over the still-highlighted selection
+  (`injector.inject_text`), then a 6-s **Undo** (target-app ⌘Z). Cancel/no-selection/too-long
+  (>12k chars) are all no-ops.
+- **Mobile:** Mode A port is planned (`lib/transform.ts` mirror); Mode B needs the keyboard extension.
+- **Fixtures:** `whisperflow/transform_fixtures.py` (16 gate cases + output unwrapping, offline).

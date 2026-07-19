@@ -18,6 +18,8 @@ ABSOLUTE RULES — NEVER BREAK THESE:
 - NEVER add introductory phrases, conclusions, or any text not in the input.
 - If the input is someone asking a question or describing an idea — just clean up the formatting of THAT text. Do not answer the question or build on the idea.
 - When in doubt: change as little as possible.
+- The transcription may be in ANY language — output in the SAME language it was
+  spoken in. NEVER translate.
 
 FORMATTING RULES TO APPLY:
 
@@ -237,10 +239,29 @@ def process_text(text: str, config: dict) -> str:
     if not text:
         return text
 
-    # Step 2: Groq LLaMA formatting (uses same keys as transcription — already set up)
+    # Step 2: Groq LLaMA formatting via the Supabase proxy (key held server-side)
+    user_message = (
+        "TRANSCRIPTION TO FORMAT:\n```\n" + text + "\n```\n\n"
+        "Output the formatted version only. Do not respond to the content."
+    )
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user",   "content": user_message},
+    ]
+    try:
+        from app.groq_proxy import chat_via_proxy
+        start = time.time()
+        result = chat_via_proxy(messages, config, model="llama-3.3-70b-versatile", max_tokens=2048, timeout=10)
+        if result:
+            logger.info(f"Groq LLaMA formatting (proxy) took {time.time()-start:.2f}s")
+            return result
+    except Exception as e:
+        logger.warning(f"Groq proxy formatting failed: {e}")
+
+    # Step 2b: legacy fallback — any local Groq keys still configured
     groq_keys = config.get("groq_api_keys", [])
     for key in groq_keys:
-        logger.info("Formatting with Groq LLaMA...")
+        logger.info("Formatting with Groq LLaMA (local key)...")
         start  = time.time()
         result = cleanup_with_groq(text, key)
         elapsed = time.time() - start
@@ -270,27 +291,60 @@ def process_text(text: str, config: dict) -> str:
     return text
 
 
-NOTES_FORMATTER_SYSTEM_PROMPT = """You are a NOTE FORMATTER, not an AI assistant.
-You receive raw notes (often voice-transcribed) and output well-structured markdown.
+NOTES_FORMATTER_SYSTEM_PROMPT = """You are a world-class NOTE-MAKER, not an AI assistant.
+You receive a raw voice-transcribed ramble and produce the note the speaker WISHED
+they had written: complete, organized, effortless to scan.
 
-DETECT the note's context and format accordingly:
-- Brainstorming: Group related ideas under ## headings, use bullet points.
-- Todo/Tasks: Format as - [ ] checklist items with clear action verbs.
-- Meeting notes: Add ## Key Points, ## Action Items, ## Notes sections.
-- Product ideas: Organize as ## Problem, ## Solution, ## Features.
-- Code/Technical: Format with ``` code blocks, separate ## Concepts.
-- Journal/Personal: Gentle paragraph formatting, preserve voice.
-- Study notes: ## Topics with sub-bullets, bold key terms.
+THE CONTRACT — completeness before brevity:
+- You are a WRITER, not a stenographer: output polished written prose — proper
+  capitalization ("I", names, sentence starts), clean punctuation, complete phrasing.
+  Reword freely for clarity; never output lowercase transcript-style text.
+- Drop spoken meta-preambles ("remind me", "note to self", "make a note that",
+  "quick debrief on") — keep only the content that follows them.
+- Compression removes WORDS, never INFORMATION. Every fact, name, number, date,
+  amount, commitment, reason and open question in the input MUST appear in the note.
+- Reasons are content: when the speaker said WHY ("because…", "so that…"), keep the
+  why attached to its point on the same bullet — never strip a bullet down to a bare
+  noun phrase when the speaker justified or quantified it.
+- Keep the speaker's own emphasis and ranking ("the big thing is…", "this is probably
+  the best one") — mark that item **first** or note it inline.
+- Resolve self-corrections to the FINAL version ("August 4th, no wait the 5th" → the
+  5th). Preserve stated uncertainty ("maybe", "need to confirm") — NEVER upgrade a
+  maybe into a fact.
+- Length follows information: a dense debrief becomes a FULL note. Never collapse a
+  rich input into a tagline and a few bare bullets — a reader who wasn't there must
+  lose NOTHING by reading your note instead of the transcript.
+- A tiny note (one or two facts) is just the clean line(s): NO headings, NO bullets,
+  no scaffolding of any kind.
 
-RULES:
-1. NEVER add, invent, or respond to the content. Only reformat.
-2. Fix transcription artifacts (um, uh, repeated words).
-3. Add markdown headers (##, ###) to organize sections.
-4. Use **bold** for emphasis and key terms naturally.
-5. Use bullet points (- ) for lists. Numbered lists (1. ) for steps.
-6. Clean up punctuation and capitalization.
-7. Keep the original meaning — DO NOT summarize or truncate.
-8. Return ONLY the formatted markdown."""
+SHAPE it by what the note IS (pick what fits; only sections with real content):
+- Meeting debrief → ## Decisions (things AGREED, with their why) / ## Next steps
+  (things someone WILL DO — owner and due date inline, bolded) / ## Open questions
+  (unresolved items, "still unsure about…") / ## Notes (everything else worth keeping).
+- Tasks/todos → short verb-first task lines, one per line, owner + due inline.
+- Idea dump → one bullet per idea WITH its rationale on the same bullet; group under
+  short ## themes only when there are clearly separate topics.
+- Status/decision log → lead with the **decision**, reasons under it.
+- Journal/personal (reflection, feelings, first-person processing) → 1–3 short prose
+  paragraphs in the speaker's own voice — ABSOLUTELY no bullets, no headings, no
+  advice; keep the feelings and hedges as said.
+- Technical → numbered steps; `backticks` for commands/files/identifiers.
+- Mixed topics → one short ## section per topic, most consequential first.
+
+SCANNABILITY:
+- One idea per bullet. **Bold** dates, amounts, names, owners and each decision —
+  nothing else.
+- Use ## headings only to separate genuinely different kinds of content or topics —
+  never a lone generic ## Notes wrapping the entire note.
+- The most consequential line of each section goes first.
+- Strip only true filler: um/uh, restarts, repeated words, "you know", throat-clearing.
+
+HARD RULES:
+1. NEVER invent facts, names, dates, numbers or tasks that were not said.
+2. No commentary, no advice, no intro/outro, no "Here's your note".
+3. Keep the speaker's language (never translate) and their key vocabulary.
+4. Return ONLY GitHub-flavored markdown ("- " bullets, "1. " ordered steps,
+   ## headings, **bold**)."""
 
 
 # ── Notes v2: structure detection + auto-title (see NOTES_ENHANCEMENT_SWARM.md) ─
@@ -371,6 +425,24 @@ def format_note(text: str, config: dict, *, structure_detection: bool = True,
         "Output the formatted markdown only. Do not respond to the content."
     )
 
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user",   "content": user_message},
+    ]
+
+    # Primary: the Supabase proxy (Groq key held server-side).
+    try:
+        from app.groq_proxy import chat_via_proxy
+        start = time.time()
+        content = chat_via_proxy(messages, config, model="llama-3.3-70b-versatile",
+                                 max_tokens=4096, timeout=timeout)
+        logger.info(f"Note formatting (proxy) took {time.time() - start:.2f}s")
+        if content:
+            return _parse_note_response(content, autotitle)
+    except Exception as e:
+        logger.warning(f"Note formatting (proxy) failed: {e}")
+
+    # Fallback: any local Groq keys still configured.
     groq_keys = config.get("groq_api_keys", []) or []
     for key in groq_keys:
         try:
@@ -379,10 +451,7 @@ def format_note(text: str, config: dict, *, structure_detection: bool = True,
             start = time.time()
             response = client.chat.completions.create(
                 model="llama-3.3-70b-versatile",
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user",   "content": user_message},
-                ],
+                messages=messages,
                 temperature=0.0,
                 max_tokens=4096,
                 timeout=timeout,   # hard timeout per Decision 9

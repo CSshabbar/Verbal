@@ -20,6 +20,9 @@
         "NSSpeechRecognitionUsageDescription": "Verbal uses speech recognition to transcribe your voice.",
         "NSCameraUsageDescription": "Verbal needs your camera to scan a pairing code on your computer.",
         "NSPhotoLibraryUsageDescription": "Verbal needs photo access so you can send images to your computer."
+      },
+      "entitlements": {
+        "com.apple.security.application-groups": ["group.com.verbal.app"]
       }
     },
     "android": {
@@ -66,7 +69,8 @@
         }
       ],
       "expo-web-browser",
-      "./plugins/withFlumeKeyboard"
+      "./plugins/withFlumeKeyboard",
+      "@bacons/apple-targets"
     ],
     "scheme": "verbal",
     "extra": {

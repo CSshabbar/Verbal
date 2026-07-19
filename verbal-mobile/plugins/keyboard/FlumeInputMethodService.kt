@@ -1,7 +1,9 @@
 package com.verbal.app.keyboard
 
 import android.content.Intent
+import android.content.res.Configuration
 import android.graphics.Color
+import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.inputmethodservice.InputMethodService
 import android.media.MediaRecorder
@@ -11,10 +13,14 @@ import android.os.Looper
 import android.text.InputType
 import android.util.TypedValue
 import android.view.Gravity
+import android.view.HapticFeedbackConstants
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.inputmethod.EditorInfo
 import android.widget.Button
+import android.widget.FrameLayout
+import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -27,35 +33,103 @@ import java.net.HttpURLConnection
 import java.net.URL
 
 /**
- * Flume dictation keyboard.
+ * Flume Keyboard v2 (Android IME) — full QWERTY keyboard with the Flume bar.
  *
- * Layout (matches the Flume design): a status pill on top; a control row with a
- * backspace/correction button (left), a large mic button (center), and a right
- * column of Snippets / Canvas / History buttons.
+ * Matches FLUME_KEYBOARD_V2_DESIGN.md: a suggestions strip, the Flume bar
+ * (F · ⚡ snippets · ▦ canvas · 🕐 history · 📖 vocabulary · ● mic), and a content
+ * area that swaps between the letters/numbers/symbols key layers and the four
+ * overlays. Light + dark themes follow the system night mode.
  *
- * Functionality:
- *  - Mic: record -> transcribe via Groq (vocabulary bias) -> apply replacements +
- *    snippet expansion -> insert.
- *  - Backspace: delete the character before the cursor.
- *  - Snippets: pick list of the user's snippets -> inserts the expansion.
- *  - History: pick list of recent dictations -> inserts the text.
- *  - Canvas: launches the Flume app.
+ * STAGE 1 (this file): layers, Flume bar, theming, overlays, basic suggestions,
+ * and the existing mic → groq-proxy dictation. DEFERRED (next stages, marked TODO):
+ * emoji picker, GIF (Tenor), glide/swipe typing, ML autocorrect/prediction.
  *
- * Config (Groq key + dictionary + snippets + recent history) is read from a JSON
- * file the RN app writes to filesDir (see lib/keyboardBridge.ts). Fails closed:
- * secure fields disable the mic; any error shows a message and never crashes.
+ * Fails closed: secure fields disable the mic; any error shows a message, never crashes.
  */
 class FlumeInputMethodService : InputMethodService() {
-    private val ACCENT = Color.parseColor("#E8522A")
-    private val BG = Color.parseColor("#0d0c0b")
-    private val CARD = Color.parseColor("#1c1a18")
-    private val TXT = Color.parseColor("#f4f3f1")
-    private val MUT = Color.parseColor("#8a8580")
 
+    // ── palette (set per theme) ──────────────────────────────────────────────────
+    private val ACCENT = Color.parseColor("#C85A3E")   // terracotta — THE Flume accent
+    private var bg = 0; private var keyBg = 0; private var keyText = 0
+    private var pressBg = 0   // key color while pressed (Gboard-style feedback)
+    private var modBg = 0; private var barBg = 0; private var iconTint = 0
+    private var mutedText = 0; private var returnBg = 0; private var returnText = 0
+    private var micBg = 0; private var micFg = 0; private var cardBg = 0; private var highlightBg = 0
+
+    // ── views / state ─────────────────────────────────────────────────────────────
+    private var root: LinearLayout? = null
+    private var suggestionStrip: LinearLayout? = null
+    private var barRow: LinearLayout? = null
+    private var content: FrameLayout? = null
     private var status: TextView? = null
-    private var mic: Button? = null
-    private var panel: ScrollView? = null
-    private var panelList: LinearLayout? = null
+    private var mic: TextView? = null
+    private val barIcons = HashMap<String, TextView>()
+    // Recording UI (waveform + cancel/pause replace the overlay icons while recording).
+    private var iconGroup: View? = null
+    private var micWrap: View? = null
+    private var recordControls: View? = null
+    private var waveform: WaveformView? = null
+    private var pauseBtn: TextView? = null
+    private var timerLabel: TextView? = null
+    private var paused = false
+    private var recStartMs = 0L
+    private var pausedTotalMs = 0L
+    private var pauseStartMs = 0L
+    private val ampPoll = object : Runnable {
+        override fun run() {
+            if (!recording) return
+            if (!paused) {
+                val amp = try { recorder?.maxAmplitude ?: 0 } catch (e: Exception) { 0 }
+                val lvl = Math.sqrt((amp / 32767.0)).toFloat().coerceIn(0f, 1f)
+                waveform?.tick(lvl)
+            }
+            main.postDelayed(this, 33)
+        }
+    }
+    private val timerTick = object : Runnable {
+        override fun run() {
+            if (!recording) return
+            val ref = if (paused) pauseStartMs else System.currentTimeMillis()
+            val s = ((ref - recStartMs - pausedTotalMs) / 1000).toInt().coerceAtLeast(0)
+            timerLabel?.text = "${s / 60}:${(s % 60).toString().padStart(2, '0')}"
+            main.postDelayed(this, 250)
+        }
+    }
+    // Ionicons (bundled ttf) — same icon set as the app; tint via setTextColor.
+    private val icFont: Typeface? by lazy {
+        try { Typeface.createFromAsset(assets, "ionicons.ttf") } catch (e: Exception) { null }
+    }
+    // App typefaces — Geist for UI/keys, JetBrains Mono for numerals + meta labels.
+    private val geist: Typeface? by lazy {
+        try { Typeface.createFromAsset(assets, "geist_medium.ttf") } catch (e: Exception) { null }
+    }
+    private val geistReg: Typeface? by lazy {
+        try { Typeface.createFromAsset(assets, "geist_regular.ttf") } catch (e: Exception) { null }
+    }
+    private val mono: Typeface? by lazy {
+        try { Typeface.createFromAsset(assets, "jetbrains_mono.ttf") } catch (e: Exception) { null }
+    }
+    private val IC_FLASH = "\uF31A"   // flash-outline (snippets)
+    private val IC_GRID  = "\uF356"   // grid-outline (canvas)
+    private val IC_TIME  = "\uF5DE"   // time-outline (history)
+    private val IC_BOOK  = "\uF1A6"   // book-outline (vocabulary)
+    private val IC_MIC   = ""   // mic
+    private val IC_CLOSE = ""   // close (cancel \u2715)
+    private val IC_PAUSE = ""   // pause
+    private val IC_PLAY  = ""   // play (resume)
+    private val IC_STOP  = ""   // stop (filled square)
+
+    private enum class Layer { LETTERS, NUMBERS, SYMBOLS }
+    private var layer = Layer.LETTERS
+    private var shifted = false
+    private var capsLock = false
+    private var activeOverlay: String? = null   // null = keyboard showing
+    private var emojiCatIdx = 1
+    private val emojiRecents = ArrayList<String>()
+
+    // Enlarged-letter preview bubble shown above the pressed letter key (Gboard-style).
+    private var keyPreview: android.widget.PopupWindow? = null
+    private var keyPreviewText: TextView? = null
 
     private var recorder: MediaRecorder? = null
     private var audioFile: File? = null
@@ -64,105 +138,1082 @@ class FlumeInputMethodService : InputMethodService() {
     private var busy = false
     private val main = Handler(Looper.getMainLooper())
 
+    // ── recording sound effects (bundled WAVs in assets/) ───────────────────────────
+    // Low-latency SoundPool, safe from any thread; fails closed so a sound error never
+    // throws into the recording/transcribe path.
+    private val soundPool: android.media.SoundPool by lazy {
+        val attrs = android.media.AudioAttributes.Builder()
+            .setUsage(android.media.AudioAttributes.USAGE_ASSISTANCE_SONIFICATION)
+            .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SONIFICATION)
+            .build()
+        android.media.SoundPool.Builder().setMaxStreams(3).setAudioAttributes(attrs).build()
+    }
+    private val soundIds = HashMap<String, Int>()
+    private fun loadSounds() {
+        if (soundIds.isNotEmpty()) return
+        for (name in listOf("flume_start", "flume_stop", "flume_done")) {
+            try {
+                val afd = assets.openFd("$name.wav")
+                soundIds[name] = soundPool.load(afd, 1)
+                afd.close()
+            } catch (e: Exception) { /* asset missing — skip */ }
+        }
+    }
+    private fun playSound(name: String, volume: Float = 0.35f) {
+        try {
+            loadSounds()
+            val id = soundIds[name] ?: return
+            soundPool.play(id, volume, volume, 1, 0, 1f)
+        } catch (e: Exception) { /* never break the recording path */ }
+    }
+
+    // ── typing suggestions: bundled frequency dictionary + on-device learning ───────
+    // flume_words.txt is ~25k words, most-frequent first (rank = position), so prefix
+    // matches taken in order are the most likely completions. `learned` is the user's
+    // own word-frequency map (persisted), boosted above the dictionary.
+    private val dictWords: List<String> by lazy {
+        try { assets.open("flume_words.txt").bufferedReader().use { it.readLines() } } catch (e: Exception) { emptyList() }
+    }
+    private val learned = HashMap<String, Int>()
+    private var learnedLoaded = false
+    private fun loadLearned() {
+        if (learnedLoaded) return
+        learnedLoaded = true
+        try {
+            val js = JSONObject(getSharedPreferences("flume_kbd_learn", MODE_PRIVATE).getString("words", "{}") ?: "{}")
+            for (k in js.keys()) learned[k] = js.optInt(k)
+        } catch (e: Exception) { /* start empty */ }
+    }
+    private fun learnWord(raw: String) {
+        val w = raw.lowercase().filter { it.isLetter() }
+        if (w.length < 2) return
+        loadLearned()
+        learned[w] = (learned[w] ?: 0) + 1
+        try {
+            if (learned.size > 600) {                    // bound the personal store
+                val top = learned.entries.sortedByDescending { it.value }.take(500).associate { it.key to it.value }
+                learned.clear(); learned.putAll(top)
+            }
+            val js = JSONObject(); for ((k, v) in learned) js.put(k, v)
+            getSharedPreferences("flume_kbd_learn", MODE_PRIVATE).edit().putString("words", js.toString()).apply()
+        } catch (e: Exception) { /* best-effort */ }
+    }
+
+    // ── next-word prediction: bundled bigram table + on-device personal bigrams ─────
+    // flume_bigrams.txt is `prev<TAB>next1 next2 next3 …` (space-separated, most-likely
+    // first). `learnedBg` is the user's own prev→next frequency map (persisted next to
+    // `learned`), preferred over the bundled table.
+    private val bigrams: HashMap<String, List<String>> by lazy {
+        val m = HashMap<String, List<String>>()
+        try {
+            assets.open("flume_bigrams.txt").bufferedReader().useLines { seq ->
+                for (line in seq) {
+                    val tab = line.indexOf('\t'); if (tab <= 0) continue
+                    val prev = line.substring(0, tab)
+                    val nexts = line.substring(tab + 1).trim().split(' ').filter { it.isNotEmpty() }
+                    if (nexts.isNotEmpty()) m[prev] = nexts
+                }
+            }
+        } catch (e: Exception) { /* empty */ }
+        m
+    }
+    private val learnedBg = HashMap<String, HashMap<String, Int>>()
+    private var learnedBgLoaded = false
+    private fun loadLearnedBg() {
+        if (learnedBgLoaded) return
+        learnedBgLoaded = true
+        try {
+            val root = JSONObject(getSharedPreferences("flume_kbd_learn", MODE_PRIVATE).getString("bigrams", "{}") ?: "{}")
+            for (p in root.keys()) {
+                val inner = root.optJSONObject(p) ?: continue
+                val m = HashMap<String, Int>(); for (n in inner.keys()) m[n] = inner.optInt(n)
+                learnedBg[p] = m
+            }
+        } catch (e: Exception) {}
+    }
+    private fun learnBigram(prev: String, next: String) {
+        val p = prev.lowercase().filter { it.isLetter() }; val n = next.lowercase().filter { it.isLetter() }
+        if (p.length < 2 || n.length < 2) return
+        loadLearnedBg()
+        val m = learnedBg.getOrPut(p) { HashMap() }
+        m[n] = (m[n] ?: 0) + 1
+        try {
+            if (learnedBg.size > 400) {   // bound: drop an arbitrary entry when too big
+                val k = learnedBg.keys.firstOrNull { it != p }; if (k != null) learnedBg.remove(k)
+            }
+            val root = JSONObject()
+            for ((pp, mm) in learnedBg) { val o = JSONObject(); for ((nn, c) in mm) o.put(nn, c); root.put(pp, o) }
+            getSharedPreferences("flume_kbd_learn", MODE_PRIVATE).edit().putString("bigrams", root.toString()).apply()
+        } catch (e: Exception) {}
+    }
+
+    // ── emoji: bundled full library + word→emoji keyword table ──────────────────────
+    // flume_emoji.txt is `Group<TAB>emoji emoji …` (9 groups, space-separated) → the full
+    // ~1900-emoji picker. flume_emoji_kw.txt is `keyword<TAB>emoji emoji …` for the
+    // word→emoji suggestion chip. Both fail closed to empty on any read error.
+    private val emojiLib: List<Pair<String, List<String>>> by lazy {
+        val out = ArrayList<Pair<String, List<String>>>()
+        try {
+            assets.open("flume_emoji.txt").bufferedReader().useLines { seq ->
+                for (line in seq) {
+                    val tab = line.indexOf('\t'); if (tab <= 0) continue
+                    val name = line.substring(0, tab)
+                    val list = line.substring(tab + 1).trim().split(' ').filter { it.isNotEmpty() }
+                    if (list.isNotEmpty()) out.add(name to list)
+                }
+            }
+        } catch (e: Exception) { /* empty */ }
+        out
+    }
+    private val emojiKw: HashMap<String, List<String>> by lazy {
+        val m = HashMap<String, List<String>>()
+        try {
+            assets.open("flume_emoji_kw.txt").bufferedReader().useLines { seq ->
+                for (line in seq) {
+                    val tab = line.indexOf('\t'); if (tab <= 0) continue
+                    val kw = line.substring(0, tab)
+                    val list = line.substring(tab + 1).trim().split(' ').filter { it.isNotEmpty() }
+                    if (list.isNotEmpty()) m[kw] = list
+                }
+            }
+        } catch (e: Exception) { /* empty */ }
+        m
+    }
+    // Representative tab glyph per bundled group (same order as flume_emoji.txt).
+    private val emojiTabGlyphs = listOf("😀","🧑","🐶","🍔","✈️","⚽","💡","❤️","🏳️")
+
+    // Read the last two alphabetic words before the cursor (prev, justFinished).
+    private fun lastTwoWords(): Pair<String, String>? {
+        val ic = currentInputConnection ?: return null
+        val before = ic.getTextBeforeCursor(64, 0)?.toString()?.trimEnd() ?: return null
+        val ms = Regex("[\\p{L}']+").findAll(before).map { it.value }.toList()
+        if (ms.size < 2) return null
+        return Pair(ms[ms.size - 2], ms[ms.size - 1])
+    }
+
     private fun dp(v: Int): Int =
         TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v.toFloat(), resources.displayMetrics).toInt()
 
     private fun rounded(color: Int, radius: Int): GradientDrawable =
         GradientDrawable().apply { setColor(color); cornerRadius = dp(radius).toFloat() }
 
+    // Gapless touch grid (Gboard-style): the touchable View fills its whole cell, but a
+    // rounded key is drawn INSIDE with a 3dp inset all sides — so the visual gap between
+    // keys is drawn inside each key, and no point in the key area is a dead touch zone.
+    private fun keyDrawable(color: Int): android.graphics.drawable.Drawable =
+        android.graphics.drawable.InsetDrawable(rounded(color, 8), dp(3))
+
+    private fun isDark(): Boolean =
+        (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
+
+    private fun applyTheme() {
+        // Flume design tokens (warm near-black + cream, orange accent).
+        if (isDark()) {
+            // Canonical "Minimalist dark" tokens (colors.ts / CLAUDE_CODE_PROMPT.md).
+            // barBg == bg so the Flume bar blends into the app bottom (no floating card).
+            bg = Color.parseColor("#0e1012"); keyBg = Color.parseColor("#2a2d31")
+            pressBg = Color.parseColor("#3a3e44")
+            keyText = Color.parseColor("#f2f2f2"); modBg = Color.parseColor("#1e2124"); barBg = Color.parseColor("#0e1012")
+            iconTint = Color.parseColor("#8b8d90"); mutedText = Color.parseColor("#8b8d90")
+            returnBg = Color.parseColor("#f2f2f2"); returnText = Color.parseColor("#0e1012")
+            micBg = Color.parseColor("#f2f2f2"); micFg = Color.parseColor("#0e1012")
+            cardBg = Color.parseColor("#26282b"); highlightBg = Color.parseColor("#26282b")
+        } else {
+            bg = Color.parseColor("#ECEBEA"); keyBg = Color.WHITE
+            pressBg = Color.parseColor("#d4d4d6")
+            keyText = Color.parseColor("#14110f"); modBg = Color.parseColor("#CBCBCD"); barBg = Color.parseColor("#ECEBEA")
+            iconTint = Color.parseColor("#6b6b6b"); mutedText = Color.parseColor("#8a857f")
+            returnBg = Color.parseColor("#14110f"); returnText = Color.WHITE
+            micBg = Color.parseColor("#14110f"); micFg = Color.WHITE
+            cardBg = Color.WHITE; highlightBg = Color.parseColor("#E1E0DF")
+        }
+    }
+
+    // ── view tree ─────────────────────────────────────────────────────────────────
     override fun onCreateInputView(): View {
-        val root = LinearLayout(this).apply {
+        applyTheme()
+        val r = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(BG)
-            setPadding(dp(12), dp(12), dp(12), dp(14))
+            setBackgroundColor(bg)
+            // Full-bleed: minimal side padding so keys reach near the screen edges and
+            // the whole surface reads as one continuous keyboard, not a floating card.
+            setPadding(dp(2), dp(2), dp(2), dp(6))
             layoutParams = ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
         }
-
-        // Pick-list panel (hidden until Snippets/History is tapped)
-        panelList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        panel = ScrollView(this).apply {
-            visibility = View.GONE
-            background = rounded(CARD, 14)
-            addView(panelList)
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(180)).apply { bottomMargin = dp(10) }
-        }
-        root.addView(panel)
-
-        // Status pill
-        val pill = LinearLayout(this).apply {
+        suggestionStrip = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            background = rounded(CARD, 16)
-            setPadding(dp(16), dp(14), dp(16), dp(14))
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-                .apply { bottomMargin = dp(12) }
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(40))
         }
-        pill.addView(TextView(this).apply {
-            text = "FLUME"; setTextColor(MUT); textSize = 11f
-            letterSpacing = 0.18f; setPadding(0, 0, dp(12), 0)
-        })
-        status = TextView(this).apply { text = "Tap to speak"; setTextColor(TXT); textSize = 15f }
-        pill.addView(status)
-        root.addView(pill)
-
-        // Control row: [backspace]  [ mic (weighted) ]  [snip/canvas/hist column]
-        val row = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
+        val sugScroll = HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            isFillViewport = true   // let the MATCH_PARENT strip stretch to full width (weighted cells)
+            addView(suggestionStrip)
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(40))
+        }
+        r.addView(sugScroll)
+        r.addView(buildFlumeBar())
+        content = FrameLayout(this).apply {
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
         }
-        val back = iconButton("⌫", CARD, TXT).apply { setOnClickListener { onBackspace() } }
-        row.addView(back)
-
-        mic = Button(this).apply {
-            text = "🎤  Tap to dictate"
-            setTextColor(Color.WHITE); textSize = 15f
-            background = rounded(ACCENT, 18)
-            setOnClickListener { onMicTap() }
-            layoutParams = LinearLayout.LayoutParams(0, dp(56), 1f)
-                .apply { leftMargin = dp(10); rightMargin = dp(10) }
-        }
-        row.addView(mic)
-
-        val rightCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        rightCol.addView(iconButton("⚡", CARD, TXT).apply { setOnClickListener { togglePanel("snippets") } })
-        rightCol.addView(iconButton("▦", CARD, TXT).apply {
-            (layoutParams as LinearLayout.LayoutParams).topMargin = dp(8)
-            setOnClickListener { openCanvas() } })
-        rightCol.addView(iconButton("🕒", CARD, TXT).apply {
-            (layoutParams as LinearLayout.LayoutParams).topMargin = dp(8)
-            setOnClickListener { togglePanel("history") } })
-        row.addView(rightCol)
-
-        root.addView(row)
-        return root
+        r.addView(content)
+        root = r
+        showKeyboard()
+        updateSuggestions()
+        loadSounds()
+        return r
     }
-
-    private fun iconButton(glyph: String, bg: Int, fg: Int): Button =
-        Button(this).apply {
-            text = glyph; setTextColor(fg); textSize = 16f
-            background = rounded(bg, 14)
-            setPadding(0, 0, 0, 0)
-            layoutParams = LinearLayout.LayoutParams(dp(48), dp(48))
-        }
 
     override fun onStartInputView(info: EditorInfo?, restarting: Boolean) {
         super.onStartInputView(info, restarting)
         secure = isSecureField(info)
         if (recording) abortRecording()
-        hidePanel()
-        mic?.isEnabled = !secure
-        setStatus(if (secure) "Secure field — dictation disabled" else "Tap to speak")
+        layer = Layer.LETTERS; shifted = false; capsLock = false
+        showKeyboard()
+        updateSuggestions()
+        maybeAutoCap()
     }
 
-    // ── buttons ─────────────────────────────────────────────────────────────────
+    override fun onDestroy() {
+        hideKeyPreview()
+        try { soundPool.release() } catch (e: Exception) {}
+        super.onDestroy()
+    }
+
+    // ── Flume bar ───────────────────────────────────────────────────────────────
+    private fun buildFlumeBar(): View {
+        val bar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setBackgroundColor(barBg)
+            setPadding(dp(6), dp(6), dp(6), dp(6))
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(52))
+        }
+        // F wordmark — inverted square (keyText bg) with a terracotta F.
+        bar.addView(TextView(this).apply {
+            text = "F"; setTextColor(ACCENT); textSize = 15f
+            typeface = geist ?: Typeface.DEFAULT_BOLD; gravity = Gravity.CENTER
+            background = rounded(keyText, 8)
+            layoutParams = LinearLayout.LayoutParams(dp(32), dp(32))
+        })
+        // Middle: overlay icons (right-aligned, weight 1) — swapped for the recording
+        // controls while dictating.
+        val icons = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL or Gravity.END
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f)
+            addView(barIcon(IC_FLASH, "snippets"))
+            addView(barIcon(IC_GRID, "canvas"))
+            addView(barIcon(IC_TIME, "history"))
+            addView(barIcon(IC_BOOK, "vocabulary"))
+        }
+        iconGroup = icons
+        bar.addView(icons)
+        bar.addView(buildRecordControls())
+        bar.addView(View(this).apply { layoutParams = LinearLayout.LayoutParams(dp(6), 1) })
+        // mic
+        mic = TextView(this).apply {
+            text = IC_MIC; typeface = icFont; setTextColor(micFg); textSize = 20f; gravity = Gravity.CENTER
+            background = rounded(micBg, 20)
+            layoutParams = FrameLayout.LayoutParams(dp(40), dp(40))
+            setOnClickListener { onMicTap() }
+        }
+        val mw = FrameLayout(this).apply {
+            layoutParams = LinearLayout.LayoutParams(dp(40), dp(40))
+            addView(mic)
+            addView(View(this@FlumeInputMethodService).apply {   // terracotta dot badge (top-right)
+                background = rounded(ACCENT, 999)
+                layoutParams = FrameLayout.LayoutParams(dp(8), dp(8), Gravity.TOP or Gravity.END)
+            })
+        }
+        micWrap = mw
+        bar.addView(mw)
+        barRow = bar
+        return bar
+    }
+
+    private fun barIcon(glyph: String, overlay: String): TextView {
+        val tv = TextView(this).apply {
+            text = glyph; typeface = icFont; setTextColor(iconTint); textSize = 20f; gravity = Gravity.CENTER
+            background = rounded(if (activeOverlay == overlay) highlightBg else Color.TRANSPARENT, 10)
+            layoutParams = LinearLayout.LayoutParams(dp(40), dp(40)).apply { leftMargin = dp(4) }
+            setOnClickListener { toggleOverlay(overlay) }
+        }
+        barIcons[overlay] = tv
+        return tv
+    }
+
+    private fun refreshBar() {
+        for ((ov, tv) in barIcons)
+            tv.background = rounded(if (activeOverlay == ov) highlightBg else Color.TRANSPARENT, 10)
+    }
+
+    private fun setMicState(rec: Boolean) {
+        mic?.apply {
+            if (rec) { typeface = Typeface.DEFAULT; text = "■" }   // ■ stop
+            else { typeface = icFont; text = IC_MIC }
+        }
+    }
+
+    // Recording bar (RECORDING_BAR_PROMPT.md, #51/#52): F · ✕ · waveform · 0:04 · terracotta.
+    private fun buildRecordControls(): View {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            visibility = View.GONE
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f)
+        }
+        // cancel — neutral circle chip (Ionicons close, matches iOS SF Symbol)
+        val cancel = TextView(this).apply {
+            text = IC_CLOSE; setTextColor(keyText); textSize = 18f; gravity = Gravity.CENTER
+            typeface = icFont
+            background = rounded(highlightBg, 999)
+            layoutParams = LinearLayout.LayoutParams(dp(38), dp(38)).apply { leftMargin = dp(8); rightMargin = dp(10) }
+            setOnClickListener { abortRecording() }
+        }
+        // live waveform — text-colored bars, fills the middle
+        val wave = WaveformView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f)
+        }
+        waveform = wave
+        // M:SS mono timer
+        val timer = TextView(this).apply {
+            text = "0:00"; setTextColor(mutedText); textSize = 12f; letterSpacing = 0.04f
+            typeface = mono ?: Typeface.MONOSPACE
+            gravity = Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                .apply { leftMargin = dp(10); rightMargin = dp(10) }
+        }
+        timerLabel = timer
+        // pause — neutral circle (Ionicons pause); tap toggles pause/resume
+        val pauseView = TextView(this).apply {
+            text = IC_PAUSE; setTextColor(keyText); textSize = 16f; gravity = Gravity.CENTER
+            typeface = icFont
+            background = rounded(highlightBg, 999)
+            layoutParams = LinearLayout.LayoutParams(dp(38), dp(38)).apply { rightMargin = dp(8) }
+            setOnClickListener { togglePause() }
+        }
+        pauseBtn = pauseView
+        // stop — terracotta circle (Ionicons stop); tap = stop & send
+        val stop = TextView(this).apply {
+            text = IC_STOP; setTextColor(Color.WHITE); textSize = 17f; gravity = Gravity.CENTER
+            typeface = icFont
+            background = rounded(ACCENT, 999)
+            layoutParams = LinearLayout.LayoutParams(dp(42), dp(42))
+            setOnClickListener { stopAndTranscribe() }
+        }
+        row.addView(cancel); row.addView(wave); row.addView(timer); row.addView(pauseView); row.addView(stop)
+        recordControls = row
+        return row
+    }
+
+    private fun enterRecordingUI() {
+        paused = false; pauseBtn?.text = IC_PAUSE; pauseBtn?.alpha = 1f
+        recStartMs = System.currentTimeMillis(); pausedTotalMs = 0L
+        timerLabel?.text = "0:00"
+        waveform?.reset()
+        // Fade + collapse BOTH the overlay icons and the mic; the bar shows only the
+        // recording controls (F wordmark stays).
+        iconGroup?.animate()?.alpha(0f)?.setDuration(250)?.withEndAction { iconGroup?.visibility = View.GONE }
+        micWrap?.animate()?.alpha(0f)?.setDuration(250)?.withEndAction { micWrap?.visibility = View.GONE }
+        recordControls?.apply {
+            alpha = 0f; translationX = dp(8).toFloat(); visibility = View.VISIBLE
+            animate().alpha(1f).translationX(0f).setDuration(250).start()
+        }
+        main.post(ampPoll); main.post(timerTick)
+    }
+
+    private fun exitRecordingUI() {
+        main.removeCallbacks(ampPoll); main.removeCallbacks(timerTick)
+        paused = false
+        recordControls?.animate()?.alpha(0f)?.setDuration(200)?.withEndAction { recordControls?.visibility = View.GONE }
+        iconGroup?.apply { visibility = View.VISIBLE; animate().alpha(1f).setDuration(250).start() }
+        micWrap?.apply { visibility = View.VISIBLE; animate().alpha(1f).setDuration(250).start() }
+    }
+
+    private fun togglePause() {
+        if (Build.VERSION.SDK_INT < 24) return
+        try {
+            if (!paused) {
+                recorder?.pause(); paused = true; pauseStartMs = System.currentTimeMillis()
+                pauseBtn?.text = IC_PLAY; pauseBtn?.alpha = 1f   // play = resume (waveform + timer freeze signal paused)
+            } else {
+                recorder?.resume(); paused = false
+                pausedTotalMs += System.currentTimeMillis() - pauseStartMs
+                pauseBtn?.text = IC_PAUSE; pauseBtn?.alpha = 1f
+            }
+        } catch (e: Exception) { /* pause unsupported — ignore */ }
+    }
+
+    // Desktop-widget waveform: a continuous travelling wave (18 bars) that mirrors the
+    // overlay_html.py keyframes — bars oscillate on a ~0.9s loop, staggered per bar, and
+    // grow taller with real-mic loudness.
+    inner class WaveformView(ctx: android.content.Context) : View(ctx) {
+        private val n = 18
+        private var phase = 0.0
+        private var level = 0.0f            // 0..1 smoothed real-mic loudness (0 on simulator)
+        private val paint = android.graphics.Paint().apply { color = keyText; isAntiAlias = true }
+        fun tick(realLevel: Float) {
+            phase += 0.22                    // ~30fps → ~0.9s period like the desktop keyframes
+            level += (realLevel.coerceIn(0f, 1f) - level) * 0.35f   // smooth toward target
+            invalidate()
+        }
+        fun reset() { phase = 0.0; level = 0f; invalidate() }
+        override fun onDraw(c: android.graphics.Canvas) {
+            val bw = dp(2).toFloat(); val gap = dp(2).toFloat()
+            val minH = dp(3).toFloat(); val maxH = dp(18).toFloat()
+            val totalW = n * bw + (n - 1) * gap
+            val startX = (width - totalW) / 2f
+            val cy = height / 2f; val r = bw / 2f
+            for (i in 0 until n) {
+                val osc = 0.5 + 0.5 * Math.sin(phase - i * 0.55)       // travelling wave, staggered per bar
+                val amp = (0.55f + 0.45f * level)                       // louder voice → taller (still animates at 0)
+                val h = (minH + (maxH - minH) * osc.toFloat() * amp).coerceIn(minH, maxH)
+                val x = startX + i * (bw + gap)
+                c.drawRoundRect(x, cy - h / 2f, x + bw, cy + h / 2f, r, r, paint)
+            }
+        }
+    }
+
+    // ── keyboard layers ───────────────────────────────────────────────────────────
+    private val lettersRows = arrayOf(
+        arrayOf("q","w","e","r","t","y","u","i","o","p"),
+        arrayOf("a","s","d","f","g","h","j","k","l"),
+        arrayOf("z","x","c","v","b","n","m"),
+    )
+    private val numbersRows = arrayOf(
+        arrayOf("1","2","3","4","5","6","7","8","9","0"),
+        arrayOf("@","#","$","_","&","-","+","(",")","/"),
+        arrayOf("*","\"","'",":",";","!","?"),
+    )
+    private val symbolsRows = arrayOf(
+        arrayOf("~","`","|","•","√","π","÷","×","¶","∆"),
+        arrayOf("£","¢","€","¥","^","°","=","{","}","\\"),
+        arrayOf("%","©","®","™","✓","[","]"),
+    )
+
+    private fun showKeyboard() {
+        hideKeyPreview()   // dismiss any stale preview bubble across a rebuild
+        activeOverlay = null
+        refreshBar()
+        content?.removeAllViews()
+        content?.addView(buildKeyboard())
+    }
+
+    private fun buildKeyboard(): View {
+        val kb = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, dp(6), 0, 0)
+            layoutParams = FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        }
+        val rows = when (layer) { Layer.LETTERS -> lettersRows; Layer.NUMBERS -> numbersRows; Layer.SYMBOLS -> symbolsRows }
+        // Row 1
+        kb.addView(keyRow(rows[0]))
+        // Row 2 (indented for letters)
+        kb.addView(keyRow(rows[1], sideInset = if (layer == Layer.LETTERS) 0.5f else 0f))
+        // Row 3: [shift/=\<] keys [backspace]
+        val r3 = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(46))
+                .apply { topMargin = 0 }
+        }
+        r3.addView(functionKey(if (layer == Layer.LETTERS) (if (capsLock) "⇪" else "⇧") else (if (layer == Layer.NUMBERS) "=\\<" else "?123"), 1.5f) {
+            if (layer == Layer.LETTERS) onShift()
+            else { layer = if (layer == Layer.NUMBERS) Layer.SYMBOLS else Layer.NUMBERS; showKeyboard() }
+        })
+        for (k in rows[2]) r3.addView(charKey(k, 1f))
+        val backKey = functionKey("⌫", 1.5f) { }   // touch handler below drives it (with repeat)
+        attachRepeat(backKey) { onBackspace() }
+        r3.addView(backKey)
+        kb.addView(r3)
+        // Row 4: [?123/ABC] , [space] . [return]
+        val r4 = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(46))
+                .apply { topMargin = 0 }
+        }
+        r4.addView(functionKey(if (layer == Layer.LETTERS) "?123" else "ABC", 1.5f) {
+            layer = if (layer == Layer.LETTERS) Layer.NUMBERS else Layer.LETTERS; showKeyboard()
+        })
+        val commaKey = charKey(",", 1f)
+        // Comma: DOWN commits ","; hold 400ms → emoji picker (replaces the old long-click).
+        keyTouch(commaKey, keyBg, fire = { onCharKey(",") }, longPress = { openEmoji() })
+        r4.addView(commaKey)
+        val space = functionKey("English (US)", 4f) { onSpace() } as TextView
+        space.textSize = 12f
+        space.background = keyDrawable(keyBg)      // key-colored, not a gray modifier
+        space.setTextColor(mutedText)
+        spaceTouch(space)                         // swipe to move cursor; tap inserts a space
+        r4.addView(space)
+        r4.addView(charKey(".", 1f))
+        val ret = functionKey("↵", 1.5f) { onEnter() }
+        (ret as TextView).apply { background = keyDrawable(returnBg); setTextColor(returnText) }
+        keyTouch(ret as TextView, returnBg, { onEnter() })   // re-bind so pressed-state restores returnBg
+        r4.addView(ret)
+        kb.addView(r4)
+        return kb
+    }
+
+    private fun keyRow(keys: Array<String>, sideInset: Float = 0f): View {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(46))
+                .apply { topMargin = 0 }
+        }
+        if (sideInset > 0) row.addView(View(this).apply { layoutParams = LinearLayout.LayoutParams(0, 1, sideInset) })
+        for (k in keys) row.addView(charKey(k, 1f))
+        if (sideInset > 0) row.addView(View(this).apply { layoutParams = LinearLayout.LayoutParams(0, 1, sideInset) })
+        return row
+    }
+
+    private fun charKey(label: String, weight: Float): TextView {
+        val shown = if (layer == Layer.LETTERS && (shifted || capsLock) && label.length == 1 && label[0].isLetter())
+            label.uppercase() else label
+        return TextView(this).apply {
+            text = shown; setTextColor(keyText); textSize = 20f; gravity = Gravity.CENTER
+            typeface = geist
+            background = keyDrawable(keyBg)
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, weight)
+                .apply { leftMargin = 0; rightMargin = 0 }
+            // Fire on DOWN (never dropped by slide-within-slop); preview letters only.
+            keyTouch(this, keyBg, { onCharKey(shown) }, previewLabel = shown)
+        }
+    }
+
+    private fun functionKey(label: String, weight: Float, onTap: () -> Unit): View =
+        TextView(this).apply {
+            text = label; setTextColor(keyText); textSize = 15f; gravity = Gravity.CENTER
+            typeface = geist
+            background = keyDrawable(modBg)
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, weight)
+                .apply { leftMargin = 0; rightMargin = 0 }
+            keyTouch(this, modBg, { onTap() })
+        }
+
+    // ── key handling ───────────────────────────────────────────────────────────────
+    private fun onCharKey(ch: String) {
+        commit(ch)
+        if (layer == Layer.LETTERS && shifted && !capsLock) { shifted = false; showKeyboard() }
+    }
+
+    private fun commit(s: String) {
+        // Learn the just-finished word when a word boundary (space/punctuation) is typed.
+        if (s.length == 1 && !s[0].isLetter()) {
+            currentWordPrefix().let { if (it.length >= 2) learnWord(it) }
+            // Also learn the bigram (prevWord → justFinishedWord) — the boundary char
+            // isn't committed yet, so getTextBeforeCursor still ends with the finished word.
+            lastTwoWords()?.let { learnBigram(it.first, it.second) }
+        }
+        currentInputConnection?.commitText(s, 1); updateSuggestions(); maybeAutoCap()
+    }
+
+    // Space key. Double-space after a word → ". " (period + space), Gboard-style.
+    private fun onSpace() {
+        val ic = currentInputConnection
+        if (ic != null) {
+            val before = ic.getTextBeforeCursor(2, 0)?.toString() ?: ""
+            // Exactly a single trailing space preceded by a word char (letter/digit).
+            if (before.length == 2 && before[1] == ' ' && before[0].isLetterOrDigit()) {
+                ic.deleteSurroundingText(1, 0)
+                commit(". ")   // keeps updateSuggestions + auto-cap in one place
+                return
+            }
+        }
+        commit(" ")
+    }
+
+    // Move the text cursor one character left/right (Gboard-style spacebar-swipe).
+    // Fails closed: a null InputConnection just no-ops.
+    private fun sendCursor(right: Boolean) {
+        val ic = currentInputConnection ?: return
+        val code = if (right) android.view.KeyEvent.KEYCODE_DPAD_RIGHT else android.view.KeyEvent.KEYCODE_DPAD_LEFT
+        ic.sendKeyEvent(android.view.KeyEvent(android.view.KeyEvent.ACTION_DOWN, code))
+        ic.sendKeyEvent(android.view.KeyEvent(android.view.KeyEvent.ACTION_UP, code))
+    }
+
+    // Dedicated space-key touch handler: dragging horizontally scrubs the cursor
+    // (~one char per 12dp of finger travel) instead of inserting a space; a plain tap
+    // (little/no movement) still inserts a space via onSpace() on UP. Space commits on
+    // UP (not a fast-typed letter, so no risk of dropping it).
+    @Suppress("ClickableViewAccessibility")
+    private fun spaceTouch(v: TextView) {
+        val base = v.background
+        var startX = 0f; var lastSteps = 0; var swiped = false
+        val stepPx = dp(12).toFloat()
+        v.isHapticFeedbackEnabled = true
+        v.setOnTouchListener { _, e ->
+            when (e.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    startX = e.rawX; lastSteps = 0; swiped = false
+                    v.background = keyDrawable(pressBg)
+                    try { v.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP, HapticFeedbackConstants.FLAG_IGNORE_VIEW_SETTING) } catch (e2: Exception) {}
+                    true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val steps = ((e.rawX - startX) / stepPx).toInt()
+                    if (steps != lastSteps) {
+                        val delta = steps - lastSteps
+                        repeat(kotlin.math.abs(delta)) { sendCursor(delta > 0) }
+                        lastSteps = steps
+                        if (kotlin.math.abs(steps) >= 1) swiped = true
+                    }
+                    true
+                }
+                MotionEvent.ACTION_UP -> { v.background = base; if (!swiped) onSpace(); true }
+                MotionEvent.ACTION_CANCEL -> { v.background = base; true }
+                else -> false
+            }
+        }
+    }
+
+    // Auto-capitalize at sentence starts: flip one-shot shift to match the editor's
+    // caps mode, but only rebuild the keys when it actually changes.
+    private fun maybeAutoCap() {
+        if (layer != Layer.LETTERS || capsLock) return
+        val caps = currentInputConnection?.getCursorCapsMode(
+            InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES) ?: 0
+        val desired = caps != 0
+        if (desired != shifted) { shifted = desired; showKeyboard() }
+    }
+
+    private fun onShift() {
+        // off → shift(one-shot) → caps-lock → off
+        when {
+            capsLock -> { capsLock = false; shifted = false }
+            shifted -> { capsLock = true }
+            else -> { shifted = true }
+        }
+        showKeyboard()
+    }
 
     private fun onBackspace() {
-        currentInputConnection?.deleteSurroundingText(1, 0)
+        val ic = currentInputConnection ?: return
+        val sel = ic.getSelectedText(0)
+        if (sel != null && sel.isNotEmpty()) {
+            ic.commitText("", 1)
+        } else {
+            // Delete a whole surrogate pair (emoji) as one, not a broken half-char.
+            val before = ic.getTextBeforeCursor(2, 0) ?: ""
+            val n = if (before.length >= 2 &&
+                        Character.isSurrogatePair(before[before.length - 2], before[before.length - 1])) 2 else 1
+            ic.deleteSurroundingText(n, 0)
+        }
+        updateSuggestions()
+    }
+
+    // Gboard-style: fire on touch-DOWN so fast taps that slide within slop are never
+    // dropped (setOnClickListener drops them). Haptic + pressed-state on down. If a
+    // longPress is given, DOWN starts a 400ms timer; the key commits on UP only if the
+    // long-press didn't fire (used by comma → emoji). previewLabel (letters only) shows
+    // the enlarged-key bubble on down and dismisses it on up/cancel. Fails closed: a
+    // haptic/preview error must never break the actual key commit.
+    @Suppress("ClickableViewAccessibility")
+    private fun keyTouch(v: TextView, baseColor: Int, fire: () -> Unit, longPress: (() -> Unit)? = null, previewLabel: String? = null) {
+        val base = v.background
+        v.isHapticFeedbackEnabled = true
+        var handled = false
+        var lp: Runnable? = null
+        v.setOnTouchListener { _, e ->
+            when (e.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    handled = false
+                    v.background = keyDrawable(pressBg)
+                    try { v.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP, HapticFeedbackConstants.FLAG_IGNORE_VIEW_SETTING) } catch (e2: Exception) {}
+                    if (previewLabel != null) showKeyPreview(v, previewLabel)
+                    if (longPress != null) {
+                        lp = Runnable { handled = true; v.background = base; hideKeyPreview(); longPress() }
+                        main.postDelayed(lp!!, 400)
+                    } else { fire(); handled = true }
+                    true
+                }
+                MotionEvent.ACTION_UP -> {
+                    lp?.let { main.removeCallbacks(it) }
+                    v.background = base
+                    hideKeyPreview()
+                    if (!handled) fire()
+                    true
+                }
+                MotionEvent.ACTION_CANCEL -> { lp?.let { main.removeCallbacks(it) }; v.background = base; hideKeyPreview(); true }
+                else -> false
+            }
+        }
+    }
+
+    private fun showKeyPreview(anchor: View, label: String) {
+        try {
+            if (label.length != 1 || !label[0].isLetter()) return   // letters only
+            if (keyPreview == null) {
+                val tv = TextView(this).apply {
+                    gravity = Gravity.CENTER; setTextColor(keyText); textSize = 26f; typeface = geist
+                    background = rounded(keyBg, 10)
+                }
+                keyPreviewText = tv
+                keyPreview = android.widget.PopupWindow(tv, dp(48), dp(56)).apply { isTouchable = false; isClippingEnabled = false }
+            }
+            keyPreviewText?.text = label
+            val loc = IntArray(2); anchor.getLocationInWindow(loc)
+            val x = loc[0] + anchor.width / 2 - dp(24)
+            val y = loc[1] - dp(58)
+            val kp = keyPreview!!
+            if (kp.isShowing) kp.update(x, y, dp(48), dp(56)) else kp.showAtLocation(anchor, Gravity.NO_GRAVITY, x, y)
+        } catch (e: Exception) {}
+    }
+    private fun hideKeyPreview() { try { keyPreview?.dismiss() } catch (e: Exception) {} }
+
+    // Press-and-hold auto-repeat (backspace): fire once on down, then repeat every
+    // 55ms after a 400ms hold until release.
+    @Suppress("ClickableViewAccessibility")
+    private fun attachRepeat(v: View, action: () -> Unit) {
+        var repeat: Runnable? = null
+        v.setOnTouchListener { view, e ->
+            when (e.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    try { view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP, HapticFeedbackConstants.FLAG_IGNORE_VIEW_SETTING) } catch (e2: Exception) {}
+                    action()
+                    repeat = object : Runnable {
+                        override fun run() { action(); main.postDelayed(this, 55) }
+                    }
+                    main.postDelayed(repeat!!, 400)
+                    true
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    repeat?.let { main.removeCallbacks(it) }; repeat = null
+                    view.performClick(); true
+                }
+                else -> false
+            }
+        }
+    }
+
+    private fun onEnter() {
+        val ic = currentInputConnection ?: return
+        val action = (currentInputEditorInfo?.imeOptions ?: 0) and EditorInfo.IME_MASK_ACTION
+        if (action != EditorInfo.IME_ACTION_NONE && action != EditorInfo.IME_ACTION_UNSPECIFIED)
+            ic.performEditorAction(action)
+        else ic.commitText("\n", 1)
+    }
+
+    // ── suggestions (STAGE 1: basic — from vocabulary + current word prefix). ML
+    // prediction/autocorrect is a later stage. ─────────────────────────────────────
+    private fun updateSuggestions() {
+        val strip = suggestionStrip ?: return
+        strip.removeAllViews()
+        if (activeOverlay != null) return
+        val word = currentWordPrefix()
+        val picks = ArrayList<String>()
+        if (word.isEmpty()) {
+            // No prefix being typed → offer NEXT-WORD predictions for the previous word.
+            val before = currentInputConnection?.getTextBeforeCursor(64, 0)?.toString()?.trimEnd() ?: ""
+            // Last alphabetic token (ignoring trailing punctuation) — mirrors iOS and our
+            // own learning extraction, so a bigram learned across a comma is offered back.
+            val prev = Regex("[\\p{L}']+").findAll(before).lastOrNull()?.value?.lowercase()
+            if (prev.isNullOrEmpty()) return
+            loadLearnedBg()
+            val seen = HashSet<String>(); seen.add(prev)
+            fun add(w: String) {
+                val lc = w.lowercase()
+                if (lc !in seen && picks.size < 3) { seen.add(lc); picks.add(w) }
+            }
+            // 1) personal bigrams (by how often you've followed prev with this word)
+            learnedBg[prev]?.entries?.sortedByDescending { it.value }?.forEach { add(it.key) }
+            // 2) bundled bigram table (already ordered most-likely first)
+            bigrams[prev]?.forEach { if (picks.size < 3) add(it) }
+        } else {
+            val pfx = word.lowercase()
+            loadLearned()
+            val seen = HashSet<String>(); seen.add(pfx)
+            fun cased(w: String): String = when {
+                word.length > 1 && word.all { it.isUpperCase() } -> w.uppercase()
+                word[0].isUpperCase() -> w.replaceFirstChar { it.uppercase() }
+                else -> w
+            }
+            fun add(w: String) { val lc = w.lowercase(); if (lc !in seen && picks.size < 3) { seen.add(lc); picks.add(cased(w)) } }
+            // 1) personal learned words (by how often you've used them)
+            learned.keys.filter { it.startsWith(pfx) }.sortedByDescending { learned[it] ?: 0 }.forEach { add(it) }
+            // 2) your custom vocabulary
+            readConfig()?.optJSONArray("vocabulary")?.let { v ->
+                for (i in 0 until v.length()) {
+                    val w = v.optJSONObject(i)?.optString("word") ?: ""
+                    if (w.lowercase().startsWith(pfx)) add(w)
+                    if (picks.size >= 3) break
+                }
+            }
+            // 3) frequency dictionary (already ordered most-common first)
+            for (w in dictWords) { if (picks.size >= 3) break; if (w.startsWith(pfx)) add(w) }
+        }
+        // Word→emoji suggestion: an EXACT full-word match on the typed prefix adds an
+        // emoji chip (shown first, larger) that REPLACES the word with the emoji.
+        val emoji = if (word.isNotEmpty()) emojiKw[word.lowercase()]?.firstOrNull() else null
+        val cells = ArrayList<View>()
+        if (emoji != null) {
+            cells.add(suggestionCell(emoji, isEmoji = true) {
+                val ic = currentInputConnection ?: return@suggestionCell
+                val w = currentWordPrefix()
+                if (w.isNotEmpty()) ic.deleteSurroundingText(w.length, 0)
+                ic.commitText("$emoji ", 1)
+                updateSuggestions()
+            })
+        }
+        // Fill the remaining cells (up to 3 total) with word completions.
+        val wordCap = 3 - cells.size
+        for (p in picks.take(wordCap)) {
+            cells.add(suggestionCell(p, isEmoji = false) { replaceCurrentWord(p) })
+        }
+        // Distribute like Gboard (and iOS fillEqually): the present cells split the full
+        // width equally with thin dividers between them — so fewer picks each grow wider
+        // and stay centered, never left-packed (no blank padding cells on the right).
+        for (i in cells.indices) {
+            if (i > 0) strip.addView(suggestionDivider())
+            strip.addView(cells[i])
+        }
+    }
+
+    // One equal-width, centered suggestion cell (weight 1). Emoji cells render larger
+    // and drop the Geist typeface so the glyph shows in its native color font.
+    private fun suggestionCell(label: String, isEmoji: Boolean, onTap: () -> Unit): View =
+        TextView(this).apply {
+            text = label; setTextColor(keyText); gravity = Gravity.CENTER
+            textSize = if (isEmoji) 22f else 14f
+            if (!isEmoji) typeface = geist
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f)
+            isClickable = true
+            setOnClickListener { onTap() }
+        }
+
+    // Thin 1px vertical divider (mutedText @ ~20% alpha) between suggestion cells.
+    private fun suggestionDivider(): View = View(this).apply {
+        setBackgroundColor((mutedText and 0x00FFFFFF) or (0x33 shl 24))
+        layoutParams = LinearLayout.LayoutParams(1, ViewGroup.LayoutParams.MATCH_PARENT)
+            .apply { topMargin = dp(8); bottomMargin = dp(8) }
+    }
+
+    private fun currentWordPrefix(): String {
+        val ic = currentInputConnection ?: return ""
+        val before = ic.getTextBeforeCursor(32, 0)?.toString() ?: return ""
+        val m = Regex("[\\p{L}']+$").find(before)
+        return m?.value ?: ""
+    }
+
+    private fun replaceCurrentWord(word: String) {
+        val ic = currentInputConnection ?: return
+        val prefix = currentWordPrefix()
+        if (prefix.isNotEmpty()) ic.deleteSurroundingText(prefix.length, 0)
+        ic.commitText("$word ", 1)
+        learnWord(word)                     // accepting a suggestion teaches it too
+        updateSuggestions()
+    }
+
+    // ── overlays ────────────────────────────────────────────────────────────────
+    private fun toggleOverlay(which: String) {
+        if (activeOverlay == which) { showKeyboard(); return }
+        activeOverlay = which
+        refreshBar()
+        content?.removeAllViews()
+        content?.addView(buildOverlay(which))
+        suggestionStrip?.removeAllViews()
+    }
+
+    private fun buildOverlay(which: String): View {
+        val wrap = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(8), dp(8), dp(8), dp(8))
+            layoutParams = FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(230))
+        }
+        val cfg = readConfig()
+        val deviceName = cfg?.optString("deviceName", "your computer") ?: "your computer"
+        // header: LABEL ........... action  ⌨(back to typing)
+        val header = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(6), dp(2), dp(6), dp(10))
+        }
+        header.addView(TextView(this).apply {
+            text = which.uppercase(); setTextColor(mutedText); textSize = 11f
+            letterSpacing = 0.16f; typeface = mono ?: Typeface.MONOSPACE
+        })
+        header.addView(View(this).apply { layoutParams = LinearLayout.LayoutParams(0, 1, 1f) })
+        header.addView(TextView(this).apply {
+            text = when (which) {
+                "snippets" -> "Tap to expand"
+                "history" -> "Tap to insert"
+                "vocabulary" -> "${cfg?.optJSONArray("vocabulary")?.length() ?: 0} words"
+                else -> "→ $deviceName"
+            }
+            setTextColor(mutedText); textSize = 11f
+            if (which == "vocabulary") typeface = mono ?: Typeface.MONOSPACE
+            setPadding(0, 0, dp(10), 0)
+        })
+        header.addView(TextView(this).apply {   // return-to-keyboard
+            text = "⌨"; setTextColor(iconTint); textSize = 15f
+            setOnClickListener { showKeyboard() }
+        })
+        wrap.addView(header)
+
+        val listScroll = ScrollView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
+        }
+        val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        listScroll.addView(list)
+        when (which) {
+            "snippets" -> {
+                val arr = cfg?.optJSONArray("snippets")
+                if (arr == null || arr.length() == 0) list.addView(emptyRow("No snippets yet"))
+                else for (i in 0 until arr.length()) {
+                    val s = arr.optJSONObject(i) ?: continue
+                    val trg = s.optString("label").ifEmpty { s.optString("trigger") }
+                    val exp = s.optString("expansion")
+                    if (exp.isEmpty()) continue
+                    list.addView(overlayRow(trg, exp, ACCENT) { currentInputConnection?.commitText(exp, 1); showKeyboard() })
+                }
+                list.addView(footerRow("+ New snippet") { openCanvas() })
+            }
+            "history" -> {
+                val arr = cfg?.optJSONArray("history")
+                if (arr == null || arr.length() == 0) list.addView(emptyRow("No recent dictations"))
+                else for (i in 0 until arr.length()) {
+                    val h = arr.optJSONObject(i) ?: continue
+                    val t = h.optString("text"); if (t.isEmpty()) continue
+                    list.addView(historyRow(formatTime(h.optString("at")), t) {
+                        currentInputConnection?.commitText(t, 1); showKeyboard()
+                    })
+                }
+                list.addView(footerRow("See all history") { openCanvas() })
+            }
+            "vocabulary" -> {
+                val arr = cfg?.optJSONArray("vocabulary")
+                list.addView(dashedAddRow("+ Add a word Flume keeps mishearing…") { openCanvas() })
+                if (arr != null && arr.length() > 0) {
+                    val words = ArrayList<Pair<String, String>>()
+                    for (i in 0 until arr.length()) {
+                        val o = arr.optJSONObject(i) ?: continue
+                        val w = o.optString("word"); if (w.isEmpty()) continue
+                        words.add(Pair(w, o.optString("phonetic")))
+                    }
+                    if (words.isNotEmpty()) list.addView(flowChips(words))
+                }
+            }
+            else -> { // canvas — v1.5 (data not plumbed yet)
+                list.addView(emptyRow("Open the Flume app to send text, links, and images to $deviceName."))
+            }
+        }
+        wrap.addView(listScroll)
+        return wrap
+    }
+
+    private fun formatTime(iso: String?): String {
+        if (iso == null || iso.length < 16) return ""
+        val hm = iso.substring(11, 16)                       // "HH:MM" (UTC)
+        val h = hm.substring(0, 2).trimStart('0').ifEmpty { "0" }
+        return h + hm.substring(2)                            // "H:MM"
+    }
+
+    private fun ellipsize(s: String, max: Int): String {
+        if (s.length <= max) return s
+        var end = max
+        if (Character.isHighSurrogate(s[end - 1])) end--     // don't split a surrogate pair
+        return s.substring(0, end) + "…"
+    }
+
+    private fun historyRow(time: String, body: String, onTap: () -> Unit): View {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+            background = rounded(cardBg, 12); setPadding(dp(12), dp(12), dp(12), dp(12))
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                .apply { bottomMargin = dp(6) }
+            isClickable = true; setOnClickListener { onTap() }
+        }
+        row.addView(TextView(this).apply {
+            text = time; setTextColor(mutedText); textSize = 12f; typeface = mono ?: Typeface.MONOSPACE
+            setPadding(0, 0, dp(10), 0)
+        })
+        row.addView(TextView(this).apply {
+            text = ellipsize(body, 40); setTextColor(keyText); textSize = 14f; typeface = geist
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        })
+        row.addView(TextView(this).apply { text = "→"; setTextColor(mutedText); textSize = 15f })
+        return row
+    }
+
+    private fun footerRow(label: String, onTap: () -> Unit): View = TextView(this).apply {
+        text = label; setTextColor(if (label.startsWith("+")) ACCENT else mutedText); textSize = 13f
+        typeface = geist
+        gravity = Gravity.CENTER; setPadding(dp(12), dp(12), dp(12), dp(12))
+        isClickable = true; setOnClickListener { onTap() }
+    }
+
+    private fun dashedAddRow(label: String, onTap: () -> Unit): View {
+        val bg = GradientDrawable().apply {
+            cornerRadius = dp(12).toFloat()
+            setStroke(dp(1), ACCENT, dp(4).toFloat(), dp(3).toFloat())
+        }
+        return TextView(this).apply {
+            text = label; setTextColor(ACCENT); textSize = 14f; typeface = geist
+            background = bg; setPadding(dp(12), dp(12), dp(12), dp(12))
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                .apply { bottomMargin = dp(8) }
+            isClickable = true; setOnClickListener { onTap() }
+        }
+    }
+
+    // Manual flow-wrap (no Flexbox dep): break to a new row by estimated chip width.
+    private fun flowChips(words: List<Pair<String, String>>): View {
+        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val maxW = resources.displayMetrics.widthPixels - dp(24)
+        var row: LinearLayout? = null
+        var used = 0
+        for ((w, ph) in words) {
+            val est = dp(28) + (w.length + (if (ph.isEmpty()) 0 else ph.length + 2)) * dp(9)
+            if (row == null || used + est > maxW) {
+                row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+                col.addView(row, LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(8) })
+                used = 0
+            }
+            val chip = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+                background = rounded(cardBg, 999); setPadding(dp(12), dp(8), dp(12), dp(8))
+                layoutParams = LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { rightMargin = dp(8) }
+                isClickable = true; setOnClickListener { currentInputConnection?.commitText("$w ", 1) }
+            }
+            chip.addView(TextView(this).apply { text = w; setTextColor(keyText); textSize = 14f; typeface = geist })
+            if (ph.isNotEmpty()) chip.addView(TextView(this).apply {
+                text = ph; setTextColor(mutedText); textSize = 11f; typeface = mono ?: Typeface.MONOSPACE
+                setPadding(dp(6), 0, 0, 0)
+            })
+            row!!.addView(chip)
+            used += est
+        }
+        return col
+    }
+
+    private fun emptyRow(msg: String): View = TextView(this).apply {
+        text = msg; setTextColor(mutedText); textSize = 14f; typeface = geist; setPadding(dp(12), dp(16), dp(12), dp(16))
+    }
+
+    private fun overlayRow(title: String, sub: String, titleColor: Int, onTap: () -> Unit): View {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+            background = rounded(cardBg, 12); setPadding(dp(12), dp(12), dp(12), dp(12))
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                .apply { bottomMargin = dp(6) }
+            isClickable = true; setOnClickListener { onTap() }
+        }
+        row.addView(TextView(this).apply {
+            text = ellipsize(title, 40)
+            setTextColor(titleColor); textSize = 14f
+            typeface = if (titleColor == ACCENT) (mono ?: Typeface.MONOSPACE) else geist
+        })
+        if (sub.isNotEmpty()) {
+            row.addView(View(this).apply { layoutParams = LinearLayout.LayoutParams(0, 1, 1f) })
+            row.addView(TextView(this).apply {
+                text = ellipsize(sub, 28)
+                setTextColor(mutedText); textSize = 13f; typeface = geist
+            })
+        }
+        return row
     }
 
     private fun openCanvas() {
@@ -173,63 +1224,79 @@ class FlumeInputMethodService : InputMethodService() {
         } catch (e: Exception) { setStatus("Couldn't open Flume") }
     }
 
-    private var openPanel: String? = null
-    private fun togglePanel(which: String) {
-        if (openPanel == which && panel?.visibility == View.VISIBLE) { hidePanel(); return }
-        val cfg = readConfig()
-        val items = ArrayList<Pair<String, String>>() // label -> textToInsert
-        if (which == "snippets") {
-            val arr = cfg?.optJSONArray("snippets")
-            if (arr != null) for (i in 0 until arr.length()) {
-                val s = arr.optJSONObject(i) ?: continue
-                val label = s.optString("label").ifEmpty { s.optString("trigger") }
-                val exp = s.optString("expansion")
-                if (exp.isNotEmpty()) items.add(Pair(label, exp))
-            }
-        } else {
-            val arr = cfg?.optJSONArray("history")
-            if (arr != null) for (i in 0 until arr.length()) {
-                val t = arr.optString(i)
-                if (t.isNotEmpty()) items.add(Pair(t, t))
-            }
+    // ── emoji: Recents tab + the full bundled library (flume_emoji.txt, 9 groups). ──
+    private fun emojiCategories(): List<Pair<String, List<String>>> {
+        val out = ArrayList<Pair<String, List<String>>>()
+        out.add("🕘" to emojiRecents.toList())
+        emojiLib.forEachIndexed { i, (_, list) ->
+            out.add((emojiTabGlyphs.getOrNull(i) ?: "•") to list)
         }
-        showPanel(which, items)
+        return out
     }
 
-    private fun showPanel(which: String, items: List<Pair<String, String>>) {
-        openPanel = which
-        panelList?.removeAllViews()
-        if (items.isEmpty()) {
-            panelList?.addView(TextView(this).apply {
-                text = if (which == "snippets") "No snippets yet" else "No recent dictations"
-                setTextColor(MUT); textSize = 14f; setPadding(dp(16), dp(16), dp(16), dp(16))
+    private fun openEmoji() {
+        activeOverlay = null; refreshBar(); suggestionStrip?.removeAllViews()
+        content?.removeAllViews(); content?.addView(buildEmoji())
+    }
+
+    private fun buildEmoji(): View {
+        val cats = emojiCategories()
+        if (emojiCatIdx !in cats.indices) emojiCatIdx = 1
+        val wrap = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL; setPadding(dp(6), dp(6), dp(6), dp(6))
+            layoutParams = FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(230))
+        }
+        val tabRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        cats.forEachIndexed { i, c ->
+            tabRow.addView(TextView(this).apply {
+                text = c.first; textSize = 18f; gravity = Gravity.CENTER
+                setPadding(dp(10), dp(4), dp(10), dp(4))
+                background = rounded(if (i == emojiCatIdx) highlightBg else Color.TRANSPARENT, 8)
+                setOnClickListener { emojiCatIdx = i; content?.removeAllViews(); content?.addView(buildEmoji()) }
             })
-        } else {
-            for (it in items) {
-                val label = it.first
-                val insert = it.second
-                panelList?.addView(TextView(this).apply {
-                    text = if (label.length > 60) label.substring(0, 60) + "…" else label
-                    setTextColor(TXT); textSize = 15f
-                    setPadding(dp(16), dp(14), dp(16), dp(14))
-                    isClickable = true
-                    setOnClickListener {
-                        currentInputConnection?.commitText(insert, 1)
-                        hidePanel()
-                    }
-                })
-            }
         }
-        panel?.visibility = View.VISIBLE
+        wrap.addView(HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; addView(tabRow) })
+
+        var list = cats[emojiCatIdx].second
+        if (list.isEmpty()) list = cats[1].second   // recents empty → smileys
+        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        var rowV: LinearLayout? = null
+        list.forEachIndexed { idx, e ->
+            if (idx % 8 == 0) {
+                rowV = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+                col.addView(rowV)
+            }
+            rowV!!.addView(TextView(this).apply {
+                text = e; textSize = 22f; gravity = Gravity.CENTER
+                layoutParams = LinearLayout.LayoutParams(0, dp(44), 1f)
+                setOnClickListener { commitEmoji(e) }
+            })
+        }
+        wrap.addView(ScrollView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
+            addView(col)
+        })
+
+        val bottom = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(46)).apply { topMargin = dp(6) }
+        }
+        bottom.addView(functionKey("ABC", 2f) { showKeyboard() })
+        bottom.addView(functionKey("⌫", 1f) { onBackspace() })
+        wrap.addView(bottom)
+        return wrap
     }
 
-    private fun hidePanel() { openPanel = null; panel?.visibility = View.GONE }
+    private fun commitEmoji(e: String) {
+        currentInputConnection?.commitText(e, 1)
+        emojiRecents.remove(e); emojiRecents.add(0, e)
+        while (emojiRecents.size > 24) emojiRecents.removeAt(emojiRecents.size - 1)
+    }
 
-    // ── mic / recording ──────────────────────────────────────────────────────────
-
+    // ── mic / recording (unchanged: dictation via groq-proxy) ──────────────────────
     private fun onMicTap() {
         if (secure || busy) return
-        hidePanel()
+        if (activeOverlay != null) showKeyboard()
         if (!recording) startRecording() else stopAndTranscribe()
     }
 
@@ -245,11 +1312,11 @@ class FlumeInputMethodService : InputMethodService() {
             r.setOutputFile(f.absolutePath)
             r.prepare(); r.start()
             recorder = r; audioFile = f; recording = true
-            mic?.text = "■  Stop"
-            setStatus("Recording… tap to stop")
+            setMicState(true)
+            enterRecordingUI()
+            playSound("flume_start")
         } catch (e: Exception) {
-            releaseRecorder(); recording = false
-            mic?.text = "🎤  Tap to dictate"
+            releaseRecorder(); recording = false; setMicState(false)
             setStatus("Mic unavailable — enable microphone for Flume in the app")
         }
     }
@@ -259,38 +1326,33 @@ class FlumeInputMethodService : InputMethodService() {
         try { recorder?.stop() } catch (e: Exception) {}
         releaseRecorder()
         audioFile?.let { try { it.delete() } catch (e: Exception) {} }
-        audioFile = null
-        mic?.text = "🎤  Tap to dictate"
+        audioFile = null; setMicState(false); exitRecordingUI()
     }
 
     private fun stopAndTranscribe() {
         recording = false
+        playSound("flume_stop")
         var ok = true
         try { recorder?.stop() } catch (e: Exception) { ok = false }
         releaseRecorder()
-        val f = audioFile; audioFile = null
-        mic?.text = "🎤  Tap to dictate"
+        val f = audioFile; audioFile = null; setMicState(false); exitRecordingUI()
         if (!ok || f == null || !f.exists() || f.length() == 0L) {
-            f?.let { try { it.delete() } catch (e: Exception) {} }
-            setStatus("Nothing recorded — try again"); return
+            f?.let { try { it.delete() } catch (e: Exception) {} }; return
         }
         busy = true
-        setStatus("Transcribing…")
         Thread {
             val text = try { transcribe(f) } catch (e: Exception) { null }
             try { f.delete() } catch (e: Exception) {}
             main.post {
                 busy = false
-                if (text.isNullOrBlank()) setStatus("Couldn't transcribe — try again")
-                else { currentInputConnection?.commitText(text + " ", 1); setStatus("Tap to speak") }
+                if (!text.isNullOrBlank()) { currentInputConnection?.commitText(text + " ", 1); updateSuggestions(); playSound("flume_done") }
             }
         }.start()
     }
 
     private fun releaseRecorder() { try { recorder?.release() } catch (e: Exception) {}; recorder = null }
 
-    // ── transcription pipeline (mirrors lib/dictationPipeline.ts) ───────────────
-
+    // ── transcription pipeline ─────────────────────────────────────────────────────
     private fun readConfig(): JSONObject? = try {
         val cfg = File(filesDir, "flume_kbd_config.json")
         if (!cfg.exists()) null else JSONObject(cfg.readText())
@@ -298,9 +1360,7 @@ class FlumeInputMethodService : InputMethodService() {
 
     private fun transcribe(f: File): String? {
         val cfg = readConfig() ?: return null
-        val key = cfg.optString("groqKey", "")
-        if (key.isEmpty()) return null
-        var text = groqTranscribe(f, key, buildPrompt(cfg)) ?: return null
+        var text = proxyTranscribe(f, buildPrompt(cfg), cfg) ?: return null
         text = applyReplacements(text, cfg.optJSONArray("replacements"))
         text = applySnippets(text, cfg.optJSONArray("snippets"))
         return text.trim()
@@ -310,23 +1370,32 @@ class FlumeInputMethodService : InputMethodService() {
         val vocab = cfg.optJSONArray("vocabulary") ?: return null
         if (vocab.length() == 0) return null
         val sb = StringBuilder("Glossary: ")
-        for (i in 0 until vocab.length()) { if (i > 0) sb.append(", "); sb.append(vocab.optString(i)) }
+        for (i in 0 until vocab.length()) {
+            if (i > 0) sb.append(", ")
+            sb.append(vocab.optJSONObject(i)?.optString("word") ?: "")
+        }
         return sb.toString()
     }
 
-    private fun groqTranscribe(f: File, key: String, prompt: String?): String? {
+    private fun proxyTranscribe(f: File, prompt: String?, cfg: JSONObject): String? {
+        val supabaseUrl = "https://ovpcthjingugwvpxlsna.supabase.co"
+        val anon = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im92cGN0aGppbmd1Z3d2cHhsc25hIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzgyNjQzMDYsImV4cCI6MjA5Mzg0MDMwNn0.XwTBo8L-aEUmmSl6dJXNqA2QXzGFOpIVB5W9eDI8j28"
         val boundary = "----FlumeBoundary" + System.currentTimeMillis()
-        val conn = URL("https://api.groq.com/openai/v1/audio/transcriptions").openConnection() as HttpURLConnection
+        val conn = URL(supabaseUrl + "/functions/v1/groq-proxy").openConnection() as HttpURLConnection
         try {
             conn.requestMethod = "POST"; conn.doOutput = true
             conn.connectTimeout = 15000; conn.readTimeout = 45000
-            conn.setRequestProperty("Authorization", "Bearer " + key)
+            conn.setRequestProperty("Authorization", "Bearer " + anon)
+            conn.setRequestProperty("apikey", anon)
+            conn.setRequestProperty("x-flume-device", cfg.optString("deviceId", "android-keyboard"))
             conn.setRequestProperty("Content-Type", "multipart/form-data; boundary=" + boundary)
             val out = DataOutputStream(conn.outputStream)
             fun field(name: String, value: String) {
-                out.writeBytes("--" + boundary + "\r\n")
-                out.writeBytes("Content-Disposition: form-data; name=\"" + name + "\"\r\n\r\n")
-                out.writeBytes(value + "\r\n")
+                // UTF-8 (not writeBytes, which drops to the low byte) so accented /
+                // non-ASCII vocabulary in the prompt isn't corrupted or rejected.
+                out.write(("--$boundary\r\n").toByteArray(Charsets.UTF_8))
+                out.write(("Content-Disposition: form-data; name=\"$name\"\r\n\r\n").toByteArray(Charsets.UTF_8))
+                out.write((value + "\r\n").toByteArray(Charsets.UTF_8))
             }
             field("model", "whisper-large-v3-turbo"); field("language", "en"); field("temperature", "0")
             if (!prompt.isNullOrEmpty()) field("prompt", prompt)
@@ -362,7 +1431,7 @@ class FlumeInputMethodService : InputMethodService() {
             val trg = s.optString("trigger", ""); val exp = s.optString("expansion", "")
             if (trg.isNotEmpty()) triggers.add(Pair(trg, exp))
         }
-        triggers.sortByDescending { it.first.length }  // longest trigger first
+        triggers.sortByDescending { it.first.length }
         var t = text
         for (p in triggers) {
             t = Regex("\\b" + Regex.escape(p.first) + "\\b", RegexOption.IGNORE_CASE).replace(t, Regex.escapeReplacement(p.second))
@@ -382,5 +1451,18 @@ class FlumeInputMethodService : InputMethodService() {
         return textPw || numPw
     }
 
-    private fun setStatus(s: String) { main.post { status?.text = s } }
+    private fun setStatus(s: String) = main.post {
+        // `status` was never added to the view; surface messages in the suggestion
+        // strip instead so mic/permission errors are actually visible.
+        suggestionStrip?.apply {
+            removeAllViews()
+            addView(TextView(this@FlumeInputMethodService).apply {
+                text = s; setTextColor(mutedText); textSize = 13f; typeface = geist
+                gravity = Gravity.CENTER
+                setPadding(dp(14), dp(6), dp(14), dp(6))
+                layoutParams = LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+            })
+        }
+    }
 }

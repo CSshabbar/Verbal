@@ -1,8 +1,10 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import { View, StyleSheet, ScrollView, Pressable, TextInput, AccessibilityInfo } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
+import * as Haptics from 'expo-haptics';
 import { Text } from '../components';
+import { confirm } from '../components/ConfirmDialog';
 import { colors, radius } from '../theme';
 import { useNotes, Note } from '../hooks/useNotes';
 import { searchNotes } from '../../lib/notesSearch';
@@ -10,6 +12,8 @@ import { searchNotes } from '../../lib/notesSearch';
 type Props = {
   onOpen: (note: Note) => void;
   onCreate: () => void;
+  /** Opens the Meetings folder (read-only desktop-captured meetings). */
+  onOpenMeetings?: () => void;
 };
 
 const CARD_CREAM = '#EADFCE';
@@ -20,12 +24,50 @@ const CARD_CREAM_INK = '#2a1f18';
  * pills, a featured pastel note card, then "This week" note cards. Notes v2 adds
  * live full-text search (Feature 1) at the top, gated by the search feature flag.
  */
-export const NotesListScreen: React.FC<Props> = ({ onOpen, onCreate }) => {
+export const NotesListScreen: React.FC<Props> = ({ onOpen, onCreate, onOpenMeetings }) => {
   const insets = useSafeAreaInsets();
-  const { notes, flags } = useNotes();
+  const { notes, flags, removeNotes } = useNotes();
   const [filter, setFilter] = useState<'all' | 'voice' | 'typed'>('all');
   const [searchOpen, setSearchOpen] = useState(false);
   const [query, setQuery] = useState('');
+
+  // Multi-select: long-press a note to enter select mode, tap to toggle.
+  const [selectMode, setSelectMode] = useState(false);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+
+  const exitSelect = useCallback(() => { setSelectMode(false); setSelected(new Set()); }, []);
+
+  const enterSelect = useCallback((id: string) => {
+    Haptics.selectionAsync();
+    setSelectMode(true);
+    setSelected(new Set([id]));
+  }, []);
+
+  const toggleSelect = useCallback((id: string) => {
+    setSelected(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }, []);
+
+  // Tap handler: in select mode a tap toggles; otherwise it opens the note.
+  const handlePress = useCallback((n: Note) => {
+    if (selectMode) toggleSelect(n.id); else onOpen(n);
+  }, [selectMode, toggleSelect, onOpen]);
+
+  const deleteSelected = useCallback(async () => {
+    const ids = Array.from(selected);
+    if (ids.length === 0) { exitSelect(); return; }
+    const ok = await confirm({
+      title: `Delete ${ids.length} note${ids.length === 1 ? '' : 's'}?`,
+      message: 'This removes them from every signed-in device. This cannot be undone.',
+      confirmLabel: 'Delete',
+      destructive: true,
+    });
+    if (ok) { removeNotes(ids); Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success); }
+    exitSelect();
+  }, [selected, removeNotes, exitSelect]);
 
   const base = useMemo(() => {
     if (filter === 'all') return notes;
@@ -57,29 +99,49 @@ export const NotesListScreen: React.FC<Props> = ({ onOpen, onCreate }) => {
 
   return (
     <View style={[styles.root, { paddingTop: insets.top + 10 }]}>
-      <View style={styles.header}>
-        <View>
-          <Text variant="caption" color={colors.textSubtle} style={{ marginBottom: 2 }}>
-            {notes.length} total · {thisWeek} this week
-          </Text>
-          <Text variant="titleSm">Notes</Text>
-        </View>
-        <View style={{ flexDirection: 'row', gap: 8 }}>
-          {flags.search ? (
-            <Pressable
-              onPress={() => setSearchOpen(o => !o)}
-              style={[styles.iconCircle, searchOpen && { backgroundColor: colors.primarySoft }]}
-              accessibilityRole="button"
-              accessibilityLabel={searchOpen ? 'Close search' : 'Search notes'}
-            >
-              <Ionicons name="search-outline" size={16} color={searchOpen ? colors.primary : colors.textSecondary} />
+      {selectMode ? (
+        <View style={styles.header}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+            <Pressable onPress={exitSelect} style={styles.iconCircle} accessibilityRole="button" accessibilityLabel="Cancel selection">
+              <Ionicons name="close" size={18} color={colors.textSecondary} />
             </Pressable>
-          ) : null}
-          <Pressable onPress={onCreate} style={[styles.iconCircle, { backgroundColor: colors.primarySoft }]} accessibilityRole="button" accessibilityLabel="New note">
-            <Ionicons name="add" size={18} color={colors.primary} />
+            <Text variant="titleSm">{selected.size} selected</Text>
+          </View>
+          <Pressable
+            onPress={deleteSelected}
+            disabled={selected.size === 0}
+            style={[styles.iconCircle, { backgroundColor: colors.primarySoft }, selected.size === 0 && { opacity: 0.4 }]}
+            accessibilityRole="button"
+            accessibilityLabel={`Delete ${selected.size} selected`}
+          >
+            <Ionicons name="trash-outline" size={17} color={colors.primaryAccent} />
           </Pressable>
         </View>
-      </View>
+      ) : (
+        <View style={styles.header}>
+          <View>
+            <Text variant="caption" color={colors.textSubtle} style={{ marginBottom: 2 }}>
+              {notes.length} total · {thisWeek} this week
+            </Text>
+            <Text variant="titleSm">Notes</Text>
+          </View>
+          <View style={{ flexDirection: 'row', gap: 8 }}>
+            {flags.search ? (
+              <Pressable
+                onPress={() => setSearchOpen(o => !o)}
+                style={[styles.iconCircle, searchOpen && { backgroundColor: colors.primarySoft }]}
+                accessibilityRole="button"
+                accessibilityLabel={searchOpen ? 'Close search' : 'Search notes'}
+              >
+                <Ionicons name="search-outline" size={16} color={searchOpen ? colors.primary : colors.textSecondary} />
+              </Pressable>
+            ) : null}
+            <Pressable onPress={onCreate} style={[styles.iconCircle, { backgroundColor: colors.primarySoft }]} accessibilityRole="button" accessibilityLabel="New note">
+              <Ionicons name="add" size={18} color={colors.primary} />
+            </Pressable>
+          </View>
+        </View>
+      )}
 
       {flags.search && searchOpen ? (
         <View style={styles.searchBar}>
@@ -111,6 +173,24 @@ export const NotesListScreen: React.FC<Props> = ({ onOpen, onCreate }) => {
         </View>
       ) : null}
 
+      {!searching && !selectMode && onOpenMeetings ? (
+        <Pressable
+          style={styles.meetingsRow}
+          onPress={onOpenMeetings}
+          accessibilityRole="button"
+          accessibilityLabel="Open meetings"
+        >
+          <View style={styles.meetingsDisc}>
+            <Ionicons name="people-outline" size={15} color={colors.primary} />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text variant="label">Meetings</Text>
+            <Text variant="caption" color={colors.textMuted}>Captured on your Mac · transcripts &amp; summaries</Text>
+          </View>
+          <Ionicons name="chevron-forward" size={16} color={colors.textSubtle} />
+        </Pressable>
+      ) : null}
+
       <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled" contentContainerStyle={{ paddingBottom: insets.bottom + 90 }}>
         {searching ? (
           results.length === 0 ? (
@@ -122,15 +202,22 @@ export const NotesListScreen: React.FC<Props> = ({ onOpen, onCreate }) => {
             </View>
           ) : (
             <View style={{ gap: 10 }} accessibilityLabel={`${results.length} results`}>
-              {results.map(n => <NoteRow key={n.id} note={n} onOpen={onOpen} />)}
+              {results.map(n => (
+                <NoteRow key={n.id} note={n} selectMode={selectMode} selected={selected.has(n.id)} onPress={handlePress} onLongPress={enterSelect} />
+              ))}
             </View>
           )
         ) : featured ? (
           <>
-            <Pressable onPress={() => onOpen(featured)} style={[styles.featured, { backgroundColor: CARD_CREAM }]}>
+            <Pressable
+              onPress={() => handlePress(featured)}
+              onLongPress={() => enterSelect(featured.id)}
+              delayLongPress={300}
+              style={[styles.featured, { backgroundColor: CARD_CREAM }, selectMode && selected.has(featured.id) && styles.cardSelected]}
+            >
               <View style={styles.featuredTop}>
                 <View style={[styles.featuredIcon, { backgroundColor: '#1a1512' }]}>
-                  <Ionicons name={featured.isVoice ? 'mic-outline' : 'create-outline'} size={14} color={CARD_CREAM} />
+                  <Ionicons name={selectMode ? (selected.has(featured.id) ? 'checkmark-circle' : 'ellipse-outline') : (featured.isVoice ? 'mic-outline' : 'create-outline')} size={14} color={CARD_CREAM} />
                 </View>
                 <View style={styles.badge}>
                   <View style={styles.badgeDot} />
@@ -160,7 +247,9 @@ export const NotesListScreen: React.FC<Props> = ({ onOpen, onCreate }) => {
                   <Text variant="buttonSm" color={colors.textMuted}>See all</Text>
                 </View>
                 <View style={{ gap: 10 }}>
-                  {rest.map(n => <NoteRow key={n.id} note={n} onOpen={onOpen} />)}
+                  {rest.map(n => (
+                    <NoteRow key={n.id} note={n} selectMode={selectMode} selected={selected.has(n.id)} onPress={handlePress} onLongPress={enterSelect} />
+                  ))}
                 </View>
               </>
             )}
@@ -175,12 +264,30 @@ export const NotesListScreen: React.FC<Props> = ({ onOpen, onCreate }) => {
   );
 };
 
-const NoteRow: React.FC<{ note: Note; onOpen: (n: Note) => void }> = ({ note: n, onOpen }) => (
-  <Pressable onPress={() => onOpen(n)} style={styles.noteCard} accessibilityRole="button" accessibilityLabel={n.title || 'Untitled note'}>
+const NoteRow: React.FC<{
+  note: Note;
+  selectMode: boolean;
+  selected: boolean;
+  onPress: (n: Note) => void;
+  onLongPress: (id: string) => void;
+}> = ({ note: n, selectMode, selected, onPress, onLongPress }) => (
+  <Pressable
+    onPress={() => onPress(n)}
+    onLongPress={() => onLongPress(n.id)}
+    delayLongPress={300}
+    style={[styles.noteCard, selectMode && selected && styles.cardSelected]}
+    accessibilityRole="button"
+    accessibilityState={{ selected: selectMode ? selected : undefined }}
+    accessibilityLabel={n.title || 'Untitled note'}
+  >
     <View style={styles.noteCardHead}>
       <Text variant="caption" color={colors.textSubtle}>{n.dateLabel}</Text>
-      <View style={styles.noteIcon}>
-        <Ionicons name={n.isVoice ? 'mic-outline' : 'create-outline'} size={13} color={colors.textMuted} />
+      <View style={[styles.noteIcon, selectMode && selected && { backgroundColor: colors.primarySoft }]}>
+        <Ionicons
+          name={selectMode ? (selected ? 'checkmark-circle' : 'ellipse-outline') : (n.isVoice ? 'mic-outline' : 'create-outline')}
+          size={13}
+          color={selectMode && selected ? colors.primary : colors.textMuted}
+        />
       </View>
     </View>
     <Text variant="button" style={{ fontSize: 14, marginBottom: 5 }} numberOfLines={1}>
@@ -215,6 +322,15 @@ const styles = StyleSheet.create({
   },
   searchInput: { flex: 1, color: colors.textPrimary, paddingVertical: 11, fontFamily: 'Geist_400Regular', fontSize: 15 },
   filters: { flexDirection: 'row', gap: 7, marginBottom: 18 },
+  meetingsRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 14,
+    backgroundColor: colors.surface1, borderWidth: 1, borderColor: colors.borderSubtle,
+    borderRadius: radius.md, paddingHorizontal: 12, paddingVertical: 10,
+  },
+  meetingsDisc: {
+    width: 30, height: 30, borderRadius: radius.sm, backgroundColor: colors.primarySoft,
+    alignItems: 'center', justifyContent: 'center',
+  },
   pill: { paddingVertical: 9, paddingHorizontal: 16, borderRadius: 999 },
   pillActive: { backgroundColor: colors.inkLight },
   pillIdle: { backgroundColor: 'transparent', borderWidth: 1, borderColor: colors.borderStrong },
@@ -229,6 +345,7 @@ const styles = StyleSheet.create({
   clearBtn: { paddingVertical: 8, paddingHorizontal: 16, borderRadius: 999, backgroundColor: colors.primarySoft, borderWidth: 1, borderColor: colors.primaryBorder },
   sectionHead: { flexDirection: 'row', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 12 },
   noteCard: { padding: 14, borderRadius: 16, backgroundColor: colors.surface1, borderWidth: 1, borderColor: colors.borderSubtle },
+  cardSelected: { borderColor: colors.primary, borderWidth: 2 },
   noteCardHead: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 8 },
   noteIcon: { width: 26, height: 26, borderRadius: 8, backgroundColor: colors.surface2, alignItems: 'center', justifyContent: 'center' },
   voiceTag: { alignSelf: 'flex-start', paddingHorizontal: 10, paddingVertical: 5, borderRadius: 7, backgroundColor: colors.tagMac },

@@ -1,0 +1,1287 @@
+import UIKit
+import AVFoundation
+import CoreText
+
+/// Flume Keyboard v2 (iOS) — full keyboard extension mirroring the Android IME and
+/// FLUME_KEYBOARD_V2_DESIGN.md: a Flume bar (F · ⚡ · ▦ · 🕐 · 📖 · mic), letters /
+/// numbers / symbols layers, light+dark theming, emoji picker, and the History /
+/// Snippets / Vocabulary overlays (read from the App Group config the app writes).
+///
+/// STAGE (iOS foundation): typing UI + Flume bar + emoji + overlays + dictation via
+/// groq-proxy. Testable on the SIMULATOR with no paid account. DEFERRED (device/
+/// account-gated or later stages): reliable in-extension mic + handoff, GIF, glide,
+/// ML autocorrect, the ~40MB jetsam-safe emoji, App Store PrivacyInfo.
+///
+/// Class name MUST stay `KeyboardViewController` (Info.plist principal class).
+class KeyboardViewController: UIInputViewController, AVAudioRecorderDelegate, UIInputViewAudioFeedback {
+
+    // MARK: typing-feel (Gboard-style): touch-down commit, pressed state, key-preview bubble, key-click sound
+    // iOS keyboard extensions CANNOT do haptics (UIFeedbackGenerator is silently ignored); the sanctioned
+    // feedback is UIDevice.current.playInputClick(), which respects the user's "Keyboard Clicks" setting.
+    var enableInputClicksWhenVisible: Bool { true }
+    private var keyPreview: UILabel?
+    private var keyBaseColor: [UIButton: UIColor] = [:]
+    // Gapless touch (Gboard): each key BUTTON fills its whole cell so hit areas tile edge-to-edge
+    // (no dead gaps between keys), while the VISIBLE rounded key is an inset background subview.
+    // keyDownVisual/keyUpVisual drive that inset view's color, not the button's (clear) background.
+    private var keyBgView: [UIButton: UIView] = [:]
+
+    @objc private func keyDownVisual(_ b: UIButton) {
+        (keyBgView[b] ?? b).backgroundColor = pal.highlightBg
+        UIDevice.current.playInputClick()
+        if let t = b.title(for: .normal) { showKeyPreview(over: b, t) }   // letters-only guard is inside
+    }
+    @objc private func keyUpVisual(_ b: UIButton) {
+        (keyBgView[b] ?? b).backgroundColor = keyBaseColor[b] ?? pal.keyBg
+        hideKeyPreview()
+    }
+
+    // Give a key a visible rounded background inset from its (full-cell) touch bounds. The button
+    // itself stays clear so its hit area tiles edge-to-edge with its neighbours (rows use spacing 0).
+    private func installKeyBackground(_ b: UIButton, color: UIColor, radius: CGFloat = 8, inset: CGFloat = 3) {
+        b.backgroundColor = .clear
+        keyBaseColor[b] = color
+        let bgv = UIView()
+        bgv.backgroundColor = color
+        bgv.layer.cornerRadius = radius
+        bgv.isUserInteractionEnabled = false
+        bgv.translatesAutoresizingMaskIntoConstraints = false
+        b.insertSubview(bgv, at: 0)                       // behind the (centered) title label
+        NSLayoutConstraint.activate([
+            bgv.leadingAnchor.constraint(equalTo: b.leadingAnchor, constant: inset),
+            bgv.trailingAnchor.constraint(equalTo: b.trailingAnchor, constant: -inset),
+            bgv.topAnchor.constraint(equalTo: b.topAnchor, constant: inset),
+            bgv.bottomAnchor.constraint(equalTo: b.bottomAnchor, constant: -inset),
+        ])
+        keyBgView[b] = bgv
+    }
+    // Recolor a key's base (visible) background after creation (space / return tint).
+    private func setKeyBaseColor(_ b: UIButton, _ color: UIColor) {
+        keyBaseColor[b] = color
+        (keyBgView[b] ?? b).backgroundColor = color
+    }
+
+    // Enlarged character bubble just ABOVE a letter key (Gboard preview). Fail-safe: letters only.
+    private func showKeyPreview(over b: UIButton, _ label: String) {
+        guard label.count == 1, label.first!.isLetter else { return }
+        let lbl = keyPreview ?? { let l = UILabel(); l.textAlignment = .center; l.font = uiFont(26); l.textColor = pal.keyText
+            l.backgroundColor = pal.keyBg; l.layer.cornerRadius = 10; l.clipsToBounds = true; view.addSubview(l); keyPreview = l; return l }()
+        lbl.textColor = pal.keyText
+        lbl.backgroundColor = pal.keyBg
+        lbl.text = label
+        let f = b.convert(b.bounds, to: view)
+        lbl.frame = CGRect(x: f.midX - 24, y: f.minY - 58, width: 48, height: 54)
+        lbl.isHidden = false; view.bringSubviewToFront(lbl)
+    }
+    private func hideKeyPreview() { keyPreview?.isHidden = true }
+
+    // MARK: palette
+    struct Palette {
+        let bg, keyBg, keyText, modBg, barBg, iconTint, mutedText: UIColor
+        let returnBg, returnText, micBg, micFg, cardBg, highlightBg: UIColor
+    }
+    private let accent = UIColor(hex: 0xC85A3E)   // terracotta — THE Flume accent
+    private var pal = Palette(
+        bg: .white, keyBg: .white, keyText: .black, modBg: .lightGray, barBg: .white,
+        iconTint: .darkGray, mutedText: .gray, returnBg: .black, returnText: .white,
+        micBg: .black, micFg: .white, cardBg: .white, highlightBg: .lightGray)
+
+    private func applyTheme() {
+        let dark = traitCollection.userInterfaceStyle == .dark
+        pal = dark ? Palette(  // canonical "Minimalist dark" tokens (colors.ts / CLAUDE_CODE_PROMPT.md); barBg == bg → seamless
+            bg: UIColor(hex: 0x0e1012), keyBg: UIColor(hex: 0x2a2d31), keyText: UIColor(hex: 0xf2f2f2),
+            modBg: UIColor(hex: 0x1e2124), barBg: UIColor(hex: 0x0e1012), iconTint: UIColor(hex: 0x8b8d90),
+            mutedText: UIColor(hex: 0x8b8d90), returnBg: UIColor(hex: 0xf2f2f2), returnText: UIColor(hex: 0x0e1012),
+            micBg: UIColor(hex: 0xf2f2f2), micFg: UIColor(hex: 0x0e1012), cardBg: UIColor(hex: 0x26282b), highlightBg: UIColor(hex: 0x26282b))
+        : Palette(
+            bg: UIColor(hex: 0xECEBEA), keyBg: .white, keyText: UIColor(hex: 0x14110f),
+            modBg: UIColor(hex: 0xCBCBCD), barBg: UIColor(hex: 0xECEBEA), iconTint: UIColor(hex: 0x6b6b6b),
+            mutedText: UIColor(hex: 0x8a857f), returnBg: UIColor(hex: 0x14110f), returnText: .white,
+            micBg: UIColor(hex: 0x14110f), micFg: .white, cardBg: .white, highlightBg: UIColor(hex: 0xE1E0DF))
+    }
+
+    // MARK: state
+    private enum Layer { case letters, numbers, symbols }
+    private var layer: Layer = .letters
+    private var shifted = false
+    private var capsLock = false
+    private var activeOverlay: String?
+    private var emojiCatIdx = 1
+    private var emojiRecents: [String] = []
+
+    // Full emoji library (bundled flume_emoji.txt: "Group<TAB>emoji emoji …", 9 groups) and the
+    // keyword→emoji map (flume_emoji_kw.txt: "keyword<TAB>emoji emoji …"). Both space-separated.
+    private lazy var emojiLib: [(String, [String])] = {
+        guard let url = Bundle(for: type(of: self)).url(forResource: "flume_emoji", withExtension: "txt"),
+              let text = try? String(contentsOf: url, encoding: .utf8) else { return [] }
+        var out: [(String, [String])] = []
+        for line in text.split(separator: "\n") {
+            guard let tab = line.firstIndex(of: "\t") else { continue }
+            let name = String(line[..<tab])
+            let emojis = line[line.index(after: tab)...].split(separator: " ").map(String.init)
+            if !emojis.isEmpty { out.append((name, emojis)) }
+        }
+        return out
+    }()
+    private lazy var emojiKw: [String: [String]] = {
+        var m: [String: [String]] = [:]
+        guard let url = Bundle(for: type(of: self)).url(forResource: "flume_emoji_kw", withExtension: "txt"),
+              let text = try? String(contentsOf: url, encoding: .utf8) else { return m }
+        for line in text.split(separator: "\n") {
+            guard let tab = line.firstIndex(of: "\t") else { continue }
+            let kw = String(line[..<tab]).lowercased()
+            let emojis = line[line.index(after: tab)...].split(separator: " ").map(String.init)
+            if !emojis.isEmpty { m[kw] = emojis }
+        }
+        return m
+    }()
+
+    // MARK: word completion (bundled frequency dict + on-device learning)
+    // Gboard-style completions: a ~25k lowercase English word list (most-frequent
+    // first) bundled into the .appex, plus a small UserDefaults-backed learned map.
+    private lazy var dictWords: [String] = {
+        guard let url = Bundle(for: type(of: self)).url(forResource: "flume_words", withExtension: "txt"),
+              let text = try? String(contentsOf: url, encoding: .utf8) else { return [] }
+        return text.split(separator: "\n").map { String($0) }
+    }()
+    private var learned: [String: Int] = [:]
+    private var learnedLoaded = false
+    private func loadLearned() {
+        if learnedLoaded { return }
+        learnedLoaded = true
+        if let dict = UserDefaults.standard.dictionary(forKey: "flume_kbd_learned") as? [String: Int] { learned = dict }
+    }
+    private func learnWord(_ raw: String) {
+        let w = raw.lowercased().filter { $0.isLetter }
+        if w.count < 2 { return }
+        loadLearned()
+        learned[w, default: 0] += 1
+        if learned.count > 600 {                       // bound the store: keep the 500 most-used
+            let top = learned.sorted { $0.value > $1.value }.prefix(500)
+            learned = Dictionary(uniqueKeysWithValues: top.map { ($0.key, $0.value) })
+        }
+        UserDefaults.standard.set(learned, forKey: "flume_kbd_learned")
+    }
+
+    // MARK: next-word prediction (bundled bigram table + on-device bigram learning)
+    // flume_bigrams.txt: each line "prev<TAB>next1 next2 next3 ..." (next-words most-likely first).
+    private lazy var bigrams: [String: [String]] = {
+        var m: [String: [String]] = [:]
+        guard let url = Bundle(for: type(of: self)).url(forResource: "flume_bigrams", withExtension: "txt"),
+              let text = try? String(contentsOf: url, encoding: .utf8) else { return m }
+        for line in text.split(separator: "\n") {
+            guard let tab = line.firstIndex(of: "\t") else { continue }
+            let prev = String(line[..<tab])
+            let nexts = line[line.index(after: tab)...].split(separator: " ").map(String.init)
+            if !nexts.isEmpty { m[prev] = nexts }
+        }
+        return m
+    }()
+    private var learnedBg: [String: [String: Int]] = [:]
+    private var learnedBgLoaded = false
+    private func loadLearnedBg() {
+        if learnedBgLoaded { return }
+        learnedBgLoaded = true
+        if let raw = UserDefaults.standard.dictionary(forKey: "flume_kbd_bigrams") as? [String: [String: Int]] { learnedBg = raw }
+    }
+    private func learnBigram(_ prevRaw: String, _ nextRaw: String) {
+        let p = prevRaw.lowercased().filter { $0.isLetter }
+        let n = nextRaw.lowercased().filter { $0.isLetter }
+        if p.count < 2 || n.count < 2 { return }
+        loadLearnedBg()
+        var inner = learnedBg[p] ?? [:]
+        inner[n, default: 0] += 1
+        learnedBg[p] = inner
+        if learnedBg.count > 400, let drop = learnedBg.keys.first(where: { $0 != p }) { learnedBg.removeValue(forKey: drop) }
+        UserDefaults.standard.set(learnedBg, forKey: "flume_kbd_bigrams")
+    }
+    // Last two alphabetic words before the cursor (for learning prev→justFinished on a boundary).
+    private func lastTwoWords() -> (String, String)? {
+        let before = (textDocumentProxy.documentContextBeforeInput ?? "")
+        let trimmed = before.replacingOccurrences(of: "\\s+$", with: "", options: .regularExpression)
+        let toks = trimmed.components(separatedBy: CharacterSet.letters.inverted).filter { !$0.isEmpty }
+        if toks.count < 2 { return nil }
+        return (toks[toks.count - 2], toks[toks.count - 1])
+    }
+
+    private var suggestionStrip: UIStackView!
+    private var contentView: UIView!
+    private var micButton: UIButton!
+    private var barButtons: [String: UIButton] = [:]
+    // Recording UI (waveform + cancel/pause replace the overlay icons while recording).
+    private var iconGroup: UIStackView?
+    private var flexSpacer: UIView?
+    private var recordControls: UIStackView?
+    private var waveformView: WaveformView?
+    private var pauseButton: UIButton?
+    private var timerLabel: UILabel?
+    private var isPaused = false
+    private var meterTimer: Timer?
+    private var elapsedTimer: Timer?
+    private var backspaceTimer: Timer?     // hold-to-repeat for the ⌫ key (mirrors Android attachRepeat)
+    private var recStart = Date()
+    private var pausedTotal: TimeInterval = 0
+    private var pauseStart = Date()
+    private var heightC: NSLayoutConstraint!
+
+    // Space-swipe cursor control (Gboard): a horizontal drag on the space key moves the caret
+    // one character per ~12pt of finger travel instead of inserting a space.
+    private var spacePanStart: CGFloat = 0
+    private var spacePanSteps = 0
+    private var spaceSwiped = false
+
+    // MARK: recording
+    private var recorder: AVAudioRecorder?
+    private var audioURL: URL?
+    private var isRecording = false
+    private var soundPlayers: [String: AVAudioPlayer] = [:]
+    private let supabaseURL = "https://ovpcthjingugwvpxlsna.supabase.co"
+    private let supabaseAnon = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im92cGN0aGppbmd1Z3d2cHhsc25hIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzgyNjQzMDYsImV4cCI6MjA5Mzg0MDMwNn0.XwTBo8L-aEUmmSl6dJXNqA2QXzGFOpIVB5W9eDI8j28"
+
+    // MARK: lifecycle
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        registerFonts()
+        applyTheme()
+        buildUI()
+    }
+
+    // Register the bundled TTFs so UIFont(name:) resolves them inside the extension.
+    private func registerFonts() {
+        for name in ["Geist-Regular", "Geist-Medium", "JetBrainsMono-Medium"] {
+            guard let url = Bundle(for: type(of: self)).url(forResource: name, withExtension: "ttf") else { continue }
+            CTFontManagerRegisterFontsForURL(url as CFURL, .process, nil)
+        }
+    }
+    private func uiFont(_ size: CGFloat) -> UIFont { UIFont(name: "Geist-Medium", size: size) ?? .systemFont(ofSize: size, weight: .medium) }
+    private func uiFontReg(_ size: CGFloat) -> UIFont { UIFont(name: "Geist-Regular", size: size) ?? .systemFont(ofSize: size) }
+    private func monoFont(_ size: CGFloat) -> UIFont { UIFont(name: "JetBrainsMono-Medium", size: size) ?? .monospacedSystemFont(ofSize: size, weight: .medium) }
+
+    // Fires on input-start and after each text change (incl. our own inserts) → sentence-start auto-cap.
+    override func textDidChange(_ textInput: UITextInput?) {
+        super.textDidChange(textInput)
+        maybeAutoCap()
+    }
+
+    override func traitCollectionDidChange(_ previous: UITraitCollection?) {
+        super.traitCollectionDidChange(previous)
+        if traitCollection.userInterfaceStyle != previous?.userInterfaceStyle {
+            applyTheme(); rebuild()
+        }
+    }
+
+    private func rebuild() {
+        backspaceTimer?.invalidate(); backspaceTimer = nil   // don't let a repeat outlive its (removed) key
+        view.subviews.forEach { $0.removeFromSuperview() }
+        keyPreview = nil                 // was a subview of `view`; drop the stale reference
+        keyBaseColor.removeAll(); keyBgView.removeAll()
+        buildUI()
+    }
+
+    private func buildUI() {
+        view.backgroundColor = pal.bg
+        // Install the height once (rebuild() only drops subviews). Priority < 1000 so
+        // it never fights the system's own input-view height constraint.
+        if heightC == nil {
+            heightC = view.heightAnchor.constraint(equalToConstant: 300)
+            heightC.priority = UILayoutPriority(999)
+            heightC.isActive = true
+        }
+
+        let root = UIStackView()
+        root.axis = .vertical
+        root.spacing = 6
+        root.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(root)
+        NSLayoutConstraint.activate([
+            root.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 2),
+            root.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -2),
+            root.topAnchor.constraint(equalTo: view.topAnchor, constant: 4),
+            root.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -4),
+        ])
+
+        // suggestion strip
+        suggestionStrip = UIStackView()
+        suggestionStrip.axis = .horizontal
+        suggestionStrip.distribution = .fillEqually
+        suggestionStrip.alignment = .fill                 // equal cells spanning the full width (Gboard)
+        suggestionStrip.heightAnchor.constraint(equalToConstant: 38).isActive = true
+        root.addArrangedSubview(suggestionStrip)
+
+        root.addArrangedSubview(buildFlumeBar())
+
+        contentView = UIView()
+        root.addArrangedSubview(contentView)
+
+        showKeyboard()
+        updateSuggestions()
+    }
+
+    // MARK: Flume bar
+    private func buildFlumeBar() -> UIView {
+        let bar = UIStackView()
+        bar.axis = .horizontal
+        bar.alignment = .center
+        bar.spacing = 6
+        bar.heightAnchor.constraint(equalToConstant: 48).isActive = true
+
+        let f = UILabel()
+        f.text = "F"; f.textColor = accent; f.textAlignment = .center   // inverted: keyText square, terracotta F
+        f.font = uiFont(15)
+        f.backgroundColor = pal.keyText; f.layer.cornerRadius = 8; f.clipsToBounds = true
+        f.widthAnchor.constraint(equalToConstant: 34).isActive = true
+        f.heightAnchor.constraint(equalToConstant: 34).isActive = true
+        bar.addArrangedSubview(f)
+        let spacer = UIView()                      // flexible spacer (hidden while recording)
+        flexSpacer = spacer
+        bar.addArrangedSubview(spacer)
+
+        // SF Symbols — the same line-icon set as the design: flash / grid / clock / book / mic.
+        let icons = UIStackView(); icons.axis = .horizontal; icons.spacing = 6; icons.alignment = .center
+        for (glyph, ov) in [("bolt.fill","snippets"), ("square.grid.2x2","canvas"), ("clock","history"), ("book.closed","vocabulary")] {
+            icons.addArrangedSubview(barIcon(glyph, ov))
+        }
+        iconGroup = icons
+        bar.addArrangedSubview(icons)
+        bar.addArrangedSubview(buildRecordControls())
+
+        micButton = circleButton("mic.fill", bg: pal.micBg, fg: pal.micFg)
+        micButton.addTarget(self, action: #selector(onMicTap), for: .touchUpInside)
+        let micDot = UIView()                    // orange dot badge (top-right)
+        micDot.backgroundColor = accent
+        micDot.layer.cornerRadius = 4
+        micDot.translatesAutoresizingMaskIntoConstraints = false
+        micButton.addSubview(micDot)
+        NSLayoutConstraint.activate([
+            micDot.widthAnchor.constraint(equalToConstant: 8),
+            micDot.heightAnchor.constraint(equalToConstant: 8),
+            micDot.topAnchor.constraint(equalTo: micButton.topAnchor, constant: 2),
+            micDot.trailingAnchor.constraint(equalTo: micButton.trailingAnchor, constant: -2),
+        ])
+        bar.addArrangedSubview(micButton)
+        return bar
+    }
+
+    // Recording bar (RECORDING_BAR_PROMPT.md, #51/#52): F · ✕ · waveform · 0:04 · terracotta.
+    private func buildRecordControls() -> UIView {
+        let row = UIStackView(); row.axis = .horizontal; row.spacing = 10; row.alignment = .center
+        row.isHidden = true
+        row.setContentHuggingPriority(.defaultLow, for: .horizontal)
+
+        // ✕ cancel — neutral circle icon chip
+        let cancel = UIButton(type: .system)
+        cancel.setImage(UIImage(systemName: "xmark", withConfiguration: UIImage.SymbolConfiguration(pointSize: 15, weight: .semibold)), for: .normal)
+        cancel.tintColor = pal.keyText
+        cancel.backgroundColor = pal.highlightBg; cancel.layer.cornerRadius = 19
+        cancel.widthAnchor.constraint(equalToConstant: 38).isActive = true
+        cancel.heightAnchor.constraint(equalToConstant: 38).isActive = true
+        cancel.addAction(UIAction { [weak self] _ in self?.cancelRecording() }, for: .touchUpInside)
+
+        // live waveform — text-colored bars, fills the middle
+        let wave = WaveformView()
+        wave.color = pal.keyText
+        wave.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        wave.heightAnchor.constraint(equalToConstant: 20).isActive = true
+        waveformView = wave
+
+        // M:SS mono timer
+        let timer = UILabel()
+        timer.text = "0:00"; timer.textColor = pal.mutedText; timer.font = monoFont(12)
+        timerLabel = timer
+
+        // ⏸ pause — neutral circle, tap = pause/resume
+        let pause = UIButton(type: .system)
+        pause.setImage(UIImage(systemName: "pause.fill", withConfiguration: UIImage.SymbolConfiguration(pointSize: 14, weight: .semibold)), for: .normal)
+        pause.tintColor = pal.keyText
+        pause.backgroundColor = pal.highlightBg; pause.layer.cornerRadius = 19
+        pause.widthAnchor.constraint(equalToConstant: 38).isActive = true
+        pause.heightAnchor.constraint(equalToConstant: 38).isActive = true
+        pause.addAction(UIAction { [weak self] _ in self?.togglePause() }, for: .touchUpInside)
+        pauseButton = pause
+
+        // ■ stop — terracotta circle, tap = stop & send
+        let stop = UIButton(type: .system)
+        stop.setImage(UIImage(systemName: "stop.fill", withConfiguration: UIImage.SymbolConfiguration(pointSize: 14, weight: .bold)), for: .normal)
+        stop.tintColor = .white
+        stop.backgroundColor = accent; stop.layer.cornerRadius = 21
+        stop.widthAnchor.constraint(equalToConstant: 42).isActive = true
+        stop.heightAnchor.constraint(equalToConstant: 42).isActive = true
+        stop.addAction(UIAction { [weak self] _ in self?.stopAndTranscribe() }, for: .touchUpInside)
+
+        row.addArrangedSubview(cancel)
+        row.addArrangedSubview(wave)
+        row.addArrangedSubview(timer)
+        row.addArrangedSubview(pause)
+        row.addArrangedSubview(stop)
+        recordControls = row
+        return row
+    }
+
+    private func pauseIcon(_ name: String) {
+        pauseButton?.setImage(UIImage(systemName: name, withConfiguration: UIImage.SymbolConfiguration(pointSize: 14, weight: .semibold)), for: .normal)
+    }
+
+    private func enterRecordingUI() {
+        isPaused = false; pauseButton?.alpha = 1; pauseIcon("pause.fill"); waveformView?.reset()
+        recStart = Date(); pausedTotal = 0; timerLabel?.text = "0:00"
+        recordControls?.alpha = 0
+        UIView.animate(withDuration: 0.25) {
+            self.iconGroup?.isHidden = true
+            self.flexSpacer?.isHidden = true
+            self.micButton?.isHidden = true                 // mic fades out too (spec)
+            self.recordControls?.isHidden = false
+            self.recordControls?.alpha = 1
+        }
+        startMeter(); startElapsed()
+    }
+
+    private func exitRecordingUI() {
+        stopMeter(); stopElapsed(); isPaused = false
+        iconGroup?.alpha = 0
+        UIView.animate(withDuration: 0.25) {
+            self.recordControls?.isHidden = true
+            self.iconGroup?.isHidden = false
+            self.flexSpacer?.isHidden = false
+            self.micButton?.isHidden = false
+            self.iconGroup?.alpha = 1
+        }
+    }
+
+    private func togglePause() {
+        guard let rec = recorder else { return }
+        if !isPaused { rec.pause(); isPaused = true; pauseStart = Date(); pauseIcon("play.fill") }
+        else { rec.record(); isPaused = false; pausedTotal += Date().timeIntervalSince(pauseStart); pauseIcon("pause.fill") }
+    }
+
+    private func cancelRecording() {
+        stopMeter(); stopElapsed()
+        recorder?.stop(); recorder = nil
+        try? AVAudioSession.sharedInstance().setActive(false)
+        if let url = audioURL { try? FileManager.default.removeItem(at: url) }
+        audioURL = nil; isRecording = false
+        micSymbol("mic.fill"); exitRecordingUI()
+    }
+
+    private func startMeter() {
+        recorder?.isMeteringEnabled = true
+        meterTimer?.invalidate()
+        meterTimer = Timer.scheduledTimer(withTimeInterval: 0.033, repeats: true) { [weak self] _ in
+            guard let self = self, let rec = self.recorder, self.isRecording, !self.isPaused else { return }
+            rec.updateMeters()
+            let lin: Double = pow(10.0, Double(rec.averagePower(forChannel: 0)) / 20.0)   // dB → 0..1
+            self.waveformView?.tick(CGFloat(min(1.0, max(0.0, lin))))
+        }
+    }
+    private func stopMeter() { meterTimer?.invalidate(); meterTimer = nil }
+
+    private func startElapsed() {
+        elapsedTimer?.invalidate()
+        elapsedTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
+            guard let self = self, self.isRecording else { return }
+            let ref = self.isPaused ? self.pauseStart : Date()
+            let s = Int(max(0, ref.timeIntervalSince(self.recStart) - self.pausedTotal))
+            self.timerLabel?.text = "\(s / 60):\(String(format: "%02d", s % 60))"
+        }
+    }
+    private func stopElapsed() { elapsedTimer?.invalidate(); elapsedTimer = nil }
+
+    // Desktop-widget waveform: a continuous travelling wave (whisperflow overlay_html bars
+    // animate 4↔15px on a ~0.9s loop with a per-bar stagger). Louder voice → taller.
+    final class WaveformView: UIView {
+        var color: UIColor = .systemOrange
+        private let n = 18
+        private var phase: Double = 0
+        private var level: CGFloat = 0            // 0..1 smoothed real loudness (0 on simulator)
+        func tick(_ realLevel: CGFloat) {
+            phase += 0.22                          // ~30fps → ~0.9s period like the desktop keyframes
+            level += (min(1, max(0, realLevel)) - level) * 0.35
+            setNeedsDisplay()
+        }
+        func reset() { phase = 0; level = 0; setNeedsDisplay() }
+        override func draw(_ rect: CGRect) {
+            guard let ctx = UIGraphicsGetCurrentContext() else { return }
+            let bw: CGFloat = 2, gap: CGFloat = 2, minH: CGFloat = 3, maxH: CGFloat = 18
+            let totalW = CGFloat(n) * bw + CGFloat(n - 1) * gap
+            let startX = (rect.width - totalW) / 2
+            let cy = rect.height / 2
+            ctx.setFillColor(color.cgColor)
+            for i in 0..<n {
+                let osc = 0.5 + 0.5 * sin(phase - Double(i) * 0.55)     // travelling wave, staggered per bar
+                let amp = 0.55 + 0.45 * level                            // louder voice → taller (still animates at 0)
+                var h = minH + (maxH - minH) * CGFloat(osc) * amp
+                h = min(maxH, max(minH, h))
+                let x = startX + CGFloat(i) * (bw + gap)
+                ctx.addPath(UIBezierPath(roundedRect: CGRect(x: x, y: cy - h/2, width: bw, height: h), cornerRadius: bw/2).cgPath)
+                ctx.fillPath()
+            }
+        }
+    }
+
+    private func barIcon(_ symbol: String, _ overlay: String) -> UIButton {
+        let b = UIButton(type: .system)
+        let cfg = UIImage.SymbolConfiguration(pointSize: 18, weight: .regular)
+        b.setImage(UIImage(systemName: symbol, withConfiguration: cfg), for: .normal)
+        b.tintColor = pal.iconTint
+        b.backgroundColor = activeOverlay == overlay ? pal.highlightBg : .clear
+        b.layer.cornerRadius = 10
+        b.widthAnchor.constraint(equalToConstant: 40).isActive = true
+        b.heightAnchor.constraint(equalToConstant: 40).isActive = true
+        b.addAction(UIAction { [weak self] _ in self?.toggleOverlay(overlay) }, for: .touchUpInside)
+        barButtons[overlay] = b
+        return b
+    }
+
+    private func circleButton(_ symbol: String, bg: UIColor, fg: UIColor) -> UIButton {
+        let b = UIButton(type: .system)
+        let cfg = UIImage.SymbolConfiguration(pointSize: 18, weight: .semibold)
+        b.setImage(UIImage(systemName: symbol, withConfiguration: cfg), for: .normal)
+        b.tintColor = fg
+        b.backgroundColor = bg; b.layer.cornerRadius = 20
+        b.widthAnchor.constraint(equalToConstant: 40).isActive = true
+        b.heightAnchor.constraint(equalToConstant: 40).isActive = true
+        return b
+    }
+
+    // Swap the mic glyph between idle (mic) and recording (stop) — SF Symbols, tinted by fg.
+    private func micSymbol(_ name: String) {
+        let cfg = UIImage.SymbolConfiguration(pointSize: 18, weight: .semibold)
+        micButton.setImage(UIImage(systemName: name, withConfiguration: cfg), for: .normal)
+    }
+
+    private func refreshBar() {
+        for (ov, b) in barButtons { b.backgroundColor = activeOverlay == ov ? pal.highlightBg : .clear }
+    }
+
+    // MARK: key layers
+    private let lettersRows = [["q","w","e","r","t","y","u","i","o","p"],
+                               ["a","s","d","f","g","h","j","k","l"],
+                               ["z","x","c","v","b","n","m"]]
+    private let numbersRows = [["1","2","3","4","5","6","7","8","9","0"],
+                               ["@","#","$","_","&","-","+","(",")","/"],
+                               ["*","\"","'",":",";","!","?"]]
+    private let symbolsRows = [["~","`","|","•","√","π","÷","×","¶","∆"],
+                               ["£","¢","€","¥","^","°","=","{","}","\\"],
+                               ["%","©","®","™","✓","[","]"]]
+
+    private func showKeyboard() {
+        activeOverlay = nil
+        refreshBar()
+        setContent(buildKeyboard())
+        updateSuggestions()
+    }
+
+    private func setContent(_ v: UIView) {
+        contentView.subviews.forEach { $0.removeFromSuperview() }
+        v.translatesAutoresizingMaskIntoConstraints = false
+        contentView.addSubview(v)
+        NSLayoutConstraint.activate([
+            v.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+            v.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+            v.topAnchor.constraint(equalTo: contentView.topAnchor),
+            v.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
+        ])
+    }
+
+    private func buildKeyboard() -> UIView {
+        keyBaseColor.removeAll(); keyBgView.removeAll()   // keys are rebuilt here; drop the previous layer's button refs
+        // spacing 0 on every key row (and the vertical stack) → gapless touch; the visual gap comes
+        // from each key's inset background subview (installKeyBackground), so taps never fall in a dead zone.
+        let kb = UIStackView(); kb.axis = .vertical; kb.spacing = 0
+        let rows = layer == .letters ? lettersRows : (layer == .numbers ? numbersRows : symbolsRows)
+        kb.addArrangedSubview(keyRow(rows[0]))
+        kb.addArrangedSubview(keyRow(rows[1], inset: layer == .letters ? 18 : 0))
+        // row 3: shift/toggle + keys + backspace
+        let r3 = UIStackView(); r3.axis = .horizontal; r3.spacing = 0; r3.distribution = .fill
+        let leftLabel = layer == .letters ? (capsLock ? "⇪" : "⇧") : (layer == .numbers ? "=\\<" : "?123")
+        r3.addArrangedSubview(funcKey(leftLabel, width: 44) { [weak self] in
+            guard let self = self else { return }
+            if self.layer == .letters { self.onShift() }
+            else { self.layer = self.layer == .numbers ? .symbols : .numbers; self.showKeyboard() }
+        })
+        let mid = UIStackView(); mid.axis = .horizontal; mid.spacing = 0; mid.distribution = .fillEqually
+        for k in rows[2] { mid.addArrangedSubview(charKey(k)) }
+        r3.addArrangedSubview(mid)
+        r3.addArrangedSubview(backspaceKey(width: 44))
+        kb.addArrangedSubview(r3)
+        // row 4
+        let r4 = UIStackView(); r4.axis = .horizontal; r4.spacing = 0; r4.distribution = .fill
+        r4.addArrangedSubview(funcKey(layer == .letters ? "?123" : "ABC", width: 50) { [weak self] in
+            guard let self = self else { return }
+            self.layer = self.layer == .letters ? .numbers : .letters; self.showKeyboard()
+        })
+        let comma = commaKey()
+        comma.widthAnchor.constraint(equalToConstant: 34).isActive = true
+        r4.addArrangedSubview(comma)
+        r4.addArrangedSubview(buildSpaceKey())
+        let period = charKey("."); period.widthAnchor.constraint(equalToConstant: 34).isActive = true
+        r4.addArrangedSubview(period)
+        let ret = funcKey("↵", width: 60) { [weak self] in self?.textDocumentProxy.insertText("\n") }
+        setKeyBaseColor(ret, pal.returnBg); ret.setTitleColor(pal.returnText, for: .normal)
+        r4.addArrangedSubview(ret)
+        kb.addArrangedSubview(r4)
+        return kb
+    }
+
+    private func keyRow(_ keys: [String], inset: CGFloat = 0) -> UIView {
+        let row = UIStackView(); row.axis = .horizontal; row.spacing = 0; row.distribution = .fillEqually
+        row.heightAnchor.constraint(equalToConstant: 46).isActive = true
+        for k in keys { row.addArrangedSubview(charKey(k)) }
+        if inset > 0 {
+            let wrap = UIStackView(arrangedSubviews: [spacer(inset), row, spacer(inset)])
+            wrap.axis = .horizontal; wrap.spacing = 0
+            return wrap
+        }
+        return row
+    }
+
+    private func spacer(_ w: CGFloat) -> UIView {
+        let v = UIView(); v.widthAnchor.constraint(equalToConstant: w).isActive = true; return v
+    }
+
+    private func charKey(_ label: String) -> UIButton {
+        let shown = (layer == .letters && (shifted || capsLock)) ? label.uppercased() : label
+        let b = UIButton(type: .system)
+        b.setTitle(shown, for: .normal)
+        b.setTitleColor(pal.keyText, for: .normal)
+        b.titleLabel?.font = uiFont(20)
+        b.heightAnchor.constraint(equalToConstant: 46).isActive = true
+        installKeyBackground(b, color: pal.keyBg)
+        // Fire on touch-DOWN so fast taps that slide slightly are never dropped (a UIButton
+        // cancels .touchUpInside once the finger drags past its slop).
+        b.addAction(UIAction { [weak self] _ in self?.onCharKey(shown) }, for: .touchDown)
+        b.addTarget(self, action: #selector(keyDownVisual(_:)), for: .touchDown)
+        b.addTarget(self, action: #selector(keyUpVisual(_:)), for: [.touchUpInside, .touchDragExit, .touchCancel])
+        return b
+    }
+
+    private func funcKey(_ label: String, width: CGFloat, flexible: Bool = false, _ action: @escaping () -> Void) -> UIButton {
+        let b = UIButton(type: .system)
+        b.setTitle(label, for: .normal)
+        b.setTitleColor(pal.keyText, for: .normal)
+        b.titleLabel?.font = uiFont(label.count > 2 ? 13 : 16)
+        b.heightAnchor.constraint(equalToConstant: 46).isActive = true
+        installKeyBackground(b, color: pal.modBg)
+        if flexible {
+            b.setContentHuggingPriority(.defaultLow, for: .horizontal)
+            b.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        } else {
+            b.widthAnchor.constraint(equalToConstant: width).isActive = true
+        }
+        b.addAction(UIAction { _ in action() }, for: .touchDown)
+        b.addTarget(self, action: #selector(keyDownVisual(_:)), for: .touchDown)
+        b.addTarget(self, action: #selector(keyUpVisual(_:)), for: [.touchUpInside, .touchDragExit, .touchCancel])
+        return b
+    }
+
+    // Comma: mirrors Android — commits "," on touch-UP only if the long-press→emoji did NOT
+    // fire. (charKey commits on touch-DOWN, which would insert a stray "," before the long-press
+    // opened emoji.) The long-press recognizer cancels the button touch on recognition, so
+    // .touchUpInside does not fire after a hold. Pressed-state + input-click kept.
+    private func commaKey() -> UIButton {
+        let b = UIButton(type: .system)
+        b.setTitle(",", for: .normal)
+        b.setTitleColor(pal.keyText, for: .normal)
+        b.titleLabel?.font = uiFont(20)
+        b.heightAnchor.constraint(equalToConstant: 46).isActive = true
+        installKeyBackground(b, color: pal.keyBg)
+        b.addAction(UIAction { [weak self] _ in self?.onCharKey(",") }, for: .touchUpInside)   // commit on UP
+        b.addTarget(self, action: #selector(keyDownVisual(_:)), for: .touchDown)
+        b.addTarget(self, action: #selector(keyUpVisual(_:)), for: [.touchUpInside, .touchDragExit, .touchCancel])
+        let long = UILongPressGestureRecognizer(target: self, action: #selector(onCommaLong(_:)))
+        b.addGestureRecognizer(long)
+        return b
+    }
+
+    // Backspace with hold-to-repeat (mirrors Android attachRepeat): delete once on down, then
+    // repeat every 55ms after a 400ms hold. Pressed-state + input-click via keyDownVisual/keyUpVisual.
+    private func backspaceKey(width: CGFloat) -> UIButton {
+        let b = UIButton(type: .system)
+        b.setTitle("⌫", for: .normal)
+        b.setTitleColor(pal.keyText, for: .normal)
+        b.titleLabel?.font = uiFont(16)
+        b.heightAnchor.constraint(equalToConstant: 46).isActive = true
+        b.widthAnchor.constraint(equalToConstant: width).isActive = true
+        installKeyBackground(b, color: pal.modBg)
+        b.addTarget(self, action: #selector(keyDownVisual(_:)), for: .touchDown)
+        b.addTarget(self, action: #selector(keyUpVisual(_:)), for: [.touchUpInside, .touchDragExit, .touchCancel])
+        b.addTarget(self, action: #selector(backspaceDown), for: .touchDown)
+        b.addTarget(self, action: #selector(backspaceUp), for: [.touchUpInside, .touchUpOutside, .touchCancel, .touchDragExit])
+        return b
+    }
+    @objc private func backspaceDown() {
+        onBackspace()
+        backspaceTimer?.invalidate()
+        backspaceTimer = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: false) { [weak self] _ in
+            self?.backspaceTimer?.invalidate()
+            self?.backspaceTimer = Timer.scheduledTimer(withTimeInterval: 0.055, repeats: true) { [weak self] _ in
+                self?.onBackspace()
+            }
+        }
+    }
+    @objc private func backspaceUp() { backspaceTimer?.invalidate(); backspaceTimer = nil }
+
+    // Space key: cursor-swipe (Gboard). A horizontal drag moves the caret one char per ~12pt of
+    // travel (via onSpacePan → adjustTextPosition); a plain tap inserts a space. Built WITHOUT
+    // funcKey's touch-DOWN insert so a swipe never types a space. Space now commits on LIFT:
+    //   • a drag that crossed >=1 step → cursor moved, NO space (pan .ended, spaceSwiped == true)
+    //   • a drag too small to cross a step → space (pan .ended, spaceSwiped == false)
+    //   • a pure tap that never starts the pan → space (button .touchUpInside)
+    // Those three are mutually exclusive (the pan's cancelsTouchesInView cancels the button touch
+    // once it begins, so .touchUpInside can't also fire), so a space is inserted at most once.
+    private func buildSpaceKey() -> UIButton {
+        let b = UIButton(type: .system)
+        b.setTitle("English (US)", for: .normal)
+        b.titleLabel?.font = uiFont(13)
+        b.heightAnchor.constraint(equalToConstant: 46).isActive = true
+        installKeyBackground(b, color: pal.keyBg)
+        setKeyBaseColor(b, pal.keyBg)
+        b.setTitleColor(pal.mutedText, for: .normal)
+        b.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        b.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        // Pressed-state visual + input-click on down, but NO text insertion on down.
+        b.addTarget(self, action: #selector(keyDownVisual(_:)), for: .touchDown)
+        b.addTarget(self, action: #selector(keyUpVisual(_:)), for: [.touchUpInside, .touchDragExit, .touchCancel])
+        // Pure tap (pan never begins → no cursor move) inserts a space on lift.
+        b.addAction(UIAction { [weak self] _ in self?.onSpace() }, for: .touchUpInside)
+        let pan = UIPanGestureRecognizer(target: self, action: #selector(onSpacePan(_:)))
+        pan.maximumNumberOfTouches = 1
+        b.addGestureRecognizer(pan)
+        return b
+    }
+
+    @objc private func onSpacePan(_ g: UIPanGestureRecognizer) {
+        switch g.state {
+        case .began:
+            spacePanStart = 0; spacePanSteps = 0; spaceSwiped = false
+        case .changed:
+            let dx = g.translation(in: g.view).x
+            let steps = Int(dx / 12)
+            if steps != spacePanSteps {
+                let delta = steps - spacePanSteps
+                textDocumentProxy.adjustTextPosition(byCharacterOffset: delta)   // + = right, - = left
+                spacePanSteps = steps
+                if abs(steps) >= 1 { spaceSwiped = true }
+            }
+        case .ended, .cancelled:
+            // A drag that began but never crossed a full step → treat as a plain tap → space.
+            if !spaceSwiped && g.state == .ended { onSpace() }
+        default: break
+        }
+    }
+
+    // MARK: key handling
+    private func onCharKey(_ ch: String) {
+        commit(ch)
+        if layer == .letters && shifted && !capsLock { shifted = false; showKeyboard() }
+    }
+    private func commit(_ s: String) {
+        // Learn the just-finished word when a single non-letter boundary (space/punctuation)
+        // is committed — capture BEFORE inserting so currentWordPrefix() still sees the word.
+        if s.count == 1, let ch = s.first, !ch.isLetter {
+            learnWord(currentWordPrefix())
+            if let tw = lastTwoWords() { learnBigram(tw.0, tw.1) }
+        }
+        textDocumentProxy.insertText(s); updateSuggestions()
+    }
+    // Space key: double-space → ". " (Gboard). If the text before the cursor ends with a single
+    // space that is itself preceded by a letter/digit, replace that space with ". "; else a normal space.
+    private func onSpace() {
+        let before = textDocumentProxy.documentContextBeforeInput ?? ""
+        if before.hasSuffix(" ") && before.count >= 2 {
+            let prev = before[before.index(before.endIndex, offsetBy: -2)]
+            if prev.isLetter || prev.isNumber {
+                textDocumentProxy.deleteBackward()
+                textDocumentProxy.insertText(". ")
+                updateSuggestions()
+                return
+            }
+        }
+        commit(" ")
+    }
+
+    // Auto-capitalize at the start of a sentence: flip `shifted` on when the document is empty or the
+    // text ends with a sentence terminator followed by a space. Only rebuilds when the state flips.
+    private func maybeAutoCap() {
+        guard layer == .letters, !capsLock else { return }
+        if textDocumentProxy.autocapitalizationType == UITextAutocapitalizationType.none { return }
+        let before = textDocumentProxy.documentContextBeforeInput ?? ""
+        var want = false
+        if before.isEmpty {
+            want = true
+        } else if before.hasSuffix(" ") {
+            let woSpace = before.dropLast()
+            if let last = woSpace.last, last == "." || last == "!" || last == "?" { want = true }
+        }
+        if want != shifted {
+            shifted = want
+            showKeyboard()
+        }
+    }
+
+    private func onShift() {
+        if capsLock { capsLock = false; shifted = false }
+        else if shifted { capsLock = true }
+        else { shifted = true }
+        showKeyboard()
+    }
+    private func onBackspace() { textDocumentProxy.deleteBackward(); updateSuggestions() }
+
+    @objc private func onCommaLong(_ g: UILongPressGestureRecognizer) {
+        if g.state == .began { openEmoji() }
+    }
+
+    // MARK: suggestions (word→emoji → personal learned → user vocabulary → bundled dictionary)
+    private func updateSuggestions() {
+        guard suggestionStrip != nil else { return }
+        if activeOverlay != nil { renderSuggestionCells([]); return }
+        let raw = currentWordPrefix()
+        let word = raw.lowercased()
+        var cells: [UIView] = []
+
+        if word.isEmpty {
+            // EMPTY prefix → next-word predictions keyed on the previous word.
+            let before = textDocumentProxy.documentContextBeforeInput ?? ""
+            let trimmed = before.replacingOccurrences(of: "\\s+$", with: "", options: .regularExpression)
+            let letterToks = trimmed.components(separatedBy: CharacterSet.letters.inverted).filter { !$0.isEmpty }
+            if let prevRaw = letterToks.last {
+                let prev = prevRaw.lowercased()
+                if !prev.isEmpty {
+                    loadLearnedBg()
+                    var nextPicks: [String] = []
+                    var nextSeen = Set<String>()
+                    func considerNext(_ candidate: String) {
+                        let lc = candidate.lowercased()
+                        if lc.isEmpty || lc == prev { return }
+                        if nextSeen.contains(lc) { return }
+                        nextSeen.insert(lc)
+                        nextPicks.append(candidate)
+                    }
+                    // 1) personal learned bigrams, most-used first
+                    if let inner = learnedBg[prev] {
+                        for (w, _) in inner.sorted(by: { $0.value > $1.value }) {
+                            considerNext(w); if nextPicks.count >= 3 { break }
+                        }
+                    }
+                    // 2) bundled bigram table, in order
+                    if nextPicks.count < 3, let nexts = bigrams[prev] {
+                        for w in nexts {
+                            considerNext(w); if nextPicks.count >= 3 { break }
+                        }
+                    }
+                    for w in nextPicks { cells.append(wordSuggestionButton(w)) }
+                }
+            }
+            renderSuggestionCells(cells)
+            return
+        }
+        loadLearned()
+
+        // Word→emoji suggestion for an EXACT full word (shown first); then up to 2 completions.
+        var emojiPick: String? = nil
+        if let list = emojiKw[word], let first = list.first { emojiPick = first }
+        let wordLimit = emojiPick != nil ? 2 : 3
+
+        var picks: [String] = []
+        var seen = Set<String>()                       // dedupe case-insensitively across sources
+        func consider(_ candidate: String) {
+            let lc = candidate.lowercased()
+            if lc == word || lc.isEmpty { return }     // skip the prefix itself
+            if seen.contains(lc) { return }
+            seen.insert(lc)
+            picks.append(candidate)
+        }
+
+        // 1) personal learned words, most-used first
+        let learnedMatches = learned.filter { $0.key.hasPrefix(word) }.sorted { $0.value > $1.value }
+        for (w, _) in learnedMatches {
+            consider(w); if picks.count >= wordLimit { break }
+        }
+        // 2) user vocabulary
+        if picks.count < wordLimit, let cfg = readConfig(), let vocab = cfg["vocabulary"] as? [[String: Any]] {
+            for v in vocab {
+                let w = v["word"] as? String ?? ""
+                if !w.isEmpty && w.lowercased().hasPrefix(word) {
+                    consider(w); if picks.count >= wordLimit { break }
+                }
+            }
+        }
+        // 3) bundled frequency dictionary (already frequency-ranked; stop once we have enough)
+        if picks.count < wordLimit {
+            for w in dictWords {
+                if w.hasPrefix(word) {
+                    consider(w); if picks.count >= wordLimit { break }
+                }
+            }
+        }
+
+        // Preserve the user's casing.
+        let upper = raw.count > 1 && raw == raw.uppercased()
+        let cap = !upper && (raw.first?.isUppercase ?? false)
+        if let e = emojiPick { cells.append(emojiSuggestionButton(e)) }
+        for p in picks {
+            let shown: String
+            if upper { shown = p.uppercased() }
+            else if cap { shown = p.prefix(1).uppercased() + p.dropFirst() }
+            else { shown = p }
+            cells.append(wordSuggestionButton(shown))
+        }
+        renderSuggestionCells(cells)
+    }
+
+    // A centered word-completion cell (tap replaces the current word).
+    private func wordSuggestionButton(_ shown: String) -> UIButton {
+        let b = UIButton(type: .system)
+        b.setTitle(shown, for: .normal); b.setTitleColor(pal.keyText, for: .normal)
+        b.titleLabel?.font = uiFont(14)
+        b.addAction(UIAction { [weak self] _ in self?.replaceCurrentWord(shown) }, for: .touchUpInside)
+        return b
+    }
+    // A word→emoji cell (tap replaces the typed word with the emoji + a trailing space).
+    private func emojiSuggestionButton(_ e: String) -> UIButton {
+        let b = UIButton(type: .system)
+        b.setTitle(e, for: .normal)
+        b.titleLabel?.font = .systemFont(ofSize: 22)
+        b.addAction(UIAction { [weak self] _ in self?.replaceCurrentWordWithEmoji(e) }, for: .touchUpInside)
+        return b
+    }
+    private func replaceCurrentWordWithEmoji(_ emoji: String) {
+        let prefix = currentWordPrefix()
+        for _ in 0..<prefix.count { textDocumentProxy.deleteBackward() }
+        textDocumentProxy.insertText(emoji + " ")
+        updateSuggestions()
+    }
+    // Distribute the strip like Gboard: up to 3 EQUAL cells (fillEqually) with thin vertical
+    // dividers between them. Fewer than 3 picks stay distributed across the present cells.
+    private func renderSuggestionCells(_ cells: [UIView]) {
+        guard let strip = suggestionStrip else { return }
+        strip.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        for (i, content) in cells.prefix(3).enumerated() {
+            strip.addArrangedSubview(suggestionCell(content, showLeadingDivider: i > 0))
+        }
+    }
+    private func suggestionCell(_ content: UIView, showLeadingDivider: Bool) -> UIView {
+        let cell = UIView()
+        content.translatesAutoresizingMaskIntoConstraints = false
+        cell.addSubview(content)
+        NSLayoutConstraint.activate([
+            content.leadingAnchor.constraint(equalTo: cell.leadingAnchor),
+            content.trailingAnchor.constraint(equalTo: cell.trailingAnchor),
+            content.topAnchor.constraint(equalTo: cell.topAnchor),
+            content.bottomAnchor.constraint(equalTo: cell.bottomAnchor),
+        ])
+        if showLeadingDivider {
+            let div = UIView()
+            div.backgroundColor = pal.mutedText.withAlphaComponent(0.2)
+            div.isUserInteractionEnabled = false
+            div.translatesAutoresizingMaskIntoConstraints = false
+            cell.addSubview(div)
+            NSLayoutConstraint.activate([
+                div.leadingAnchor.constraint(equalTo: cell.leadingAnchor),
+                div.widthAnchor.constraint(equalToConstant: 1),
+                div.topAnchor.constraint(equalTo: cell.topAnchor, constant: 8),
+                div.bottomAnchor.constraint(equalTo: cell.bottomAnchor, constant: -8),
+            ])
+        }
+        return cell
+    }
+    private func currentWordPrefix() -> String {
+        let before = textDocumentProxy.documentContextBeforeInput ?? ""
+        let parts = before.components(separatedBy: CharacterSet.alphanumerics.inverted)
+        return parts.last ?? ""
+    }
+    private func replaceCurrentWord(_ word: String) {
+        let prefix = currentWordPrefix()
+        for _ in 0..<prefix.count { textDocumentProxy.deleteBackward() }
+        textDocumentProxy.insertText(word + " ")
+        learnWord(word)
+        updateSuggestions()
+    }
+    private func formatTime(_ iso: String?) -> String {
+        guard let iso = iso, iso.count >= 16 else { return "" }
+        let start = iso.index(iso.startIndex, offsetBy: 11)
+        let end = iso.index(iso.startIndex, offsetBy: 16)
+        var hm = String(iso[start..<end])   // "HH:MM" (UTC)
+        if hm.hasPrefix("0") { hm.removeFirst() }
+        return hm
+    }
+
+    // MARK: overlays
+    private func toggleOverlay(_ which: String) {
+        if activeOverlay == which { showKeyboard(); return }
+        activeOverlay = which; refreshBar()
+        suggestionStrip.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        setContent(buildOverlay(which))
+    }
+
+    private func buildOverlay(_ which: String) -> UIView {
+        let wrap = UIStackView(); wrap.axis = .vertical; wrap.spacing = 6
+        let header = UILabel()
+        header.text = which.uppercased(); header.textColor = pal.mutedText
+        header.font = monoFont(11)
+        wrap.addArrangedSubview(header)
+
+        let scroll = UIScrollView()
+        let list = UIStackView(); list.axis = .vertical; list.spacing = 6
+        list.translatesAutoresizingMaskIntoConstraints = false
+        scroll.addSubview(list)
+        NSLayoutConstraint.activate([
+            list.leadingAnchor.constraint(equalTo: scroll.leadingAnchor),
+            list.trailingAnchor.constraint(equalTo: scroll.trailingAnchor),
+            list.topAnchor.constraint(equalTo: scroll.topAnchor),
+            list.bottomAnchor.constraint(equalTo: scroll.bottomAnchor),
+            list.widthAnchor.constraint(equalTo: scroll.widthAnchor),
+        ])
+        let cfg = readConfig()
+        switch which {
+        case "snippets":
+            let arr = (cfg?["snippets"] as? [[String: Any]]) ?? []
+            if arr.isEmpty { list.addArrangedSubview(emptyRow("No snippets yet")) }
+            for s in arr {
+                let trg = (s["label"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? (s["trigger"] as? String ?? "")
+                let exp = s["expansion"] as? String ?? ""
+                if exp.isEmpty { continue }
+                list.addArrangedSubview(overlayRow(trg, exp, accent) { [weak self] in
+                    self?.textDocumentProxy.insertText(exp); self?.showKeyboard() })
+            }
+        case "history":
+            let arr = (cfg?["history"] as? [[String: Any]]) ?? []
+            if arr.isEmpty { list.addArrangedSubview(emptyRow("No recent dictations")) }
+            for h in arr {
+                let t = h["text"] as? String ?? ""
+                if t.isEmpty { continue }
+                let time = formatTime(h["at"] as? String)
+                list.addArrangedSubview(overlayRow(time.isEmpty ? t : "\(time)   \(t)", "", pal.keyText) { [weak self] in
+                    self?.textDocumentProxy.insertText(t); self?.showKeyboard() })
+            }
+        case "vocabulary":
+            let arr = (cfg?["vocabulary"] as? [[String: Any]]) ?? []
+            if arr.isEmpty { list.addArrangedSubview(emptyRow("No words yet")) }
+            for v in arr {
+                let w = v["word"] as? String ?? ""
+                if w.isEmpty { continue }
+                let ph = v["phonetic"] as? String ?? ""
+                list.addArrangedSubview(overlayRow(w, ph, pal.keyText) { [weak self] in
+                    self?.textDocumentProxy.insertText(w + " ") })
+            }
+        default: // canvas (v1.5)
+            list.addArrangedSubview(emptyRow("Open the Flume app to use Canvas"))
+        }
+        wrap.addArrangedSubview(scroll)
+        return wrap
+    }
+
+    private func emptyRow(_ msg: String) -> UIView {
+        let l = UILabel(); l.text = msg; l.textColor = pal.mutedText; l.font = uiFont(14); return l
+    }
+
+    private func overlayRow(_ title: String, _ sub: String, _ titleColor: UIColor, _ action: @escaping () -> Void) -> UIView {
+        let b = UIButton(type: .system)
+        let t = title.count > 44 ? String(title.prefix(44)) + "…" : title
+        b.setTitle(sub.isEmpty ? t : "\(t)   \(sub.count > 26 ? String(sub.prefix(26)) + "…" : sub)", for: .normal)
+        b.setTitleColor(titleColor, for: .normal)
+        b.contentHorizontalAlignment = .left
+        b.contentEdgeInsets = UIEdgeInsets(top: 12, left: 12, bottom: 12, right: 12)
+        b.titleLabel?.font = titleColor == accent
+            ? monoFont(14)
+            : uiFont(14)
+        b.backgroundColor = pal.cardBg; b.layer.cornerRadius = 12
+        b.addAction(UIAction { _ in action() }, for: .touchUpInside)
+        return b
+    }
+
+    // MARK: emoji
+    // Recents first, then the 9 bundled groups (flume_emoji.txt) with representative tab glyphs.
+    private func emojiCategories() -> [(String, [String])] {
+        let glyphs = ["😀", "🧑", "🐶", "🍔", "✈️", "⚽", "💡", "❤️", "🏳️"]   // Smileys…Flags
+        var cats: [(String, [String])] = [("🕘", emojiRecents)]
+        for (i, group) in emojiLib.enumerated() {
+            let glyph = i < glyphs.count ? glyphs[i] : "•"
+            cats.append((glyph, group.1))
+        }
+        return cats
+    }
+
+    private func openEmoji() {
+        activeOverlay = nil; refreshBar()
+        suggestionStrip.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        setContent(buildEmoji())
+    }
+
+    private func buildEmoji() -> UIView {
+        keyBaseColor.removeAll(); keyBgView.removeAll()   // the ABC / ⌫ funcKeys are rebuilt here too
+        let cats = emojiCategories()
+        if emojiCatIdx < 0 || emojiCatIdx >= cats.count { emojiCatIdx = 1 }
+        let wrap = UIStackView(); wrap.axis = .vertical; wrap.spacing = 6
+
+        let tabs = UIStackView(); tabs.axis = .horizontal; tabs.spacing = 4; tabs.distribution = .fillEqually
+        for (i, c) in cats.enumerated() {
+            let b = UIButton(type: .system)
+            b.setTitle(c.0, for: .normal); b.titleLabel?.font = .systemFont(ofSize: 18)
+            b.backgroundColor = i == emojiCatIdx ? pal.highlightBg : .clear
+            b.layer.cornerRadius = 8
+            b.addAction(UIAction { [weak self] _ in self?.emojiCatIdx = i; self?.setContent(self!.buildEmoji()) }, for: .touchUpInside)
+            tabs.addArrangedSubview(b)
+        }
+        tabs.heightAnchor.constraint(equalToConstant: 34).isActive = true
+        wrap.addArrangedSubview(tabs)
+
+        var list = cats[emojiCatIdx].1
+        if list.isEmpty { list = cats[1].1 }
+        let scroll = UIScrollView()
+        let col = UIStackView(); col.axis = .vertical; col.spacing = 2
+        col.translatesAutoresizingMaskIntoConstraints = false
+        scroll.addSubview(col)
+        NSLayoutConstraint.activate([
+            col.leadingAnchor.constraint(equalTo: scroll.leadingAnchor),
+            col.trailingAnchor.constraint(equalTo: scroll.trailingAnchor),
+            col.topAnchor.constraint(equalTo: scroll.topAnchor),
+            col.bottomAnchor.constraint(equalTo: scroll.bottomAnchor),
+            col.widthAnchor.constraint(equalTo: scroll.widthAnchor),
+        ])
+        var rowV: UIStackView?
+        for (idx, e) in list.enumerated() {
+            if idx % 8 == 0 { rowV = UIStackView(); rowV!.axis = .horizontal; rowV!.distribution = .fillEqually; col.addArrangedSubview(rowV!) }
+            let b = UIButton(type: .system)
+            b.setTitle(e, for: .normal); b.titleLabel?.font = .systemFont(ofSize: 24)
+            b.heightAnchor.constraint(equalToConstant: 44).isActive = true
+            b.addAction(UIAction { [weak self] _ in self?.commitEmoji(e) }, for: .touchUpInside)
+            rowV!.addArrangedSubview(b)
+        }
+        wrap.addArrangedSubview(scroll)
+
+        let bottom = UIStackView(); bottom.axis = .horizontal; bottom.spacing = 6; bottom.distribution = .fill
+        bottom.addArrangedSubview(funcKey("ABC", width: 0, flexible: true) { [weak self] in self?.showKeyboard() })
+        bottom.addArrangedSubview(funcKey("⌫", width: 60) { [weak self] in self?.onBackspace() })
+        wrap.addArrangedSubview(bottom)
+        return wrap
+    }
+
+    private func commitEmoji(_ e: String) {
+        textDocumentProxy.insertText(e)
+        emojiRecents.removeAll { $0 == e }; emojiRecents.insert(e, at: 0)
+        if emojiRecents.count > 24 { emojiRecents = Array(emojiRecents.prefix(24)) }
+    }
+
+    // MARK: config (App Group — the app writes flume_kbd_config.json here)
+    private func readConfig() -> [String: Any]? {
+        guard let dir = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: "group.com.verbal.app") else { return nil }
+        let url = dir.appendingPathComponent("flume_kbd_config.json")
+        guard let data = try? Data(contentsOf: url),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        return obj
+    }
+
+    // MARK: dictation (record → groq-proxy). In-extension mic is a device-only
+    // unknown (spec risk #1); the button is present and works where the OS allows it.
+    @objc private func onMicTap() {
+        if isRecording { stopAndTranscribe() } else { startRecording() }
+    }
+
+    private func startRecording() {
+        requestMic { [weak self] ok in
+            guard let self = self, ok else { self?.flashMic("mic blocked"); return }
+            do {
+                let session = AVAudioSession.sharedInstance()
+                try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker])
+                try session.setActive(true)
+                let url = FileManager.default.temporaryDirectory.appendingPathComponent("flume_rec.m4a")
+                try? FileManager.default.removeItem(at: url)
+                let settings: [String: Any] = [
+                    AVFormatIDKey: Int(kAudioFormatMPEG4AAC), AVSampleRateKey: 16000,
+                    AVNumberOfChannelsKey: 1, AVEncoderAudioQualityKey: AVAudioQuality.medium.rawValue]
+                let rec = try AVAudioRecorder(url: url, settings: settings)
+                rec.isMeteringEnabled = true
+                guard rec.record() else { return }
+                self.recorder = rec; self.audioURL = url; self.isRecording = true
+                self.micSymbol("stop.fill")
+                self.enterRecordingUI()
+                self.playSound("flume_start")
+            } catch { self.flashMic("record failed") }
+        }
+    }
+
+    private func requestMic(_ completion: @escaping (Bool) -> Void) {
+        if #available(iOS 17.0, *) {
+            AVAudioApplication.requestRecordPermission { g in DispatchQueue.main.async { completion(g) } }
+        } else {
+            AVAudioSession.sharedInstance().requestRecordPermission { g in DispatchQueue.main.async { completion(g) } }
+        }
+    }
+
+    private func stopAndTranscribe() {
+        stopMeter()
+        recorder?.stop(); recorder = nil
+        try? AVAudioSession.sharedInstance().setActive(false)
+        // Switch to playback so the stop SFX is audible (recording set the category to .playAndRecord).
+        try? AVAudioSession.sharedInstance().setCategory(.playback, options: [.mixWithOthers])
+        try? AVAudioSession.sharedInstance().setActive(true)
+        playSound("flume_stop")
+        isRecording = false; micSymbol("mic.fill"); exitRecordingUI()
+        guard let url = audioURL, let data = try? Data(contentsOf: url), !data.isEmpty else { return }
+        transcribe(data: data)
+    }
+
+    private func flashMic(_ msg: String) { /* transient — status surface added later */ }
+
+    // Recording SFX (mirrors the desktop start/stop/done sounds). Load once + cache.
+    // FAIL CLOSED — a sound error must never break the record→transcribe→inject path.
+    private func playSound(_ name: String, volume: Float = 0.35) {
+        do {
+            let player: AVAudioPlayer
+            if let cached = soundPlayers[name] {
+                player = cached
+            } else {
+                guard let url = Bundle(for: type(of: self)).url(forResource: name, withExtension: "wav") else { return }
+                player = try AVAudioPlayer(contentsOf: url)
+                player.prepareToPlay()
+                soundPlayers[name] = player
+            }
+            player.volume = volume
+            player.currentTime = 0
+            player.play()
+        } catch { /* ignore */ }
+    }
+
+    private func transcribe(data: Data) {
+        guard let url = URL(string: "\(supabaseURL)/functions/v1/groq-proxy") else { return }
+        let boundary = "Boundary-\(UUID().uuidString)"
+        var req = URLRequest(url: url); req.httpMethod = "POST"
+        req.setValue("Bearer \(supabaseAnon)", forHTTPHeaderField: "Authorization")
+        req.setValue(supabaseAnon, forHTTPHeaderField: "apikey")
+        req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        var body = Data()
+        func field(_ n: String, _ v: String) {
+            body.append("--\(boundary)\r\n".data(using: .utf8)!)
+            body.append("Content-Disposition: form-data; name=\"\(n)\"\r\n\r\n".data(using: .utf8)!)
+            body.append("\(v)\r\n".data(using: .utf8)!)
+        }
+        field("model", "whisper-large-v3-turbo"); field("response_format", "json")
+        body.append("--\(boundary)\r\n".data(using: .utf8)!)
+        body.append("Content-Disposition: form-data; name=\"file\"; filename=\"audio.m4a\"\r\n".data(using: .utf8)!)
+        body.append("Content-Type: audio/m4a\r\n\r\n".data(using: .utf8)!)
+        body.append(data); body.append("\r\n".data(using: .utf8)!)
+        body.append("--\(boundary)--\r\n".data(using: .utf8)!)
+        req.httpBody = body
+        URLSession.shared.dataTask(with: req) { [weak self] data, _, _ in
+            guard let self = self, let data = data,
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let text = (obj["text"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty
+            else { return }
+            DispatchQueue.main.async {
+                self.textDocumentProxy.insertText(text + " ")
+                // Switch to playback so the done SFX is audible after the async transcription.
+                try? AVAudioSession.sharedInstance().setCategory(.playback, options: [.mixWithOthers])
+                try? AVAudioSession.sharedInstance().setActive(true)
+                self.playSound("flume_done")
+            }
+        }.resume()
+    }
+}
+
+private extension UIColor {
+    convenience init(hex: Int) {
+        self.init(red: CGFloat((hex >> 16) & 0xFF) / 255.0,
+                  green: CGFloat((hex >> 8) & 0xFF) / 255.0,
+                  blue: CGFloat(hex & 0xFF) / 255.0, alpha: 1.0)
+    }
+}

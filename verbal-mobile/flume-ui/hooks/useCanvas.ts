@@ -60,8 +60,22 @@ async function uploadImage(localUri: string): Promise<string | null> {
 
 export function useCanvas() {
   const [items, setItems] = useState<CanvasItem[]>([]);
+  const [toast, setToast] = useState<string | null>(null);
   const channelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
   const myNameRef = useRef<string>('');
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Transient in-app banner ("Received from X — copied to clipboard"), auto-hides.
+  const flashToast = useCallback((msg: string) => {
+    setToast(msg);
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    toastTimer.current = setTimeout(() => setToast(null), 2800);
+  }, []);
+  const dismissToast = useCallback(() => {
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    setToast(null);
+  }, []);
+  useEffect(() => () => { if (toastTimer.current) clearTimeout(toastTimer.current); }, []);
 
   // Subscribe to the shared canvas row for cross-device receive.
   useEffect(() => {
@@ -84,8 +98,12 @@ export function useCanvas() {
             if (from === myNameRef.current) return; // skip our own writes
 
             const id = `c_${Date.now()}`;
+            const who = from || 'another device';
             if (imageUrl) {
               setItems(prev => [{ id, kind: 'image', state: 'sent', sentAt: nowHHmm(), uri: imageUrl, filename: 'shared.jpg' }, ...prev]);
+              // Copy the image's URL so it's pasteable even before the thumbnail loads.
+              await Clipboard.setStringAsync(imageUrl);
+              flashToast(`Received image from ${who} — link copied`);
               await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
             } else if (content) {
               const isLink = /^https?:\/\//i.test(content);
@@ -96,6 +114,7 @@ export function useCanvas() {
                 ...prev,
               ]);
               await Clipboard.setStringAsync(content);
+              flashToast(`Received from ${who} — copied to clipboard`);
               await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
             }
           },
@@ -131,17 +150,24 @@ export function useCanvas() {
         await pushToShared({ content: item.url, image_url: null });
       } else if (item.kind === 'image') {
         const url = /^https?:\/\//i.test(item.uri) ? item.uri : await uploadImage(item.uri);
-        if (url) {
-          await Clipboard.setStringAsync(url);
-          await pushToShared({ content: null, image_url: url });
+        if (!url) {
+          // Surface the silent upload failure instead of no-op'ing (was the
+          // "I send a picture and nothing happens" bug).
+          flashToast('Image upload failed — check your connection');
+          await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+          return;
         }
+        await Clipboard.setStringAsync(url);
+        await pushToShared({ content: null, image_url: url });
       }
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     } catch (err) {
       console.error('Failed to save canvas item:', err);
+      flashToast('Send failed — try again');
+      return;
     }
     setItems(prev => prev.map(i => (i.id === id ? { ...i, state: 'sent', sentAt: nowHHmm() } : i)));
-  }, [items, pushToShared]);
+  }, [items, pushToShared, flashToast]);
 
   const discard = useCallback((id: string) => {
     setItems(prev => prev.filter(i => i.id !== id));
@@ -210,5 +236,5 @@ export function useCanvas() {
     }
   }, []);
 
-  return { items, save, discard, addText, addLink, addPhoto, updateText, refresh };
+  return { items, save, discard, addText, addLink, addPhoto, updateText, refresh, toast, dismissToast };
 }

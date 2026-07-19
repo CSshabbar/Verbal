@@ -29,6 +29,7 @@ _IC = {
     "book":   '<path d="M4 5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2z"/><path d="M4 19h15"/><path d="M9 7h6"/>',
     "bolt":   '<path d="M13 2 4 14h7l-1 8 9-12h-7z"/>',
     "phone":  '<rect x="6" y="2.5" width="12" height="19" rx="2.4"/><path d="M11 18.5h2"/>',
+    "meet":   '<circle cx="9" cy="8" r="3.2"/><path d="M3.5 19c.7-3 2.9-4.5 5.5-4.5s4.8 1.5 5.5 4.5"/><circle cx="17" cy="9" r="2.6"/><path d="M15.8 14.7c2.2.3 3.9 1.6 4.7 4.3"/>',
     "dots":   '<circle cx="5" cy="12" r=".9"/><circle cx="12" cy="12" r=".9"/><circle cx="19" cy="12" r=".9"/>',
 }
 
@@ -328,6 +329,86 @@ body{background:var(--bg);font-family:'Geist',-apple-system,system-ui,sans-serif
 .fmtbtn.ftxt{width:auto;padding:0 10px;font:600 11.5px 'Geist'}
 .fmtbtn.retry{color:var(--acc);border-color:var(--acc-bd)}
 .nflags .saverow{margin:0 0 12px}.nflags .saverow:last-child{margin-bottom:0}
+/* ── Meetings (31a launcher card · 31f folder tabs) ── */
+.mcard{display:flex;align-items:center;gap:14px;margin:18px 0 6px;padding:16px 18px;border-radius:12px;
+  background:linear-gradient(160deg,#17191c,#1c1e22);border:1px solid var(--bd)}
+.mctitle{font:600 13.5px 'Geist';color:var(--tx);display:flex;align-items:center;gap:8px}
+.mcsub{font:400 12px/1.5 'Geist';color:var(--mut);margin-top:4px;max-width:520px}
+.mcsub.mono{font-family:'JetBrains Mono',monospace;font-size:10.5px}
+.mnew{font:600 9px 'JetBrains Mono';letter-spacing:.12em;color:var(--acc);
+  background:var(--acc-soft);border-radius:6px;padding:2px 6px}
+.mrec{display:inline-flex;align-items:center;gap:6px;padding:3px 9px;border-radius:999px;flex:none;
+  background:rgba(224,80,73,.14);border:1px solid rgba(224,80,73,.38);
+  font:500 10px 'JetBrains Mono';letter-spacing:.14em;color:#f0a5a0}
+.mdot{width:6px;height:6px;border-radius:50%;background:#E05049;animation:mcpulse 1.4s ease-in-out infinite}
+@keyframes mcpulse{0%,100%{opacity:1}50%{opacity:.25}}
+.mrecdot{display:inline-block;width:8px;height:8px;border-radius:50%;background:currentColor;margin-right:6px}
+/* Meetings page — MeetingCard v2 (33j): rows inside ONE parent card per group */
+.meetlist{background:var(--card);border:1px solid var(--bd);border-radius:12px;
+  padding:2px 16px;margin:6px 0 16px}
+.meetrow{position:relative;display:block;padding:12px 0;cursor:pointer;
+  border-top:1px solid rgba(240,240,240,.04)}
+.meetrow:first-of-type{border-top:0}
+.meetrowTop{display:flex;align-items:baseline;gap:9px;min-width:0}
+.meetrowTitle{font:600 13.5px 'Geist';letter-spacing:-.01em;color:var(--tx);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.mrMeta{margin-left:auto;flex:none;font:500 10.5px 'JetBrains Mono';color:var(--mut);
+  letter-spacing:.05em;font-variant-numeric:tabular-nums}
+.mrPrev{font:400 12px 'Geist';color:var(--tx2);margin-top:3px;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap;max-width:60ch}
+.mrFoot{display:flex;align-items:center;gap:16px;margin-top:7px;min-height:16px}
+.mrChip{display:inline-flex;align-items:center;gap:6px;font:600 11px 'Geist';color:var(--tx2)}
+.mrChip i{width:6px;height:6px;border-radius:50%;flex:none}
+.mrMore{font:400 11px 'Geist';color:var(--dim)}
+.mrAttrs{margin-left:auto;display:flex;gap:12px;font:500 10.5px 'JetBrains Mono';color:var(--mut)}
+.mrAttrs .st{color:#D9B36B}
+.mrActs{position:absolute;top:10px;right:0;display:flex;gap:2px;opacity:0;
+  transition:opacity .12s ease;background:var(--card)}
+.meetrow:hover .mrActs,.meetrow:focus-within .mrActs{opacity:1}
+.mrActs button{width:26px;height:24px;display:inline-flex;align-items:center;justify-content:center;
+  background:none;border:0;color:var(--dim);cursor:pointer;border-radius:6px;font:500 12px 'Geist'}
+.mrActs button:hover{color:var(--tx)}
+.mrActs button.del:hover{color:#e08a80}
+.mrActs svg{width:12px;height:12px}
+.newbar{position:absolute;left:-16px;top:16px;width:3px;height:12px;border-radius:2px;background:var(--acc)}
+.newTag{font:500 9px 'JetBrains Mono';letter-spacing:.12em;color:#e5a18d;flex:none}
+.pinG{font-size:10px;color:#D9B36B;flex:none;margin-right:2px}
+.meetEmpty{display:flex;flex-direction:column;align-items:center;gap:10px;padding:56px 24px;
+  text-align:center}
+.meetEmptyDisc{width:56px;height:56px;border-radius:50%;background:var(--acc-soft);
+  color:var(--acc);display:flex;align-items:center;justify-content:center}
+.meetEmptyDisc svg{width:24px;height:24px}
+.meetEmptyTitle{font:600 15px 'Geist';color:var(--tx)}
+.meetEmptyBody{font:400 12px/1.6 'Geist';color:var(--mut);max-width:360px}
+.mbadge{display:inline-flex;align-items:center;gap:6px;padding:3px 8px;border-radius:999px;
+  font:500 9.5px 'JetBrains Mono';letter-spacing:.1em}
+.mbadge i{width:5px;height:5px;border-radius:50%}
+.mbadge.ready{background:rgba(74,209,90,.10);color:#8ee69a}.mbadge.ready i{background:#4ad15a}
+.mbadge.denied{background:rgba(224,80,73,.14);color:#f0a5a0}.mbadge.denied i{background:#E05049}
+.mbadge.pending{background:rgba(209,160,74,.12);color:#e6c890}.mbadge.pending i{background:#d1a04a}
+/* Ask-your-meetings chat */
+.askCard{background:linear-gradient(160deg,#17191c,#1c1e22);border:1px solid var(--bd);
+  border-radius:12px;padding:14px 16px;margin:0 0 14px}
+.askHead{font:500 10px 'JetBrains Mono';letter-spacing:.14em;color:var(--acc);
+  text-transform:uppercase;margin-bottom:10px}
+.askRow{display:flex;gap:8px}
+.askRow input{flex:1;background:rgba(240,240,240,.05);border:1px solid var(--bd2);
+  border-radius:10px;padding:9px 13px;font:400 12.5px 'Geist';color:var(--tx);outline:none}
+.askRow input:focus{border-color:var(--acc-bd)}
+.askRow input::placeholder{color:var(--sub)}
+.askThread{display:flex;flex-direction:column;gap:10px;margin-top:12px}
+.askQ{align-self:flex-end;max-width:78%;background:var(--acc-soft);border-radius:12px 12px 4px 12px;
+  padding:8px 12px;font:500 12px 'Geist';color:var(--tx)}
+.askA{align-self:flex-start;max-width:88%;background:rgba(240,240,240,.05);
+  border:1px solid var(--bd);border-radius:12px 12px 12px 4px;padding:10px 13px;
+  font:400 12.5px/1.6 'Geist';color:var(--tx);white-space:pre-wrap}
+.askA.err{color:#f0a5a0;border-color:rgba(224,80,73,.3)}
+.askSrc{font:500 10px 'JetBrains Mono';color:var(--sub);margin-top:6px}
+.askThink{display:inline-flex;gap:4px;padding:10px 13px}
+.askThink i{width:5px;height:5px;border-radius:50%;background:var(--mut);
+  animation:askdots 1.1s ease-in-out infinite}
+.askThink i:nth-child(2){animation-delay:.15s}.askThink i:nth-child(3){animation-delay:.3s}
+@keyframes askdots{0%,100%{opacity:.25;transform:translateY(0)}50%{opacity:1;transform:translateY(-3px)}}
 """
 
 
@@ -347,6 +428,7 @@ def flume_html() -> str:
         {_nav("clock","History","history")}
         {_nav("grid","Canvas","canvas", badge="")}
         {_nav("lines","Notes","notes")}
+        {_nav("meet","Meetings","meetings")}
         {_nav("book","Dictionary","dictionary")}
         {_nav("bolt","Snippets","snippets")}
       </nav>
@@ -385,6 +467,7 @@ def flume_html() -> str:
       <section class="screen" id="scr-history" hidden><div class="threepane" id="historyMain"></div></section>
       <section class="screen" id="scr-canvas" hidden><div class="main" id="canvasMain"></div></section>
       <section class="screen" id="scr-notes" hidden><div class="threepane" id="notesMain"></div></section>
+      <section class="screen" id="scr-meetings" hidden><div class="main" id="meetingsMain"></div></section>
       <section class="screen" id="scr-dictionary" hidden><div class="main" id="dictionaryMain"></div></section>
       <section class="screen" id="scr-snippets" hidden><div class="main" id="snippetsMain"></div></section>
       <section class="screen" id="scr-devices" hidden><div class="main" id="devicesMain"></div></section>
@@ -401,6 +484,8 @@ let DICT={vocabulary:[],replacements:[]}, DICT_LOADED=false;
 let SNIPS=[], SNIPS_LOADED=false, SNIP_EDIT=null, SNIP_SEARCH='', SNIP_MENU=null, SNIP_SORT=1;
 let FT={enabled:false,seen_count:0}, FT_LOADED=false;
 let AL={enabled:false}, AL_LOADED=false;
+let MEETS={meetings:[],active_id:null}, MEETS_LOADED=false, MSET=null, MSET_LOADED=false;
+let MEET_QUERY='';   // Meetings page search filter (31f)
 let retryErr='', retryBusy=false;
 const esc = s => String(s==null?'':s).replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const keyText = v => Array.isArray(v) ? v.join('\n') : (v==null?'':String(v));
@@ -413,6 +498,9 @@ function show(id){
   document.querySelectorAll('.screen').forEach(s=>s.hidden=(s.id!=='scr-'+id));
   document.querySelectorAll('#wsnav .navitem').forEach(b=>b.classList.toggle('active',b.dataset.screen===id));
   renderActive();
+  // Meetings finish in a separate window — refresh the list whenever the user
+  // lands somewhere that displays it (stale-list bug).
+  if(id==='meetings' || id==='home') loadMeets();
 }
 function renderActive(){
   try {
@@ -420,6 +508,7 @@ function renderActive(){
     else if(ACTIVE==='history') renderHistory();
     else if(ACTIVE==='canvas') renderCanvas();
     else if(ACTIVE==='notes') renderNotes();
+    else if(ACTIVE==='meetings') renderMeetings();
     else if(ACTIVE==='dictionary') renderDictionary();
     else if(ACTIVE==='snippets') renderSnippets();
     else if(ACTIVE==='devices') renderDevices();
@@ -445,6 +534,75 @@ function statusPill(){
   return `<div class="statuspill${rec||proc?' rec':''}"><span class="sdot"></span>${txt}</div>`;
 }
 
+function loadMeets(){
+  api('list_meetings').then(r=>{
+    if(r && r.ok){ MEETS=r; if(ACTIVE==='home') renderHome(); if(ACTIVE==='meetings') renderMeetings(); }
+  });
+}
+let MCHAT=[];   // [{q, a, sources, err, pending}]
+function renderAskThread(){
+  const box=document.getElementById('askThread');
+  if(!box) return;
+  box.innerHTML = MCHAT.map(m=>{
+    let a='';
+    if(m.pending) a='<div class="askThink"><i></i><i></i><i></i></div>';
+    else if(m.err) a=`<div class="askA err">${esc(m.err)}</div>`;
+    else a=`<div class="askA">${esc(m.a)}${m.sources&&m.sources.length?`<div class="askSrc">FROM: ${esc(m.sources.join(' · '))}</div>`:''}</div>`;
+    return `<div class="askQ">${esc(m.q)}</div>`+a;
+  }).join('');
+  box.scrollTop=box.scrollHeight;
+}
+function askMeetings(){
+  const inp=document.getElementById('askInput');
+  const q=(inp.value||'').trim();
+  if(!q) return;
+  inp.value='';
+  const entry={q:q, pending:true};
+  MCHAT.push(entry);
+  if(MCHAT.length>6) MCHAT=MCHAT.slice(-6);
+  renderAskThread();
+  api('ask_meetings', q).then(r=>{
+    entry.pending=false;
+    if(r && r.ok){ entry.a=r.answer; entry.sources=r.sources||[]; }
+    else { entry.err=(r&&r.error)||'Something went wrong — try again.'; }
+    renderAskThread();
+  });
+}
+function fmtDur(secs){
+  secs=Math.max(0,Math.floor(secs||0));
+  const m=Math.floor(secs/60), s=secs%60;
+  return m+':'+String(s).padStart(2,'0');
+}
+function meetingLauncherCard(){
+  // 31a — MeetingLauncherCard, or the ActiveMeetingCard variant while recording.
+  if(MEETS.active_id){
+    return `
+    <div class="mcard">
+      <div class="mrec"><span class="mdot"></span>REC</div>
+      <div style="flex:1;min-width:0">
+        <div class="mctitle">${esc(MEETS.active_title||'Meeting')}</div>
+        <div class="mcsub mono">${fmtDur(MEETS.active_elapsed)} · recording</div></div>
+      <button class="btn primary" style="flex:none" onclick="api('open_meeting_launcher')">Return to meeting</button>
+      <button class="btn ghost" style="flex:none" onclick="api('stop_meeting');setTimeout(loadMeets,800)">Stop</button>
+    </div>`;
+  }
+  const recent=(MEETS.meetings||[]).slice(0,3).map(m=>`
+    <div class="lrow" style="cursor:pointer" onclick="api('open_meeting', ${esc(JSON.stringify(m.id))})">
+      <span class="ltime">${fmtDur(m.duration_seconds)}</span>
+      <span class="ltext">${esc(m.title||'Meeting')}</span>
+      <span class="tag ${m.status==='failed'?'fail':'local'}">${esc(m.status||'')}</span></div>`).join('');
+  return `
+    <div class="mcard">
+      <div style="flex:1;min-width:0">
+        <div class="mctitle"><span class="mnew">NEW</span> Record a meeting</div>
+        <div class="mcsub">Live transcript, your notes beside it, and an AI summary when you stop. No bot joins the call.</div>
+        <div style="display:flex;gap:8px;margin-top:10px;align-items:center">
+          <button class="btn primary" style="flex:none" onclick="api('open_meeting_launcher')"><span class="mrecdot"></span>Start meeting</button>
+          <button class="btn ghost" style="flex:none" onclick="show('settings')">Settings</button>
+        </div></div>
+    </div>
+    ${recent?`<div class="sechead"><h2>Recent meetings</h2><span class="link" onclick="show('meetings')">See all →</span></div><div class="rows">${recent}</div>`:''}`;
+}
 function renderHome(){
   if(!STATE) return;
   const h = STATE.history||[];
@@ -453,7 +611,7 @@ function renderHome(){
     <div class="lrow"><span class="ltime">${esc(e.ts||'')}</span>
       <span class="ltext">${esc(e.text)}</span>
       <span class="tag ${tagCls(e.app)}">${esc(e.app||'Local')}</span>
-      <button class="cbtn" onclick="api('copy_text', ${JSON.stringify(e.text)})">${SVG.copy}</button></div>`).join('')
+      <button class="cbtn" onclick="api('copy_text', ${esc(JSON.stringify(e.text))})">${SVG.copy}</button></div>`).join('')
     || '<div class="empty">Nothing yet — hold your hotkey to record.</div>';
   document.getElementById('homeMain').innerHTML = `
     <div class="mhead"><div><div class="eyebrow">Welcome back</div><h1 class="title">${esc(name)}</h1></div>${statusPill()}</div>
@@ -462,8 +620,10 @@ function renderHome(){
       <div class="fcard sage"><div class="disc">${SVG.grid}</div><div class="fnum">Canvas</div><div class="flabel">Shared clipboard</div><div class="fsub">${STATE.sync_connected?'Synced':'Local only'}</div></div>
       <div class="fcard plum"><div class="disc">${SVG.lines}</div><div class="fnum">${NOTES.length}</div><div class="flabel">Notes synced</div><div class="fsub">${STATE.total_words||0} words total</div></div>
     </div>
+    ${meetingLauncherCard()}
     <div class="sechead"><h2>Recent</h2><span class="link" onclick="show('history')">Open history →</span></div>
     <div class="rows">${rows}</div>`;
+  if(!MEETS_LOADED){ MEETS_LOADED=true; loadMeets(); }
 }
 
 function renderHistory(){
@@ -488,21 +648,21 @@ function renderHistory(){
         <div class="failtitle">Transcription failed</div>
         <div class="failsub">${retryErr?esc(retryErr):'The network may have dropped. Your audio is saved — retry when you are back online.'}</div></div>
       <div class="pvactions">
-        <button class="btn primary" style="flex:1.3" ${retryBusy?'disabled':''} onclick="retryRec(${JSON.stringify(sel.id)})">${retryBusy?'Retrying…':'Retry transcription'}</button></div>`;
+        <button class="btn primary" style="flex:1.3" ${retryBusy?'disabled':''} onclick="retryRec(${esc(JSON.stringify(sel.id))})">${retryBusy?'Retrying…':'Retry transcription'}</button></div>`;
   }
   else if(EDITH){ prev = `
       <div class="pvhead"><span class="pvmeta">${esc(sel.ts||'')}</span></div>
       <textarea class="transcript histedit" id="histEdit">${esc(sel.text)}</textarea>
       <div class="pvactions"><button class="btn ghost" onclick="EDITH=false;renderHistory()">Cancel</button>
-        <button class="btn primary" style="flex:1.3" onclick="saveHistEdit(${JSON.stringify(sel.text)})">${SVG.copy}Save changes</button></div>`;
+        <button class="btn primary" style="flex:1.3" onclick="saveHistEdit(${esc(JSON.stringify(sel.text))})">${SVG.copy}Save changes</button></div>`;
   } else { prev = `
       <div class="pvhead"><span class="pvmeta">${esc(sel.ts||'')}</span></div>
       <div class="pvtagrow"><span class="tag ${tagCls(sel.app)}">${esc(sel.app||'Local')}</span><span class="pvsub">${words(sel.text)} words</span></div>
       ${audioBar}
       <div class="transcript">${esc(sel.text)}</div>
-      <div class="pvactions"><button class="btn ghost" onclick="api('copy_text', ${JSON.stringify(sel.text)})">${SVG.copy}Copy</button>
+      <div class="pvactions"><button class="btn ghost" onclick="api('copy_text', ${esc(JSON.stringify(sel.text))})">${SVG.copy}Copy</button>
         <button class="btn ghost" onclick="EDITH=true;renderHistory()">${SVG.edit}Edit</button>
-        <button class="btn primary" style="flex:1.3" onclick="api('copy_text', ${JSON.stringify(sel.text)})">${SVG.send}Resend</button></div>`;
+        <button class="btn primary" style="flex:1.3" onclick="api('copy_text', ${esc(JSON.stringify(sel.text))})">${SVG.send}Resend</button></div>`;
   }
   document.getElementById('historyMain').innerHTML = `
     <div class="listcol"><div class="eyebrow">${(STATE.total_transcriptions||0)} total</div><h1 class="title">History</h1>
@@ -660,6 +820,135 @@ function renderNotes(){
   if(n && !SHOW_ORIG){ const b=document.getElementById('noteBody'); if(b) b.innerHTML=noteBodyHtml(n); updateDictateBtn(); }
   updateSegIcons();
 }
+
+// ── 31f — Meetings page (dedicated sidebar destination) ──────────────────────
+function meetGroup(m){
+  try{
+    const d=new Date(m.started_at), now=new Date();
+    const day=x=>new Date(x.getFullYear(),x.getMonth(),x.getDate()).getTime();
+    const diff=Math.round((day(now)-day(d))/86400000);
+    if(diff<=0) return 'Today';
+    if(diff<7) return 'This week';
+    return 'Earlier';
+  }catch(e){ return 'Earlier'; }
+}
+function renderMeetings(){
+  const all=MEETS.meetings||[];
+  const total=all.reduce((a,m)=>a+(m.duration_seconds||0),0);
+  const activeBar = MEETS.active_id ? `
+    <div class="mcard" style="margin:0 0 14px">
+      <div class="mrec"><span class="mdot"></span>REC</div>
+      <div style="flex:1;min-width:0">
+        <div class="mctitle">${esc(MEETS.active_title||'Meeting')}</div>
+        <div class="mcsub mono">${fmtDur(MEETS.active_elapsed)} · recording</div></div>
+      <button class="btn primary" style="flex:none" onclick="api('open_meeting_launcher')">Return</button>
+      <button class="btn ghost" style="flex:none" onclick="api('stop_meeting');setTimeout(loadMeets,800)">Stop</button>
+    </div>` : '';
+  document.getElementById('meetingsMain').innerHTML = `
+    <div class="mhead"><div><div class="eyebrow">${all.length} meetings · ${Math.round(total/60)} min captured</div><h1 class="title">Meetings</h1></div>
+      <button class="btn primary" style="flex:none" onclick="api('open_meeting_launcher')"><span class="mrecdot"></span>New meeting</button></div>
+    ${activeBar}
+    <div class="askCard">
+      <div class="askHead">Ask your meetings</div>
+      <div class="askRow">
+        <input id="askInput" placeholder="e.g. What did we decide about the launch? Who owns the wireframes?"
+          onkeydown="if(event.key==='Enter')askMeetings()"/>
+        <button class="btn primary" style="flex:none" onclick="askMeetings()">Ask</button>
+      </div>
+      <div class="askThread" id="askThread"></div>
+    </div>
+    <div class="searchbox">${SVG.search}<input id="meetSearch" type="search" aria-label="Search meetings" placeholder="Search meetings…" value="${esc(MEET_QUERY)}" oninput="MEET_QUERY=this.value;renderMeetRows()"/></div>
+    <div class="rows" style="display:block" id="meetRows"></div>`;
+  renderMeetRows();
+  renderAskThread();
+  if(!MEETS_LOADED){ MEETS_LOADED=true; loadMeets(); }
+}
+// Rows only — re-rendered on each search keystroke so the input keeps focus.
+function renderMeetRows(){
+  const box=document.getElementById('meetRows'); if(!box) return;
+  const q=(MEET_QUERY||'').trim().toLowerCase();
+  const all=MEETS.meetings||[];
+  const ms=q?all.filter(m=>(m.title||'').toLowerCase().includes(q)):all;
+  if(!ms.length){
+    box.innerHTML = q
+      ? `<div class="empty">No meetings match “${esc(q)}”.</div>`
+      : `<div class="meetEmpty">
+          <div class="meetEmptyDisc">${SVG.meet}</div>
+          <div class="meetEmptyTitle">No meetings yet</div>
+          <div class="meetEmptyBody">Start your first meeting from the button above or the menubar.
+            Flume captures system audio and your mic silently — no bot joins the call.</div>
+          <button class="btn primary" style="width:auto" onclick="api('open_meeting_launcher')">Start your first meeting</button>
+        </div>`;
+    return;
+  }
+  // 33j — group rows into ONE parent card per group (Today / This week / Earlier)
+  const SPCOL={self:'#D9B36B'};
+  const PAL=['#D98A72','#8FA7C2','#A9BD98','#D9B36B'];
+  function spDot(sid,i){ return SPCOL[sid]||PAL[i%PAL.length]; }
+  function rowHtml(m){
+    const status = m.status==='failed' ? ' <span class="tag fail">failed</span>'
+      : m.status==='processing' ? ' <span class="tag local">summarizing…</span>' : '';
+    const prev = m.status==='processing' ? 'Summarizing…'
+      : (m.summary||'').split('\n')[0] || ((m.utterances||0)+' segments'+(m.cloud?'':' · this Mac only'));
+    const spk=m.speakers||{};
+    const sids=Object.keys(spk);
+    const chips=sids.slice(0,3).map((sid,i)=>
+      `<span class="mrChip"><i style="background:${spDot(sid,i)}"></i>${esc(spk[sid]||sid)}</span>`).join('');
+    const more=sids.length>3?`<span class="mrMore">+${sids.length-3}</span>`:'';
+    const marks=(m.marked_moments||[]).length, acts=(m.action_items||[]).length;
+    const attrs=[
+      marks?`<span class="st">★ ${marks}</span>`:'',
+      acts?`<span>✓ ${acts}</span>`:'',
+      m.audio_url?'<span>▶</span>':''
+    ].filter(Boolean).join('');
+    const isNew = m.status==='ready' && (MEETS.opened||[]).indexOf(m.id)<0;
+    return `
+    <div class="meetrow" onclick="api('open_meeting', ${esc(JSON.stringify(m.id))})">
+      ${isNew?'<span class="newbar"></span>':''}
+      <div class="meetrowTop">${m.pinned?'<span class="pinG" title="Pinned">★</span>':''}<span class="meetrowTitle">${esc(m.title||'Meeting')}</span>${isNew?'<span class="newTag">NEW</span>':''}${status}
+        <span class="mrMeta">${esc((m.started_at||'').slice(0,10))} · ${fmtDur(m.duration_seconds)}</span></div>
+      <div class="mrPrev">${esc(prev)}</div>
+      <div class="mrFoot">${chips}${more}<span class="mrAttrs">${attrs}</span></div>
+      <div class="mrActs">
+        <button title="${m.pinned?'Unpin':'Pin'}" onclick="event.stopPropagation();pinMeeting(${esc(JSON.stringify(m.id))}, ${m.pinned?'false':'true'})">${m.pinned?'★':'☆'}</button>
+        <button title="Open" onclick="event.stopPropagation();api('open_meeting', ${esc(JSON.stringify(m.id))})">${SVG.play}</button>
+        <button class="del" title="Delete meeting"
+          onclick="event.stopPropagation();deleteMeeting(${esc(JSON.stringify(m.id))})">✕</button>
+      </div>
+    </div>`;
+  }
+  const pinned=ms.filter(m=>m.pinned), rest=ms.filter(m=>!m.pinned);
+  let html='';
+  if(pinned.length){
+    html+=`<div class="eyebrow" style="margin:14px 0 0">PINNED</div><div class="meetlist">`+
+      pinned.map(rowHtml).join('')+`</div>`;
+  }
+  let last='', open=false;
+  rest.forEach(m=>{
+    const g=meetGroup(m);
+    if(g!==last){
+      if(open) html+='</div>';
+      html+=`<div class="eyebrow" style="margin:14px 0 0">${g.toUpperCase()}</div><div class="meetlist">`;
+      open=true; last=g;
+    }
+    html+=rowHtml(m);
+  });
+  if(open) html+='</div>';
+  box.innerHTML=html;
+}
+function pinMeeting(id, on){
+  api('set_meeting_pinned', id, on).then(r=>{
+    if(r && r.ok){
+      (MEETS.meetings||[]).forEach(m=>{ if(m.id===id) m.pinned=on; });
+      renderMeetRows();
+    }
+  });
+}
+function deleteMeeting(id){
+  api('delete_meeting', id).then(r=>{
+    if(r && r.ok){ MEETS.meetings=(MEETS.meetings||[]).filter(m=>m.id!==id); renderActive(); }
+  });
+}
 // List column only — re-rendered on every keystroke so the search input keeps focus.
 function renderNoteList(){
   const flist=filteredNotes();
@@ -676,7 +965,7 @@ function renderNoteList(){
   }
   listEl.innerHTML = flist.map(n=>{
     const audio=(n.audio_segments&&n.audio_segments.length)?` <span class="ncaudio" title="Has recording">${SVG.mic}</span>`:'';
-    return `<div class="ncard${(SELN===n.id)?' active':''}" onclick="selectNote(${JSON.stringify(n.id)})">
+    return `<div class="ncard${(SELN===n.id)?' active':''}" onclick="selectNote(${esc(JSON.stringify(n.id))})">
       <div class="nctitle">${esc(n.title||'Untitled')}</div>
       <div class="ncprev">${esc(notePreview(n))||'Empty note'}</div>
       <div class="ncmeta">${esc((n.updated_at||'').slice(0,10))}${audio}</div></div>`;
@@ -1004,6 +1293,11 @@ function stopPairing(){
 }
 
 function renderSettings(){
+  // A state heartbeat rebuilds this screen every ~30s. Without these guards the
+  // page jumps to the top mid-interaction ("so hard to click anything").
+  if(window.__HK_WAIT) return;                       // hotkey capture in progress
+  const scroller=document.getElementById('settingsMain');
+  const keepScroll=scroller?scroller.scrollTop:0;
   const s = (STATE&&STATE.settings)||{};
   const model = (STATE&&STATE.model)||'base';
   const u = STATE && STATE.user;
@@ -1021,11 +1315,12 @@ function renderSettings(){
   document.getElementById('settingsMain').innerHTML = `
     <div class="eyebrow">General</div><h1 class="title">Preferences</h1>
     ${account}
-    <div class="ssection"><h3>API keys</h3><p class="ssub">Groq powers transcription; Gemini is a formatting fallback.</p>
+    <div class="ssection"><h3>Transcription</h3><p class="ssub">Transcription and formatting are provided by Flume — no API key needed.</p>
       <div class="scard">
-        <div class="field"><label>GROQ API KEYS</label><textarea id="groqKeys" rows="2">${esc(keyText(s.groq_api_keys))}</textarea></div>
-        <div class="field"><label>GEMINI API KEYS</label><textarea id="gemKeys" rows="2">${esc(keyText(s.gemini_api_keys))}</textarea></div>
-        <div class="field"><label>WHISPER MODEL</label><select id="model">${['tiny','base','small','medium'].map(m=>`<option ${model===m?'selected':''}>${m}</option>`).join('')}</select></div>
+        <div class="field"><label>SPOKEN LANGUAGE</label><select id="spokenLang" onchange="setSpokenLang(this.value)">
+          ${(LANGS.options||[["en","English"]]).map(o=>`<option value="${o[0]}" ${LANGS.value===o[0]?'selected':''}>${o[1]}</option>`).join('')}
+        </select><span class="ssub" style="margin:4px 0 0">Applies to dictation and meetings. Pick the language you speak — “Auto-detect” works but a pinned language is steadier for meetings.</span></div>
+        <div class="field"><label>OFFLINE WHISPER MODEL</label><select id="model">${['tiny','base','small','medium'].map(m=>`<option ${model===m?'selected':''}>${m}</option>`).join('')}</select></div>
         <button class="btn primary" style="flex:none;width:130px" onclick="saveSettings()">Save</button>
       </div></div>
     <div class="ssection"><h3>Cross-device sync</h3><p class="ssub">Use the same Account ID on every device to link them.</p>
@@ -1059,14 +1354,135 @@ function renderSettings(){
         <div class="saverow"><button class="toggle ${s.notes_structure_detection_enabled!==false?'on':''}" aria-label="Detect lists and checklists" onclick="toggleNoteFlag('notes_structure_detection_enabled',this)"></button><span style="font:500 13px Geist">Detect lists &amp; checklists</span></div>
         <div class="saverow"><button class="toggle ${s.notes_audio_linkage_enabled!==false?'on':''}" aria-label="Link source recordings" onclick="toggleNoteFlag('notes_audio_linkage_enabled',this)"></button><span style="font:500 13px Geist">Link source recordings to notes</span></div>
       </div></div>
+    <div class="ssection" id="meetSettings"><h3>Meetings</h3><p class="ssub">Loading…</p></div>
+    <div class="ssection" id="tfSettings"><h3>Transform</h3><p class="ssub">Loading…</p></div>
     <div class="ssection"><h3>Hotkeys</h3><p class="ssub">Trigger recording from anywhere.</p>
       <div class="scard hotcard">
-        <div class="hotrow"><span>Push-to-talk</span><span class="kbs"><kbd>${esc(s.hotkey_hold||'⌥')}</kbd></span></div>
-        <div class="hotrow"><span>Toggle recording</span><span class="kbs"><kbd>${esc(s.hotkey_toggle||'⌥')}</kbd></span></div>
+        <div class="hotrow"><span>Dictation (hold or toggle)</span><span class="kbs"><kbd id="dictKeyLbl">…</kbd></span>
+          <button class="btn ghost" style="width:auto;padding:5px 12px;margin-left:8px" id="dictKeyBtn"
+            onclick="pickHotkey('dict')">Change</button></div>
+        <div class="hotrow"><span>Transform selection</span><span class="kbs"><kbd>⌘⇧</kbd> + <kbd id="tfKeyLbl">…</kbd></span>
+          <button class="btn ghost" style="width:auto;padding:5px 12px;margin-left:8px" id="tfKeyBtn"
+            onclick="pickHotkey('tf')">Change</button></div>
+        <div class="ssub" id="hotkeyMsg" style="margin:8px 0 0"></div>
       </div></div>`;
   if(!DICT_LOADED){ DICT_LOADED=true; loadDict(); }
   if(!FT_LOADED){ FT_LOADED=true; loadFiletag(); }
   if(!AL_LOADED){ AL_LOADED=true; loadAutolearn(); }
+  loadMeetSettings();
+  const sc2=document.getElementById('settingsMain');
+  if(sc2 && keepScroll) sc2.scrollTop=keepScroll;
+}
+
+// ── 31g — MeetingsSettingsPane ────────────────────────────────────────────────
+function loadMeetSettings(){
+  api('get_meeting_settings').then(r=>{
+    if(r && r.ok){ MSET=r; renderMeetSettings(); }
+  });
+  api('get_spoken_language').then(r=>{
+    if(r && r.ok){ LANGS={value:r.value, options:r.options}; renderSettings(); }
+  });
+  api('get_transform_settings').then(r=>{
+    if(r && r.ok){ TSET=r.settings||{}; TSET._tfLabel=r.hotkey_label; TSET._dictLabel=r.dictation_label; renderTfSettings(); fillHotkeyLabels(); }
+  });
+}
+function meetBadge(st){
+  const cls = st==='granted'?'ready':(st==='denied'?'denied':'pending');
+  const lbl = st==='granted'?'READY':(st==='denied'?'DENIED':'PENDING');
+  return `<span class="mbadge ${cls}"><i></i>${lbl}</span>`;
+}
+function renderMeetSettings(){
+  const box=document.getElementById('meetSettings');
+  if(!box || !MSET) return;
+  const s=MSET.settings||{}, p=MSET.perms||{};
+  const tgl=(key,label,sub)=>`
+    <div class="saverow"><button class="toggle ${s[key]?'on':''}" aria-label="${label}"
+      onclick="toggleMeetSetting('${key}',this)"></button>
+      <span style="font:500 13px Geist">${label}</span>
+      ${sub?`<span class="ssub" style="display:inline;margin:0 0 0 6px">${sub}</span>`:''}</div>`;
+  const dd=(key,opts,labels)=>`
+    <select onchange="setMeetSetting('${key}', parseInt(this.value))" style="margin-left:auto">
+      ${opts.map((o,i)=>`<option value="${o}" ${s[key]===o?'selected':''}>${labels[i]}</option>`).join('')}</select>`;
+  box.innerHTML = `
+    <h3>Meetings</h3><p class="ssub">Capture a meeting's system audio + your mic, live-transcribe it, and get an AI summary. Meeting text is never sent to analytics — ever.</p>
+    <div class="scard">
+      <div class="saverow" style="justify-content:space-between"><span style="font:500 13px Geist">System audio permission</span>${meetBadge(p.system_audio)}</div>
+      <div class="saverow" style="justify-content:space-between"><span style="font:500 13px Geist">Microphone permission</span>${meetBadge(p.microphone)}</div>
+      ${tgl('meetings_enabled','Enable meetings')}
+      ${tgl('meetings_hud_enabled','Floating HUD when tabbed away')}
+      ${tgl('meetings_speaker_labels','Speaker labeling')}
+      ${tgl('meetings_keep_audio','Keep audio files')}
+      <div class="saverow"><span style="font:500 13px Geist">Auto-delete audio after</span>
+        ${dd('meetings_keep_audio_days',[7,30,90,0],['7 days','30 days','90 days','Never'])}</div>
+      <div class="saverow"><span style="font:500 13px Geist">Max meeting length</span>
+        ${dd('meetings_max_minutes',[30,60,120,180,360,0],['30 min','1 h','2 h','3 h','6 h','No limit'])}</div>
+      ${tgl('meetings_sync_enabled','Sync meetings to other devices')}
+      <div class="ssub" style="margin:10px 0 0">${MSET.count||0} meeting${MSET.count===1?'':'s'} · ${Math.round((MSET.total_seconds||0)/60)} min captured</div>
+    </div>`;
+}
+function toggleMeetSetting(key, el){
+  el.classList.toggle('on');
+  const val = el.classList.contains('on');
+  if(MSET && MSET.settings) MSET.settings[key]=val;
+  api('set_meeting_setting', key, val);
+}
+function setMeetSetting(key, val){
+  if(MSET && MSET.settings) MSET.settings[key]=val;
+  api('set_meeting_setting', key, val);
+}
+let TSET=null;
+let LANGS={value:'en', options:[["auto","Auto-detect"],["en","English"]]};
+function setSpokenLang(v){
+  LANGS.value=v;
+  api('set_spoken_language', v);
+}
+function renderTfSettings(){
+  const box=document.getElementById('tfSettings');
+  if(!box || !TSET) return;
+  const tgl=(key,label,sub)=>`
+    <div class="saverow"><button class="toggle ${TSET[key]?'on':''}" aria-label="${label}"
+      onclick="toggleTfSetting('${key}',this)"></button>
+      <span style="font:500 13px Geist">${label}</span>
+      ${sub?`<span class="ssub" style="display:inline;margin:0 0 0 6px">${sub}</span>`:''}</div>`;
+  box.innerHTML = `
+    <h3>Transform</h3><p class="ssub">Reshape text with an instruction — end a dictation with “…so Flume, make this formal”, or select text anywhere and press your Transform hotkey (see Hotkeys below) for an instant rewrite with preview.</p>
+    <div class="scard">
+      ${tgl('transform_enabled','Enable Transform')}
+      ${tgl('transform_inline_enabled','Inline — “…so Flume, …” at the end of a dictation')}
+      ${tgl('transform_selection_enabled','Selection — ⌘⇧'+(TSET._tfLabel||'T')+' on highlighted text (preview before replace)')}
+    </div>`;
+}
+function fillHotkeyLabels(){
+  if(!TSET) return;
+  const d=document.getElementById('dictKeyLbl'); if(d) d.textContent=TSET._dictLabel||'Right ⌘';
+  const t=document.getElementById('tfKeyLbl'); if(t) t.textContent=TSET._tfLabel||'T';
+}
+function pickHotkey(which){
+  const btn=document.getElementById(which==='dict'?'dictKeyBtn':'tfKeyBtn');
+  const msg=document.getElementById('hotkeyMsg');
+  if(btn.dataset.wait) return;
+  window.__HK_WAIT=true;                             // freeze settings rebuilds
+  btn.dataset.wait='1'; btn.textContent='Press a key…';
+  if(msg) msg.textContent = which==='dict'
+    ? 'Press the key you want (modifiers like Right ⌘ work too). Esc cancels.'
+    : 'Press one letter/key — it will trigger with ⌘⇧. Esc cancels.';
+  api(which==='dict'?'set_dictation_hotkey':'set_transform_hotkey').then(r=>{
+    window.__HK_WAIT=false;
+    delete btn.dataset.wait; btn.textContent='Change';
+    if(r && r.ok){
+      if(which==='dict'){ TSET._dictLabel=r.label; } else { TSET._tfLabel=r.label; }
+      fillHotkeyLabels();
+      if(msg) msg.textContent='Saved — active immediately.';
+    } else if(r && r.cancelled){ if(msg) msg.textContent='No key pressed — click Change and press a key within 20s.'; }
+    else { if(msg) msg.textContent=(r&&r.error)||'Could not set that key.'; }
+    setTimeout(()=>{ if(msg && msg.textContent==='Saved — active immediately.') msg.textContent=''; }, 2500);
+  });
+}
+function toggleTfSetting(key, el){
+  el.classList.toggle('on');
+  const val = el.classList.contains('on');
+  if(TSET) TSET[key]=val;
+  api('set_transform_setting', key, val);
 }
 
 function renderDictionary(){
@@ -1236,10 +1652,11 @@ function deleteSnip(id){
   api('delete_snippet', id).then(r=>{ if(r&&r.ok){ SNIPS=r.snippets||SNIPS; if(SNIP_EDIT&&SNIP_EDIT.id===id) SNIP_EDIT=null; SNIP_MENU=null; renderSnippets(); } });
 }
 function saveSettings(){
-  const g=document.getElementById('groqKeys').value.split('\n').map(x=>x.trim()).filter(Boolean);
-  const gm=document.getElementById('gemKeys').value.split('\n').map(x=>x.trim()).filter(Boolean);
+  // Groq/Gemini keys are no longer entered in-app (Groq is served by the groq-proxy
+  // Edge Function). Preserve whatever is already in state so we never clobber it.
+  const s=(STATE&&STATE.settings)||{};
   api('save_settings', {
-    groq_api_keys:g, gemini_api_keys:gm,
+    groq_api_keys:s.groq_api_keys||[], gemini_api_keys:s.gemini_api_keys||[],
     whisper_model:document.getElementById('model').value,
     sync_enabled:document.getElementById('syncToggle').classList.contains('on'),
     sync_user_id:document.getElementById('userId').value,
@@ -1274,6 +1691,7 @@ window.VerbalNative = function(event, payload){
   else if(event==='selectTab'){ if(payload && payload.tab) show(payload.tab); }
   else if(event==='result'){ load(); }
   else if(event==='canvasRemote'){ CANVAS={content:payload.content||'', image_url:payload.image_url||null, from:payload.device_name}; if(ACTIVE==='canvas')renderCanvas(); }
+  else if(event==='meetingsUpdated'){ loadMeets(); }
 };
 document.addEventListener('paste', function(e){
   if(ACTIVE!=='canvas') return;

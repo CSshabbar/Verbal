@@ -308,6 +308,55 @@
     items as real persisted checkboxes (`set_action_item_done`). CSS escapes for glyphs in the
     non-raw `_CSS` string need DOUBLE backslashes (`\\2014`) — `\2014` is an octal escape in Python.
 
+### Language rules (multilingual transcription)
+
+- **Never hard-pin `language="en"` in a transcription call** — resolve through
+  `transcriber.resolve_language(config, override)`. `auto` = omit the param.
+- The dictionary glossary is an English Whisper *prompt* and drags language detection toward
+  English — attach it only when the resolved language is `en`.
+- Non-English pinned languages use full `whisper-large-v3` (not turbo) via the proxy.
+- **Never ask the LLM to JUDGE the output language** — an English meeting once came back with a
+  Russian summary because the prompt said "use the transcript's dominant language" and the model
+  guessed. Python decides (`meetings._summary_output_language`: per-meeting pin > global pin >
+  script-count detection > English) and the user message states it explicitly ("OUTPUT LANGUAGE:
+  English. Every field must be written in English.").
+- Meeting chunks that transcribe to a bare Whisper silence hallucination ("Thank you.", "you",
+  "Bye.", …) are DROPPED before they enter the transcript (`_MEETING_HALLUCINATIONS`) — they pollute
+  summaries and once helped trigger the wrong-language bug. Dictation is untouched (someone may
+  really dictate "Thank you.").
+- LLM prompts that consume transcripts must state their output language (summary: transcript's
+  dominant language; dictation formatter/notes: same language, never translate).
+
+### Transform rules (TRANSFORM_SWARM.md)
+
+- **Transform is a SEPARATE prompt/mode — never edit `ai_cleanup.SYSTEM_PROMPT`.** The formatter must
+  keep ignoring instructions in speech; Transform only engages via its gate (Mode A) or hotkey (Mode B).
+- The Mode A gate biases toward MISSING an instruction over stealing content: tight trigger set,
+  ≥3-word body, and the instruction must start with an editing verb (`transform.INSTRUCTION_VERBS`).
+- **Clipboard capture must save/restore in try/finally** (`transform.capture_selection`) — the user's
+  clipboard always survives, selection or not.
+- `transform_widget.py` joins the non-activating-panel family (cream pill, ScreenSaver level,
+  becomesKeyOnlyIfNeeded, acceptsFirstMouse webview subclass). The spoken prompt is BLOCKED while a
+  meeting holds the mic (one mic stream process-wide).
+- **Borderless NSPanels refuse key-window status by default** — any panel with a TEXT INPUT needs a
+  subclass overriding `canBecomeKeyWindow → YES` (transform pill: `_panel_class()`), or the field shows
+  no caret and typing goes nowhere. Buttons alone don't need it (autolearn pill).
+- The transform pill uses the same **ready-handshake** as the meeting window (`api('tf_ready')` +
+  buffered emit) — without it the first open showed a BLANK pill, read as "mic/typing not working".
+- `transcribe_with_status` success status is **'ok'** (not 'done'/'success') — compare against the
+  real contract ('ok'/'silent'/'failed'); the transform pill's spoken prompt shipped checking 'done'
+  and every perfect transcript fell into "Didn't catch that".
+- Synthetic CGEvents route to the ACTIVE app, not the key window — E2E tests must use
+  `CGEventPostToPid` to type into a nonactivating panel; real hardware keys follow the key window.
+- Hotkeys are user-selectable in Settings → Hotkeys via `main.capture_next_key` (one-shot NSEvent
+  monitors, real macOS keycodes — never JS `keyCode`, which is a different code space). While capturing,
+  `_capturing_key` suppresses all hotkey handlers; dictation↔transform collisions are rejected.
+- The pill's spoken prompt shows "Transcribing…" IMMEDIATELY on the stop-click and latches
+  (`_transcribing`) — the silent gap otherwise reads as "mic not working" and double-clicks restart
+  the recording.
+- Transform hotkey = ⌘⇧T on keydown (`hotkey.py` handles it before, and separate from, the dictation
+  keys). Config keys are config-only — no Supabase columns.
+
 ## Design system (Flume)
 
 Single source: desktop `app/theme.py` + `app/fonts_css.py`; mobile `flume-ui/theme/`. Also

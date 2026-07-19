@@ -13,7 +13,7 @@ VK_ESCAPE = 0x35
 
 class HotkeyListener:
     def __init__(self, on_start, on_stop, on_toggle, on_esc=None, hold_key=54, toggle_key=54,
-                 mode="toggle"):
+                 mode="toggle", on_transform=None, transform_key=None):
         self._on_start = on_start
         self._on_stop = on_stop
         self._on_toggle = on_toggle
@@ -24,6 +24,15 @@ class HotkeyListener:
         self._monitors = []
         self._pressed = False
         self._last_event_time = 0.0
+        # Transform (Mode B): Cmd+Shift+<transform_key> keydown → on_transform.
+        # Kept OUT of the dictation key handling below (Rule #1).
+        self._on_transform = on_transform
+        self._transform_key = transform_key
+        self._last_transform_time = 0.0
+
+    def set_transform(self, on_transform, transform_key):
+        self._on_transform = on_transform
+        self._transform_key = transform_key
 
     def update_keys(self, hold_key, toggle_key):
         self._hold_key = hold_key
@@ -105,6 +114,19 @@ class HotkeyListener:
                     # Fallback for unknown modifiers
                     is_down = bool(flags & 0xFFFF0000) # Check all device-independent flags
                     is_up = not is_down
+
+            # Transform selection — Cmd+Shift+<key> on keydown, debounced.
+            # Checked BEFORE the dictation keys and returns without touching them.
+            if (self._on_transform and self._transform_key is not None
+                    and event_type == 10 and keycode == self._transform_key):
+                flags = event.modifierFlags()
+                if (flags & Quartz.NSEventModifierFlagCommand
+                        and flags & Quartz.NSEventModifierFlagShift
+                        and now - self._last_transform_time > 0.5):
+                    self._last_transform_time = now
+                    logger.info(f"Transform hotkey fired: {keycode}")
+                    self._on_transform()
+                    return
 
             # Hold-to-talk — only in HOLD mode (press to start, release to stop)
             if self._mode == "hold" and keycode == self._hold_key:

@@ -280,7 +280,7 @@ check("prompt OMITS TITLE instruction when autotitle OFF",
       "TITLE:" not in _p_off)
 # the structure rule always carries base formatter rules (never dropped)
 check("base formatter rules retained in both prompt variants",
-      "NOTE FORMATTER" in _p_on and "NOTE FORMATTER" in _p_off)
+      "NOTE-MAKER" in _p_on and "NOTE-MAKER" in _p_off)
 
 # 3b. RESPONSE PARSER over the three corpus shapes. We simulate what the LLM returns
 #     for each category and assert the parser routes {title, body} correctly and

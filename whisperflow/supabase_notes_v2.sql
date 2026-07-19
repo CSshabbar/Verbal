@@ -5,6 +5,53 @@
 -- 1) raw_content: the untouched Whisper transcript for a voice-dictated note. The
 --    user-visible `content` holds the AI-formatted version; "show original" reveals
 --    this. NULL for pre-existing notes and for typed (non-dictated) notes.
+-- 0) Base notes table — create if it was never provisioned. `notes` may not exist
+--    yet (the base migration notes_migration.sql was never run in some projects, so
+--    Notes has been local-only). All idempotent / safe to re-run.
+-- id is TEXT, not uuid: the desktop uses uuid4().hex ids while mobile uses string
+-- ids like `note_<timestamp>` (NOT valid uuids). A text column lets each client
+-- supply its OWN id, so a note's local id === its cloud id — which is required for
+-- edits (.update().eq('id',…)) to match and to avoid duplicate rows on pull-back.
+create table if not exists public.notes (
+  id text primary key,
+  user_id text not null,
+  title text default '',
+  content text not null default '',
+  folder text default '',
+  is_pinned boolean default false,
+  device_name text,
+  created_at timestamptz default now(),
+  updated_at timestamptz default now()
+);
+create index if not exists idx_notes_user_id on public.notes(user_id);
+create index if not exists idx_notes_updated_at on public.notes(user_id, updated_at desc);
+
+-- If the table already existed with a uuid id (an earlier run of this script),
+-- convert it to text so mobile's string ids are accepted. Idempotent — the guard
+-- skips once id is already text. Drops the uuid default (clients always supply id).
+do $$
+begin
+  if exists (
+    select 1 from information_schema.columns
+    where table_schema = 'public' and table_name = 'notes'
+      and column_name = 'id' and data_type <> 'text'
+  ) then
+    alter table public.notes alter column id drop default;
+    alter table public.notes alter column id type text using id::text;
+  end if;
+end $$;
+
+-- Add notes to the realtime publication only if it isn't already a member (re-run safe).
+do $$
+begin
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'notes'
+  ) then
+    alter publication supabase_realtime add table public.notes;
+  end if;
+end $$;
+
 alter table public.notes add column if not exists raw_content text;
 
 -- 2) audio_segments: append-only list of the recordings behind a note, shape

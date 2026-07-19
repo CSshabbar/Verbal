@@ -15,8 +15,8 @@ export type RootStackParamList = {
     wordCount: number;
     transcribeMs: number;
   };
-  /** Settings — pushed from the Home header. */
-  Settings: undefined;
+  /** Menu — the navigation hub, opened from the Home header ☰. */
+  Menu: undefined;
 };
 
 /** Bottom tabs — mic is the center action (opens the Recording modal). */
@@ -32,6 +32,11 @@ export type TabsParamList = {
 export type NotesStackParamList = {
   NotesList: undefined;
   NoteEditor: { noteId: string | null };
+  /** Meetings live inside Notes — read-only views of desktop-captured meetings. */
+  MeetingList: undefined;
+  MeetingDetail: { meetingId: string };
+  MeetingPlayback: { meetingId: string };
+  MeetingNotes: { meetingId: string };
 };
 
 export type HistoryStackParamList = {
@@ -39,8 +44,10 @@ export type HistoryStackParamList = {
   HistoryDetail: { itemId: string };
 };
 
-export type SettingsStackParamList = {
+export type MenuStackParamList = {
+  Menu: undefined;
   Settings: undefined;
+  Dictionary: undefined;
   Devices: undefined;
   PairDevice: undefined;
   Snippets: undefined;

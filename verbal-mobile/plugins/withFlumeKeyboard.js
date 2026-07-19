@@ -63,6 +63,20 @@ const withFlumeKeyboard = (config) => {
       const xmlDir = path.join(root, 'app/src/main/res/xml');
       fs.mkdirSync(xmlDir, { recursive: true });
       fs.copyFileSync(path.join(TEMPLATES, 'method.xml'), path.join(xmlDir, 'method.xml'));
+      // Fonts so the keyboard renders in the SAME typefaces as the app:
+      // Ionicons (bar icons), Geist (UI text/keys), JetBrains Mono (numerals/meta).
+      const assetsDir = path.join(root, 'app/src/main/assets');
+      fs.mkdirSync(assetsDir, { recursive: true });
+      for (const f of [
+        'ionicons.ttf', 'geist_regular.ttf', 'geist_medium.ttf', 'jetbrains_mono.ttf',
+        'flume_start.wav', 'flume_stop.wav', 'flume_done.wav',   // recording sound effects
+        'flume_words.txt',                                       // frequency dictionary (completions)
+        'flume_bigrams.txt',                                     // next-word prediction table
+        'flume_emoji.txt',                                       // full categorized emoji library
+        'flume_emoji_kw.txt',                                    // word → emoji suggestions
+      ]) {
+        fs.copyFileSync(path.join(TEMPLATES, f), path.join(assetsDir, f));
+      }
       return c;
     },
   ]);

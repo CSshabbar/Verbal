@@ -25,6 +25,7 @@ import {
   getUserId,
   getDeviceName,
   getGroqKey,
+  getSyncEnabled,
   getNotesFeatureFlags,
   DEFAULT_NOTES_FLAGS,
   NotesFeatureFlags,
@@ -159,6 +160,7 @@ export function useNotes() {
         .order('updated_at', { ascending: false })
         .limit(200);
 
+      const remoteIds = new Set<string>();
       if (!error && data && data.length > 0) {
         const entries: NoteEntry[] = data.map((row: any) => ({
           // Spread the whole row first so raw_content, audio_segments, and any
@@ -176,9 +178,37 @@ export function useNotes() {
           updated_at: row.updated_at,
           source: 'remote' as const,
         }));
-        for (const e of entries) await mergeRemoteNote(e);
+        for (const e of entries) { remoteIds.add(e.id); await mergeRemoteNote(e); }
       }
       const cached = await getCachedNotes();
+
+      // Back-fill: push locally-cached notes that never reached the cloud (created
+      // before the `notes` table existed, or while signed out). Without this, the
+      // user's existing mobile notes would stay invisible on other devices forever.
+      // Upsert on the note's OWN id so local id === cloud id (no duplicates).
+      if (!error && (await getSyncEnabled())) {
+        const deviceName = await getDeviceName();
+        for (const e of cached) {
+          if (remoteIds.has(e.id)) continue;
+          try {
+            await supabase.from('notes').upsert({
+              id: e.id,
+              user_id: userId,
+              title: e.title || '',
+              content: e.content || '',
+              raw_content: e.raw_content ?? null,
+              audio_segments: e.audio_segments ?? [],
+              folder: e.folder || '',
+              is_pinned: e.is_pinned || false,
+              device_name: deviceName,
+              created_at: e.created_at,
+              updated_at: e.updated_at,
+            }, { onConflict: 'id' });
+          } catch (pushErr) {
+            console.warn('Note back-fill push failed:', pushErr);
+          }
+        }
+      }
       setNotes(cached.map(e => toNote(e)));
     } catch (err) {
       console.error('Failed to load notes:', err);
@@ -212,13 +242,23 @@ export function useNotes() {
         const userId = await getUserId();
         const deviceName = await getDeviceName();
         await addCachedNote(toEntry(note, deviceName));
-        await supabase.from('notes').insert({
-          user_id: userId,
-          title: note.title,
-          content: note.body,
-          folder: '',
-          device_name: deviceName,
-        });
+        // Upsert WITH the note's own id so the cloud row shares the local id —
+        // otherwise the server mints a UUID we never learn, and every later
+        // .update().eq('id', localId) matches zero rows (edits silently lost) and
+        // the pulled-back UUID row shows up as a duplicate. Gated on sync so the
+        // row always carries the authenticated user_id, never the local fallback.
+        if (await getSyncEnabled()) {
+          await supabase.from('notes').upsert({
+            id: note.id,
+            user_id: userId,
+            title: note.title,
+            content: note.body,
+            folder: '',
+            device_name: deviceName,
+            created_at: new Date(note.createdAt).toISOString(),
+            updated_at: new Date(note.updatedAt).toISOString(),
+          }, { onConflict: 'id' });
+        }
       } catch (err) {
         console.error('Failed to persist new note:', err);
       }
@@ -269,6 +309,22 @@ export function useNotes() {
         await supabase.from('notes').delete().eq('id', id);
       } catch (err) {
         console.error('Failed to remove note:', err);
+      }
+    })();
+  }, []);
+
+  // Batch delete (multi-select). One cloud round-trip via .in(), local cache
+  // cleared per id. Best-effort — local removal always applies.
+  const removeNotes = useCallback((ids: string[]) => {
+    if (ids.length === 0) return;
+    const idSet = new Set(ids);
+    setNotes(prev => prev.filter(n => !idSet.has(n.id)));
+    (async () => {
+      try {
+        for (const id of ids) await removeCachedNote(id);
+        await supabase.from('notes').delete().in('id', ids);
+      } catch (err) {
+        console.error('Failed to remove notes:', err);
       }
     })();
   }, []);
@@ -426,6 +482,7 @@ export function useNotes() {
     createNote,
     updateNote,
     removeNote,
+    removeNotes,
     saveDictation,
     reformatNote,
     addAudioSegment,

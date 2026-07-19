@@ -113,7 +113,32 @@ class VerbalApp(rumps.App):
         self.status_item.set_callback(None)
 
         self.record_btn = rumps.MenuItem("Start Recording", callback=self._toggle_recording)
+        self.meeting_btn = rumps.MenuItem("Start Meeting", callback=self._toggle_meeting)
         self.signin_item = rumps.MenuItem("Sign in with Google", callback=self._sign_in)
+
+        # Meetings (MEETINGS_DESIGN_HANDOFF.md) — manager + lazy window. Fails
+        # closed: if construction fails, meetings are simply unavailable and
+        # dictation is untouched (Rule #1).
+        self.meetings = None
+        self.meeting_window = None
+        self.meeting_hud = None
+        try:
+            from app.meetings import MeetingManager
+            self.meetings = MeetingManager(self)
+            # Pre-warm the ScreenCaptureKit import off the critical path — its
+            # cold import costs ~1 s and used to freeze the first "Start
+            # Meeting" click.
+            import threading as _threading
+
+            def _warm():
+                try:
+                    from app import system_audio
+                    system_audio.is_supported()
+                except Exception:
+                    pass
+            _threading.Thread(target=_warm, daemon=True).start()
+        except Exception as _e:
+            logging.getLogger("verbal").warning("meetings unavailable (%s)", _e)
         self.reset_onb_item = rumps.MenuItem("Reset Onboarding (dev)", callback=self._reset_onboarding)
 
         mode_menu = rumps.MenuItem("Recording Mode")
@@ -135,6 +160,7 @@ class VerbalApp(rumps.App):
         self.menu = [
             self.status_item,
             self.record_btn,
+            self.meeting_btn,
             None,
             self.signin_item,
             self.reset_onb_item,
@@ -143,8 +169,6 @@ class VerbalApp(rumps.App):
             rumps.MenuItem("Open Canvas", callback=self._open_canvas),
             rumps.MenuItem("Open Notes", callback=self._open_notes),
             mode_menu,
-            rumps.MenuItem("Groq API Key (Transcription)...", callback=self._manage_groq_keys),
-            rumps.MenuItem("Gemini API Key (AI Cleanup)...", callback=self._manage_keys),
             model_menu,
             None,
             rumps.MenuItem("About Verbal", callback=self._about),
@@ -158,7 +182,10 @@ class VerbalApp(rumps.App):
             hold_key=self.config.get("hotkey_hold", 54),
             toggle_key=self.config.get("hotkey_toggle", 54),
             mode=self._mode,
+            on_transform=self._on_transform_hotkey,
+            transform_key=self.config.get("transform_hotkey", 17),
         )
+        self.transform_widget = None      # lazy (TRANSFORM_SWARM.md Mode B)
 
         self._ui_timer = rumps.Timer(self._drain_ui_queue, 0.1)
         # attaches the popover to the status item once rumps has created it
@@ -447,6 +474,192 @@ class VerbalApp(rumps.App):
         self.dashboard.show()
         self.dashboard._on_tab_select(5)
 
+    # ── Meetings ─────────────────────────────────────────────────────────────
+    def _meeting_win(self):
+        """Lazy meeting window; fails closed to None."""
+        if self.meeting_window is None:
+            try:
+                from app.meeting_window import MeetingWindow
+                self.meeting_window = MeetingWindow(self)
+            except Exception as e:
+                logging.getLogger("verbal").warning("meeting window unavailable (%s)", e)
+        return self.meeting_window
+
+    _MOD_KEY_LABELS = {54: "Right ⌘", 55: "⌘", 56: "⇧", 57: "⇪", 58: "⌥",
+                       59: "⌃", 60: "Right ⇧", 61: "Right ⌥", 62: "Right ⌃", 63: "fn"}
+
+    def capture_next_key(self, timeout=20.0, allow_modifiers=True):
+        """Hotkey picker: block (on the CALLER's thread) until the user presses
+        one key anywhere, and return {'keycode', 'label', 'modifier'} or None.
+        While capturing, the normal hotkey handlers are suppressed so pressing
+        the current dictation key doesn't start a recording."""
+        import threading
+        result = {}
+        done = threading.Event()
+        state = {"monitors": []}
+        self._capturing_key = True
+
+        def install():
+            try:
+                from AppKit import NSEvent
+                import Quartz
+                mask = Quartz.NSEventMaskKeyDown | Quartz.NSEventMaskFlagsChanged
+
+                def grab(event):
+                    try:
+                        et = event.type()
+                        kc = int(event.keyCode())
+                        if et == 10:                       # KeyDown
+                            if kc == 53:                   # ESC cancels capture
+                                done.set()
+                                return
+                            ch = ""
+                            try:
+                                ch = str(event.charactersIgnoringModifiers() or "")
+                            except Exception:
+                                pass
+                            label = ch.upper() if ch.strip() else f"key {kc}"
+                            result.update(keycode=kc, label=label, modifier=False)
+                            done.set()
+                        elif et == 12 and allow_modifiers:  # FlagsChanged (modifier down)
+                            flags = event.modifierFlags()
+                            if flags & 0xFFFF0000:          # only the DOWN transition
+                                label = self._MOD_KEY_LABELS.get(kc, f"mod {kc}")
+                                result.update(keycode=kc, label=label, modifier=True)
+                                done.set()
+                    except Exception:
+                        done.set()
+
+                def local(event):
+                    grab(event)
+                    return None                            # swallow it locally
+                m1 = NSEvent.addGlobalMonitorForEventsMatchingMask_handler_(mask, grab)
+                m2 = NSEvent.addLocalMonitorForEventsMatchingMask_handler_(mask, local)
+                state["monitors"] = [m for m in (m1, m2) if m]
+            except Exception as e:
+                logging.getLogger("verbal").error("hotkey capture install failed: %s", e)
+                done.set()
+        self._on_main(install)
+        logging.getLogger("verbal").info("hotkey capture armed (timeout %.0fs)", timeout)
+        done.wait(timeout)
+        logging.getLogger("verbal").info("hotkey capture result: %s", result or "none")
+
+        def cleanup():
+            from AppKit import NSEvent
+            for m in state["monitors"]:
+                try:
+                    NSEvent.removeMonitor_(m)
+                except Exception:
+                    pass
+        self._on_main(cleanup)
+        # small grace so the captured keypress can't double-fire the new binding
+        import threading as _t
+        _t.Timer(0.4, lambda: setattr(self, "_capturing_key", False)).start()
+        return result if result.get("keycode") is not None else None
+
+    def _on_transform_hotkey(self):
+        if getattr(self, "_capturing_key", False):
+            return
+        """Cmd+Shift+T — Transform Mode B (TRANSFORM_SWARM.md). Never enters the
+        dictation core: capture the selection on a worker thread, then show the
+        pill on the main thread. Everything fails closed to a silent no-op."""
+        try:
+            if not (self.config.get("transform_enabled")
+                    and self.config.get("transform_selection_enabled", True)):
+                return
+            if self._is_recording:
+                return
+            if self.transform_widget and self.transform_widget.visible:
+                self._on_main(self.transform_widget.hide)
+                return
+
+            def bg():
+                try:
+                    from app import transform as _tf
+                    sel = _tf.capture_selection()
+                    if not sel:
+                        return                      # nothing selected → silent no-op
+
+                    def ui():
+                        try:
+                            if self.transform_widget is None:
+                                from app.transform_widget import TransformWidget
+                                self.transform_widget = TransformWidget(self)
+                            self.transform_widget.show(sel)
+                        except Exception as e:
+                            logging.getLogger("verbal").debug("transform pill failed: %s", e)
+                    self._on_main(ui)
+                except Exception as e:
+                    logging.getLogger("verbal").debug("transform capture failed: %s", e)
+            import threading
+            threading.Thread(target=bg, daemon=True).start()
+        except Exception:
+            pass
+
+    def _meeting_hud(self):
+        """Lazy meeting HUD; fails closed to None."""
+        if getattr(self, "meeting_hud", None) is None:
+            try:
+                from app.meeting_hud import MeetingHud
+                self.meeting_hud = MeetingHud(self)
+            except Exception as e:
+                logging.getLogger("verbal").warning("meeting HUD unavailable (%s)", e)
+                self.meeting_hud = None
+        return self.meeting_hud
+
+    def _toggle_meeting(self, _=None):
+        """Menubar 'Start Meeting' — opens the permission checklist when setup
+        is incomplete, otherwise the pre-meeting modal. When a meeting is
+        already running, focuses its window.
+
+        The permission check cold-imports ScreenCaptureKit (~1 s) — it runs on
+        a background thread so the menubar/dashboard never freezes; only the
+        window show hops back to the main thread."""
+        try:
+            if not self.meetings:
+                return
+            if self.meetings.active:
+                win = self._meeting_win()
+                if win:
+                    win.show("live")
+                return
+
+            import threading
+
+            def bg():
+                try:
+                    from app import permissions
+                    ready = bool(permissions.meeting_permissions().get("ready"))
+                except Exception:
+                    ready = False
+                # "Skip for now" is a durable choice — don't re-show the
+                # checklist on every open (capture fails closed to mic-only).
+                skipped = bool(self.config.get("meetings_skipped_system_audio"))
+                logging.getLogger("verbal").info(
+                    "meeting open: ready=%s skipped=%s", ready, skipped)
+                if not ready and skipped:
+                    ready = True
+
+                def ui():
+                    try:
+                        win = self._meeting_win()
+                        if win:
+                            win.show("premeeting" if ready else "permissions")
+                        self._refresh_meeting_menu()
+                    except Exception as e:
+                        logging.getLogger("verbal").error("meeting show failed: %s", e)
+                self._on_main(ui)
+            threading.Thread(target=bg, daemon=True).start()
+        except Exception as e:
+            logging.getLogger("verbal").error("start meeting failed: %s", e)
+
+    def _refresh_meeting_menu(self):
+        try:
+            active = bool(self.meetings and self.meetings.active)
+            self.meeting_btn.title = "Return to Meeting" if active else "Start Meeting"
+        except Exception:
+            pass
+
     def _set_mode_hold(self, _):
         self._mode = MODE_HOLD
         self.mode_hold.state = 1
@@ -467,16 +680,22 @@ class VerbalApp(rumps.App):
 
     def _on_hotkey_press(self):
         """Called by HotkeyListener for Hold Key Down."""
+        if getattr(self, "_capturing_key", False):
+            return
         if not self._is_recording:
             self._on_main(self._on_record_start)
 
     def _on_hotkey_release(self):
         """Called by HotkeyListener for Hold Key Up."""
+        if getattr(self, "_capturing_key", False):
+            return
         if self._is_recording:
             self._on_main(self._on_record_stop)
 
     def _on_hotkey_toggle(self):
         """Called by HotkeyListener for Toggle Key Down."""
+        if getattr(self, "_capturing_key", False):
+            return
         self._on_main(lambda: self._toggle_recording(None))
 
     def _on_esc_pressed(self):
@@ -513,7 +732,18 @@ class VerbalApp(rumps.App):
                     logger.debug(f"filetag harvest kickoff skipped: {e}")
             self._is_recording = True
             self._cancel_flag.clear()
-            self.recorder.start()
+            # During a meeting, dictation SHARES the meeting's mic stream via a
+            # tap — opening a second InputStream on the same device makes
+            # CoreAudio drop one of them, and a failed second open used to nuke
+            # the meeting's stream through PortAudio reinit.
+            mt = self.meetings.active if self.meetings else None
+            if mt is not None and mt.mic_running:
+                self._meeting_mic_tap = self.recorder.feed_external
+                mt.add_mic_tap(self._meeting_mic_tap)
+                self.recorder.start_external(16000)
+            else:
+                self._meeting_mic_tap = None
+                self.recorder.start()
             play_start()
 
             if os.path.exists(ICON_ACTIVE_PATH):
@@ -528,12 +758,22 @@ class VerbalApp(rumps.App):
             self._is_recording = False
             logger.error(f"Record start failed: {e}\n{traceback.format_exc()}")
 
+    def _detach_meeting_tap(self):
+        try:
+            tap = getattr(self, "_meeting_mic_tap", None)
+            if tap and self.meetings and self.meetings.session:
+                self.meetings.session.remove_mic_tap(tap)
+            self._meeting_mic_tap = None
+        except Exception:
+            pass
+
     def _on_record_stop(self):
         if not self._is_recording:
             return
         try:
             self._is_recording = False
             audio = self.recorder.stop()
+            self._detach_meeting_tap()
             play_stop()
 
             if os.path.exists(ICON_PATH):
@@ -563,6 +803,7 @@ class VerbalApp(rumps.App):
     def _cancel_recording(self):
         self._is_recording = False
         self.recorder.stop()
+        self._detach_meeting_tap()
         play_stop()
         self._reset_to_ready()
 
@@ -646,7 +887,28 @@ class VerbalApp(rumps.App):
                 self._on_main(self._refresh_dashboards)
                 return
 
-            result = process_text(text, self.config)
+            # Transform Mode A (TRANSFORM_SWARM.md): a trailing "…so Flume, <instruction>"
+            # transforms the dictated body instead of formatting it. Fully guarded —
+            # any miss/failure falls through to the normal process_text path.
+            result = None
+            transform_note = None
+            try:
+                if (self.config.get("transform_enabled")
+                        and self.config.get("transform_inline_enabled", True)):
+                    from app import transform as _tf
+                    det = _tf.detect_trailing_instruction(
+                        text, self.config.get("transform_trigger_words"))
+                    if det:
+                        body, instruction = det
+                        rewritten = _tf.apply_instruction(body, instruction, self.config)
+                        if rewritten:
+                            result = rewritten
+                            transform_note = instruction
+                            logger.info("transform inline applied: %r", instruction[:60])
+            except Exception as e:
+                logger.debug("transform inline skipped: %s", e)
+            if result is None:
+                result = process_text(text, self.config)
             if self._cancel_flag.is_set():
                 return
 
@@ -677,6 +939,12 @@ class VerbalApp(rumps.App):
 
             success = inject_text(result, allow_mentions=self.config.get("filetag_enabled", False))
             play_done()
+
+            # Show the split (TRANSFORM_SWARM.md P1.3): surface what was read as
+            # the instruction so a wrong split is catchable + retryable.
+            if transform_note:
+                note = transform_note if len(transform_note) <= 44 else transform_note[:41] + "…"
+                self._on_main(lambda: self.overlay.show_briefly("✦ Transformed · " + note, 2.5))
 
             # Auto-learn: watch the target field for a manual correction, off the
             # recording/injection critical path. Fully guarded — any failure is a
