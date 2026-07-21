@@ -58,13 +58,15 @@ but only if `notes` already has RLS enabled; if it has no RLS, it leaves it unto
 
 **`groq_usage`** — `create_groq_usage` migration. Usage + rate-limit ledger for the `groq-proxy` Edge
 Function: one row per successful Groq call — `id`, `identity` (`user:<uuid>`|`device:<id>`|`ip:<addr>`),
-`user_id?`, `kind` (`transcription`|`chat`), `created_at`. **RLS on** (read-your-own for `authenticated`);
-only the function writes, via the service role (fire-and-forget). Metering ledger — rate-limit *enforcement*
-is currently off for latency (see `05-conventions` Hard Rule #15). (The earlier `app_config` key-table idea was dropped — the Groq key must
-never be readable by a client, so it lives only as the function's `GROQ_API_KEY` secret.)
+`user_id?`, `kind` (`transcription`|`chat`|`chat-ollama`), `created_at`. **RLS on** (read-your-own for
+`authenticated`); only the function writes, via the service role (fire-and-forget). Metering ledger —
+rate-limit *enforcement* is currently off for latency (see `05-conventions` Hard Rule #15). (The earlier
+`app_config` key-table idea was dropped — provider keys must never be readable by a client, so they live
+only as the function's `GROQ_API_KEY` / `OLLAMA_API_KEY` secrets.)
 
-**Edge Functions:** `groq-proxy` (`supabase/functions/groq-proxy/index.ts`) — the only holder of the Groq
-key; brokers all transcription + chat for every client. `verify_jwt` on.
+**Edge Functions:** `groq-proxy` (`supabase/functions/groq-proxy/index.ts`) — the only holder of the
+provider keys (`GROQ_API_KEY`, plus `OLLAMA_API_KEY` for the meeting-notes model `gpt-oss:120b`); brokers
+all transcription + chat for every client. `verify_jwt` on.
 
 **`meetings`** — `supabase_meetings.sql` (applied live 2026-07 + follow-up `hybrid_notes` column). One row
 per captured meeting.
@@ -86,7 +88,11 @@ per captured meeting.
 | `status` | text | `processing` \| `ready` \| `failed` (failed = summary failed, transcript intact) |
 
 Indexes `(user_id)`, `(user_id, started_at desc)`. **Realtime publication: yes** (mobile subscribes
-INSERT+UPDATE on `verbal_meetings_<uid>`). RLS on, policy "meetings rw" `FOR ALL TO public USING(true)`
+INSERT+UPDATE on `verbal_meetings_<uid>` — the live-transcript stream). **`REPLICA IDENTITY FULL`**
+(migration `meetings_replica_identity_full_for_realtime_updates`) — required so Realtime can match the
+`user_id=eq` filter on UPDATE events; with the default (PK-only) identity INSERTs delivered but live
+UPDATE chunks were silently dropped, so `MeetingLiveScreen` also polls every 3s while live as a fallback.
+RLS on, policy "meetings rw" `FOR ALL TO public USING(true)`
 (Hard Rule #10 — same deferred-hardening posture as the rest). Desktop also keeps a bounded metadata list
 in `config['meetings']` (`MEETINGS_CAP=30`) and the mixed WAV at `~/.verbal/meetings/<id>.wav`.
 

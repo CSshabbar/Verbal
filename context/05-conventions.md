@@ -95,7 +95,13 @@
    It is deliberately lean for latency: **no SDK import, no blocking pre-checks** (a synchronous
    rate-limit query was removed — re-add a *fast* limiter, e.g. in-isolate/Upstash, if abuse appears).
    Rotate/revoke centrally: `supabase secrets set GROQ_API_KEY=…` (no app update). The key is **never** in an
-   app bundle, the repo, or a log. The earlier `app_config` key-table / `BUNDLED_GROQ_KEY` idea is
+   app bundle, the repo, or a log. **Meeting NOTES route through the same function but to Ollama Cloud**
+   (`gpt-oss:120b`): the client adds `{"provider":"ollama"}` to the chat payload → the function strips it
+   and forwards to `https://ollama.com/v1/chat/completions` (OpenAI-compatible, pure passthrough) using a
+   second secret `OLLAMA_API_KEY`. It **fails closed**: no key / Ollama down → the client retries on Groq
+   `llama-3.3-70b` so notes never fail (`meetings.generate_meeting_notes`, `lib/groq.ts::generateMeetingNotes`).
+   Set/rotate via `supabase secrets set OLLAMA_API_KEY=…` (key from ollama.com/settings/keys). The earlier
+   `app_config` key-table / `BUNDLED_GROQ_KEY` idea is
    **SUPERSEDED** (a client must never be able to read the key); `lib/remoteConfig.ts` is now vestigial. The
    iOS keyboard's `KeyboardViewController.swift` and desktop still keep a local-key fallback path only for
    resilience — the proxy is always tried first.
@@ -327,6 +333,47 @@
 - LLM prompts that consume transcripts must state their output language (summary: transcript's
   dominant language; dictation formatter/notes: same language, never translate).
 
+### Keyboard hot-path rules (native IME, both platforms)
+
+- **Never do heavy work synchronously inside a keystroke commit.** Per-keystroke disk
+  reads/JSON parses, 25k-word dictionary scans, and IPC text queries jank the UI/main
+  thread and drop fast taps. Cache config by file-mtime; DEBOUNCE suggestions (~70ms) off
+  the commit; persist learning writes on a background thread.
+- **Never rebuild the whole keyboard view tree during typing.** Shift / one-shot-shift /
+  auto-cap changes must update key labels IN PLACE (`refreshLetterCaps` / live-cased key
+  titles), not call `showKeyboard()` — a mid-type rebuild races the next tap's touch target
+  and eats the letter (worst right after a space/sentence boundary). Reserve full rebuilds
+  for actual layer switches (letters↔symbols↔numbers).
+
+### Per-device sync (mobile)
+
+- Sync is PER DEVICE via the cloud `devices.sync_enabled` column, not one global flag.
+  `lib/deviceSync.ts` is the shared source of truth; THIS device's own row drives the local
+  `verbal_sync_enabled` gate that `lib/useSync` reads. Show the devices sheet from the ROOT
+  host (`DevicesSyncHost`), never from inside the Settings/Menu native-stack modal (JS
+  `<Modal>` touches are unreliable there — the same reason `confirmSignOut` uses native Alert).
+
+### Meeting-notes generation (both platforms)
+
+- `MEETING_NOTES_SYSTEM` lives in **two places that must stay byte-for-byte in sync**:
+  `whisperflow/app/meetings.py` (desktop) and `verbal-mobile/lib/groq.ts` (mobile). Edit one → mirror
+  the other in the same change, and keep `max_tokens=4000` on both `generate_meeting_notes` /
+  `generateMeetingNotes` (rich output needs the headroom; 2500 truncated tables/roadmaps).
+- Notes run on **Ollama Cloud `gpt-oss:120b`** (`NOTES_MODEL`, mirrored in both files) via
+  `provider:"ollama"` through the proxy, with an automatic **Groq `llama-3.3-70b` fallback** if Ollama
+  is unset/slow/down — so notes always generate. To try another model swap `NOTES_MODEL` in BOTH files
+  (`glm-4.6`, `qwen3:235b`); to go Groq-only drop the provider. Ollama timeout is longer (90s desktop).
+- The prompt is **analyst-grade and proportional**: TL;DR + topic sections + Decisions + Action items
+  + Open questions, and **Markdown TABLES are mandatory** whenever 3+ items share fields (costs,
+  comparisons, schedules). Weaker models only reliably emit a table when the prompt carries a
+  concrete table example — keep the worked `| Item | Cost | Notes |` example in the prompt.
+- **Two markdown renderers must both understand every construct the prompt emits**, or new syntax
+  shows as raw text: desktop `meeting_html.py::mdRender` (JS) and mobile
+  `MeetingNotesScreen.tsx::MdView` (RN). Both now parse GitHub tables (header + `|---|` divider +
+  body rows). `MdView` uses an **index loop, not `forEach`** — table rendering must look ahead and
+  skip consumed rows. Truth discipline is unchanged: never invent numbers/names; compute only
+  derived values the speakers implied; OUTPUT LANGUAGE is computed in code, never judged by the LLM.
+
 ### Transform rules (TRANSFORM_SWARM.md)
 
 - **Transform is a SEPARATE prompt/mode — never edit `ai_cleanup.SYSTEM_PROMPT`.** The formatter must
@@ -340,7 +387,17 @@
   meeting holds the mic (one mic stream process-wide).
 - **Borderless NSPanels refuse key-window status by default** — any panel with a TEXT INPUT needs a
   subclass overriding `canBecomeKeyWindow → YES` (transform pill: `_panel_class()`), or the field shows
-  no caret and typing goes nowhere. Buttons alone don't need it (autolearn pill).
+  no caret and typing goes nowhere. Buttons alone don't need it (autolearn pill, `meeting_prompt.py`).
+- The **meeting-detected pill** (`meeting_prompt.py`, Granola-style auto-detect) is the newest member of
+  the non-activating-panel family — buttons only, so no key-window subclass. It must never steal focus
+  from the Zoom/Meet window. Detection (`meeting_detect.py`) reads on-screen **window titles** via
+  **`SCShareableContent`** (ScreenCaptureKit), NOT `CGWindowListCopyWindowInfo`: on macOS 14/15
+  `kCGWindowName` is empty for every window except the frontmost even WITH Screen-Recording permission, so
+  CGWindowList missed background meetings entirely ("not detecting" bug). SCShareableContent returns all
+  window titles with the SR permission Flume already holds; CGWindowList stays only as a fallback. The
+  scan can block ~1 s → run it OFF the main thread (main.py `_detect_meeting_tick` → bg thread →
+  `_md_apply` on main). Keep heuristics conservative (in-call window, not just an open app) and fail
+  closed — a detection error must never reach the capture path.
 - The transform pill uses the same **ready-handshake** as the meeting window (`api('tf_ready')` +
   buffered emit) — without it the first open showed a BLANK pill, read as "mic/typing not working".
 - `transcribe_with_status` success status is **'ok'** (not 'done'/'success') — compare against the
@@ -356,6 +413,15 @@
   the recording.
 - Transform hotkey = ⌘⇧T on keydown (`hotkey.py` handles it before, and separate from, the dictation
   keys). Config keys are config-only — no Supabase columns.
+
+19. **A filtered realtime UPDATE subscription needs `REPLICA IDENTITY FULL` on the table.** Supabase
+    Realtime evaluates a `postgres_changes` filter (e.g. `user_id=eq.<uid>`) against the WAL tuple; with
+    the default (PK-only) replica identity an UPDATE's tuple lacks the filter column, so the event is
+    silently dropped — **INSERTs still arrive, UPDATEs don't.** This is exactly why mobile live-meeting
+    transcript "only refreshed after close+reopen" (fixed Jul 2026: `meetings` → `REPLICA IDENTITY FULL`).
+    Any new table that mobile subscribes to for UPDATE streams must be `REPLICA IDENTITY FULL`. Belt-and-
+    suspenders: a realtime-driven live view should ALSO poll (`MeetingLiveScreen` refetches every 3s while
+    `isLiveNow`) so a dropped socket on mobile can't freeze it. Realtime is the fast path, not the only one.
 
 ## Design system (Flume)
 

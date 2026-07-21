@@ -157,10 +157,15 @@ class VerbalApp(rumps.App):
             self.model_items[m] = item
             model_menu.add(item)
 
+        self.autodetect_item = rumps.MenuItem(
+            "Auto-detect meetings", callback=self._toggle_meeting_autodetect)
+        self.autodetect_item.state = 1 if self.config.get("meeting_autodetect", True) else 0
+
         self.menu = [
             self.status_item,
             self.record_btn,
             self.meeting_btn,
+            self.autodetect_item,
             None,
             self.signin_item,
             self.reset_onb_item,
@@ -186,6 +191,17 @@ class VerbalApp(rumps.App):
             transform_key=self.config.get("transform_hotkey", 17),
         )
         self.transform_widget = None      # lazy (TRANSFORM_SWARM.md Mode B)
+
+        # Granola-style meeting auto-detection (macOS only). A window-scan poll pops
+        # a non-activating "Meeting detected · <source>" pill; state tracks the call
+        # currently being prompted so we ask once per call and reset when it ends.
+        self.meeting_prompt = None        # lazy MeetingPrompt
+        self._md_active_key = None        # the call key currently on screen
+        self._md_handled = set()          # call keys already prompted/dismissed
+        self._md_empty = 0                # consecutive polls with no call detected
+        self._md_source = ""              # last detected source label
+        self._md_scanning = False         # a background window scan is in flight
+        self._meeting_detect_timer = rumps.Timer(self._detect_meeting_tick, 5.0)
 
         self._ui_timer = rumps.Timer(self._drain_ui_queue, 0.1)
         # attaches the popover to the status item once rumps has created it
@@ -255,6 +271,10 @@ class VerbalApp(rumps.App):
         self._ui_timer.start()
         if self.popover:
             self._popover_hook_timer.start()
+        # Poll for calls in progress (Granola-style prompt). Meetings-only, macOS-only;
+        # fails closed — a detection error never touches dictation/capture.
+        if self.meetings:
+            self._meeting_detect_timer.start()
         threading.Thread(target=self._preload_model, daemon=True).start()
         threading.Thread(target=self._check_update, daemon=True).start()
         threading.Thread(target=self._load_dictionary_once, daemon=True).start()
@@ -659,6 +679,118 @@ class VerbalApp(rumps.App):
             self.meeting_btn.title = "Return to Meeting" if active else "Start Meeting"
         except Exception:
             pass
+
+    # ── Granola-style meeting auto-detection ─────────────────────────────────
+    def _detect_meeting_tick(self, _=None):
+        """Timer (main thread): cheap guards, then run the window scan on a
+        background thread (SCShareableContent can block ~1s) and apply the result
+        back on the main thread. Best-effort — never raises into the timer."""
+        try:
+            if not self.meetings:
+                return
+            # Master switch (default on) + never nag while already capturing.
+            if not self.config.get("meeting_autodetect", True):
+                if self.meeting_prompt and self.meeting_prompt.visible:
+                    self.meeting_prompt.hide()
+                return
+            if self.meetings.active:
+                if self.meeting_prompt and self.meeting_prompt.visible:
+                    self.meeting_prompt.hide()
+                return
+            if getattr(self, "_md_scanning", False):
+                return  # a previous scan is still in flight
+
+            self._md_scanning = True
+
+            def work():
+                info = None
+                try:
+                    from app import meeting_detect
+                    info = meeting_detect.detect()
+                except Exception as e:
+                    logger.debug("meeting detect scan failed: %s", e)
+                self._on_main(lambda: self._md_apply(info))
+            threading.Thread(target=work, daemon=True).start()
+        except Exception as e:
+            logger.debug("meeting detect tick failed: %s", e)
+
+    def _md_apply(self, info):
+        """Main thread: fold a scan result into the prompt state machine."""
+        self._md_scanning = False
+        try:
+            # State may have changed while the scan ran.
+            if self.meetings and self.meetings.active:
+                return
+            if not self.config.get("meeting_autodetect", True):
+                return
+            if not info:
+                # A couple of empty polls = the call ended → forget it so the NEXT
+                # call gets a fresh prompt, and drop any stale pill.
+                self._md_empty += 1
+                if self._md_empty >= 2:
+                    self._md_active_key = None
+                    self._md_handled.clear()
+                    if self.meeting_prompt and self.meeting_prompt.visible:
+                        self.meeting_prompt.hide()
+                return
+            self._md_empty = 0
+            key = info.get("key") or ""
+            if key in self._md_handled:
+                return  # already asked (or dismissed) for this call
+            self._md_active_key = key
+            self._md_source = info.get("source") or ""
+            self._md_handled.add(key)   # ask once per call
+            logger.info("meeting detected (auto): source=%s key=%s",
+                        self._md_source, key)
+            self._show_meeting_prompt(self._md_source)
+        except Exception as e:
+            logger.debug("meeting detect apply failed: %s", e)
+
+    def _show_meeting_prompt(self, source):
+        try:
+            if self.meeting_prompt is None:
+                from app.meeting_prompt import MeetingPrompt
+                self.meeting_prompt = MeetingPrompt(self)
+            self.meeting_prompt.show(source)
+        except Exception as e:
+            logger.debug("meeting prompt show failed: %s", e)
+
+    def _meeting_detect_result(self, take: bool):
+        """Pill button result: True = start capturing this call now."""
+        if not take:
+            return
+        try:
+            source = self._md_source or ""
+            lang = self.config.get("spoken_language", "") or ""
+            res = self.meetings.start(title="", use_mic=True, use_system=True,
+                                      language=lang) if self.meetings else None
+            if res and res.get("ok"):
+                logger.info("meeting auto-started from detection (%s)", source)
+                self._refresh_meeting_menu()
+                win = self._meeting_win()
+                if win:
+                    win.show("live")
+            else:
+                # Not ready (e.g. Screen-Recording permission) → fall back to the
+                # normal launcher, which walks the permission/pre-meeting flow.
+                logger.info("auto-start not ready (%s) — opening launcher",
+                            res.get("error") if res else "no manager")
+                self._toggle_meeting()
+        except Exception as e:
+            logger.error("meeting auto-start failed: %s", e)
+
+    def _toggle_meeting_autodetect(self, sender=None):
+        try:
+            on = not self.config.get("meeting_autodetect", True)
+            self.config["meeting_autodetect"] = on
+            save_config(self.config)
+            if sender is not None:
+                sender.state = 1 if on else 0
+            if not on and self.meeting_prompt and self.meeting_prompt.visible:
+                self.meeting_prompt.hide()
+            logger.info("meeting auto-detect %s", "on" if on else "off")
+        except Exception as e:
+            logger.warning("toggle auto-detect failed: %s", e)
 
     def _set_mode_hold(self, _):
         self._mode = MODE_HOLD

@@ -543,6 +543,12 @@ input,textarea{font-family:inherit;color:inherit;background:none;border:0;outlin
 .ntBody ol li::marker{color:var(--dim);font:500 11px 'JetBrains Mono'}
 .ntBody b,.ntBody strong{font-weight:600;color:var(--tx)}
 .ntBody code{font:500 12px 'JetBrains Mono';background:var(--raised);border-radius:5px;padding:1px 6px}
+.ntTableWrap{overflow-x:auto;margin:6px 0 16px}
+.ntTable{border-collapse:collapse;width:100%;font:400 12.5px 'Geist'}
+.ntTable th{text-align:left;font:600 10px 'JetBrains Mono';letter-spacing:.1em;text-transform:uppercase;
+  color:var(--acc-txt);padding:7px 12px 7px 0;border-bottom:1px solid var(--bd2);white-space:nowrap}
+.ntTable td{padding:7px 12px 7px 0;border-bottom:1px solid var(--bd-faint);color:var(--tx);vertical-align:top}
+.ntTable tr:last-child td{border-bottom:0}
 .ntTask{display:flex;align-items:flex-start;gap:9px;margin:0 0 8px}
 .ntTask .box{width:15px;height:15px;border-radius:4px;border:1.4px solid var(--dim);flex:none;
   margin-top:3px;display:inline-flex;align-items:center;justify-content:center;color:transparent}
@@ -1257,11 +1263,31 @@ function mdRender(md){
     t=t.replace(/`([^`]+)`/g,'<code>$1</code>');
     return t;
   }
+  function isTableRow(s){ return /^\|.*\|\s*$/.test(s); }
+  function isDivider(s){ return /^\|?[\s:|-]+\|[\s:|-]*$/.test(s) && s.indexOf('-')>=0; }
+  function cells(s){ return s.replace(/^\||\|$/g,'').split('|').map(function(c){return c.trim();}); }
   for(let i=0;i<lines.length;i++){
     const ln=lines[i];
     const t=ln.trim();
     if(!t){ closeList(); continue; }
     let m;
+    // Markdown table: header row, |---| divider, then body rows.
+    if(isTableRow(t) && i+1<lines.length && isDivider(lines[i+1].trim())){
+      closeList();
+      const head=cells(t);
+      html+='<div class="ntTableWrap"><table class="ntTable"><thead><tr>'+
+        head.map(function(c){return '<th>'+inline(c)+'</th>';}).join('')+'</tr></thead><tbody>';
+      i+=2;
+      while(i<lines.length && isTableRow(lines[i].trim())){
+        const row=cells(lines[i].trim());
+        html+='<tr>'+head.map(function(_,ci){return '<td>'+inline(row[ci]||'')+'</td>';}).join('')+'</tr>';
+        i++;
+      }
+      i--;
+      html+='</tbody></table></div>';
+      first=false;
+      continue;
+    }
     if((m=t.match(/^##\s+(.+)$/))){ closeList(); html+='<h2>'+inline(m[1])+'</h2>'; first=false; }
     else if((m=t.match(/^###\s+(.+)$/))){ closeList(); html+='<h3>'+inline(m[1])+'</h3>'; }
     else if((m=t.match(/^- \[( |x|X)\]\s+(.+)$/))){

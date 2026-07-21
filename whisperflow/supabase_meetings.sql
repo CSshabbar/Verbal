@@ -111,3 +111,9 @@ end $$;
 alter table public.meetings add column if not exists pinned boolean not null default false;
 alter table public.meetings add column if not exists recognized jsonb not null default '{}'::jsonb;
 alter table public.meetings add column if not exists notes_md text;  -- full AI meeting notes (markdown)
+alter table public.meetings add column if not exists live boolean not null default false;  -- true while capturing (live mirror)
+-- push_tokens: Expo push tokens per user (mobile meeting-start notifications)
+create table if not exists public.push_tokens (
+  user_id text not null, token text not null, platform text, device_name text,
+  updated_at timestamptz not null default now(), primary key (user_id, token));
+alter table public.push_tokens enable row level security;

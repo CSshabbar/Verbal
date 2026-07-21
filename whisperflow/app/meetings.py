@@ -405,32 +405,62 @@ def merge_action_done(old_items, new_items):
     return new_items
 
 
-MEETING_NOTES_SYSTEM = """You are a world-class MEETING NOTE-TAKER. From a raw meeting
-transcript (plus the user's own quick notes and marked moments) you write the
-DEFINITIVE notes for the meeting — the document a diligent chief of staff would
-produce: complete, organized, effortless to scan.
+# Notes model on Ollama Cloud (OpenAI-compatible). Swap this tag to try glm-4.6 /
+# qwen3:235b, or set provider=None + a Groq model to go back to Groq-only.
+NOTES_MODEL = "gpt-oss:120b"
 
-THE CONTRACT:
-- A reader who MISSED the meeting must lose nothing that matters: every decision,
-  commitment, number, date, amount, name, reason and open question appears.
-- Organize by TOPIC in the order that makes sense — not strictly the order spoken.
-- Reasons stay attached to their point ("decided X because Y") on the same bullet.
-- Resolve self-corrections to the final version; keep stated uncertainty uncertain.
-- The user's own notes mark what mattered to THEM — weave each one in where it
-  belongs. Marked moments deserve their point in the notes.
-- Write EVERYTHING in the OUTPUT LANGUAGE stated in the user message.
+MEETING_NOTES_SYSTEM = """You are a world-class MEETING ANALYST. You turn a raw, messy call
+transcript (plus the user's own quick notes and marked moments) into the notes the
+participant WISHED they had taken: complete, beautifully organized, instantly
+scannable. Match the depth and polish of a top human analyst's write-up.
 
-SHAPE (GitHub markdown; include only sections with real content):
-- Start with a 1–2 sentence context line (what this meeting was, who, purpose) —
-  plain text, no heading.
-- ## <Topic> — one short section per discussion topic; one point per bullet;
-  **bold** the key facts (dates, amounts, names, the operative word of a decision).
-- ## Decisions — every agreement, each with its why.
-- ## Action items — "- [ ] task — **owner**, due **date**" (only real commitments;
-  use the speaker NAMES given, never ids; omit owner/due when not said).
-- ## Open questions — unresolved items, disagreements left standing.
+THE CONTRACT
+- Lose nothing that matters: every decision, commitment, number, amount, date, name,
+  option, reason and open question in the transcript appears in the notes.
+- Reorganize by MEANING, not the order things were said. Group related points; lead
+  with the most consequential.
+- Attach reasons to their point ("chose X because Y"). Resolve self-corrections to the
+  FINAL value ("Aug 4th, no wait the 5th" → the 5th). Keep stated uncertainty uncertain
+  ("~", "roughly", "needs confirming") — never harden a maybe into a fact.
+- The user's own notes + marked moments flag what mattered to THEM — fold each in where
+  it belongs.
+- If part of the audio is garbled or one-sided, reconstruct the missing side ONLY where
+  context makes it unambiguous, and say briefly that you did. Never invent facts.
+- Write EVERYTHING in the OUTPUT LANGUAGE stated in the user message. Never translate.
 
-NEVER invent content. No meta commentary, no "Here are the notes". Notes only."""
+STRUCTURE (GitHub markdown). Use the sections that FIT this meeting — a rich advisory
+call earns all of them; a 30-second sync earns two lines. In this order:
+
+1. ## TL;DR — 3–6 tight bullets: the answer, the key numbers, the decision, the next
+   move. Skip entirely for a trivial note.
+2. ## <Topic> sections — one per real topic, logically ordered. One idea per bullet;
+   nest sub-bullets for supporting detail; **bold** the load-bearing facts (names, dates,
+   amounts, the operative word of a decision).
+3. TABLES — this is mandatory, not optional. The MOMENT the meeting covers three or more
+   items that share the same fields, render a real Markdown table, never a bullet list.
+   Costs/prices, option comparisons, pros/cons, schedules, criteria rankings, before/after,
+   anything with amounts or a shared shape becomes a table. Example — a cost discussion
+   MUST come out like this, not as bullets:
+
+   | Item | Cost | Notes |
+   |---|---|---|
+   | Tuition (non-EU) | €10,000–25,000/yr | Public unis €14k–18k |
+   | Living funds to show | ~€13,500/yr | Your own money, not a fee |
+
+   Compute derived values the speakers implied (totals, the unit conversions they used) —
+   but NEVER invent numbers that weren't given or derivable.
+4. ## Decisions — each agreement with its why.
+5. ## Action items — "- [ ] task — **owner**, due **date**" (owner = a speaker NAME,
+   never an id; omit owner/due when unstated). If the meeting laid out a multi-step plan,
+   present it as a PHASED ROADMAP: "### Phase 1 — <name>" then its checkbox items.
+6. ## Open questions — unresolved items, disagreements, things to confirm.
+
+QUALITY BAR
+- Rich when the meeting is rich, terse when it's thin — never padded, never a wall of text.
+- Every heading must carry real content; drop empty ones.
+- Sentence-case, clean punctuation, complete phrasing — you are a writer, not a transcript.
+- NEVER invent facts, names, numbers or tasks. No preamble, no "Here are the notes", no
+  closing remarks. Output the notes only."""
 
 
 def generate_meeting_notes(config, row, session_language=""):
@@ -455,10 +485,16 @@ def generate_meeting_notes(config, row, session_language=""):
                 f"SPEAKERS: {spk}\n\nUSER'S OWN NOTES:\n{notes}\n\n"
                 f"MARKED MOMENTS:\n{marks}\n\n"
                 f"TRANSCRIPT:\n{_transcript_text(transcript, speakers)}")
-        raw = chat_via_proxy(
-            [{"role": "system", "content": MEETING_NOTES_SYSTEM},
-             {"role": "user", "content": user}],
-            config, max_tokens=2500, timeout=45.0)
+        msgs = [{"role": "system", "content": MEETING_NOTES_SYSTEM},
+                {"role": "user", "content": user}]
+        # Notes run on Ollama Cloud's gpt-oss:120b (open-weight, strong at structured
+        # markdown + tables). Fall back to Groq llama-3.3 if Ollama is unset/slow/down —
+        # notes must never fail to generate. (richer notes: TL;DR + tables + roadmap)
+        raw = chat_via_proxy(msgs, config, model=NOTES_MODEL, provider="ollama",
+                             max_tokens=4000, timeout=90.0)
+        if not (raw or "").strip():
+            logger.info("meeting notes: Ollama empty/failed — falling back to Groq")
+            raw = chat_via_proxy(msgs, config, max_tokens=4000, timeout=60.0)
         text = (raw or "").strip()
         if text.startswith("```"):
             text = text.strip("`").strip()
@@ -743,6 +779,7 @@ class MeetingSession:
         self._emit_state()
         self._persist_local()
         threading.Thread(target=self._cloud_insert, daemon=True).start()
+        threading.Thread(target=self._notify_start, daemon=True).start()
         return True
 
     def toggle_pause(self):
@@ -924,6 +961,10 @@ class MeetingSession:
                 self.transcript.append(utt)
                 self.transcript.sort(key=lambda u: u["t0"])
                 self._emit("utterance", dict(utt, speakers=self.speakers, mid=self.id))
+                now = time.time()
+                if now - getattr(self, "_last_live_push", 0.0) > 4.0:
+                    self._last_live_push = now
+                    threading.Thread(target=self._cloud_push_live, daemon=True).start()
             except Exception as e:
                 logger.debug("chunk transcribe failed: %s", e)
             finally:
@@ -1097,6 +1138,7 @@ class MeetingSession:
             "device_id": cfg.get("sync_device_name", "") or "",
             "device_name": cfg.get("sync_device_name", "") or "",
             "status": {"ready": "ready", "failed": "failed"}.get(self.state, "processing"),
+            "live": self.state in ("preparing", "recording", "paused"),
             "updated_at": _now_iso(),
         }
 
@@ -1109,6 +1151,46 @@ class MeetingSession:
             save_config(cfg)
         except Exception as e:
             logger.debug("meeting local persist failed: %s", e)
+
+    def _notify_start(self):
+        """Tell the user's other devices a meeting just started (push). Best-effort,
+        fires the notify-meeting-start edge function; never blocks capture."""
+        try:
+            uid = self.app.config.get("sync_user_id")
+            if not uid:
+                return
+            import httpx
+            from app.sync import SUPABASE_URL, SUPABASE_KEY
+            httpx.post(
+                f"{SUPABASE_URL}/functions/v1/notify-meeting-start",
+                headers={"apikey": SUPABASE_KEY,
+                         "Authorization": f"Bearer {SUPABASE_KEY}",
+                         "Content-Type": "application/json"},
+                json={"user_id": uid, "meeting_id": self.id, "title": self.title,
+                      "source": self.app.config.get("sync_device_name", "your Mac")},
+                timeout=8)
+        except Exception as e:
+            logger.debug("meeting start notify failed: %s", e)
+
+    def _cloud_push_live(self):
+        """Push just the live-mirror fields to the cloud so a phone can watch the
+        transcript stream in. Transcript-only PATCH (never touches scratchpad —
+        mobile owns that during the meeting). Fails closed; throttled by caller."""
+        try:
+            if not self.app.config.get("sync_user_id") or not self._cloud_ok:
+                return
+            import httpx
+            from app.sync import SUPABASE_URL, SUPABASE_KEY
+            httpx.patch(
+                f"{SUPABASE_URL}/rest/v1/meetings?id=eq.{self.id}",
+                headers={"apikey": SUPABASE_KEY,
+                         "Authorization": f"Bearer {SUPABASE_KEY}",
+                         "Content-Type": "application/json"},
+                json={"transcript": self.transcript, "speakers": self.speakers,
+                      "duration_seconds": self.elapsed, "live": True,
+                      "status": "processing", "updated_at": _now_iso()}, timeout=10)
+        except Exception as e:
+            logger.debug("meeting live push failed: %s", e)
 
     def _cloud_insert(self):
         try:

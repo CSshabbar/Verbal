@@ -55,14 +55,19 @@ def transcribe_via_proxy(wav_path: str, config: dict, prompt: str | None = None,
 
 def chat_via_proxy(messages: list, config: dict, model: str = "llama-3.3-70b-versatile",
                    max_tokens: int = 2048, timeout: float = 10.0,
-                   response_format: dict | None = None) -> str | None:
+                   response_format: dict | None = None,
+                   provider: str | None = None) -> str | None:
     """Chat completion via the proxy (JSON → Groq /chat/completions).
-    Pass response_format={"type": "json_object"} for Groq's strict JSON mode."""
+    Pass response_format={"type": "json_object"} for Groq's strict JSON mode.
+    Pass provider="ollama" to route to Ollama Cloud instead (model = an Ollama tag,
+    e.g. "gpt-oss:120b") — same OpenAI-compatible request/response shape."""
     try:
         import httpx
         payload = {"model": model, "messages": messages, "temperature": 0, "max_tokens": max_tokens}
         if response_format:
             payload["response_format"] = response_format
+        if provider:
+            payload["provider"] = provider
         resp = httpx.post(_endpoint(), headers=_headers(config, json=True), json=payload, timeout=timeout)
         if resp.status_code != 200:
             logger.warning("groq-proxy chat %s: %s", resp.status_code, resp.text[:200])

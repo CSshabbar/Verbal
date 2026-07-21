@@ -1,17 +1,24 @@
-// groq-proxy — Supabase Edge Function brokering ALL Groq access for every Flume
-// client. The Groq key lives ONLY here as the GROQ_API_KEY secret.
+// groq-proxy — Supabase Edge Function brokering AI access for every Flume client.
+// Provider keys live ONLY here: GROQ_API_KEY (default) and OLLAMA_API_KEY (for the
+// meeting-notes model). Clients never see them.
 //
 // Tuned for latency: no heavy SDK import (was supabase-js — a big cold-start cost),
 // no getUser() round-trip (the gateway already verified the JWT, so we just decode
 // the `sub` locally), no blocking rate-limit query. Usage is logged fire-and-forget
-// via a lightweight PostgREST call, and the Groq response is streamed straight back.
+// via a lightweight PostgREST call, and the upstream response is streamed straight back.
 //
-//   multipart/form-data with `file` -> POST /audio/transcriptions (dictation)
-//   application/json with `messages` -> POST /chat/completions      (cleanup/notes)
+//   multipart/form-data with `file` ---------------> Groq  /audio/transcriptions (dictation)
+//   application/json with `messages` --------------> Groq  /chat/completions      (cleanup/notes)
+//   application/json + {"provider":"ollama"} ------> Ollama Cloud /v1/chat/completions (notes)
+//
+// The Ollama branch is OpenAI-compatible (same request/response shape as Groq), so it's
+// a pure passthrough. It fails closed: if OLLAMA_API_KEY is unset the client gets an
+// error and (by design) falls back to Groq — dictation is never affected.
 
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 
 const GROQ_BASE = "https://api.groq.com/openai/v1";
+const OLLAMA_CHAT = "https://ollama.com/v1/chat/completions";
 const DEFAULT_TRANSCRIBE_MODEL = "whisper-large-v3-turbo";
 
 const CORS = {
@@ -87,11 +94,26 @@ Deno.serve(async (req) => {
       });
     } else {
       const payload = await req.json();
-      resp = await fetch(`${GROQ_BASE}/chat/completions`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${groqKey}`, "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
+      const provider = payload.provider;
+      delete payload.provider; // not a valid upstream field — strip before forwarding
+      if (provider === "ollama") {
+        const ollamaKey = Deno.env.get("OLLAMA_API_KEY");
+        if (!ollamaKey) {
+          return json({ error: { message: "OLLAMA_API_KEY secret not set on the function" } }, 500);
+        }
+        kind = "chat-ollama";
+        resp = await fetch(OLLAMA_CHAT, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${ollamaKey}`, "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+      } else {
+        resp = await fetch(`${GROQ_BASE}/chat/completions`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${groqKey}`, "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+      }
     }
   } catch (e) {
     return json({ error: { message: `groq-proxy upstream error: ${String(e)}` } }, 502);
