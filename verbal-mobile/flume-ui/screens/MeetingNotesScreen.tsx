@@ -46,15 +46,55 @@ function Inline({ text, base }: { text: string; base?: object }) {
   );
 }
 
-/** Tiny GitHub-markdown renderer: ##/###, bullets, 1. lists, - [ ] tasks. */
+const isTableRow = (s: string) => /^\|.*\|\s*$/.test(s);
+const isDivider = (s: string) => /^\|?[\s:|-]+\|[\s:|-]*$/.test(s) && s.indexOf('-') >= 0;
+const rowCells = (s: string) =>
+  s.replace(/^\||\|$/g, '').split('|').map((c) => c.trim());
+
+/** Tiny GitHub-markdown renderer: ##/###, bullets, 1. lists, - [ ] tasks, tables. */
 function MdView({ md }: { md: string }) {
   const lines = md.replace(/\r/g, '').split('\n');
   const out: React.ReactNode[] = [];
   let first = true;
-  lines.forEach((ln, i) => {
-    const t = ln.trim();
-    if (!t) return;
+  for (let i = 0; i < lines.length; i++) {
+    const t = lines[i].trim();
+    if (!t) continue;
     let m;
+    // Markdown table: header row + | --- | divider + body rows
+    if (isTableRow(t) && i + 1 < lines.length && isDivider(lines[i + 1].trim())) {
+      const header = rowCells(t);
+      const body: string[][] = [];
+      let j = i + 2;
+      while (j < lines.length && isTableRow(lines[j].trim())) {
+        body.push(rowCells(lines[j].trim()));
+        j++;
+      }
+      out.push(
+        <View key={i} style={styles.table}>
+          <View style={styles.trHead}>
+            {header.map((c, k) => (
+              <View key={k} style={styles.cell}>
+                <Text variant="metaSm" color={colors.primaryAccent} style={styles.th}>
+                  {c.toUpperCase()}
+                </Text>
+              </View>
+            ))}
+          </View>
+          {body.map((cells, r) => (
+            <View key={r} style={[styles.tr, r === body.length - 1 && styles.trLast]}>
+              {header.map((_, k) => (
+                <View key={k} style={styles.cell}>
+                  <Inline text={cells[k] ?? ''} />
+                </View>
+              ))}
+            </View>
+          ))}
+        </View>,
+      );
+      first = false;
+      i = j - 1;
+      continue;
+    }
     if ((m = t.match(/^##\s+(.+)$/))) {
       out.push(
         <Text key={i} variant="metaSm" color={colors.primaryAccent} style={styles.h2}>
@@ -100,7 +140,7 @@ function MdView({ md }: { md: string }) {
       );
       first = false;
     }
-  });
+  }
   return <View>{out}</View>;
 }
 
@@ -232,6 +272,18 @@ const styles = StyleSheet.create({
     fontFamily: fonts.mono, backgroundColor: colors.surface2,
     paddingHorizontal: 4, borderRadius: 4,
   },
+  table: { marginTop: 10, marginBottom: 16 },
+  trHead: {
+    flexDirection: 'row', borderBottomWidth: 1, borderBottomColor: colors.borderStrong,
+    paddingBottom: 7,
+  },
+  tr: {
+    flexDirection: 'row', borderBottomWidth: 1, borderBottomColor: colors.borderSubtle,
+    paddingVertical: 8,
+  },
+  trLast: { borderBottomWidth: 0 },
+  cell: { flex: 1, paddingRight: 10 },
+  th: { letterSpacing: 1, lineHeight: 15 },
 });
 
 export default MeetingNotesScreen;

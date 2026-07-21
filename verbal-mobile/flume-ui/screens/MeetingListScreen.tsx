@@ -10,10 +10,12 @@ import { Ionicons } from '@expo/vector-icons';
 import { Text } from '../components';
 import { colors, radius } from '../theme';
 import { useMeetings, Meeting } from '../hooks/useMeetings';
+import { isLiveNow } from '../../lib/meetings';
 
 type Props = {
   onBack: () => void;
   onOpen: (meetingId: string) => void;
+  onOpenLive: (meetingId: string) => void;
 };
 
 function groupLabel(m: Meeting): string {
@@ -38,9 +40,10 @@ function speakerDot(sid: string, i: number): string {
   return sid === 'self' ? '#D9B36B' : SPEAKER_PAL[i % SPEAKER_PAL.length];
 }
 
-export const MeetingListScreen: React.FC<Props> = ({ onBack, onOpen }) => {
+export const MeetingListScreen: React.FC<Props> = ({ onBack, onOpen, onOpenLive }) => {
   const insets = useSafeAreaInsets();
   const { meetings, loading, refresh } = useMeetings();
+  const liveMeetings = useMemo(() => meetings.filter(isLiveNow), [meetings]);
   const [refreshing, setRefreshing] = React.useState(false);
 
   // widget kit v2 (33j compact-mobile): rows live inside ONE parent card per
@@ -49,6 +52,7 @@ export const MeetingListScreen: React.FC<Props> = ({ onBack, onOpen }) => {
     const out: Array<{ label: string; items: Meeting[] }> = [];
     for (const m of meetings) {
       const g = groupLabel(m);
+      if (isLiveNow(m)) continue;   // live meetings shown in the banner above
       if (!out.length || out[out.length - 1].label !== g) out.push({ label: g, items: [] });
       out[out.length - 1].items.push(m);
     }
@@ -76,6 +80,23 @@ export const MeetingListScreen: React.FC<Props> = ({ onBack, onOpen }) => {
           <Text variant="subtitle">Meetings</Text>
         </View>
       </View>
+
+      {liveMeetings.length > 0 && (
+        <View style={styles.liveWrap}>
+          {liveMeetings.map((m) => (
+            <Pressable key={m.id} style={styles.liveCard} onPress={() => onOpenLive(m.id)}>
+              <View style={styles.liveDot} />
+              <View style={{ flex: 1, minWidth: 0 }}>
+                <Text variant="label" numberOfLines={1}>{m.title}</Text>
+                <Text variant="metaSm" color={colors.primaryAccent}>
+                  LIVE NOW · recording on {m.deviceName || 'your Mac'}
+                </Text>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color={colors.primaryAccent} />
+            </Pressable>
+          ))}
+        </View>
+      )}
 
       {loading ? (
         <View style={styles.center}><ActivityIndicator color={colors.primary} /></View>
@@ -170,6 +191,13 @@ const styles = StyleSheet.create({
     alignItems: 'center', justifyContent: 'center',
   },
   emptyBody: { textAlign: 'center', marginTop: 8, lineHeight: 20 },
+  liveWrap: { gap: 8, marginBottom: 14 },
+  liveCard: {
+    flexDirection: 'row', alignItems: 'center', gap: 12,
+    backgroundColor: 'rgba(200,90,62,0.12)', borderRadius: radius.md,
+    borderWidth: 1, borderColor: 'rgba(200,90,62,0.4)', padding: 14,
+  },
+  liveDot: { width: 9, height: 9, borderRadius: 5, backgroundColor: '#E05049' },
   groupHead: { marginTop: 14, marginBottom: 6 },
   groupCard: {
     backgroundColor: colors.surface1, borderRadius: radius.md, borderWidth: 1,

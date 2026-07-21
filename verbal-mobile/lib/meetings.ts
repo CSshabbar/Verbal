@@ -56,6 +56,8 @@ export function toMeeting(row: any): Meeting {
     notesMd: row.notes_md || null,
     pinned: !!row.pinned,
     recognized: row.recognized && typeof row.recognized === 'object' ? row.recognized : {},
+    live: !!row.live,
+    updatedAt: row.updated_at || row.started_at || new Date().toISOString(),
     dateLabel: dateLabel(row.started_at),
   };
 }
@@ -98,6 +100,16 @@ export async function updateScratchpadRemote(id: string, text: string): Promise<
   } catch {
     return false;
   }
+}
+
+/** A live meeting whose last update is older than this is treated as stale
+ *  (desktop crashed mid-meeting and never cleared `live`). */
+export const LIVE_STALE_MS = 90_000;
+
+export function isLiveNow(m: Meeting): boolean {
+  if (!m.live) return false;
+  const age = Date.now() - new Date(m.updatedAt).getTime();
+  return age >= 0 ? age < LIVE_STALE_MS : true;
 }
 
 /** Persist mobile-generated AI notes so desktop sees them too. */

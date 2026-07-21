@@ -37,6 +37,7 @@ export type NotesStackParamList = {
   MeetingDetail: { meetingId: string };
   MeetingPlayback: { meetingId: string };
   MeetingNotes: { meetingId: string };
+  MeetingLive: { meetingId: string };
 };
 
 export type HistoryStackParamList = {

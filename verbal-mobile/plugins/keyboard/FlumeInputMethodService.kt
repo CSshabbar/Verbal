@@ -138,6 +138,28 @@ class FlumeInputMethodService : InputMethodService() {
     private var busy = false
     private val main = Handler(Looper.getMainLooper())
 
+    // Fast-typing correctness (see 05-conventions "keyboard hot path"): the letter
+    // key views are updated IN PLACE on shift/caps changes instead of rebuilding the
+    // whole keyboard, and suggestions run debounced off the commit path — a rebuild
+    // or a heavy per-keystroke scan mid-typing was dropping the next rapid tap.
+    private val letterKeyViews = mutableListOf<TextView>()   // char keys; base label in view.tag
+    private var shiftKeyView: TextView? = null
+    private val suggRunnable = Runnable { doUpdateSuggestions() }
+
+    /** The label to SHOW/COMMIT for a base key, given the live shift/caps state. */
+    private fun casedChar(base: String): String =
+        if (layer == Layer.LETTERS && (shifted || capsLock) && base.length == 1 && base[0].isLetter())
+            base.uppercase() else base
+
+    /** Update letter labels + the shift glyph without tearing down the view tree. */
+    private fun refreshLetterCaps() {
+        for (v in letterKeyViews) {
+            val b = v.tag as? String ?: continue
+            v.text = casedChar(b)
+        }
+        shiftKeyView?.text = if (capsLock) "⇪" else "⇧"
+    }
+
     // ── recording sound effects (bundled WAVs in assets/) ───────────────────────────
     // Low-latency SoundPool, safe from any thread; fails closed so a sound error never
     // throws into the recording/transcribe path.
@@ -603,6 +625,7 @@ class FlumeInputMethodService : InputMethodService() {
     }
 
     private fun buildKeyboard(): View {
+        letterKeyViews.clear(); shiftKeyView = null   // rebuilt fresh below
         val kb = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(0, dp(6), 0, 0)
@@ -620,10 +643,12 @@ class FlumeInputMethodService : InputMethodService() {
             layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(46))
                 .apply { topMargin = 0 }
         }
-        r3.addView(functionKey(if (layer == Layer.LETTERS) (if (capsLock) "⇪" else "⇧") else (if (layer == Layer.NUMBERS) "=\\<" else "?123"), 1.5f) {
+        val shiftK = functionKey(if (layer == Layer.LETTERS) (if (capsLock) "⇪" else "⇧") else (if (layer == Layer.NUMBERS) "=\\<" else "?123"), 1.5f) {
             if (layer == Layer.LETTERS) onShift()
             else { layer = if (layer == Layer.NUMBERS) Layer.SYMBOLS else Layer.NUMBERS; showKeyboard() }
-        })
+        }
+        if (layer == Layer.LETTERS) shiftKeyView = shiftK as TextView
+        r3.addView(shiftK)
         for (k in rows[2]) r3.addView(charKey(k, 1f))
         val backKey = functionKey("⌫", 1.5f) { }   // touch handler below drives it (with repeat)
         attachRepeat(backKey) { onBackspace() }
@@ -670,16 +695,18 @@ class FlumeInputMethodService : InputMethodService() {
     }
 
     private fun charKey(label: String, weight: Float): TextView {
-        val shown = if (layer == Layer.LETTERS && (shifted || capsLock) && label.length == 1 && label[0].isLetter())
-            label.uppercase() else label
+        val isLetter = label.length == 1 && label[0].isLetter()
         return TextView(this).apply {
-            text = shown; setTextColor(keyText); textSize = 20f; gravity = Gravity.CENTER
+            tag = label                      // base label; live case computed on press
+            text = casedChar(label); setTextColor(keyText); textSize = 20f; gravity = Gravity.CENTER
             typeface = geist
             background = keyDrawable(keyBg)
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, weight)
                 .apply { leftMargin = 0; rightMargin = 0 }
-            // Fire on DOWN (never dropped by slide-within-slop); preview letters only.
-            keyTouch(this, keyBg, { onCharKey(shown) }, previewLabel = shown)
+            // Fire on DOWN (never dropped by slide-within-slop). Case is read LIVE so a
+            // one-shot/auto-cap flip (updated in place) commits the right case without a rebuild.
+            keyTouch(this, keyBg, { onCharKey(casedChar(label)) }, preview = isLetter)
+            if (isLetter) letterKeyViews.add(this)
         }
     }
 
@@ -696,7 +723,9 @@ class FlumeInputMethodService : InputMethodService() {
     // ── key handling ───────────────────────────────────────────────────────────────
     private fun onCharKey(ch: String) {
         commit(ch)
-        if (layer == Layer.LETTERS && shifted && !capsLock) { shifted = false; showKeyboard() }
+        // one-shot shift clears after a letter — update key labels IN PLACE (a full
+        // showKeyboard() rebuild here raced the next rapid tap and dropped it).
+        if (layer == Layer.LETTERS && shifted && !capsLock) { shifted = false; refreshLetterCaps() }
     }
 
     private fun commit(s: String) {
@@ -776,7 +805,7 @@ class FlumeInputMethodService : InputMethodService() {
         val caps = currentInputConnection?.getCursorCapsMode(
             InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES) ?: 0
         val desired = caps != 0
-        if (desired != shifted) { shifted = desired; showKeyboard() }
+        if (desired != shifted) { shifted = desired; refreshLetterCaps() }  // in-place, no rebuild
     }
 
     private fun onShift() {
@@ -786,7 +815,7 @@ class FlumeInputMethodService : InputMethodService() {
             shifted -> { capsLock = true }
             else -> { shifted = true }
         }
-        showKeyboard()
+        refreshLetterCaps()   // in-place caps/glyph swap (no full rebuild)
     }
 
     private fun onBackspace() {
@@ -807,11 +836,11 @@ class FlumeInputMethodService : InputMethodService() {
     // Gboard-style: fire on touch-DOWN so fast taps that slide within slop are never
     // dropped (setOnClickListener drops them). Haptic + pressed-state on down. If a
     // longPress is given, DOWN starts a 400ms timer; the key commits on UP only if the
-    // long-press didn't fire (used by comma → emoji). previewLabel (letters only) shows
+    // long-press didn't fire (used by comma → emoji). preview=true (letters only) shows
     // the enlarged-key bubble on down and dismisses it on up/cancel. Fails closed: a
     // haptic/preview error must never break the actual key commit.
     @Suppress("ClickableViewAccessibility")
-    private fun keyTouch(v: TextView, baseColor: Int, fire: () -> Unit, longPress: (() -> Unit)? = null, previewLabel: String? = null) {
+    private fun keyTouch(v: TextView, baseColor: Int, fire: () -> Unit, longPress: (() -> Unit)? = null, preview: Boolean = false) {
         val base = v.background
         v.isHapticFeedbackEnabled = true
         var handled = false
@@ -822,7 +851,7 @@ class FlumeInputMethodService : InputMethodService() {
                     handled = false
                     v.background = keyDrawable(pressBg)
                     try { v.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP, HapticFeedbackConstants.FLAG_IGNORE_VIEW_SETTING) } catch (e2: Exception) {}
-                    if (previewLabel != null) showKeyPreview(v, previewLabel)
+                    if (preview) showKeyPreview(v, v.text.toString())   // live case
                     if (longPress != null) {
                         lp = Runnable { handled = true; v.background = base; hideKeyPreview(); longPress() }
                         main.postDelayed(lp!!, 400)
@@ -898,7 +927,15 @@ class FlumeInputMethodService : InputMethodService() {
 
     // ── suggestions (STAGE 1: basic — from vocabulary + current word prefix). ML
     // prediction/autocorrect is a later stage. ─────────────────────────────────────
+    // updateSuggestions() is DEBOUNCED (~70ms) so the config read + 25k-word scan +
+    // IPC text queries never run synchronously inside a keystroke commit — that was
+    // janking the UI thread and dropping fast taps. Coalesced: only the last tap in
+    // a burst computes suggestions.
     private fun updateSuggestions() {
+        main.removeCallbacks(suggRunnable)
+        main.postDelayed(suggRunnable, 70)
+    }
+    private fun doUpdateSuggestions() {
         val strip = suggestionStrip ?: return
         strip.removeAllViews()
         if (activeOverlay != null) return
@@ -1353,9 +1390,19 @@ class FlumeInputMethodService : InputMethodService() {
     private fun releaseRecorder() { try { recorder?.release() } catch (e: Exception) {}; recorder = null }
 
     // ── transcription pipeline ─────────────────────────────────────────────────────
+    // Config is CACHED in memory and only re-read/parsed when the file's mtime
+    // changes — reading + JSON-parsing it on every keystroke was janking the UI
+    // thread mid-typing and dropping fast keystrokes.
+    private var cfgCache: JSONObject? = null
+    private var cfgMtime = -1L
     private fun readConfig(): JSONObject? = try {
         val cfg = File(filesDir, "flume_kbd_config.json")
-        if (!cfg.exists()) null else JSONObject(cfg.readText())
+        if (!cfg.exists()) { cfgCache = null; cfgMtime = -1L; null }
+        else {
+            val m = cfg.lastModified()
+            if (m != cfgMtime) { cfgMtime = m; cfgCache = try { JSONObject(cfg.readText()) } catch (e: Exception) { null } }
+            cfgCache
+        }
     } catch (e: Exception) { null }
 
     private fun transcribe(f: File): String? {

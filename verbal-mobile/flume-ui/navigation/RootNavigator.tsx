@@ -25,6 +25,7 @@ import {
   MeetingDetailScreen,
   MeetingPlaybackScreen,
   MeetingNotesScreen,
+  MeetingLiveScreen,
   CanvasScreen,
   SettingsScreen,
   MenuScreen,
@@ -34,6 +35,7 @@ import * as Clipboard from 'expo-clipboard';
 import { colors, type } from '../theme';
 import { useAuth } from '../hooks/useAuth';
 import { ConfirmHost } from '../components/ConfirmDialog';
+import { DevicesSyncHost } from '../components/DevicesSyncSheet';
 import { useHistory } from '../hooks/useHistory';
 import { useDevices } from '../hooks/useDevices';
 import { consumeLastRecording } from '../hooks/useRecorder';
@@ -91,6 +93,7 @@ function NotesNavigator() {
           <MeetingListScreen
             onBack={() => navigation.goBack()}
             onOpen={(meetingId) => navigation.navigate('MeetingDetail', { meetingId })}
+            onOpenLive={(meetingId) => navigation.navigate('MeetingLive', { meetingId })}
           />
         )}
       </NotesStack.Screen>
@@ -109,6 +112,15 @@ function NotesNavigator() {
           <MeetingPlaybackScreen
             meetingId={route.params.meetingId}
             onBack={() => navigation.goBack()}
+          />
+        )}
+      </NotesStack.Screen>
+      <NotesStack.Screen name="MeetingLive">
+        {({ route, navigation }) => (
+          <MeetingLiveScreen
+            meetingId={route.params.meetingId}
+            onBack={() => navigation.goBack()}
+            onFinished={(meetingId) => navigation.replace('MeetingDetail', { meetingId })}
           />
         )}
       </NotesStack.Screen>
@@ -143,17 +155,27 @@ function HistoryNavigator() {
 }
 
 const HistoryDetail: React.FC<{ itemId: string; onBack: () => void }> = ({ itemId, onBack }) => {
-  const { items, addTranscription, retryEntry, playEntry } = useHistory();
+  const { items, addTranscription, retryEntry, playEntry, remove } = useHistory();
   const { target } = useDevices();
   const item = items.find(i => i.id === itemId);
   if (!item) return null;
   const copy = () => { Clipboard.setStringAsync(item.text); };
+  const overflow = () => {
+    Alert.alert('Transcription', undefined, [
+      { text: 'Copy', onPress: copy },
+      {
+        text: 'Delete', style: 'destructive',
+        onPress: () => { remove(item.id); onBack(); },
+      },
+      { text: 'Cancel', style: 'cancel' },
+    ]);
+  };
   return (
     <HistoryDetailScreen
       item={item}
       onBack={onBack}
-      onEdit={copy}
       onCopy={copy}
+      onOverflow={overflow}
       onPlay={item.hasAudio ? () => { playEntry(item.id); } : undefined}
       onRetry={item.status === 'failed' ? async () => {
         const r = await retryEntry(item.id);
@@ -233,7 +255,6 @@ function MenuNavigator() {
                 navigation.goBack();
               }
             }}
-            onUseCode={() => {/* TODO: code-entry screen */}}
           />
         )}
       </MenuStack.Screen>
@@ -479,6 +500,7 @@ export const RootNavigator: React.FC = () => {
         )}
       </Root.Navigator>
       <ConfirmHost />
+      <DevicesSyncHost />
     </NavigationContainer>
   );
 };

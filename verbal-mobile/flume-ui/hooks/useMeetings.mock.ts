@@ -33,6 +33,8 @@ export type Meeting = {
   notesMd: string | null;             // full AI meeting notes (markdown; lazy on desktop)
   pinned: boolean;
   recognized: Record<string, { name: string; meetings: number }>;  // voiceprint hits
+  live: boolean;                  // currently being captured on another device
+  updatedAt: string;
   dateLabel: string;              // "Today · 9:24 AM" | "Yesterday" | "Mon · 2:08 PM"
 };
 
@@ -66,6 +68,8 @@ const MOCK: Meeting[] = [
     notesMd: null,
     pinned: false,
     recognized: {},
+    live: false,
+    updatedAt: new Date().toISOString(),
     dateLabel: 'Today · 9:24 AM',
   },
   {
@@ -87,6 +91,8 @@ const MOCK: Meeting[] = [
     notesMd: null,
     pinned: false,
     recognized: {},
+    live: false,
+    updatedAt: new Date().toISOString(),
     dateLabel: 'Yesterday',
   },
 ];

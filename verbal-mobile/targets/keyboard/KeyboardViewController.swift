@@ -105,6 +105,13 @@ class KeyboardViewController: UIInputViewController, AVAudioRecorderDelegate, UI
     private var layer: Layer = .letters
     private var shifted = false
     private var capsLock = false
+    // Fast-typing correctness (mirrors Android): letter keys update IN PLACE on
+    // shift/caps changes instead of rebuilding the whole keyboard, and suggestions
+    // run debounced off the commit path — a rebuild or heavy per-keystroke scan
+    // mid-typing was dropping the next rapid tap.
+    private var letterKeys: [(UIButton, String)] = []   // (button, base label)
+    private weak var shiftKeyBtn: UIButton?
+    private var suggestWork: DispatchWorkItem?
     private var activeOverlay: String?
     private var emojiCatIdx = 1
     private var emojiRecents: [String] = []
@@ -160,7 +167,8 @@ class KeyboardViewController: UIInputViewController, AVAudioRecorderDelegate, UI
             let top = learned.sorted { $0.value > $1.value }.prefix(500)
             learned = Dictionary(uniqueKeysWithValues: top.map { ($0.key, $0.value) })
         }
-        UserDefaults.standard.set(learned, forKey: "flume_kbd_learned")
+        let snapshot = learned                          // persist off the main thread (was blocking the space keystroke)
+        DispatchQueue.global(qos: .utility).async { UserDefaults.standard.set(snapshot, forKey: "flume_kbd_learned") }
     }
 
     // MARK: next-word prediction (bundled bigram table + on-device bigram learning)
@@ -193,7 +201,8 @@ class KeyboardViewController: UIInputViewController, AVAudioRecorderDelegate, UI
         inner[n, default: 0] += 1
         learnedBg[p] = inner
         if learnedBg.count > 400, let drop = learnedBg.keys.first(where: { $0 != p }) { learnedBg.removeValue(forKey: drop) }
-        UserDefaults.standard.set(learnedBg, forKey: "flume_kbd_bigrams")
+        let snapshot = learnedBg                         // persist off the main thread
+        DispatchQueue.global(qos: .utility).async { UserDefaults.standard.set(snapshot, forKey: "flume_kbd_bigrams") }
     }
     // Last two alphabetic words before the cursor (for learning prev→justFinished on a boundary).
     private func lastTwoWords() -> (String, String)? {
@@ -584,6 +593,7 @@ class KeyboardViewController: UIInputViewController, AVAudioRecorderDelegate, UI
 
     private func buildKeyboard() -> UIView {
         keyBaseColor.removeAll(); keyBgView.removeAll()   // keys are rebuilt here; drop the previous layer's button refs
+        letterKeys.removeAll(); shiftKeyBtn = nil          // rebuilt fresh below (in-place caps refresh)
         // spacing 0 on every key row (and the vertical stack) → gapless touch; the visual gap comes
         // from each key's inset background subview (installKeyBackground), so taps never fall in a dead zone.
         let kb = UIStackView(); kb.axis = .vertical; kb.spacing = 0
@@ -593,11 +603,13 @@ class KeyboardViewController: UIInputViewController, AVAudioRecorderDelegate, UI
         // row 3: shift/toggle + keys + backspace
         let r3 = UIStackView(); r3.axis = .horizontal; r3.spacing = 0; r3.distribution = .fill
         let leftLabel = layer == .letters ? (capsLock ? "⇪" : "⇧") : (layer == .numbers ? "=\\<" : "?123")
-        r3.addArrangedSubview(funcKey(leftLabel, width: 44) { [weak self] in
+        let shiftBtn = funcKey(leftLabel, width: 44) { [weak self] in
             guard let self = self else { return }
             if self.layer == .letters { self.onShift() }
             else { self.layer = self.layer == .numbers ? .symbols : .numbers; self.showKeyboard() }
-        })
+        }
+        if layer == .letters { shiftKeyBtn = shiftBtn }
+        r3.addArrangedSubview(shiftBtn)
         let mid = UIStackView(); mid.axis = .horizontal; mid.spacing = 0; mid.distribution = .fillEqually
         for k in rows[2] { mid.addArrangedSubview(charKey(k)) }
         r3.addArrangedSubview(mid)
@@ -638,19 +650,32 @@ class KeyboardViewController: UIInputViewController, AVAudioRecorderDelegate, UI
         let v = UIView(); v.widthAnchor.constraint(equalToConstant: w).isActive = true; return v
     }
 
+    /// The title to SHOW/COMMIT for a base key, given the live shift/caps state.
+    private func casedChar(_ base: String) -> String {
+        (layer == .letters && (shifted || capsLock) && base.count == 1 && (base.first?.isLetter ?? false))
+            ? base.uppercased() : base
+    }
+
+    /// Update letter titles + the shift glyph without tearing down the view tree.
+    private func refreshLetterCaps() {
+        for (b, base) in letterKeys { b.setTitle(casedChar(base), for: .normal) }
+        shiftKeyBtn?.setTitle(capsLock ? "⇪" : "⇧", for: .normal)
+    }
+
     private func charKey(_ label: String) -> UIButton {
-        let shown = (layer == .letters && (shifted || capsLock)) ? label.uppercased() : label
+        let isLetter = label.count == 1 && (label.first?.isLetter ?? false)
         let b = UIButton(type: .system)
-        b.setTitle(shown, for: .normal)
+        b.setTitle(casedChar(label), for: .normal)
         b.setTitleColor(pal.keyText, for: .normal)
         b.titleLabel?.font = uiFont(20)
         b.heightAnchor.constraint(equalToConstant: 46).isActive = true
         installKeyBackground(b, color: pal.keyBg)
-        // Fire on touch-DOWN so fast taps that slide slightly are never dropped (a UIButton
-        // cancels .touchUpInside once the finger drags past its slop).
-        b.addAction(UIAction { [weak self] _ in self?.onCharKey(shown) }, for: .touchDown)
+        // Fire on touch-DOWN so fast taps that slide slightly are never dropped. Case is
+        // read LIVE so a one-shot/auto-cap flip (applied in place) commits the right case.
+        b.addAction(UIAction { [weak self] _ in guard let self = self else { return }; self.onCharKey(self.casedChar(label)) }, for: .touchDown)
         b.addTarget(self, action: #selector(keyDownVisual(_:)), for: .touchDown)
         b.addTarget(self, action: #selector(keyUpVisual(_:)), for: [.touchUpInside, .touchDragExit, .touchCancel])
+        if isLetter { letterKeys.append((b, label)) }
         return b
     }
 
@@ -772,7 +797,9 @@ class KeyboardViewController: UIInputViewController, AVAudioRecorderDelegate, UI
     // MARK: key handling
     private func onCharKey(_ ch: String) {
         commit(ch)
-        if layer == .letters && shifted && !capsLock { shifted = false; showKeyboard() }
+        // one-shot shift clears after a letter — update titles IN PLACE (a full
+        // showKeyboard() rebuild here raced the next rapid tap and dropped it).
+        if layer == .letters && shifted && !capsLock { shifted = false; refreshLetterCaps() }
     }
     private func commit(_ s: String) {
         // Learn the just-finished word when a single non-letter boundary (space/punctuation)
@@ -814,7 +841,7 @@ class KeyboardViewController: UIInputViewController, AVAudioRecorderDelegate, UI
         }
         if want != shifted {
             shifted = want
-            showKeyboard()
+            refreshLetterCaps()   // in-place, no rebuild
         }
     }
 
@@ -822,7 +849,7 @@ class KeyboardViewController: UIInputViewController, AVAudioRecorderDelegate, UI
         if capsLock { capsLock = false; shifted = false }
         else if shifted { capsLock = true }
         else { shifted = true }
-        showKeyboard()
+        refreshLetterCaps()   // in-place caps/glyph swap (no full rebuild)
     }
     private func onBackspace() { textDocumentProxy.deleteBackward(); updateSuggestions() }
 
@@ -831,7 +858,16 @@ class KeyboardViewController: UIInputViewController, AVAudioRecorderDelegate, UI
     }
 
     // MARK: suggestions (word→emoji → personal learned → user vocabulary → bundled dictionary)
+    // DEBOUNCED (~70ms): the config read + 25k-word scan + document-context queries never
+    // run synchronously inside a keystroke commit (that janked the main thread and dropped
+    // fast taps). Coalesced — only the last tap in a burst computes suggestions.
     private func updateSuggestions() {
+        suggestWork?.cancel()
+        let w = DispatchWorkItem { [weak self] in self?.doUpdateSuggestions() }
+        suggestWork = w
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.07, execute: w)
+    }
+    private func doUpdateSuggestions() {
         guard suggestionStrip != nil else { return }
         if activeOverlay != nil { renderSuggestionCells([]); return }
         let raw = currentWordPrefix()
@@ -1163,11 +1199,19 @@ class KeyboardViewController: UIInputViewController, AVAudioRecorderDelegate, UI
     }
 
     // MARK: config (App Group — the app writes flume_kbd_config.json here)
+    // Config is CACHED and only re-read/parsed when the file's modified-date changes —
+    // reading + JSON-parsing it on every keystroke janked the main thread mid-typing.
+    private var cfgCache: [String: Any]?
+    private var cfgMtime: Date?
     private func readConfig() -> [String: Any]? {
         guard let dir = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: "group.com.verbal.app") else { return nil }
         let url = dir.appendingPathComponent("flume_kbd_config.json")
+        let m = (try? FileManager.default.attributesOfItem(atPath: url.path)[.modificationDate]) as? Date
+        if let m = m, m == cfgMtime { return cfgCache }
+        cfgMtime = m
         guard let data = try? Data(contentsOf: url),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { cfgCache = nil; return nil }
+        cfgCache = obj
         return obj
     }
 

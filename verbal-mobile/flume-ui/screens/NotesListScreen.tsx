@@ -244,7 +244,6 @@ export const NotesListScreen: React.FC<Props> = ({ onOpen, onCreate, onOpenMeeti
               <>
                 <View style={styles.sectionHead}>
                   <Text variant="subtitle" style={{ fontSize: 16 }}>Recent</Text>
-                  <Text variant="buttonSm" color={colors.textMuted}>See all</Text>
                 </View>
                 <View style={{ gap: 10 }}>
                   {rest.map(n => (

@@ -1,6 +1,7 @@
 import React from 'react';
 import { View, StyleSheet, ScrollView, Pressable } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useNavigation } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { Text, LogoMark } from '../components';
 import { colors } from '../theme';
@@ -24,6 +25,7 @@ const CARD_SAGE_INK = '#1e2418';
  */
 export const HomeScreen: React.FC<Props> = ({ onOpenMenu }) => {
   const insets = useSafeAreaInsets();
+  const nav = useNavigation<any>();
   const { user } = useAuth();
   const { devices, target, setTarget } = useDevices();
   const { items } = useHistory();
@@ -31,6 +33,10 @@ export const HomeScreen: React.FC<Props> = ({ onOpenMenu }) => {
 
   const onlineNames = devices.map(d => d.name).join(' · ') || 'No devices';
   const recent = items.slice(0, 4);
+
+  const openDevices = () => nav.navigate('Menu', { screen: 'Devices' });
+  const openNotes = () => nav.navigate('NotesTab');
+  const openHistory = () => nav.navigate('HistoryTab');
 
   return (
     <View style={[styles.root, { paddingTop: insets.top + 8 }]}>
@@ -40,12 +46,9 @@ export const HomeScreen: React.FC<Props> = ({ onOpenMenu }) => {
           <LogoMark size={34} />
           <Text variant="subtitle" style={{ fontSize: 15 }}>Hi, {user?.firstName ?? 'there'}</Text>
         </View>
-        <View style={{ flexDirection: 'row', gap: 8 }}>
-          <View style={styles.iconCircle}><Ionicons name="notifications-outline" size={16} color={colors.textSecondary} /></View>
-          <Pressable onPress={onOpenMenu} style={styles.iconCircle} accessibilityRole="button" accessibilityLabel="Open menu">
-            <Ionicons name="menu" size={18} color={colors.textSecondary} />
-          </Pressable>
-        </View>
+        <Pressable onPress={onOpenMenu} style={styles.iconCircle} accessibilityRole="button" accessibilityLabel="Open menu">
+          <Ionicons name="menu" size={18} color={colors.textSecondary} />
+        </Pressable>
       </View>
 
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: insets.bottom + 24 }}>
@@ -59,14 +62,16 @@ export const HomeScreen: React.FC<Props> = ({ onOpenMenu }) => {
 
         {/* Feature cards */}
         <View style={styles.featureRow}>
-          <FeatureCard bg={CARD_CREAM} ink={CARD_CREAM_INK} icon="mic-outline" big={`${devices.length} online`} title="Devices ready" sub={onlineNames} />
-          <FeatureCard bg={CARD_SAGE} ink={CARD_SAGE_INK} icon="document-text-outline" big={`${notes.length} notes`} title="Your notebook" sub={notes.length ? 'Tap to open' : 'No notes yet'} />
+          <FeatureCard bg={CARD_CREAM} ink={CARD_CREAM_INK} icon="mic-outline" big={`${devices.length} online`} title="Devices ready" sub={onlineNames} onPress={openDevices} />
+          <FeatureCard bg={CARD_SAGE} ink={CARD_SAGE_INK} icon="document-text-outline" big={`${notes.length} notes`} title="Your notebook" sub={notes.length ? 'Tap to open' : 'No notes yet'} onPress={openNotes} />
         </View>
 
         {/* Recent */}
         <View style={styles.recentHead}>
           <Text variant="subtitle" style={{ fontSize: 16 }}>Recent</Text>
-          <Text variant="buttonSm" color={colors.textMuted}>See all</Text>
+          <Pressable onPress={openHistory} hitSlop={8}>
+            <Text variant="buttonSm" color={colors.textMuted}>See all</Text>
+          </Pressable>
         </View>
 
         {recent.length === 0 ? (
@@ -101,9 +106,9 @@ const Pill: React.FC<{ label: string; active: boolean; onPress: () => void }> = 
 );
 
 const FeatureCard: React.FC<{
-  bg: string; ink: string; icon: keyof typeof Ionicons.glyphMap; big: string; title: string; sub: string;
-}> = ({ bg, ink, icon, big, title, sub }) => (
-  <View style={[styles.feature, { backgroundColor: bg }]}>
+  bg: string; ink: string; icon: keyof typeof Ionicons.glyphMap; big: string; title: string; sub: string; onPress?: () => void;
+}> = ({ bg, ink, icon, big, title, sub, onPress }) => (
+  <Pressable style={({ pressed }) => [styles.feature, { backgroundColor: bg }, pressed && { opacity: 0.85 }]} onPress={onPress} accessibilityRole="button" accessibilityLabel={title}>
     <View style={styles.featureTop}>
       <View style={[styles.featureIcon, { backgroundColor: ink }]}>
         <Ionicons name={icon} size={15} color={bg} />
@@ -113,7 +118,7 @@ const FeatureCard: React.FC<{
     <Text style={{ fontSize: 22, fontFamily: 'Geist_600SemiBold', color: ink, letterSpacing: -0.4, marginBottom: 3 }}>{big}</Text>
     <Text style={{ fontSize: 13, fontFamily: 'Geist_600SemiBold', color: ink, marginBottom: 2 }}>{title}</Text>
     <Text style={{ fontSize: 11, fontFamily: 'Geist_400Regular', color: ink, opacity: 0.6 }} numberOfLines={1}>{sub}</Text>
-  </View>
+  </Pressable>
 );
 
 const styles = StyleSheet.create({

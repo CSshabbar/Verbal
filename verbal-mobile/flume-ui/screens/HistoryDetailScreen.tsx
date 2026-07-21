@@ -10,9 +10,9 @@ import { DeviceTag } from './HistoryListScreen';
 type Props = {
   item: HistoryItem;
   onBack: () => void;
-  onEdit: () => void;
   onCopy: () => void;
   onResend: () => void;
+  onOverflow: () => void;
   onPlay?: () => void;
   onRetry?: () => void;
 };
@@ -21,7 +21,7 @@ type Props = {
  * Screen 3g — History detail. Audio playback bar + transcript + actions.
  */
 export const HistoryDetailScreen: React.FC<Props> = ({
-  item, onBack, onEdit, onCopy, onResend, onPlay, onRetry,
+  item, onBack, onCopy, onResend, onOverflow, onPlay, onRetry,
 }) => {
   const insets = useSafeAreaInsets();
   const failed = item.status === 'failed';
@@ -33,7 +33,7 @@ export const HistoryDetailScreen: React.FC<Props> = ({
           <Ionicons name="chevron-back" size={22} color={colors.textSecondary} />
           <Text variant="buttonSm">History</Text>
         </Pressable>
-        <Pressable style={styles.overflow}>
+        <Pressable style={styles.overflow} onPress={onOverflow} accessibilityRole="button" accessibilityLabel="More options">
           <Ionicons name="ellipsis-horizontal" size={18} color={colors.textPrimary} />
         </Pressable>
       </View>
@@ -67,7 +67,6 @@ export const HistoryDetailScreen: React.FC<Props> = ({
           <Button label="Retry transcription" onPress={() => onRetry?.()} style={{ flex: 1 }} />
         ) : (
           <>
-            <Button label="Edit" variant="ghost" onPress={onEdit} style={{ flex: 1 }} />
             <Button label="Copy" variant="ghost" onPress={onCopy} style={{ flex: 1 }} />
             <Button label="Resend" onPress={onResend} style={{ flex: 1.3 }} />
           </>

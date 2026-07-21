@@ -5,6 +5,9 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { useFonts } from 'expo-font';
 import { syncKeyboardConfig } from './lib/keyboardBridge';
 import {
+  configureNotificationHandler, registerForMeetingPush,
+} from './lib/notifications';
+import {
   Geist_400Regular,
   Geist_500Medium,
   Geist_600SemiBold,
@@ -66,6 +69,13 @@ export default function App() {
 
   // Write the native keyboard's config snapshot (Groq key + dictionary) on launch.
   React.useEffect(() => { syncKeyboardConfig(); }, []);
+
+  // Register for meeting-start push notifications. Fully guarded (no-op if the
+  // native module isn't in this build) — never blocks launch.
+  React.useEffect(() => {
+    configureNotificationHandler();
+    registerForMeetingPush().catch(() => {});
+  }, []);
 
   if (!fontsLoaded) return null;
 

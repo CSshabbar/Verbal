@@ -14,7 +14,8 @@ import * as QueryParams from 'expo-auth-session/build/QueryParams';
 import { supabase } from '../../lib/supabase';
 import { setUserId, setSyncEnabled, getDeviceName, getDeviceId, getStoredUserId, clearAccountData } from '../../lib/storage';
 import * as historyStore from './historyStore';
-import { confirm, notify } from '../components/ConfirmDialog';
+import { notify } from '../components/ConfirmDialog';
+import { showDevicesSheet } from '../components/DevicesSyncSheet';
 
 WebBrowser.maybeCompleteAuthSession();
 
@@ -94,8 +95,8 @@ async function afterSignIn(session: any) {
     try { await historyStore.reset(); } catch { /* ignore */ }
   }
   await setUserId(uid);
-  await setSyncEnabled(true);
-  // Register this device + detect other devices on the account.
+  // Register this device, reconcile THIS device's sync flag from its cloud row,
+  // then show the per-device sync sheet when there are other devices to manage.
   try {
     const deviceName = await getDeviceName();
     const deviceId = await getDeviceId();
@@ -103,22 +104,22 @@ async function afterSignIn(session: any) {
       { user_id: uid, device_id: deviceId, device_name: deviceName,
         device_type: 'ios', last_seen: new Date().toISOString() },
       { onConflict: 'user_id,device_id' });
+    // This device's own sync_enabled (default true) drives lib/useSync.
+    const { data: mine } = await supabase
+      .from('devices').select('sync_enabled')
+      .eq('user_id', uid).eq('device_id', deviceId).maybeSingle();
+    await setSyncEnabled((mine as any)?.sync_enabled ?? true);
+    // Other devices on the account → open the sync sheet so the user can pick
+    // which devices sync (per-device, cloud-backed).
     const { data } = await supabase
-      .from('devices').select('device_name,device_id')
+      .from('devices').select('device_id')
       .eq('user_id', uid).neq('device_id', deviceId);
-    const others = data || [];
-    if (others.length) {
-      const names = others.slice(0, 3).map((d: any) => d.device_name || 'a device').join(', ');
-      const ok = await confirm({
-        title: 'New device detected',
-        message: `Your account is already signed in on: ${names}.\n\nSync your dictation, notes and canvas across your devices?`,
-        confirmLabel: 'Sync',
-        cancelLabel: 'Not now',
-      });
-      await setSyncEnabled(ok);
+    if ((data || []).length) {
+      await showDevicesSheet();
     }
   } catch (e) {
     console.warn('device detect failed:', e);
+    await setSyncEnabled(true);
   }
   // Now that the account id + sync flag are set, (re)pull history from the cloud and
   // open the realtime channel. RootNavigator's useHistory already ran load() once at

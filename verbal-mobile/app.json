@@ -22,7 +22,9 @@
         "NSPhotoLibraryUsageDescription": "Verbal needs photo access so you can send images to your computer."
       },
       "entitlements": {
-        "com.apple.security.application-groups": ["group.com.verbal.app"]
+        "com.apple.security.application-groups": [
+          "group.com.verbal.app"
+        ]
       }
     },
     "android": {
@@ -36,17 +38,12 @@
         "android.permission.FOREGROUND_SERVICE",
         "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK",
         "android.permission.CAMERA",
-        "android.permission.READ_MEDIA_IMAGES",
-        "android.permission.RECORD_AUDIO",
-        "android.permission.MODIFY_AUDIO_SETTINGS",
-        "android.permission.FOREGROUND_SERVICE",
-        "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK",
-        "android.permission.CAMERA",
         "android.permission.READ_MEDIA_IMAGES"
       ],
       "package": "com.verbal.app"
     },
     "plugins": [
+      "expo-notifications",
       [
         "expo-audio",
         {

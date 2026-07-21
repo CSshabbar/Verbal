@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { View, StyleSheet, FlatList, Pressable } from 'react-native';
+import { View, StyleSheet, FlatList, Pressable, TextInput } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { Text, Chip, Card } from '../components';
@@ -32,12 +32,17 @@ export const HistoryListScreen: React.FC<Props> = ({ onOpen }) => {
   const insets = useSafeAreaInsets();
   const { items } = useHistory();
   const [filter, setFilter] = useState<'all' | string>('all');
+  const [searching, setSearching] = useState(false);
+  const [query, setQuery] = useState('');
 
   const todayCount = useMemo(() => items.filter(i => i.dayLabel === 'Today').length, [items]);
-  const filtered = useMemo(
-    () => (filter === 'all' ? items : items.filter(i => i.deviceTag === filter)),
-    [items, filter],
-  );
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return items.filter(i =>
+      (filter === 'all' || i.deviceTag === filter) &&
+      (!q || i.text.toLowerCase().includes(q)),
+    );
+  }, [items, filter, query]);
   const grouped = useMemo(() => groupByDay(filtered), [filtered]);
 
   return (
@@ -49,10 +54,30 @@ export const HistoryListScreen: React.FC<Props> = ({ onOpen }) => {
           </Text>
           <Text variant="titleSm">History</Text>
         </View>
-        <Pressable style={styles.iconBtn}>
-          <Ionicons name="search-outline" size={17} color={colors.textSecondary} />
+        <Pressable
+          style={styles.iconBtn}
+          onPress={() => { setSearching(s => !s); if (searching) setQuery(''); }}
+          accessibilityRole="button"
+          accessibilityLabel={searching ? 'Close search' : 'Search history'}
+        >
+          <Ionicons name={searching ? 'close' : 'search-outline'} size={17} color={colors.textSecondary} />
         </Pressable>
       </View>
+
+      {searching && (
+        <View style={styles.searchBox}>
+          <Ionicons name="search-outline" size={16} color={colors.textSubtle} />
+          <TextInput
+            style={styles.searchInput}
+            value={query}
+            onChangeText={setQuery}
+            placeholder="Search transcriptions…"
+            placeholderTextColor={colors.textDisabled}
+            autoFocus
+            returnKeyType="search"
+          />
+        </View>
+      )}
 
       <View style={styles.filters}>
         <Chip label="All" active={filter === 'all'} onPress={() => setFilter('all')} />
@@ -122,6 +147,25 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface2,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  searchBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: colors.surface1,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.borderSubtle,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    marginTop: 12,
+  },
+  searchInput: {
+    flex: 1,
+    color: colors.textPrimary,
+    fontFamily: 'Geist_400Regular',
+    fontSize: 14,
+    padding: 0,
   },
   filters: {
     flexDirection: 'row',
