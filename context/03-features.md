@@ -267,6 +267,42 @@ Each feature: **what it does · desktop impl · mobile impl · backend · status
   `https://ovpcthjingugwvpxlsna.supabase.co/auth/v1/callback`; Supabase Redirect URLs include the loopback
   and the `verbal://` deep link). Details in `04-data-model.md`.
 
+## Account deletion (MER-32, 2026-07)
+
+In-app "Delete account" — App Store Guideline 5.1.1(v) requires apps with account creation to let users
+initiate deletion in-app. **Server-side:** `supabase/functions/delete-account/index.ts`, `verify_jwt` on,
+identity derived from the caller's JWT locally (never a body-supplied id — the function can only ever
+delete the signed-in caller's own account). Order: purge DB rows across every `user_id`-keyed table
+(`transcriptions`, `notes`, `dictionary`, `canvas`, `devices`, `meetings`, `push_tokens`, `groq_usage`) +
+storage objects (`recordings/<user_id>/`, `meeting-audio/<user_id>/`, and a list+filter over `canvas-images`
+since that bucket's namespace is flat, `canvas/<user_id>_<ts>.<ext>`, not folder-per-user) **first**, then
+the Supabase auth user itself **last** — a partial failure leaves a recoverable signed-in state instead of
+an orphaned auth user. Idempotent (retrying after a partial failure is safe: every delete is either
+by-`user_id` or by-listed-path, and a repeat admin-delete-user call 404s harmlessly, treated as success).
+Sign-in-with-Apple token revocation is an intentional deferred TODO (`revokeAppleToken()` stub — needs the
+Apple Developer account, not available yet); Google-only deletion (the only live sign-in method) works
+fully without it.
+
+**Clients:** both call the same edge function with the real session JWT (not the anon key — the function
+401s without one) via `app.auth.delete_account_remote(cfg)` (desktop, `whisperflow/app/auth.py`) /
+`useAuth().deleteAccount()` (mobile, `flume-ui/hooks/useAuth.ts`), then wipe every local trace on success:
+desktop `app.auth.wipe_local_account_data()` (clears `config['auth']`/history/pinned/notes/meetings/
+dictionary, deletes the local `recordings/`+`meetings/` directories — a strict superset of `sign_out()`,
+which deliberately preserves local caches for a same-user re-sign-in); mobile reuses `clearAccountData()` +
+`historyStore.reset()` (the same sign-out teardown, Hard Rule #13). Two-step destructive confirm on both
+platforms: desktop uses two sequential JS `confirm()` dialogs in the Settings "Account" card
+(`flume_dashboard_html.py`); mobile uses two sequential native `Alert.alert` calls in `SettingsScreen.tsx`
+(Hard Rule #14 — this screen is a native-stack modal, so the custom `ConfirmDialog` wouldn't reliably
+receive touches here, same reasoning as the existing sign-out confirm).
+
+Live-verified end-to-end (2026-07) with a disposable test auth user: seeded one row in every table + one
+object in every bucket, called the function with a real JWT, confirmed all rows/objects/the auth user were
+gone, confirmed a repeat call with the same token still returned success (idempotency), and confirmed a
+request bearing only the anon key (no user JWT) was rejected with 401. The desktop Python client wrapper
+(`delete_account_remote`) was also exercised directly against the live function, not just the edge function
+itself via curl. `wipe_local_account_data()` was verified by code review only, not live execution — it
+deletes real files under `~/.verbal/` and this development machine has a real, in-use installation.
+
 ## Meetings — capture, live transcript, hybrid summary
 
 
