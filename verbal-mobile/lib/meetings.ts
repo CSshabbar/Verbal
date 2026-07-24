@@ -43,6 +43,7 @@ export function toMeeting(row: any): Meeting {
     startedAt: row.started_at || new Date().toISOString(),
     durationSeconds: Number(row.duration_seconds) || 0,
     audioUrl: row.audio_url || null,
+    audioExpired: !!row.audio_expired,
     transcript: Array.isArray(row.transcript) ? row.transcript : [],
     speakers: row.speakers && typeof row.speakers === 'object' ? row.speakers : {},
     scratchpad: row.scratchpad || '',

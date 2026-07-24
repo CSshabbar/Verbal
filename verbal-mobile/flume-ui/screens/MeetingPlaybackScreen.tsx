@@ -153,6 +153,13 @@ export const MeetingPlaybackScreen: React.FC<Props> = ({ meetingId, onBack }) =>
           </View>
         </View>
       )}
+      {/* MER-31: audio was reaped by the retention policy — transcript above is
+          still intact, only playback is gone. Never an error state. */}
+      {!hasAudio && meeting.audioExpired && (
+        <View style={[styles.playerBar, { bottom: insets.bottom + 20, justifyContent: 'center' }]}>
+          <Text variant="metaSm" color={colors.textMuted}>Audio expired — transcript kept</Text>
+        </View>
+      )}
     </View>
   );
 };

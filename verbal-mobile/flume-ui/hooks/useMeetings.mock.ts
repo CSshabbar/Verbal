@@ -20,6 +20,7 @@ export type Meeting = {
   startedAt: string;              // ISO
   durationSeconds: number;
   audioUrl: string | null;
+  audioExpired: boolean;           // MER-31: reaped by retention policy — notes/transcript survive, audio doesn't
   transcript: MeetingUtterance[];
   speakers: Record<string, string>;   // speaker id → display name ('self' = You)
   scratchpad: string;
@@ -45,6 +46,7 @@ const MOCK: Meeting[] = [
     startedAt: new Date(Date.now() - 3 * 3600_000).toISOString(),
     durationSeconds: 42 * 60 + 18,
     audioUrl: null,
+    audioExpired: false,
     transcript: [
       { speaker: 's1', t0: 4, t1: 12, text: 'Walking through the two-panel view first.' },
       { speaker: 'self', t0: 14, t1: 22, text: 'The scratchpad should feel like my own notes, not a transcript.' },
@@ -78,6 +80,7 @@ const MOCK: Meeting[] = [
     startedAt: new Date(Date.now() - 26 * 3600_000).toISOString(),
     durationSeconds: 31 * 60,
     audioUrl: null,
+    audioExpired: false,
     transcript: [],
     speakers: { self: 'You', s1: 'Speaker 1' },
     scratchpad: '',

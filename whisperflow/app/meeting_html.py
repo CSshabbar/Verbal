@@ -1191,7 +1191,11 @@ function renderSummary(){
         '<span class="zap"><svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L4 14h6l-1 8 9-12h-6z"/></svg></span>'+
         'Voice recognized from '+(r.meetings||1)+' previous meeting'+((r.meetings||1)>1?'s':'')+
         ' — auto-named <b>'+esc(r.name||'')+'</b><span class="k">FINGERPRINT</span></span>';
-    }).join('');
+    }).join('')+
+    // MER-31: audio was reaped by the retention policy — transcript/summary/
+    // notes are all still intact, only playback is gone. Never an error state.
+    (ROW.audio_expired ? '<span style="flex-basis:100%;font:400 11.5px \'Geist\';color:var(--mut)">'+
+      'Audio expired — notes and transcript kept</span>' : '');
   const skel='<div class="skel" style="width:88%"></div><div class="skel" style="width:70%"></div>';
   const proc = ROW.status==='processing';
   // Summary card
@@ -1538,6 +1542,10 @@ function txEdit(i){
   }
 }
 function playAt(secs, idx){
+  // MER-31: expired audio is a clean no-op, not an error — the banner in
+  // renderSummary() already told the user why; clicking a transcript line
+  // just does nothing rather than surfacing a fetch failure.
+  if(ROW && ROW.audio_expired) return;
   const a=document.getElementById('sumAudio');
   function go(){ try{ a.currentTime=Math.max(0,secs); a.play(); markPlaying(idx); }catch(e){} }
   if(AUDIO_SRC){ go(); return; }

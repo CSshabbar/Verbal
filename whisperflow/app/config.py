@@ -50,7 +50,7 @@ DEFAULT_CONFIG = {
     # the Supabase `meetings` row + local per-meeting audio files.
     "meetings_enabled": True,
     "meetings_keep_audio": True,          # keep the meeting WAV on disk / in cloud
-    "meetings_keep_audio_days": 30,       # 7 | 30 | 90 | 0 (= never delete)
+    "meetings_keep_audio_days": 0,        # 7 | 30 | 90 | 0 (= never delete, default — MER-31 reaper is opt-in)
     "meetings_max_minutes": 120,          # 30 | 60 | 120 | 180 | 360 | 0 (= no limit)
     "meetings_hud_enabled": True,         # floating HUD when the window loses focus
     "meetings_speaker_labels": True,      # source-based Speaker 1..N labeling

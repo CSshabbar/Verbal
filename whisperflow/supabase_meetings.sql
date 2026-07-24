@@ -117,3 +117,39 @@ create table if not exists public.push_tokens (
   user_id text not null, token text not null, platform text, device_name text,
   updated_at timestamptz not null default now(), primary key (user_id, token));
 alter table public.push_tokens enable row level security;
+
+-- Meeting-audio retention reaper (MER-31, 2026-07). OFF by default — a meeting
+-- only gets `retention_days > 0` if the user explicitly changes
+-- `meetings_keep_audio_days` from its default of 0 (never expire); desktop
+-- stamps this per-meeting at capture time (app/meetings.py::row()), not a
+-- retroactive global setting, so changing it only affects future recordings.
+-- `audio_expired` is the single, authoritative "no audio left" signal clients
+-- check — never inferred from a null `audio_url` (both fields go together).
+alter table public.meetings add column if not exists audio_expired boolean not null default false;
+alter table public.meetings add column if not exists retention_days int;  -- null/0 = never expire
+
+create extension if not exists pg_cron;
+create extension if not exists pg_net;
+
+-- Calls the `reap-meeting-audio` Edge Function daily at 03:00 UTC (a low-traffic
+-- window). The function does the actual work with the service-role key
+-- internally (Deno.env, same pattern as every other Edge Function in this
+-- repo) — the anon key here only needs to satisfy the gateway's `verify_jwt`
+-- check, which any valid project JWT does; it's not itself privileged, so no
+-- secret-in-SQL handling (e.g. Vault) is needed for this call.
+select cron.schedule(
+  'reap-meeting-audio-daily',
+  '0 3 * * *',
+  $$
+  select net.http_post(
+    url := 'https://ovpcthjingugwvpxlsna.supabase.co/functions/v1/reap-meeting-audio',
+    headers := jsonb_build_object(
+      'Content-Type', 'application/json',
+      'Authorization', 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im92cGN0aGppbmd1Z3d2cHhsc25hIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzgyNjQzMDYsImV4cCI6MjA5Mzg0MDMwNn0.XwTBo8L-aEUmmSl6dJXNqA2QXzGFOpIVB5W9eDI8j28',
+      'apikey', 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im92cGN0aGppbmd1Z3d2cHhsc25hIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzgyNjQzMDYsImV4cCI6MjA5Mzg0MDMwNn0.XwTBo8L-aEUmmSl6dJXNqA2QXzGFOpIVB5W9eDI8j28'
+    ),
+    body := '{}'::jsonb,
+    timeout_milliseconds := 30000
+  ) as request_id;
+  $$
+);

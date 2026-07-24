@@ -929,6 +929,11 @@ class DashboardApi:
                 signed = recordings.sign_url("meeting-audio", object_path, expires_in=3600)
                 if signed:
                     return _ok(src=signed)
+            if (got.get("meeting") or {}).get("audio_expired"):
+                # MER-31 reaper already removed this — a distinct message from
+                # "never had audio" so the UI can show "Audio expired — notes
+                # kept" instead of a generic playback error.
+                return {"ok": False, "expired": True, "error": "Audio expired — notes kept."}
             return {"ok": False, "error": "No audio for this meeting."}
         except Exception as e:
             return {"ok": False, "error": str(e)}

@@ -1155,6 +1155,10 @@ class MeetingSession:
             "status": {"ready": "ready", "failed": "failed"}.get(self.state, "processing"),
             "live": self.state in ("preparing", "recording", "paused"),
             "updated_at": _now_iso(),
+            # MER-31: stamped from the user's current setting at capture time —
+            # changing the setting later only affects meetings captured after
+            # the change, not retroactively. 0/None = never expire (default).
+            "retention_days": cfg.get("meetings_keep_audio_days") or 0,
         }
 
     def _persist_local(self):
