@@ -54,7 +54,10 @@
    (role `authenticated`). A policy scoped `TO anon` silently filters out the authenticated client's rows —
    this is what broke dictionary/snippet sync to signed-in phones (fixed via
    `whisperflow/supabase_dictionary_rls_fix.sql`). Same fix applied to `notes` (Linear MER-26, 2026-07 —
-   RLS had been fully DISABLED there, not just `TO anon`; see `whisperflow/supabase_notes_rls.sql`).
+   RLS had been fully DISABLED there, not just `TO anon`; see `whisperflow/supabase_notes_rls.sql`) and to
+   the **`recordings` Storage bucket's policies** (Linear MER-27, 2026-07 — found mid-fix while making the
+   bucket private: its read/insert/update policies were `TO anon` only, which would have silently broken
+   signed-in mobile clients' `createSignedUrl` calls; see `whisperflow/supabase_recordings_meeting_audio_private.sql`).
    `pairings` still has the latent `TO anon` pattern.
 
 11. **Preserve unknown fields verbatim on write-back (forward-compat sync).** A client must never replace a

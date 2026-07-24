@@ -143,13 +143,19 @@ Each feature: **what it does · desktop impl · mobile impl · backend · status
 ## Recordings — save / playback / retry
 
 - **Desktop:** `recordings.py` — every capture saved as **16 kHz mono WAV** in `~/.verbal/recordings/{id}.wav`
-  (LRU 60). `upload_cloud` → `recordings` bucket (`{user_id}/{id}.wav`), URL stored on the history entry.
-  `DashboardApi.play_recording`/`get_audio` (base64 data-URI)/`retry_transcription`. Failed transcriptions
-  saved `status:'failed'` for retry from History.
+  (LRU 60). `upload_cloud` → `recordings` bucket (`{user_id}/{id}.wav`), the bare **object path** (not a
+  URL — bucket is private, MER-27) stored on the history entry. `DashboardApi._ensure_local_audio` signs a
+  short-lived URL (`recordings.sign_url`) before downloading — the one choke point for
+  `play_recording`/`get_audio` (base64 data-URI)/`retry_transcription`. Failed transcriptions saved
+  `status:'failed'` for retry from History.
 - **Mobile:** `lib/recordings.ts` mirror — `persist` (copy temp → `documentDirectory/recordings/`),
-  `uploadCloud` (Storage binary upload), `ensureLocal` (download if needed); `historyStore.retryEntry`
-  re-transcribes + `formatText`. Playback via `expo-audio`, prefers local then cloud.
-- **Backend:** `recordings` bucket (public), path `<user_id>/<id>.<ext>`.
+  `uploadCloud` (Storage binary upload, returns a bare object path), `ensureLocal` (signs via
+  `signUrl`/`resolvePlaybackUrl` then downloads if needed); `historyStore.retryEntry`/`playEntry` both
+  delegate to `ensureLocal`. Playback via `expo-audio`, prefers local then cloud.
+- **Backend:** `recordings` bucket, **private** (MER-27, 2026-07 — was public), path `<user_id>/<id>.<ext>`.
+  Signed URLs generated on demand (~180s TTL); a format-tolerant path extractor
+  (`extract_object_path`/`extractObjectPath`) handles both new bare-path writes and legacy public-URL rows,
+  so no backfill migration was needed.
 
 ## Notes
 
@@ -327,7 +333,10 @@ Each feature: **what it does · desktop impl · mobile impl · backend · status
   events → "click does nothing"). Delete: ✕ on each row, plus a two-step confirm trash button in the
   summary header; deletes emit `meetingsUpdated` so the dashboard list refreshes everywhere.
 - **Backend:** `meetings` table + `meeting-audio` bucket (`supabase_meetings.sql`, realtime on, RLS
-  `TO public`). See `04-data-model.md`.
+  `TO public`). Bucket is **private** (MER-27, 2026-07 — was public); `meetings.audio_url` stores a bare
+  object path, and both `shared_dashboard.py::get_meeting_audio` (desktop) and
+  `MeetingPlaybackScreen.tsx` (mobile) generate a signed URL (~3600s TTL — long enough for a full
+  playback+scrub session) before playing. See `04-data-model.md`.
 - **Status/limitations:** system audio requires macOS 13+ and the Screen & System Audio Recording
   permission (31h checklist + 3 s capture self-test). Speaker identity is source-based v1 (no diarization);
   meeting text NEVER goes to analytics; `meetings_max_minutes` enforcement and audio auto-delete are

@@ -149,19 +149,31 @@ undocumented). Upsert `on_conflict=user_id,device_id`. "Online" = `last_seen` wi
 `user_id` (conflict key), `content` text, `image_url` text, `device_name`, `updated_at`. In the realtime
 publication.
 
-## Storage buckets (all public)
+## Storage buckets
 
-- **`recordings`** (`supabase_recordings.sql`) — audio. Object path **`<user_id>/<id>.<ext>`**
-  (desktop 16 kHz WAV; mobile m4a/wav/caf). Public URL
-  `…/storage/v1/object/public/recordings/<user_id>/<id>.<ext>`. Anon select/insert/update policies scoped
-  to `bucket_id='recordings'`.
-- **`canvas-images`** — canvas photo attachments, path `canvas/<userId>_<ts>.<ext>`. Policy in
+- **`recordings`** (`supabase_recordings.sql` + `supabase_recordings_meeting_audio_private.sql`,
+  MER-27, 2026-07) — audio. Object path **`<user_id>/<id>.<ext>`** (desktop 16 kHz WAV; mobile
+  m4a/wav/caf). **Private** (was public — highest-sensitivity data the product holds, was downloadable by
+  anyone with/able to construct a URL, zero auth). Consumers generate a short-lived signed URL on demand
+  at playback/download time instead (`recordings.py::sign_url` / `lib/recordings.ts::signUrl`, ~180s TTL) —
+  rows still store a value under `audio_url`, but it's now a **bare object path**, not a fetchable URL;
+  a format-tolerant extractor (`extract_object_path`/`extractObjectPath`) accepts either a bare path (new
+  writes) or a legacy `.../object/public/...` URL (rows written before this fix) so no backfill migration
+  was needed. Policies widened from `TO anon` to **`TO public`** in the same fix (the exact
+  `dictionary`/`notes` signed-in-mobile trap — see Hard Rule #10) — scoped to `bucket_id='recordings'`.
+- **`canvas-images`** — canvas photo attachments, path `canvas/<userId>_<ts>.<ext>`. Still **public**
+  (deliberately, per MER-27's scope — lower-sensitivity, user-chosen shares). Policy in
   `supabase_canvas_images_policy.sql` (idempotent: ensures the bucket exists + public, and read/insert/update
   `TO public` scoped to `bucket_id='canvas-images'`). A missing/blocked policy → mobile's anon upload fails
   silently → the shared photo never reaches the other device (now surfaced as an "Image upload failed" toast).
-- **`releases`** — auto-update binaries, public SELECT.
-- **`meeting-audio`** (`supabase_meetings.sql`) — meeting recordings, path **`<user_id>/<meeting_id>.wav`**
-  (16 kHz mono, mic+system mixed). Public read/insert/update/delete policies scoped to the bucket.
+- **`releases`** — auto-update binaries, public SELECT. Stays public deliberately (app-update downloads).
+- **`meeting-audio`** (`supabase_meetings.sql` + `supabase_recordings_meeting_audio_private.sql`,
+  MER-27, 2026-07) — meeting recordings, path **`<user_id>/<meeting_id>.wav`** (16 kHz mono, mic+system
+  mixed). **Private** (was public), same signed-URL mechanism as `recordings` but with a much longer TTL
+  (~3600s, since a meeting can run long and the URL must stay valid for the whole playback+scrub session,
+  not just the first byte) — see `meetings.py::_upload_audio` (stores a bare path) and
+  `shared_dashboard.py::get_meeting_audio` / `MeetingPlaybackScreen.tsx` (sign at read time). Its
+  read/insert/update/delete policies were already `TO public` — no role-scoping fix needed here.
 
 ## Exact data shapes in code
 
@@ -261,7 +273,9 @@ Pragmatic, matches code + `GOOGLE_AUTH_SETUP.md`:
   `authenticated`). This bit `dictionary` — fixed in `supabase_dictionary_rls_fix.sql`; `pairings` still
   has the latent `TO anon` pattern.
 - Proper JWT + `auth.uid()` RLS is a **documented deferred** hardening (the setup doc has the migration).
-- Storage buckets are public; `app_versions` inserts are service_role-gated.
+- `recordings` and `meeting-audio` are **private** (MER-27, 2026-07) — signed URLs only, see Storage
+  buckets above. `canvas-images` and `releases` remain public (lower-sensitivity / app binaries).
+  `app_versions` inserts are service_role-gated.
 
 
 ### meetings — widget-kit-v2 columns (Jul 2026, applied live + in supabase_meetings.sql)
