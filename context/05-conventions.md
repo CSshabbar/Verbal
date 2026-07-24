@@ -537,9 +537,23 @@ Single source: desktop `app/theme.py` + `app/fonts_css.py`; mobile `flume-ui/the
 - `whisperflow/WINDOWS_PARITY_PLAN.md` + `whisperflow/windows_specs/W3–W9*.md` are the **active** handoff
   specs for the remaining Windows-native workstreams (overlay/popover/injection/meetings/auto-learn/
   file-tagging/visual-QA) — not legacy; execute on a Windows dev session.
-- Three near-identical macOS specs (`verbal.spec`/`pico.spec`/`whisperflow.spec`) with **drifting version
-  strings** (plist 1.3.0 vs 1.0.0) and slightly different `hiddenimports`; `config.APP_VERSION` is 1.0.10 —
-  none match. `pico.spec` bundles `groq`+`scipy`; `verbal`/`whisperflow` bundle `pyautogui`.
+- ~~Three near-identical macOS specs (`verbal.spec`/`pico.spec`/`whisperflow.spec`) with drifting version
+  strings~~ — **consolidated** (MER-33, 2026-07): `verbal.spec` and `pico.spec` are **retired/deleted**;
+  `whisperflow.spec` is the one canonical macOS spec (it's what CI already built from —
+  `.github/workflows/build-release.yml`; `build.sh`, the local dev build script, was pointed at
+  `verbal.spec` and is now fixed to match). Its plist `CFBundleShortVersionString`/`CFBundleVersion` now
+  import and read `config.APP_VERSION` directly (`sys.path.insert(0, '.')` + `from app.config import
+  APP_VERSION`) instead of a separate hardcoded string — one number to bump, not three. **Whoever cuts a
+  release must still make the git tag / `app_versions.version` match `config.APP_VERSION` at build time** —
+  `updater.py` compares the DB row against the running app's `APP_VERSION`, and this fix only closes the
+  spec-vs-config drift, not the tag-vs-config one; that's a release-process discipline, not something the
+  spec file can enforce. `hiddenimports` reconciled against actual runtime usage: added `scipy`/
+  `scipy.signal` (used by `recorder.py`/`transcriber.py`/`recordings.py`, was missing from `verbal`/
+  `whisperflow`'s list — a real gap), `ScreenCaptureKit`/`CoreMedia` (meetings, Hard Rule #18's packaging
+  note — was missing from ALL THREE specs, meaning every prior packaged build likely had broken meetings),
+  and `websocket` (Realtime, defensive); removed `pyautogui` (that's `win_injector.py` — Windows-only, macOS
+  injection is `Quartz`+`pyperclip`) and `groq` (no file imports it directly anymore — all Groq access is
+  server-mediated via `groq-proxy`, Hard Rule #15).
 - `ai_cleanup.apply_file_tags`/`FILE_TAG_PATTERNS` kept for reference/tests only — real tagging is in
   `filetags.py`.
 
