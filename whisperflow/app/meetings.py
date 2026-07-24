@@ -86,8 +86,14 @@ _MEETING_HALLUCINATIONS = {
 
 
 def _summary_output_language(config, transcript, session_language=""):
-    """Deterministic output language: per-meeting pin > global pin > script
+    """Deterministic output language for the summary/notes prose. Independent of
+    the meeting's *spoken* (transcription) language — `meetings_notes_language`
+    defaults to "en" so e.g. an Urdu meeting still gets English notes; set it to
+    "auto" to fall back to: per-meeting pin > global spoken-language pin > script
     detection over the transcript text > English."""
+    notes_pref = (config.get("meetings_notes_language") or "en").strip().lower()
+    if notes_pref != "auto":
+        return _LANG_NAMES.get(notes_pref, "English")
     lang = (session_language or config.get("spoken_language") or "en").strip().lower()
     if lang and lang != "auto":
         return _LANG_NAMES.get(lang, "English")
@@ -362,24 +368,33 @@ def generate_meeting_summary(config, transcript, speakers, scratchpad, marked_mo
     """Run the structured summary LLM call (proxy → one retry). Returns the
     parsed dict or None. Pure function so retry-after-restart can reuse it."""
     try:
-        from app.groq_proxy import chat_via_proxy
+        from app.groq_proxy import chat_via_proxy, ProxyPayloadTooLarge
         notes = "\n".join(l for l in (scratchpad or "").splitlines() if l.strip()) or "(none)"
         marks = "\n".join(f"- at {int(m.get('t',0))//60}:{int(m.get('t',0))%60:02d} "
                           f"{m.get('label','') or '(unlabeled)'}"
                           for m in (marked_moments or [])) or "(none)"
         spk = ", ".join(f"{sid} = {name}" for sid, name in (speakers or {}).items()) or "(unknown)"
         out_lang = _summary_output_language(config, transcript, session_language)
-        user = (f"OUTPUT LANGUAGE: {out_lang}. Every field must be written in {out_lang}.\n\n"
-                f"SPEAKERS: {spk}\n\nUSER NOTES:\n{notes}\n\nMARKED MOMENTS:\n{marks}\n\n"
-                f"TRANSCRIPT:\n{_transcript_text(transcript or [], speakers or {})}")
-        messages = [{"role": "system", "content": _SUMMARY_SYSTEM},
-                    {"role": "user", "content": user}]
-        for attempt in (1, 2):
-            # Groq strict JSON mode keeps llama on-contract; attempt 2 drops it
-            # in case the model/proxy ever rejects response_format.
-            raw = chat_via_proxy(
-                messages, config, max_tokens=2048, timeout=45.0,
-                response_format={"type": "json_object"} if attempt == 1 else None)
+        budget = TRANSCRIPT_CHAR_BUDGET
+        for attempt in (1, 2, 3):
+            user = (f"OUTPUT LANGUAGE: {out_lang}. Every field must be written in {out_lang}.\n\n"
+                    f"SPEAKERS: {spk}\n\nUSER NOTES:\n{notes}\n\nMARKED MOMENTS:\n{marks}\n\n"
+                    f"TRANSCRIPT:\n{_transcript_text(transcript or [], speakers or {}, budget=budget)}")
+            messages = [{"role": "system", "content": _SUMMARY_SYSTEM},
+                        {"role": "user", "content": user}]
+            # Groq strict JSON mode keeps llama on-contract; attempt 2 drops it in
+            # case the model/proxy ever rejects response_format. A 413 means the
+            # shared key's tokens-per-minute budget can't fit this request — halve
+            # the transcript and retry rather than repeating the identical request.
+            try:
+                raw = chat_via_proxy(
+                    messages, config, max_tokens=2048, timeout=45.0,
+                    response_format={"type": "json_object"} if attempt == 1 else None)
+            except ProxyPayloadTooLarge:
+                logger.warning("summary attempt %d: 413 (token budget) — "
+                               "retrying with a smaller transcript", attempt)
+                budget //= 2
+                continue
             parsed = _parse_summary_json(raw)
             if parsed:
                 return parsed

@@ -101,10 +101,22 @@
    second secret `OLLAMA_API_KEY`. It **fails closed**: no key / Ollama down → the client retries on Groq
    `llama-3.3-70b` so notes never fail (`meetings.generate_meeting_notes`, `lib/groq.ts::generateMeetingNotes`).
    Set/rotate via `supabase secrets set OLLAMA_API_KEY=…` (key from ollama.com/settings/keys). The earlier
-   `app_config` key-table / `BUNDLED_GROQ_KEY` idea is
-   **SUPERSEDED** (a client must never be able to read the key); `lib/remoteConfig.ts` is now vestigial. The
-   iOS keyboard's `KeyboardViewController.swift` and desktop still keep a local-key fallback path only for
-   resilience — the proxy is always tried first.
+   `app_config` **provider-secret-key-table** idea is correctly **SUPERSEDED** (a client must never be able
+   to read `GROQ_API_KEY` itself) — but **`lib/remoteConfig.ts` is NOT vestigial**, contrary to what this
+   rule used to say: it's still actively called (`storage.ts::getGroqKey`'s last-resort fallback, and
+   warmed on app start in `RootNavigator.tsx`) to read a *different*, same-named `app_config` table for a
+   cached "shared bundled Groq key" — and a 2026-07 live-schema audit found **no `app_config` table exists
+   in the current DB at all**, meaning this fallback path likely silently no-ops every time (see
+   `04-data-model.md`'s `app_config` callout). Low practical impact since it's a fallback of a fallback
+   (`groq-proxy` is always tried first), but the code and this rule had drifted from each other — verify
+   before assuming this path does anything today. The iOS keyboard's `KeyboardViewController.swift` and
+   desktop still keep a local-key fallback path only for
+   resilience — the proxy is always tried first. **Groq returns HTTP 413 (not 429) when a request would
+   exceed the shared key's tokens-per-minute budget** — this shows up on long meetings, since the summary
+   prompt can carry up to `TRANSCRIPT_CHAR_BUDGET` (24,000) chars. `groq_proxy.chat_via_proxy` raises
+   `ProxyPayloadTooLarge` on 413 instead of swallowing it; `meetings.generate_meeting_summary` catches it
+   and retries with a halved transcript budget (up to 3 attempts total) rather than repeating the identical
+   oversized request.
 16. **Keyboard data bridge is App-Group–gated on iOS.** The app hands the keyboard its config
     (`flume_kbd_config.json`: theme, vocabulary, snippets, recent history) via a JSON snapshot written by
     `lib/keyboardBridge.ts::syncKeyboardConfig()`. On **Android** the IME reads `context.filesDir`, which is
@@ -181,6 +193,30 @@
     the space key moves the caret (~1 char per 12dp/pt) instead of typing — Android sends `DPAD_LEFT/RIGHT` key
     events, iOS uses `adjustTextPosition(byCharacterOffset:)`; a swipe suppresses the space, a plain tap still
     spaces (double-space→". " intact).
+    **Clipboard history (quick-paste chip + 5th bar icon) is deliberately NOT part of this bridge** — it's
+    self-contained in each keyboard target, reading/writing its own `flume_kbd_clipboard.json` (iOS: same App
+    Group container; Android: the IME's own `filesDir`), capped at 15 entries, because only the extension
+    itself can observe a clipboard change made in another app — the main app/JS has no visibility into it.
+    Only a single on/off preference, `clipboardHistoryEnabled`, rides the existing bridge. **Any future keyboard
+    feature that touches the clipboard MUST skip content flagged by the password-manager "don't capture this"
+    convention** — Android `ClipDescription.EXTRA_IS_SENSITIVE` (API 33+) and iOS's de facto
+    `org.nspasteboard.ConcealedType` UTI (1Password/Bitwarden etc.) — and must never sync clipboard content off
+    the device. iOS clipboard reads require the keyboard's "Full Access"; gate ambient UI (the quick-paste chip)
+    on `hasFullAccess` silently, but an explicit user action (the clipboard overlay) must show an informative
+    "enable Full Access" prompt, never fail silently.
+    **"Type into the keyboard's own UI" pattern (Transform, Jul 2026) — reuse this for any future feature
+    that needs free-text input from inside the extension.** Neither platform can host a real second
+    text-input surface inside a keyboard extension's own view, so instead: add ONE mode flag, and have the
+    already-centralized `commit()`/`onSpace()`/`onBackspace()` (every real keystroke funnels through these
+    on both platforms) redirect to a local string buffer + a preview label instead of
+    `textDocumentProxy`/`currentInputConnection` while that flag is set — the letters/numbers/symbols layer
+    stays fully visible and usable underneath, just repointed. Also guard `doUpdateSuggestions()` to no-op
+    while the flag is set (same shape as the existing `activeOverlay != nil` guard), since the suggestion
+    strip is repurposed as the input-preview band. Bar chips are a shared, mode-aware slot, not one-per-
+    feature: Transform's post-Replace "Undo" affordance reuses the exact same chip view as the clipboard
+    quick-paste chip (`refreshQuickPasteChip`/`tapQuickPasteChip` on both platforms) — whichever ephemeral
+    action is most recent wins the display; they never show at once, and that's an accepted degrade rather
+    than a bug.
 17. **`historyStore` loads once at app start — you MUST `refresh()` it on sign-in.** The shared singleton
     (`flume-ui/hooks/historyStore.ts`) has a `started` guard: `ensureLoaded()` runs `load()` a single time,
     and `RootNavigator` mounts `useHistory()` at app start — i.e. **before sign-in, when sync is off** — which

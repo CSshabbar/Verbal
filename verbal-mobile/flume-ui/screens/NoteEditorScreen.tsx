@@ -1,5 +1,8 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { View, StyleSheet, Pressable, TextInput, ScrollView, ActivityIndicator } from 'react-native';
+import {
+  View, StyleSheet, Pressable, TextInput, ScrollView, ActivityIndicator,
+  KeyboardAvoidingView, Platform,
+} from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { Text, Visualizer, MarkdownNote, AudioSegmentPlayer } from '../components';
@@ -147,7 +150,10 @@ export const NoteEditorScreen: React.FC<Props> = ({ noteId, onBack }) => {
   const renderMarkdown = hasMarkdown && !editingRaw && !showOriginal;
 
   return (
-    <View style={[styles.root, { paddingTop: insets.top + 10, paddingBottom: insets.bottom + 6 }]}>
+    <KeyboardAvoidingView
+      style={[styles.root, { paddingTop: insets.top + 10, paddingBottom: insets.bottom + 6 }]}
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+    >
       <View style={styles.topBar}>
         <Pressable onPress={onBack} accessibilityRole="button" accessibilityLabel="Back">
           <Ionicons name="chevron-back" size={24} color={colors.textSecondary} />
@@ -293,7 +299,7 @@ export const NoteEditorScreen: React.FC<Props> = ({ noteId, onBack }) => {
           </>
         )}
       </View>
-    </View>
+    </KeyboardAvoidingView>
   );
 };
 

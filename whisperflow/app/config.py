@@ -55,6 +55,9 @@ DEFAULT_CONFIG = {
     "meetings_hud_enabled": True,         # floating HUD when the window loses focus
     "meetings_speaker_labels": True,      # source-based Speaker 1..N labeling
     "meetings_sync_enabled": False,       # push meetings to other devices (default off)
+    "meetings_notes_language": "en",      # summary/notes output language: "en" (always
+                                           # English) | "auto" (match the meeting's spoken
+                                           # language) — independent of transcription language
     "meetings": [],                       # [{id,title,started_at,duration_seconds,status,...}]
     # Transform (TRANSFORM_SWARM.md) — voice/prompt-driven text reshaping.
     # Master default OFF (like autolearn); Mode A = trailing "…so Flume, …"

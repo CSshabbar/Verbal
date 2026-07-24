@@ -113,5 +113,10 @@ export function useMeetings() {
     setMeetings(prev => prev.map(m => (m.id === id ? { ...m, scratchpad: text } : m)));
   }, []);
 
-  return { meetings, loading, getMeeting, refresh, updateScratchpad };
+  /** Manual notes_md edits — mock is local-only, same shape as the real hook. */
+  const updateNotes = useCallback((id: string, text: string) => {
+    setMeetings(prev => prev.map(m => (m.id === id ? { ...m, notesMd: text } : m)));
+  }, []);
+
+  return { meetings, loading, getMeeting, refresh, updateScratchpad, updateNotes };
 }

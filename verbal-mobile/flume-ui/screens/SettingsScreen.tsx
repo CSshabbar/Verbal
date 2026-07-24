@@ -18,6 +18,8 @@ import {
   clearHistory,
   getNotesFeatureFlags, setNotesFeatureFlag,
   DEFAULT_NOTES_FLAGS, type NotesFeatureFlags,
+  getClipboardHistoryEnabled, setClipboardHistoryEnabled,
+  getTransformEnabled, setTransformEnabled,
 } from '../../lib/storage';
 
 type Props = { onOpenDevices: () => void; onOpenSnippets: () => void };
@@ -42,6 +44,8 @@ export const SettingsScreen: React.FC<Props> = ({ onOpenDevices, onOpenSnippets 
   const [repTo, setRepTo] = useState('');
 
   const [notesFlags, setNotesFlags] = useState<NotesFeatureFlags>(DEFAULT_NOTES_FLAGS);
+  const [clipboardHistory, setClipboardHistory] = useState(true);
+  const [transformOnKeyboard, setTransformOnKeyboard] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -50,12 +54,24 @@ export const SettingsScreen: React.FC<Props> = ({ onOpenDevices, onOpenSnippets 
       setSync(await getSyncEnabled());
       setDict(await fetchRemote());
       setNotesFlags(await getNotesFeatureFlags());
+      setClipboardHistory(await getClipboardHistoryEnabled());
+      setTransformOnKeyboard(await getTransformEnabled());
     })();
   }, []);
 
   const toggleNotesFlag = async (key: keyof NotesFeatureFlags, val: boolean) => {
     setNotesFlags(prev => ({ ...prev, [key]: val }));
     await setNotesFeatureFlag(key, val);
+  };
+
+  const toggleClipboardHistory = async (v: boolean) => {
+    setClipboardHistory(v);
+    await setClipboardHistoryEnabled(v);
+  };
+
+  const toggleTransformOnKeyboard = async (v: boolean) => {
+    setTransformOnKeyboard(v);
+    await setTransformEnabled(v);
   };
 
   const persistDict = async (d: Dictionary) => { setDict(d); await saveDictionary(d); };
@@ -280,6 +296,29 @@ export const SettingsScreen: React.FC<Props> = ({ onOpenDevices, onOpenSnippets 
         </Section>
 
         {/* Sync */}
+        {/* Keyboard clipboard history (quick-paste chip + clipboard overlay on the
+            custom keyboards) — captured/stored entirely on-device by the keyboard
+            extension itself; this toggle just gates whether it runs at all. */}
+        <Section label="KEYBOARD">
+          <FlagRow
+            icon="clipboard-outline"
+            title="Clipboard history on keyboard"
+            subtitle="Quick-paste recent copies from the Flume keyboard"
+            value={clipboardHistory}
+            onChange={toggleClipboardHistory}
+          />
+          {/* Select text elsewhere → tap Transform → instruction (typed/spoken/preset) →
+              LLM rewrite → preview → replace. Mirrors desktop's Transform (Mode B); off
+              by default like desktop, since it's an LLM-driven feature. */}
+          <FlagRow
+            icon="sparkles-outline"
+            title="Transform on keyboard"
+            subtitle="Select text anywhere, then rewrite it with an instruction"
+            value={transformOnKeyboard}
+            onChange={toggleTransformOnKeyboard}
+          />
+        </Section>
+
         <Section label="CROSS-DEVICE SYNC">
           <ListRow
             icon="sync-outline"

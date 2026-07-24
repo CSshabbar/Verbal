@@ -8,10 +8,12 @@
 ```
 Verbal/
 ├── whisperflow/     # desktop (macOS primary, Windows variant)
-│   └── app/         # ~34 Python modules
-├── verbal-mobile/   # Expo / React Native (iOS)
+│   └── app/         # ~48 Python modules
+├── verbal-mobile/   # Expo / React Native — ONE codebase for iOS + Android
 │   ├── flume-ui/    # canonical UI: screens/ hooks/ components/ theme/ navigation/
-│   └── lib/         # backend-facing TS modules
+│   ├── lib/         # backend-facing TS modules
+│   ├── targets/keyboard/   # iOS keyboard extension (Swift)
+│   └── plugins/keyboard/   # Android IME (Kotlin) + Expo config plugin
 └── (Supabase)       # one shared project: ovpcthjingugwvpxlsna
 ```
 
@@ -106,6 +108,27 @@ summary/decisions/action_items/hybrid_notes) → `meetings` row upsert. Local me
 bounded `config['meetings']` (`MEETINGS_CAP`). The HUD appears when the meeting window resigns key
 (NSNotification observers) and never steals focus.
 
+## Windows stack (`whisperflow/app/win_*.py`)
+
+- **Runtime:** `win_main.py::VerbalWinApp` (893 lines) is the Windows equivalent of `main.py::VerbalApp` —
+  same role, different shell: **`pystray`** owns the tray icon + menu (recording mode, Whisper model,
+  Groq/Gemini key management, auth toggle, Open Verbal/Canvas/Notes/Settings) instead of `rumps`. No
+  Cocoa-style run loop to own; the pywebview window and pystray tray each run their own loop, wired
+  together rather than sharing one.
+- **Shares the SAME pipeline core as macOS:** `Recorder`, `transcriber` (`transcribe`/
+  `transcribe_with_status`), `ai_cleanup.process_text`, `recordings`, `auth` — imported directly from
+  `app.*`, not reimplemented. This is *why* Windows parity work is additive (new shell code) rather than
+  a port of the whole app.
+- **`win_overlay.py::WinOverlay`** (378 lines) — the Windows floating recording pill, parallel to macOS
+  `overlay.py::OverlayBar`; renders the shared `overlay_html()` (see the JS↔Python bridge note above —
+  same dual-target `flume_html()`/`overlay_html()`/etc. pattern serves both OSes).
+- **Dashboard:** `win_dashboard.py` + `shared_dashboard.py::DashboardApi` (the same backend class macOS
+  uses) render the identical `flume_dashboard_html.py::flume_html()` via real pywebview (WebView2) instead
+  of WKWebView + `_SHIM` — see "Also shared across the two desktops" below.
+- **Native-heavy features not yet ported:** meetings (ScreenCaptureKit → needs WASAPI loopback), auto-learn
+  and file-tagging (macOS Accessibility → need UI Automation) — specced in `whisperflow/WINDOWS_PARITY_PLAN.md`
+  and `whisperflow/windows_specs/*.md`, not yet implemented.
+
 ## Mobile stack (`verbal-mobile/`)
 
 - **Framework:** Expo SDK `~55`, React Native `0.83`, React 19, New Architecture on. Entry `index.ts` →
@@ -115,8 +138,8 @@ bounded `config['meetings']` (`MEETINGS_CAP`). The HUD appears when the meeting 
   exists) → `Main`. `Main` is bottom tabs **Home · Notes · [center mic] · Canvas · History**
   (center mic is a floating button opening the `Recording` modal). The Home header **☰** opens the **Menu**
   modal — the navigation hub for the secondary destinations (Settings, Snippets, Dictionary, Device pairing,
-  a Sync toggle, Sign out) that used to be buried in Settings. The tab bar is **hidden while a note is open**
-  (`NoteEditor`) so the editor owns the screen.
+  a Sync toggle, Sign out) that used to be buried in Settings. The tab bar is **hidden while a note or a
+  meeting's full AI notes are open** (`NoteEditor`, `MeetingNotes`) so the screen owns the view.
   Modals: `Recording`, `Confirmation`, `Menu`. Sub-stacks: Notes (→NoteEditor), History (→HistoryDetail),
   Menu (→Settings/Snippets/Dictionary/Devices→PairDevice).
 - **Layered architecture:** presentational **screens** (`flume-ui/screens/*.tsx`) receive callbacks as
@@ -129,7 +152,19 @@ bounded `config['meetings']` (`MEETINGS_CAP`). The HUD appears when the meeting 
 - **Client:** `lib/supabase.ts` — one `@supabase/supabase-js` client, `flowType:'pkce'`,
   `storage: AsyncStorage`, `detectSessionInUrl:false`.
 - **iOS native project** committed at `ios/` (`Verbal.xcworkspace`, CocoaPods) — a dev-client/prebuilt
-  Expo app; EAS profiles in `eas.json`.
+  Expo app; **Android native project** committed at `android/` (Gradle, `gradlew`); EAS profiles for both
+  in `eas.json`.
+- **Shared dictation pipeline contract:** `lib/dictationPipeline.ts` wraps transcribe → AI-cleanup →
+  dictionary-replacement → snippet-expansion as ONE function so every entry point (in-app recorder, the
+  iOS keyboard extension's main-app handoff, any future RN-hosted path) runs identical logic instead of
+  each reimplementing it. iOS's keyboard extension can't run JS at all, so it hands off to the main app,
+  which calls this. Android's IME (Kotlin, native) can't call this TS either — `FlumeInputMethodService.kt`
+  mirrors the same sequence natively, with this file as the reference contract that mirror must match.
+- **Custom keyboards are separate native targets, not RN screens:** the iOS keyboard extension
+  (`targets/keyboard/KeyboardViewController.swift`) and Android IME (`plugins/keyboard/
+  FlumeInputMethodService.kt`) are full from-scratch keyboards (QWERTY layers, suggestions, dictation,
+  snippets/history/vocabulary/clipboard overlays, Transform) — see `05-conventions.md` Hard Rule #16 for
+  the app→keyboard config bridge and all the native-specific gotchas.
 
 ## Backend (Supabase)
 
@@ -162,7 +197,9 @@ bounded `config['meetings']` (`MEETINGS_CAP`). The HUD appears when the meeting 
   (`injector`↔`win_injector`, `hotkey` NSEvent vs `pynput`, ScreenCaptureKit↔WASAPI loopback), and the
   macOS AX features (file-tagging, auto-learn) whose Windows equivalents use UI Automation
   (`win_ax.py`/`win_editwatch.py`, planned — see `whisperflow/WINDOWS_PARITY_PLAN.md`); mobile's Expo
-  screens/hooks and native audio (`expo-audio`).
+  screens/hooks and native audio (`expo-audio`); and, within mobile itself, the custom keyboard's native
+  layer (iOS Swift extension vs Android Kotlin IME — two independent implementations of the same feature
+  set, kept in sync by convention, not shared code).
 
 See `05-conventions.md` for the non-obvious rules that keep all this from breaking, and the list of
 dead/legacy modules to ignore.

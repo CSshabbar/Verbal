@@ -24,7 +24,11 @@ Each feature: **what it does · desktop impl · mobile impl · backend · status
   module-level `lastRecording` read once via `consumeLastRecording()`.
 - **Backend:** all Groq calls (transcription + cleanup) now route through the **`groq-proxy` Edge Function**
   — the Groq key is server-side only, clients hold none, and the **in-app API-key entry has been removed**
-  (mobile Settings card + desktop dashboard field + the menu-bar "Groq/Gemini API Key…" items are all gone).
+  on macOS/mobile (mobile Settings card + desktop dashboard field + the menu-bar "Groq/Gemini API Key…"
+  items are gone — macOS's `main.py::_manage_groq_keys` is dead code, unattached to any `rumps.MenuItem`).
+  **Windows is the one live exception:** `win_main.py`'s tray still wires reachable
+  `"Groq API Key…"`/`"Gemini API Key…"` menu items (`_tray_manage_groq`/`_tray_manage_gemini`) that let a
+  user paste/remove a LOCAL key — not yet brought in line with the removed-entry posture above.
   A user's pre-existing local Groq/Gemini key stays only as a silent *fallback*. Audio → `recordings` bucket.
   See `05-conventions` Hard Rule #15.
 - **Status:** solid. Local Whisper is a desktop-only offline fallback (`faster_whisper` bundled).
@@ -423,6 +427,16 @@ a Notes entry row, tappable action-item checkboxes (`updateActionItemsRemote`, f
 due-date labels, and marked-moment user notes. New cloud column `notes_md`; mobile Meeting type +
 `toMeeting` carry `notesMd`/`pinned`/`recognized`.
 
+**Notes are now editable on mobile (Jul 2026):** a pencil toggle in the header swaps the rendered
+`MdView` for a raw-markdown `TextInput` (edits are plain markdown source, not WYSIWYG); a checkmark
+returns to the rendered view. Wiring mirrors the scratchpad's optimistic-update + 600ms-debounced-write
+shape (`useMeetings.ts::updateNotes`, both the real hook and `useMeetings.mock.ts` — the two must stay
+contract-identical) → `lib/meetings.ts::updateNotesRemote` (pre-existing, previously only called after
+AI regeneration). The screen also hides the bottom tab bar (`RootNavigator.tsx`'s
+`getFocusedRouteNameFromRoute` check, same mechanism `NoteEditor` already used) and now has its own
+"Play with transcript" button (previously only on `MeetingDetailScreen`) linking to
+`MeetingPlaybackScreen` — see the tap-to-seek/highlight sync described just above.
+
 ## Meeting auto-detection (Granola-style, desktop, Jul 2026)
 
 Flume notices a call in progress and pops a floating **"Meeting detected · <source>"** pill with a
@@ -485,11 +499,81 @@ modal overrides it (`start_meeting(..., language)` → `MeetingSession.language`
 Resolution + routing live in `transcriber.resolve_language` / `transcribe_with_status(language=…)`:
 `auto` → omit the param (Whisper detects); non-English pins route Groq to full **whisper-large-v3**
 (turbo is weaker on low-resource languages); the English dictionary-glossary bias prompt is attached
-ONLY when the language is English (a Whisper prompt also hints the language). The meeting summary
-LLM now writes all fields in the transcript's dominant language; the dictation formatter carries a
-"same language, never translate" rule. Options list: `shared_dashboard.SPOKEN_LANGUAGES`. Mobile:
-`lib/groq.ts` honors `flume_spoken_language` (default `en`; no picker UI yet). Known limit:
+ONLY when the language is English (a Whisper prompt also hints the language). The dictation formatter
+carries a "same language, never translate" rule. Options list: `shared_dashboard.SPOKEN_LANGUAGES`.
+Mobile: `lib/groq.ts` honors `flume_spoken_language` (default `en`; no picker UI yet). Known limit:
 code-switched meetings resolve per 8–22s chunk in auto mode.
+
+**Meeting notes/summary output language is a separate setting from transcription language**
+(`config['meetings_notes_language']`, Settings → Meetings): default `"en"` always writes the
+summary/decisions/action items/notes in English, regardless of what language (or script) the
+meeting was recorded in — e.g. a meeting transcribed in Roman-script Urdu still gets English notes.
+Set it to `"auto"` to fall back to the old behavior: per-meeting `MeetingSession.language` pin >
+global `spoken_language` pin > script detection over the transcript > English. Resolution lives in
+`meetings._summary_output_language`, used by both `generate_meeting_summary` and
+`generate_meeting_notes`.
+
+## Custom keyboard — core features (mobile, iOS + Android)
+
+Verbal ships a real system-level keyboard on both platforms (iOS extension
+`targets/keyboard/KeyboardViewController.swift`, Android IME `plugins/keyboard/
+FlumeInputMethodService.kt`) — a from-scratch QWERTY/numbers/symbols keyboard, not a wrapper around the
+system one. The "Flume bar" above the keys has icon buttons that toggle in-keyboard overlays (tap-to-insert
+rows), a pattern every subsequent keyboard feature (clipboard history, Transform) has reused rather than
+inventing new UI:
+
+- **Snippets** — spoken/typed trigger phrases expand to full text, browsable and tap-to-insert directly
+  from the keyboard (not just via dictation).
+- **Canvas** — the cross-device shared-clipboard feature, reachable from the keyboard too.
+- **History** — recent dictations, tap to re-insert.
+- **Vocabulary** — the user's custom dictionary words, with phonetics shown if present.
+- **On-device word suggestions**: prefix completions AND next-word prediction from a personal
+  word/bigram model (`learnWord`/`learnBigram`, bundled `flume_words.txt`/`flume_bigrams.txt` seed data),
+  persisted per-keyboard (see `05-conventions.md` Hard Rule #16 for the exact storage/caps). Suggestions
+  can also surface an emoji for an exact word match.
+- **Emoji picker**: a full bundled library (~1900 emoji, 9 groups + Recents) with keyword search
+  (`flume_emoji_kw.txt`) mapping typed words to relevant emoji.
+- **Dictation via mic**: records and transcribes through the same `groq-proxy` pipeline as the in-app
+  recorder; on iOS (which can't run JS in an extension) this hands off to `lib/dictationPipeline.ts` in
+  the main app — see `02-architecture.md`'s "Shared dictation pipeline contract" note. Android's IME
+  mirrors the same transcribe → cleanup → replacements → snippets sequence natively in Kotlin.
+
+All of the above predates and is extended by the clipboard-history and Transform features below, which
+reuse the identical bar-icon → overlay → tap-to-insert (or bar-icon → live-action) shape. Deep
+implementation gotchas (fonts, sounds, typing feel, theming, the app→keyboard config bridge) live in
+`05-conventions.md` Hard Rule #16 — this section is deliberately the "what," not the "how."
+
+## Keyboard clipboard history (mobile, Jul 2026)
+
+A 5th Flume-bar icon (clipboard glyph) on both custom keyboards opens a clipboard-history
+overlay (same bar-icon → overlay → tap-to-insert pattern as dictation history), plus an ephemeral
+"quick paste" chip near the bar that appears once per new copy with an 8-char preview — tap either
+to insert the full text.
+
+**Entirely self-contained in each keyboard target — not part of the `flume_kbd_config.json`
+app→keyboard bridge.** Neither the main app nor JS ever sees clipboard content; only the extension
+observes and persists it, to a NEW file `flume_kbd_clipboard.json` (iOS: same App Group container as
+the config bridge; Android: the IME's own `filesDir`), capped at 15 entries (mirrors the existing
+dictation-history wire cap). One preference IS threaded through the existing bridge:
+`clipboardHistoryEnabled` (`lib/storage.ts::getClipboardHistoryEnabled`/`setClipboardHistoryEnabled`,
+default ON, Settings → Keyboard) — gates the feature without carrying any clipboard content itself.
+
+- **iOS** (`KeyboardViewController.swift`): clipboard access needs the keyboard's "Full Access"
+  permission. The quick-paste chip simply doesn't render without it (ambient, not naggy); the
+  clipboard overlay always shows the icon, but tapping it without Full Access shows an explicit
+  "tap to open Settings" row (`extensionContext?.open(...)`) instead of the list — informative,
+  never silently broken. Detection happens in `viewWillAppear` (the only reliable moment an
+  extension can notice a clipboard change — extensions don't run in the background) by comparing
+  `UIPasteboard.general.changeCount` against a persisted value.
+- **Android** (`FlumeInputMethodService.kt`): no permission gate needed. A
+  `ClipboardManager.OnPrimaryClipChangedListener` registered in `onCreate()` can catch a clipboard
+  change made in another app before the keyboard reopens (Android IMEs stay resident more readily
+  than iOS extensions); `onStartInputView` re-checks once as a fallback.
+- **Privacy — respected on both platforms, not optional:** content flagged by the password-manager
+  "don't capture this" convention is skipped for both the chip and history — Android's
+  `ClipDescription.EXTRA_IS_SENSITIVE` (API 33+) and iOS's de facto `org.nspasteboard.ConcealedType`
+  UTI (set by 1Password/Bitwarden etc). Clipboard content is never synced to Supabase or any cloud
+  store — device-local only, always.
 
 ## Transform — voice/prompt-driven text reshaping (TRANSFORM_SWARM.md, Jul 2026)
 
@@ -510,5 +594,32 @@ code-switched meetings resolve per 8–22s chunk in auto mode.
   mic). Result is a **preview** — Replace pastes over the still-highlighted selection
   (`injector.inject_text`), then a 6-s **Undo** (target-app ⌘Z). Cancel/no-selection/too-long
   (>12k chars) are all no-ops.
-- **Mobile:** Mode A port is planned (`lib/transform.ts` mirror); Mode B needs the keyboard extension.
+- **Mobile — Mode B on the keyboard (Jul 2026):** a dedicated Transform button (iOS SF Symbol
+  `wand.and.stars`, Android Ionicons `sparkles-outline`) on both custom keyboards
+  (`targets/keyboard/KeyboardViewController.swift`, `plugins/keyboard/FlumeInputMethodService.kt`),
+  gated by `transformEnabled` (default OFF, bridged like `clipboardHistoryEnabled` — Settings →
+  Keyboard). No Accessibility-style universal selection API exists on mobile, so selection is read
+  through the focused field's own proxy instead: iOS `textDocumentProxy.selectedText`, Android
+  `currentInputConnection.getSelectedText(0)` (the same call already used for the existing
+  delete-over-selection backspace logic). Empty/unreadable selection shows an inline "Select some
+  text first" message rather than silently doing nothing. **Typing the instruction reuses the
+  physical keyboard itself**: both files already funnel every keystroke through one centralized
+  `commit()`/`onSpace()`/`onBackspace()` — a compose-mode flag redirects these to a local instruction
+  buffer instead of the host app, so the letters layer stays fully usable while the original
+  selection is left untouched (critical: nothing touches the host proxy until the final Replace,
+  which is what keeps the selection alive through the whole flow). The existing mic button is
+  repurposed (same button, mode-dependent meaning) to speak the instruction via the already-built
+  recording→transcribe pipeline; a horizontally-scrollable preset row (Improvise + Formal/Casual/
+  Shorten/Fix grammar) covers the one-tap case. Same verbatim `TRANSFORM_SYSTEM_PROMPT`/
+  `IMPROVISE_SYSTEM_PROMPT` and de-wrapping logic as desktop, called directly from the extension via
+  a new JSON chat-completions call (`chatViaProxy`/`proxyChat`) — a sibling of the multipart
+  transcription call each file already makes, same `groq-proxy` endpoint (it already routes JSON→chat
+  vs multipart→transcription), no backend changes needed. Selection sent to the LLM is capped at 8000
+  chars (smaller than desktop's 12000 — mobile selections are shorter, and the shared Groq key has a
+  real tokens-per-minute ceiling, see the 413-handling note in `05-conventions.md`). **No OS-level undo
+  exists on mobile** (no "send ⌘Z to the host app" equivalent) — Undo is a soft implementation: delete
+  exactly as many characters as the rewrite inserted, then re-insert the original captured text; correct
+  only if nothing else was typed/moved since Replace, shown as a ~6s bar chip (shared with the clipboard
+  quick-paste chip — whichever ephemeral affordance is most recent wins; the two never show at once).
+  Mode A (trailing "…so Flume, …" trigger) is not implemented on mobile.
 - **Fixtures:** `whisperflow/transform_fixtures.py` (16 gate cases + output unwrapping, offline).

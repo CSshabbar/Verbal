@@ -640,7 +640,7 @@ class DashboardApi:
     _MEETING_SETTING_KEYS = (
         "meetings_enabled", "meetings_keep_audio", "meetings_keep_audio_days",
         "meetings_max_minutes", "meetings_hud_enabled", "meetings_speaker_labels",
-        "meetings_sync_enabled",
+        "meetings_sync_enabled", "meetings_notes_language",
     )
 
     def get_meeting_settings(self):

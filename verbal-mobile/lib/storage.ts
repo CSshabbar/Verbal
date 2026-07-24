@@ -13,6 +13,14 @@ const KEYS = {
   NOTES_AUTOTITLE: 'notes_autotitle_enabled',
   NOTES_STRUCTURE: 'notes_structure_detection_enabled',
   NOTES_AUDIO:     'notes_audio_linkage_enabled',
+  // Keyboard clipboard history (quick-paste chip + clipboard overlay). Default ON —
+  // the clipboard content itself never reaches this key/AsyncStorage; it's captured
+  // and persisted entirely native-side (see FlumeInputMethodService.kt / KeyboardViewController.swift).
+  KBD_CLIPBOARD_ENABLED: 'keyboard_clipboard_history_enabled',
+  // Keyboard Transform (select text elsewhere → instruction → LLM rewrite → replace).
+  // Default OFF, matching desktop's opt-in posture for this heavier/LLM-driven feature
+  // (whisperflow/app/config.py transform_enabled).
+  KBD_TRANSFORM_ENABLED: 'keyboard_transform_enabled',
 };
 
 export interface HistoryEntry {
@@ -116,6 +124,24 @@ export async function getSyncEnabled(): Promise<boolean> {
 }
 export async function setSyncEnabled(val: boolean) {
   await AsyncStorage.setItem(KEYS.SYNC_ON, val ? 'true' : 'false');
+}
+
+// Absent key reads as ON, same convention as the Notes feature flags below.
+export async function getClipboardHistoryEnabled(): Promise<boolean> {
+  return (await AsyncStorage.getItem(KEYS.KBD_CLIPBOARD_ENABLED)) !== 'false';
+}
+export async function setClipboardHistoryEnabled(val: boolean) {
+  await AsyncStorage.setItem(KEYS.KBD_CLIPBOARD_ENABLED, val ? 'true' : 'false');
+  import('./keyboardBridge').then((m) => m.syncKeyboardConfig()).catch(() => {});
+}
+
+// Absent key reads as OFF — opt-in, matching desktop's transform_enabled default.
+export async function getTransformEnabled(): Promise<boolean> {
+  return (await AsyncStorage.getItem(KEYS.KBD_TRANSFORM_ENABLED)) === 'true';
+}
+export async function setTransformEnabled(val: boolean) {
+  await AsyncStorage.setItem(KEYS.KBD_TRANSFORM_ENABLED, val ? 'true' : 'false');
+  import('./keyboardBridge').then((m) => m.syncKeyboardConfig()).catch(() => {});
 }
 
 // ── Notes v2 feature flags ──────────────────────────────────────────────────────

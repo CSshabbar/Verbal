@@ -233,6 +233,61 @@ class KeyboardViewController: UIInputViewController, AVAudioRecorderDelegate, UI
     private var pauseStart = Date()
     private var heightC: NSLayoutConstraint!
 
+    // MARK: clipboard (App-Group-persisted, self-contained — see readConfig() for the
+    // one-directional app→keyboard bridge this is deliberately NOT part of; clipboard
+    // content is only ever visible to the extension itself, never synced anywhere)
+    private var quickPasteChip: UIButton?
+    private var pendingQuickPaste: String?
+    private var clipboardCache: [(text: String, at: String)] = []
+    private var clipboardLoaded = false
+    private var lastClipboardChangeCount = -1
+    private let clipboardCap = 15              // mirrors the dictation-history wire cap
+    private let clipboardEntryCharCap = 4000    // bound file size / row rendering only
+
+    // MARK: transform (select text elsewhere → instruction → LLM rewrite → replace)
+    // Mirrors whisperflow/app/transform.py's Mode B exactly (same prompts, same
+    // preview-before-replace contract) — see context/03-features.md for why the
+    // mechanism differs (no Accessibility-style selection API, no Cmd+Z equivalent).
+    private enum TransformState { case idle, compose, busy, preview }
+    private var transformState: TransformState = .idle
+    private var transformButton: UIButton?
+    private var transformCancelButton: UIButton?
+    private var transformOriginalText = ""
+    private var transformInstruction = ""
+    private var transformRewrite = ""
+    private var pendingUndo: (length: Int, original: String)?
+    private var undoWorkItem: DispatchWorkItem?
+    private let transformSelectionCharCap = 8000   // smaller than desktop's 12000 — mobile
+                                                    // selections are shorter; same shared-key TPM caution
+    private let transformPresets: [(String, String)] = [
+        ("Improvise", ""),   // "" = IMPROVISE_SYSTEM_PROMPT, no instruction (mirrors desktop's 1-tap)
+        ("Formal", "Make this more formal"),
+        ("Casual", "Make this more casual"),
+        ("Shorten", "Make this shorter and tighter"),
+        ("Fix grammar", "Fix grammar and punctuation"),
+    ]
+    // Verbatim from whisperflow/app/transform.py:48-69 — keep in sync; this is a
+    // SEPARATE prompt from the dictation cleanup prompt and must never be merged with it.
+    private static let transformSystemPrompt =
+        "You transform the user's text according to their instruction.\n" +
+        "Rules:\n" +
+        "- Return ONLY the transformed text. No preamble, no explanation, no quotes, " +
+        "no markdown fences.\n" +
+        "- Never add facts, names, numbers or claims that are not in the original text.\n" +
+        "- Preserve the language of the original text unless the instruction says to translate.\n" +
+        "- Keep meaning intact unless the instruction explicitly asks to change it.\n" +
+        "- If the instruction is unclear or impossible, return the original text lightly " +
+        "cleaned up (punctuation, casing) instead."
+    private static let improviseSystemPrompt =
+        "You are a precision editor. Rewrite the user's text to be clearer and tighter.\n" +
+        "Rules:\n" +
+        "- Return ONLY the rewritten text. No preamble, no explanation, no quotes, " +
+        "no markdown fences.\n" +
+        "- Preserve the meaning, facts, tone register and language. Never add content.\n" +
+        "- Fix grammar, punctuation and awkward phrasing; break up run-ons; remove filler.\n" +
+        "- Keep the original structure (paragraphs, lists, greetings/sign-offs) intact.\n" +
+        "- Do not shorten by more than ~20% unless the text is redundant."
+
     // Space-swipe cursor control (Gboard): a horizontal drag on the space key moves the caret
     // one character per ~12pt of finger travel instead of inserting a space.
     private var spacePanStart: CGFloat = 0
@@ -253,6 +308,17 @@ class KeyboardViewController: UIInputViewController, AVAudioRecorderDelegate, UI
         registerFonts()
         applyTheme()
         buildUI()
+    }
+
+    // Fires each time the keyboard becomes visible again (new field, new app, reopen) —
+    // the only reliable moment an extension can notice a clipboard change made elsewhere,
+    // since extensions don't run in the background to observe it happen live.
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        checkClipboardForNewContent()
+        if transformState == .idle {
+            transformButton?.isHidden = !((readConfig()?["transformEnabled"] as? Bool) ?? false)
+        }
     }
 
     // Register the bundled TTFs so UIFont(name:) resolves them inside the extension.
@@ -285,6 +351,12 @@ class KeyboardViewController: UIInputViewController, AVAudioRecorderDelegate, UI
         keyPreview = nil                 // was a subview of `view`; drop the stale reference
         keyBaseColor.removeAll(); keyBgView.removeAll()
         buildUI()
+        // A theme change mid-transform would desync the freshly-rebuilt bar/content from
+        // transformState — simplest safe behavior is to cancel back to idle rather than
+        // try to replay busy/preview against a stale network callback.
+        transformState = .idle
+        transformInstruction = ""
+        refreshQuickPasteChip()   // buildFlumeBar() just recreated the chip hidden — restore its state
     }
 
     private func buildUI() {
@@ -341,18 +413,40 @@ class KeyboardViewController: UIInputViewController, AVAudioRecorderDelegate, UI
         f.widthAnchor.constraint(equalToConstant: 34).isActive = true
         f.heightAnchor.constraint(equalToConstant: 34).isActive = true
         bar.addArrangedSubview(f)
+
+        let chip = UIButton(type: .system)
+        chip.setTitleColor(.white, for: .normal)
+        chip.titleLabel?.font = uiFont(13)
+        chip.backgroundColor = accent
+        chip.layer.cornerRadius = 14
+        chip.contentEdgeInsets = UIEdgeInsets(top: 6, left: 12, bottom: 6, right: 12)
+        chip.addAction(UIAction { [weak self] _ in self?.tapQuickPasteChip() }, for: .touchUpInside)
+        chip.isHidden = true
+        quickPasteChip = chip
+        bar.addArrangedSubview(chip)
+
         let spacer = UIView()                      // flexible spacer (hidden while recording)
         flexSpacer = spacer
         bar.addArrangedSubview(spacer)
 
-        // SF Symbols — the same line-icon set as the design: flash / grid / clock / book / mic.
+        // SF Symbols — the same line-icon set as the design: flash / grid / clock / clipboard / book / mic.
         let icons = UIStackView(); icons.axis = .horizontal; icons.spacing = 6; icons.alignment = .center
-        for (glyph, ov) in [("bolt.fill","snippets"), ("square.grid.2x2","canvas"), ("clock","history"), ("book.closed","vocabulary")] {
+        for (glyph, ov) in [("bolt.fill","snippets"), ("square.grid.2x2","canvas"), ("clock","history"),
+                            ("doc.on.clipboard","clipboard"), ("book.closed","vocabulary")] {
             icons.addArrangedSubview(barIcon(glyph, ov))
         }
         iconGroup = icons
         bar.addArrangedSubview(icons)
         bar.addArrangedSubview(buildRecordControls())
+        bar.addArrangedSubview(buildTransformCancelControl())
+
+        // Transform — a live action on the current selection, same category as mic/dictation,
+        // not a browse-a-list overlay, so it sits next to mic rather than in the icon group.
+        let tf = circleButton("wand.and.stars", bg: pal.highlightBg, fg: pal.keyText)
+        tf.addAction(UIAction { [weak self] _ in self?.onTransformTap() }, for: .touchUpInside)
+        tf.isHidden = !((readConfig()?["transformEnabled"] as? Bool) ?? false)
+        transformButton = tf
+        bar.addArrangedSubview(tf)
 
         micButton = circleButton("mic.fill", bg: pal.micBg, fg: pal.micFg)
         micButton.addTarget(self, action: #selector(onMicTap), for: .touchUpInside)
@@ -426,6 +520,21 @@ class KeyboardViewController: UIInputViewController, AVAudioRecorderDelegate, UI
         return row
     }
 
+    // Compose-mode bar swap (mirrors buildRecordControls' role): replaces the icon group
+    // + transform button with a single ✕ while the user is composing a transform instruction.
+    private func buildTransformCancelControl() -> UIView {
+        let cancel = UIButton(type: .system)
+        cancel.setImage(UIImage(systemName: "xmark", withConfiguration: UIImage.SymbolConfiguration(pointSize: 15, weight: .semibold)), for: .normal)
+        cancel.tintColor = pal.keyText
+        cancel.backgroundColor = pal.highlightBg; cancel.layer.cornerRadius = 19
+        cancel.widthAnchor.constraint(equalToConstant: 38).isActive = true
+        cancel.heightAnchor.constraint(equalToConstant: 38).isActive = true
+        cancel.isHidden = true
+        cancel.addAction(UIAction { [weak self] _ in self?.exitCompose() }, for: .touchUpInside)
+        transformCancelButton = cancel
+        return cancel
+    }
+
     private func pauseIcon(_ name: String) {
         pauseButton?.setImage(UIImage(systemName: name, withConfiguration: UIImage.SymbolConfiguration(pointSize: 14, weight: .semibold)), for: .normal)
     }
@@ -434,6 +543,9 @@ class KeyboardViewController: UIInputViewController, AVAudioRecorderDelegate, UI
         isPaused = false; pauseButton?.alpha = 1; pauseIcon("pause.fill"); waveformView?.reset()
         recStart = Date(); pausedTotal = 0; timerLabel?.text = "0:00"
         recordControls?.alpha = 0
+        // Compose mode's own ✕ would otherwise sit alongside recordControls' cancel —
+        // hide it for the duration of the recording, restored in exitRecordingUI().
+        transformCancelButton?.isHidden = true
         UIView.animate(withDuration: 0.25) {
             self.iconGroup?.isHidden = true
             self.flexSpacer?.isHidden = true
@@ -447,6 +559,15 @@ class KeyboardViewController: UIInputViewController, AVAudioRecorderDelegate, UI
     private func exitRecordingUI() {
         stopMeter(); stopElapsed(); isPaused = false
         iconGroup?.alpha = 0
+        // Mic can be repurposed to "speak a transform instruction" — if a transform flow
+        // is still active (compose/busy), restore ITS bar state, not the normal one.
+        if transformState != .idle {
+            UIView.animate(withDuration: 0.25) {
+                self.recordControls?.isHidden = true
+                self.transformCancelButton?.isHidden = false
+            }
+            return
+        }
         UIView.animate(withDuration: 0.25) {
             self.recordControls?.isHidden = true
             self.iconGroup?.isHidden = false
@@ -627,7 +748,14 @@ class KeyboardViewController: UIInputViewController, AVAudioRecorderDelegate, UI
         r4.addArrangedSubview(buildSpaceKey())
         let period = charKey("."); period.widthAnchor.constraint(equalToConstant: 34).isActive = true
         r4.addArrangedSubview(period)
-        let ret = funcKey("↵", width: 60) { [weak self] in self?.textDocumentProxy.insertText("\n") }
+        let ret = funcKey("↵", width: 60) { [weak self] in
+            guard let self = self else { return }
+            if self.transformState == .compose && !self.transformInstruction.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                self.sendTransform()
+            } else {
+                self.textDocumentProxy.insertText("\n")
+            }
+        }
         setKeyBaseColor(ret, pal.returnBg); ret.setTitleColor(pal.returnText, for: .normal)
         r4.addArrangedSubview(ret)
         kb.addArrangedSubview(r4)
@@ -802,6 +930,14 @@ class KeyboardViewController: UIInputViewController, AVAudioRecorderDelegate, UI
         if layer == .letters && shifted && !capsLock { shifted = false; refreshLetterCaps() }
     }
     private func commit(_ s: String) {
+        // While composing a transform instruction, the SAME letter keys feed a local
+        // buffer instead of the host app — the original selection is never touched
+        // until Replace, which is what keeps it alive through the whole flow.
+        if transformState == .compose {
+            transformInstruction += s
+            refreshTransformComposeUI()
+            return
+        }
         // Learn the just-finished word when a single non-letter boundary (space/punctuation)
         // is committed — capture BEFORE inserting so currentWordPrefix() still sees the word.
         if s.count == 1, let ch = s.first, !ch.isLetter {
@@ -813,6 +949,7 @@ class KeyboardViewController: UIInputViewController, AVAudioRecorderDelegate, UI
     // Space key: double-space → ". " (Gboard). If the text before the cursor ends with a single
     // space that is itself preceded by a letter/digit, replace that space with ". "; else a normal space.
     private func onSpace() {
+        if transformState == .compose { commit(" "); return }
         let before = textDocumentProxy.documentContextBeforeInput ?? ""
         if before.hasSuffix(" ") && before.count >= 2 {
             let prev = before[before.index(before.endIndex, offsetBy: -2)]
@@ -851,7 +988,14 @@ class KeyboardViewController: UIInputViewController, AVAudioRecorderDelegate, UI
         else { shifted = true }
         refreshLetterCaps()   // in-place caps/glyph swap (no full rebuild)
     }
-    private func onBackspace() { textDocumentProxy.deleteBackward(); updateSuggestions() }
+    private func onBackspace() {
+        if transformState == .compose {
+            if !transformInstruction.isEmpty { transformInstruction.removeLast() }
+            refreshTransformComposeUI()
+            return
+        }
+        textDocumentProxy.deleteBackward(); updateSuggestions()
+    }
 
     @objc private func onCommaLong(_ g: UILongPressGestureRecognizer) {
         if g.state == .began { openEmoji() }
@@ -869,6 +1013,7 @@ class KeyboardViewController: UIInputViewController, AVAudioRecorderDelegate, UI
     }
     private func doUpdateSuggestions() {
         guard suggestionStrip != nil else { return }
+        if transformState != .idle { return }   // compose UI owns the suggestion strip
         if activeOverlay != nil { renderSuggestionCells([]); return }
         let raw = currentWordPrefix()
         let word = raw.lowercased()
@@ -1089,6 +1234,21 @@ class KeyboardViewController: UIInputViewController, AVAudioRecorderDelegate, UI
                 list.addArrangedSubview(overlayRow(time.isEmpty ? t : "\(time)   \(t)", "", pal.keyText) { [weak self] in
                     self?.textDocumentProxy.insertText(t); self?.showKeyboard() })
             }
+        case "clipboard":
+            if !hasFullAccess {
+                list.addArrangedSubview(overlayRow("Clipboard needs Full Access", "Tap to open Settings", accent) { [weak self] in
+                    guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
+                    self?.extensionContext?.open(url, completionHandler: nil)
+                })
+            } else {
+                loadClipboardHistoryIfNeeded()
+                if clipboardCache.isEmpty { list.addArrangedSubview(emptyRow("No clipboard items yet — copy something to get started")) }
+                for c in clipboardCache {
+                    let time = formatTime(c.at)
+                    list.addArrangedSubview(overlayRow(time.isEmpty ? c.text : "\(time)   \(c.text)", "", pal.keyText) { [weak self] in
+                        self?.textDocumentProxy.insertText(c.text); self?.showKeyboard() })
+                }
+            }
         case "vocabulary":
             let arr = (cfg?["vocabulary"] as? [[String: Any]]) ?? []
             if arr.isEmpty { list.addArrangedSubview(emptyRow("No words yet")) }
@@ -1215,6 +1375,323 @@ class KeyboardViewController: UIInputViewController, AVAudioRecorderDelegate, UI
         return obj
     }
 
+    // MARK: clipboard (self-contained: unlike `flume_kbd_config.json` above, this file is
+    // written AND read by the extension itself — the main app never touches clipboard content)
+    private func clipboardFileURL() -> URL? {
+        FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: "group.com.verbal.app")?
+            .appendingPathComponent("flume_kbd_clipboard.json")
+    }
+
+    private func loadClipboardHistoryIfNeeded() {
+        guard !clipboardLoaded else { return }
+        clipboardLoaded = true
+        guard let url = clipboardFileURL(),
+              let data = try? Data(contentsOf: url),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+        lastClipboardChangeCount = obj["lastChangeCount"] as? Int ?? -1
+        let items = (obj["items"] as? [[String: Any]]) ?? []
+        clipboardCache = items.compactMap { item -> (text: String, at: String)? in
+            guard let text = item["text"] as? String, !text.isEmpty else { return nil }
+            return (text: text, at: item["at"] as? String ?? "")
+        }
+    }
+
+    private func saveClipboardHistory() {
+        guard let url = clipboardFileURL() else { return }
+        let items = clipboardCache.prefix(clipboardCap).map { ["text": $0.text, "at": $0.at] }
+        let obj: [String: Any] = ["items": items, "lastChangeCount": lastClipboardChangeCount]
+        guard let data = try? JSONSerialization.data(withJSONObject: obj) else { return }
+        try? data.write(to: url, options: .atomic)
+    }
+
+    // Called on every keyboard-show (viewWillAppear). Cheap in the steady state — an int
+    // compare — since it only does real work when UIPasteboard.general.changeCount moved.
+    private func checkClipboardForNewContent() {
+        guard hasFullAccess else { return }
+        loadClipboardHistoryIfNeeded()
+        let pb = UIPasteboard.general
+        let cc = pb.changeCount
+        guard cc != lastClipboardChangeCount else { return }
+        lastClipboardChangeCount = cc
+        defer { saveClipboardHistory() }   // persist the seen changeCount even if we skip recording below
+
+        guard (readConfig()?["clipboardHistoryEnabled"] as? Bool) ?? true else { return }
+        // Respect the password-manager convention for "don't capture this" content
+        // (1Password/Bitwarden et al. tag concealed copies with this UTI).
+        guard !pb.types.contains("org.nspasteboard.ConcealedType"), let text = pb.string, !text.isEmpty else { return }
+
+        let stored = text.count > clipboardEntryCharCap ? String(text.prefix(clipboardEntryCharCap)) : text
+        clipboardCache.removeAll { $0.text == stored }
+        clipboardCache.insert((text: stored, at: ISO8601DateFormatter().string(from: Date())), at: 0)
+        if clipboardCache.count > clipboardCap { clipboardCache = Array(clipboardCache.prefix(clipboardCap)) }
+
+        pendingQuickPaste = text
+        refreshQuickPasteChip()
+    }
+
+    // Shared bar-chip slot: shows whichever ephemeral affordance is most recent — a
+    // just-replaced transform's Undo takes priority over an older pending quick-paste,
+    // since it's the more contextually relevant action. The two never show at once;
+    // that's an acceptable, expected degrade (newest ephemeral action wins).
+    private func refreshQuickPasteChip() {
+        guard let chip = quickPasteChip else { return }
+        if let undo = pendingUndo {
+            chip.setTitle("↩︎ Undo (\(undo.length) chars)", for: .normal)
+            chip.isHidden = false
+        } else if let text = pendingQuickPaste, !text.isEmpty {
+            let preview = text.count > 8 ? String(text.prefix(8)) + "…" : text
+            chip.setTitle("📋 " + preview, for: .normal)
+            chip.isHidden = false
+        } else {
+            chip.isHidden = true
+        }
+    }
+
+    private func tapQuickPasteChip() {
+        if let undo = pendingUndo {
+            undoWorkItem?.cancel()
+            for _ in 0..<undo.length { textDocumentProxy.deleteBackward() }
+            textDocumentProxy.insertText(undo.original)
+            pendingUndo = nil
+            refreshQuickPasteChip()
+            return
+        }
+        guard let text = pendingQuickPaste else { return }
+        textDocumentProxy.insertText(text)
+        pendingQuickPaste = nil
+        refreshQuickPasteChip()
+    }
+
+    // MARK: transform (select text elsewhere → instruction → LLM rewrite → replace)
+    private func onTransformTap() {
+        guard ((readConfig()?["transformEnabled"] as? Bool) ?? false), transformState == .idle else { return }
+        let selected = (textDocumentProxy.selectedText ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !selected.isEmpty else {
+            flashTransformMessage("Select some text first")
+            return
+        }
+        transformOriginalText = selected.count > transformSelectionCharCap
+            ? String(selected.prefix(transformSelectionCharCap)) : selected
+        transformInstruction = ""
+        enterCompose()
+    }
+
+    private func flashTransformMessage(_ msg: String) {
+        suggestionStrip.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        let lbl = UILabel(); lbl.text = msg; lbl.textColor = pal.mutedText; lbl.font = uiFont(13)
+        lbl.textAlignment = .center
+        suggestionStrip.addArrangedSubview(lbl)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+            guard let self = self, self.transformState == .idle else { return }
+            self.updateSuggestions()
+        }
+    }
+
+    private func enterCompose() {
+        transformState = .compose
+        UIView.animate(withDuration: 0.2) {
+            self.iconGroup?.isHidden = true
+            self.transformButton?.isHidden = true
+            self.transformCancelButton?.isHidden = false
+        }
+        refreshTransformComposeUI()
+    }
+
+    private func exitCompose() {
+        transformState = .idle
+        UIView.animate(withDuration: 0.2) {
+            self.iconGroup?.isHidden = false
+            self.transformButton?.isHidden = !((self.readConfig()?["transformEnabled"] as? Bool) ?? false)
+            self.transformCancelButton?.isHidden = true
+        }
+        showKeyboard()
+    }
+
+    // Suggestion-strip band is repurposed while composing: the growing instruction
+    // preview (typed via the SAME letter keys — see commit()/onSpace()/onBackspace()
+    // below) plus a horizontally-scrollable row of one-tap presets.
+    private func refreshTransformComposeUI() {
+        suggestionStrip.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        let row = UIStackView(); row.axis = .horizontal; row.spacing = 8; row.alignment = .center
+        row.translatesAutoresizingMaskIntoConstraints = false
+
+        let label = UILabel()
+        label.text = transformInstruction.isEmpty ? "Type or tap a preset…" : transformInstruction
+        label.textColor = transformInstruction.isEmpty ? pal.mutedText : pal.keyText
+        label.font = uiFont(13)
+        label.lineBreakMode = .byTruncatingHead
+        label.setContentHuggingPriority(.defaultLow, for: .horizontal)
+
+        let scroll = UIScrollView(); scroll.showsHorizontalScrollIndicator = false
+        let chips = UIStackView(); chips.axis = .horizontal; chips.spacing = 6
+        chips.translatesAutoresizingMaskIntoConstraints = false
+        for (title, instruction) in transformPresets {
+            let b = UIButton(type: .system)
+            b.setTitle(title, for: .normal)
+            b.setTitleColor(pal.keyText, for: .normal)
+            b.titleLabel?.font = uiFont(12)
+            b.backgroundColor = pal.highlightBg; b.layer.cornerRadius = 13
+            b.contentEdgeInsets = UIEdgeInsets(top: 6, left: 10, bottom: 6, right: 10)
+            b.addAction(UIAction { [weak self] _ in self?.fireTransformPreset(instruction) }, for: .touchUpInside)
+            chips.addArrangedSubview(b)
+        }
+        scroll.addSubview(chips)
+        NSLayoutConstraint.activate([
+            chips.leadingAnchor.constraint(equalTo: scroll.leadingAnchor),
+            chips.trailingAnchor.constraint(equalTo: scroll.trailingAnchor),
+            chips.topAnchor.constraint(equalTo: scroll.topAnchor),
+            chips.bottomAnchor.constraint(equalTo: scroll.bottomAnchor),
+            chips.heightAnchor.constraint(equalTo: scroll.heightAnchor),
+        ])
+
+        row.addArrangedSubview(label)
+        row.addArrangedSubview(scroll)
+        suggestionStrip.addArrangedSubview(row)
+        NSLayoutConstraint.activate([
+            row.leadingAnchor.constraint(equalTo: suggestionStrip.leadingAnchor, constant: 8),
+            row.trailingAnchor.constraint(equalTo: suggestionStrip.trailingAnchor, constant: -8),
+            row.topAnchor.constraint(equalTo: suggestionStrip.topAnchor),
+            row.bottomAnchor.constraint(equalTo: suggestionStrip.bottomAnchor),
+        ])
+    }
+
+    private func fireTransformPreset(_ instruction: String) {
+        transformInstruction = instruction
+        sendTransform()
+    }
+
+    private func sendTransform() {
+        guard transformState == .compose else { return }
+        let instruction = transformInstruction.trimmingCharacters(in: .whitespacesAndNewlines)
+        transformState = .busy
+        refreshTransformBusyUI()
+        let isImprovise = instruction.isEmpty
+        let system = isImprovise ? Self.improviseSystemPrompt : Self.transformSystemPrompt
+        let user = isImprovise ? transformOriginalText
+            : "INSTRUCTION: \(instruction)\n\nTEXT:\n\(transformOriginalText)"
+        chatViaProxy(system: system, user: user) { [weak self] result in
+            guard let self = self, self.transformState == .busy else { return }   // cancelled meanwhile
+            guard let raw = result, !raw.isEmpty else {
+                self.transformState = .compose
+                self.refreshTransformComposeUI()
+                self.flashTransformMessage("Couldn't transform — try again")
+                return
+            }
+            self.transformRewrite = Self.stripTransformWrapping(raw, original: self.transformOriginalText)
+            self.transformState = .preview
+            self.refreshTransformPreviewUI()
+        }
+    }
+
+    private func refreshTransformBusyUI() {
+        let wrap = UIStackView(); wrap.axis = .vertical; wrap.alignment = .center; wrap.spacing = 8
+        let spinner = UIActivityIndicatorView(style: .medium); spinner.color = pal.mutedText; spinner.startAnimating()
+        let label = UILabel(); label.text = "Transforming…"; label.textColor = pal.mutedText; label.font = uiFont(13)
+        wrap.addArrangedSubview(spinner); wrap.addArrangedSubview(label)
+        setContent(wrap)
+    }
+
+    private func refreshTransformPreviewUI() {
+        let wrap = UIStackView(); wrap.axis = .vertical; wrap.spacing = 8
+        let scroll = UIScrollView()
+        let label = UILabel()
+        label.text = transformRewrite; label.numberOfLines = 0; label.font = uiFont(14); label.textColor = pal.keyText
+        label.translatesAutoresizingMaskIntoConstraints = false
+        scroll.addSubview(label)
+        NSLayoutConstraint.activate([
+            label.leadingAnchor.constraint(equalTo: scroll.leadingAnchor, constant: 8),
+            label.trailingAnchor.constraint(equalTo: scroll.trailingAnchor, constant: -8),
+            label.topAnchor.constraint(equalTo: scroll.topAnchor, constant: 4),
+            label.bottomAnchor.constraint(equalTo: scroll.bottomAnchor, constant: -4),
+            label.widthAnchor.constraint(equalTo: scroll.widthAnchor, constant: -16),
+        ])
+        wrap.addArrangedSubview(scroll)
+
+        let buttons = UIStackView(); buttons.axis = .horizontal; buttons.spacing = 8; buttons.distribution = .fillEqually
+        buttons.heightAnchor.constraint(equalToConstant: 44).isActive = true
+        let cancelBtn = UIButton(type: .system)
+        cancelBtn.setTitle("Cancel", for: .normal); cancelBtn.setTitleColor(pal.mutedText, for: .normal)
+        cancelBtn.backgroundColor = pal.highlightBg; cancelBtn.layer.cornerRadius = 10
+        cancelBtn.addAction(UIAction { [weak self] _ in self?.exitCompose() }, for: .touchUpInside)
+        let replaceBtn = UIButton(type: .system)
+        replaceBtn.setTitle("Replace", for: .normal); replaceBtn.setTitleColor(.white, for: .normal)
+        replaceBtn.backgroundColor = accent; replaceBtn.layer.cornerRadius = 10
+        replaceBtn.addAction(UIAction { [weak self] _ in self?.applyTransformReplace() }, for: .touchUpInside)
+        buttons.addArrangedSubview(cancelBtn); buttons.addArrangedSubview(replaceBtn)
+        wrap.addArrangedSubview(buttons)
+        setContent(wrap)
+    }
+
+    private func applyTransformReplace() {
+        guard transformState == .preview else { return }
+        textDocumentProxy.insertText(transformRewrite)
+        let original = transformOriginalText
+        let rewriteLen = transformRewrite.count
+        transformState = .idle
+        UIView.animate(withDuration: 0.2) {
+            self.iconGroup?.isHidden = false
+            self.transformButton?.isHidden = !((self.readConfig()?["transformEnabled"] as? Bool) ?? false)
+            self.transformCancelButton?.isHidden = true
+        }
+        showKeyboard()
+        pendingUndo = (length: rewriteLen, original: original)
+        refreshQuickPasteChip()
+        undoWorkItem?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self = self else { return }
+            self.pendingUndo = nil
+            self.refreshQuickPasteChip()
+        }
+        undoWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 6.0, execute: work)
+    }
+
+    // Mirrors whisperflow/app/transform.py::_strip_wrapping — models occasionally wrap
+    // output in quotes/fences despite the prompt saying not to.
+    private static func stripTransformWrapping(_ out: String, original: String) -> String {
+        var s = out.trimmingCharacters(in: .whitespacesAndNewlines)
+        if s.hasPrefix("```") {
+            s = s.trimmingCharacters(in: CharacterSet(charactersIn: "`")).trimmingCharacters(in: .whitespacesAndNewlines)
+            for lang in ["text", "markdown", "md"] where s.lowercased().hasPrefix(lang + "\n") {
+                s = String(s.dropFirst(lang.count + 1))
+            }
+        }
+        let quoteChars: Set<Character> = ["\"", "'", "\u{201C}"]
+        if s.count > 1, let first = s.first, let last = s.last,
+           (first == "\"" && last == "\"") || (first == "'" && last == "'") || (first == "\u{201C}" && last == "\u{201D}"),
+           let origFirst = original.first, !quoteChars.contains(origFirst) {
+            s = String(s.dropFirst().dropLast())
+        }
+        return s
+    }
+
+    // JSON chat-completions call — sibling of transcribe(data:) below (same endpoint/auth,
+    // same async URLSession + main-queue-callback convention), just a different body shape.
+    private func chatViaProxy(system: String, user: String, completion: @escaping (String?) -> Void) {
+        guard let url = URL(string: "\(supabaseURL)/functions/v1/groq-proxy") else { completion(nil); return }
+        var req = URLRequest(url: url); req.httpMethod = "POST"
+        req.setValue("Bearer \(supabaseAnon)", forHTTPHeaderField: "Authorization")
+        req.setValue(supabaseAnon, forHTTPHeaderField: "apikey")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let payload: [String: Any] = [
+            "model": "llama-3.3-70b-versatile",
+            "messages": [["role": "system", "content": system], ["role": "user", "content": user]],
+            "temperature": 0, "max_tokens": 2048,
+        ]
+        guard let body = try? JSONSerialization.data(withJSONObject: payload) else { completion(nil); return }
+        req.httpBody = body
+        URLSession.shared.dataTask(with: req) { data, _, _ in
+            guard let data = data,
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let choices = obj["choices"] as? [[String: Any]],
+                  let message = choices.first?["message"] as? [String: Any],
+                  let content = (message["content"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !content.isEmpty
+            else { DispatchQueue.main.async { completion(nil) }; return }
+            DispatchQueue.main.async { completion(content) }
+        }.resume()
+    }
+
     // MARK: dictation (record → groq-proxy). In-extension mic is a device-only
     // unknown (spec risk #1); the button is present and works where the OS allows it.
     @objc private func onMicTap() {
@@ -1312,11 +1789,20 @@ class KeyboardViewController: UIInputViewController, AVAudioRecorderDelegate, UI
                   let text = (obj["text"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty
             else { return }
             DispatchQueue.main.async {
-                self.textDocumentProxy.insertText(text + " ")
                 // Switch to playback so the done SFX is audible after the async transcription.
                 try? AVAudioSession.sharedInstance().setCategory(.playback, options: [.mixWithOthers])
                 try? AVAudioSession.sharedInstance().setActive(true)
                 self.playSound("flume_done")
+                // Mic is repurposed while composing a transform instruction (same button,
+                // mode-dependent meaning) — route the transcription into the instruction
+                // buffer and auto-send instead of typing it into the host app.
+                if self.transformState == .compose {
+                    self.transformInstruction = text
+                    self.refreshTransformComposeUI()
+                    self.sendTransform()
+                } else {
+                    self.textDocumentProxy.insertText(text + " ")
+                }
             }
         }.resume()
     }

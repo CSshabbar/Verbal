@@ -10,6 +10,12 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+class ProxyPayloadTooLarge(Exception):
+    """Groq rejected the request (413) — the shared key's tokens-per-minute
+    budget can't fit this request. Callers that can shrink their payload
+    should catch this and retry smaller; others fail closed like any error."""
+
+
 def _endpoint() -> str:
     from app.sync import SUPABASE_URL
     return f"{SUPABASE_URL}/functions/v1/groq-proxy"
@@ -69,11 +75,15 @@ def chat_via_proxy(messages: list, config: dict, model: str = "llama-3.3-70b-ver
         if provider:
             payload["provider"] = provider
         resp = httpx.post(_endpoint(), headers=_headers(config, json=True), json=payload, timeout=timeout)
+        if resp.status_code == 413:
+            raise ProxyPayloadTooLarge(resp.text[:200])
         if resp.status_code != 200:
             logger.warning("groq-proxy chat %s: %s", resp.status_code, resp.text[:200])
             return None
         data = resp.json()
         return (data.get("choices", [{}])[0].get("message", {}).get("content") or "").strip() or None
+    except ProxyPayloadTooLarge:
+        raise
     except Exception as e:
         logger.warning("groq-proxy chat failed: %s", e)
         return None

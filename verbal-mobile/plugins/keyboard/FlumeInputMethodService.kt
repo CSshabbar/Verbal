@@ -1,5 +1,7 @@
 package com.verbal.app.keyboard
 
+import android.content.ClipDescription
+import android.content.ClipboardManager
 import android.content.Intent
 import android.content.res.Configuration
 import android.graphics.Color
@@ -31,6 +33,10 @@ import java.io.File
 import java.io.FileInputStream
 import java.net.HttpURLConnection
 import java.net.URL
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import java.util.TimeZone
 
 /**
  * Flume Keyboard v2 (Android IME) — full QWERTY keyboard with the Flume bar.
@@ -75,6 +81,59 @@ class FlumeInputMethodService : InputMethodService() {
     private var recStartMs = 0L
     private var pausedTotalMs = 0L
     private var pauseStartMs = 0L
+    // ── clipboard (self-contained: written AND read by this service, never via the
+    // one-directional flume_kbd_config.json app→keyboard bridge; content never leaves device)
+    private var quickPasteChip: TextView? = null
+    private var pendingQuickPaste: String? = null
+    private var clipboardCache = ArrayList<Pair<String, String>>()   // (text, iso timestamp), most-recent-first
+    private var clipboardLoaded = false
+    private var lastClipHash = 0
+    private val CLIPBOARD_CAP = 15                // mirrors the dictation-history wire cap
+    private val CLIPBOARD_ENTRY_CHAR_CAP = 4000   // bound file size / row rendering only
+    private var clipboardListener: ClipboardManager.OnPrimaryClipChangedListener? = null
+    // ── transform (select text elsewhere → instruction → LLM rewrite → replace) ─────────
+    // Mirrors whisperflow/app/transform.py's Mode B exactly (same prompts, same
+    // preview-before-replace contract) — see context/03-features.md for why the
+    // mechanism differs (no Accessibility-style selection API, no Cmd+Z equivalent).
+    private enum class TransformState { IDLE, COMPOSE, BUSY, PREVIEW }
+    private var transformState = TransformState.IDLE
+    private var transformButton: TextView? = null
+    private var transformCancelButton: View? = null
+    private var transformOriginalText = ""
+    private var transformInstruction = ""
+    private var transformRewrite = ""
+    private var pendingUndo: Pair<Int, String>? = null   // (length, original)
+    private var undoRunnable: Runnable? = null
+    private val TRANSFORM_SELECTION_CHAR_CAP = 8000   // smaller than desktop's 12000 — mobile
+                                                       // selections are shorter; same shared-key TPM caution
+    private val transformPresets = listOf(
+        "Improvise" to "",   // "" = IMPROVISE_SYSTEM_PROMPT, no instruction (mirrors desktop's 1-tap)
+        "Formal" to "Make this more formal",
+        "Casual" to "Make this more casual",
+        "Shorten" to "Make this shorter and tighter",
+        "Fix grammar" to "Fix grammar and punctuation",
+    )
+    // Verbatim from whisperflow/app/transform.py:48-69 — keep in sync; this is a
+    // SEPARATE prompt from the dictation cleanup prompt and must never be merged with it.
+    private val TRANSFORM_SYSTEM_PROMPT =
+        "You transform the user's text according to their instruction.\n" +
+        "Rules:\n" +
+        "- Return ONLY the transformed text. No preamble, no explanation, no quotes, " +
+        "no markdown fences.\n" +
+        "- Never add facts, names, numbers or claims that are not in the original text.\n" +
+        "- Preserve the language of the original text unless the instruction says to translate.\n" +
+        "- Keep meaning intact unless the instruction explicitly asks to change it.\n" +
+        "- If the instruction is unclear or impossible, return the original text lightly " +
+        "cleaned up (punctuation, casing) instead."
+    private val IMPROVISE_SYSTEM_PROMPT =
+        "You are a precision editor. Rewrite the user's text to be clearer and tighter.\n" +
+        "Rules:\n" +
+        "- Return ONLY the rewritten text. No preamble, no explanation, no quotes, " +
+        "no markdown fences.\n" +
+        "- Preserve the meaning, facts, tone register and language. Never add content.\n" +
+        "- Fix grammar, punctuation and awkward phrasing; break up run-ons; remove filler.\n" +
+        "- Keep the original structure (paragraphs, lists, greetings/sign-offs) intact.\n" +
+        "- Do not shorten by more than ~20% unless the text is redundant."
     private val ampPoll = object : Runnable {
         override fun run() {
             if (!recording) return
@@ -113,6 +172,8 @@ class FlumeInputMethodService : InputMethodService() {
     private val IC_GRID  = "\uF356"   // grid-outline (canvas)
     private val IC_TIME  = "\uF5DE"   // time-outline (history)
     private val IC_BOOK  = "\uF1A6"   // book-outline (vocabulary)
+    private val IC_CLIPBOARD = "\uF248"   // clipboard-outline (clipboard)
+    private val IC_TRANSFORM = "\uF58D"   // sparkles-outline (transform)
     private val IC_MIC   = ""   // mic
     private val IC_CLOSE = ""   // close (cancel \u2715)
     private val IC_PAUSE = ""   // pause
@@ -351,6 +412,17 @@ class FlumeInputMethodService : InputMethodService() {
         }
     }
 
+    // Registered once for the service's process lifetime — an Android IME stays
+    // resident more readily than an iOS keyboard extension, so this can notice a
+    // clipboard change made in another app before the user reopens this keyboard.
+    override fun onCreate() {
+        super.onCreate()
+        val cm = getSystemService(CLIPBOARD_SERVICE) as? ClipboardManager
+        val listener = ClipboardManager.OnPrimaryClipChangedListener { checkClipboardForNewContent() }
+        cm?.addPrimaryClipChangedListener(listener)
+        clipboardListener = listener
+    }
+
     // ── view tree ─────────────────────────────────────────────────────────────────
     override fun onCreateInputView(): View {
         applyTheme()
@@ -396,11 +468,18 @@ class FlumeInputMethodService : InputMethodService() {
         showKeyboard()
         updateSuggestions()
         maybeAutoCap()
+        // Fallback in case the listener wasn't registered / the service was killed
+        // and relaunched since the clipboard last changed.
+        checkClipboardForNewContent()
     }
 
     override fun onDestroy() {
         hideKeyPreview()
         try { soundPool.release() } catch (e: Exception) {}
+        try {
+            val cm = getSystemService(CLIPBOARD_SERVICE) as? ClipboardManager
+            clipboardListener?.let { cm?.removePrimaryClipChangedListener(it) }
+        } catch (e: Exception) {}
         super.onDestroy()
     }
 
@@ -420,6 +499,15 @@ class FlumeInputMethodService : InputMethodService() {
             background = rounded(keyText, 8)
             layoutParams = LinearLayout.LayoutParams(dp(32), dp(32))
         })
+        quickPasteChip = TextView(this).apply {
+            typeface = geist ?: Typeface.DEFAULT
+            setTextColor(Color.WHITE); textSize = 13f; gravity = Gravity.CENTER
+            background = rounded(ACCENT, 14)
+            setPadding(dp(12), dp(6), dp(12), dp(6))
+            visibility = View.GONE
+            setOnClickListener { tapQuickPasteChip() }
+        }
+        bar.addView(quickPasteChip)
         // Middle: overlay icons (right-aligned, weight 1) — swapped for the recording
         // controls while dictating.
         val icons = LinearLayout(this).apply {
@@ -429,12 +517,24 @@ class FlumeInputMethodService : InputMethodService() {
             addView(barIcon(IC_FLASH, "snippets"))
             addView(barIcon(IC_GRID, "canvas"))
             addView(barIcon(IC_TIME, "history"))
+            addView(barIcon(IC_CLIPBOARD, "clipboard"))
             addView(barIcon(IC_BOOK, "vocabulary"))
         }
         iconGroup = icons
         bar.addView(icons)
         bar.addView(buildRecordControls())
+        bar.addView(buildTransformCancelControl())
         bar.addView(View(this).apply { layoutParams = LinearLayout.LayoutParams(dp(6), 1) })
+        // Transform — a live action on the current selection, same category as mic/dictation,
+        // not a browse-a-list overlay, so it sits next to mic rather than in the icon group.
+        transformButton = TextView(this).apply {
+            text = IC_TRANSFORM; typeface = icFont; setTextColor(keyText); textSize = 18f; gravity = Gravity.CENTER
+            background = rounded(highlightBg, 999)
+            layoutParams = LinearLayout.LayoutParams(dp(38), dp(38)).apply { rightMargin = dp(8) }
+            visibility = if (readConfig()?.optBoolean("transformEnabled", false) == true) View.VISIBLE else View.GONE
+            setOnClickListener { onTransformTap() }
+        }
+        bar.addView(transformButton)
         // mic
         mic = TextView(this).apply {
             text = IC_MIC; typeface = icFont; setTextColor(micFg); textSize = 20f; gravity = Gravity.CENTER
@@ -531,6 +631,21 @@ class FlumeInputMethodService : InputMethodService() {
         return row
     }
 
+    // Compose-mode bar swap (mirrors buildRecordControls' role): replaces the icon group
+    // + transform button with a single ✕ while the user is composing a transform instruction.
+    private fun buildTransformCancelControl(): View {
+        val cancel = TextView(this).apply {
+            text = IC_CLOSE; setTextColor(keyText); textSize = 18f; gravity = Gravity.CENTER
+            typeface = icFont
+            background = rounded(highlightBg, 999)
+            layoutParams = LinearLayout.LayoutParams(dp(38), dp(38))
+            visibility = View.GONE
+            setOnClickListener { exitCompose() }
+        }
+        transformCancelButton = cancel
+        return cancel
+    }
+
     private fun enterRecordingUI() {
         paused = false; pauseBtn?.text = IC_PAUSE; pauseBtn?.alpha = 1f
         recStartMs = System.currentTimeMillis(); pausedTotalMs = 0L
@@ -540,6 +655,9 @@ class FlumeInputMethodService : InputMethodService() {
         // recording controls (F wordmark stays).
         iconGroup?.animate()?.alpha(0f)?.setDuration(250)?.withEndAction { iconGroup?.visibility = View.GONE }
         micWrap?.animate()?.alpha(0f)?.setDuration(250)?.withEndAction { micWrap?.visibility = View.GONE }
+        // Compose mode's own ✕ would otherwise sit alongside recordControls' cancel —
+        // hide it for the duration of the recording, restored in exitRecordingUI().
+        transformCancelButton?.visibility = View.GONE
         recordControls?.apply {
             alpha = 0f; translationX = dp(8).toFloat(); visibility = View.VISIBLE
             animate().alpha(1f).translationX(0f).setDuration(250).start()
@@ -551,8 +669,14 @@ class FlumeInputMethodService : InputMethodService() {
         main.removeCallbacks(ampPoll); main.removeCallbacks(timerTick)
         paused = false
         recordControls?.animate()?.alpha(0f)?.setDuration(200)?.withEndAction { recordControls?.visibility = View.GONE }
-        iconGroup?.apply { visibility = View.VISIBLE; animate().alpha(1f).setDuration(250).start() }
-        micWrap?.apply { visibility = View.VISIBLE; animate().alpha(1f).setDuration(250).start() }
+        // Mic can be repurposed to "speak a transform instruction" — if a transform flow
+        // is still active (compose/busy), restore ITS bar state, not the normal one.
+        if (transformState != TransformState.IDLE) {
+            transformCancelButton?.apply { visibility = View.VISIBLE; alpha = 1f }
+        } else {
+            iconGroup?.apply { visibility = View.VISIBLE; animate().alpha(1f).setDuration(250).start() }
+            micWrap?.apply { visibility = View.VISIBLE; animate().alpha(1f).setDuration(250).start() }
+        }
     }
 
     private fun togglePause() {
@@ -729,6 +853,14 @@ class FlumeInputMethodService : InputMethodService() {
     }
 
     private fun commit(s: String) {
+        // While composing a transform instruction, the SAME letter keys feed a local
+        // buffer instead of the host app — the original selection is never touched
+        // until Replace, which is what keeps it alive through the whole flow.
+        if (transformState == TransformState.COMPOSE) {
+            transformInstruction += s
+            refreshTransformComposeUI()
+            return
+        }
         // Learn the just-finished word when a word boundary (space/punctuation) is typed.
         if (s.length == 1 && !s[0].isLetter()) {
             currentWordPrefix().let { if (it.length >= 2) learnWord(it) }
@@ -741,6 +873,7 @@ class FlumeInputMethodService : InputMethodService() {
 
     // Space key. Double-space after a word → ". " (period + space), Gboard-style.
     private fun onSpace() {
+        if (transformState == TransformState.COMPOSE) { commit(" "); return }
         val ic = currentInputConnection
         if (ic != null) {
             val before = ic.getTextBeforeCursor(2, 0)?.toString() ?: ""
@@ -819,6 +952,11 @@ class FlumeInputMethodService : InputMethodService() {
     }
 
     private fun onBackspace() {
+        if (transformState == TransformState.COMPOSE) {
+            if (transformInstruction.isNotEmpty()) transformInstruction = transformInstruction.dropLast(1)
+            refreshTransformComposeUI()
+            return
+        }
         val ic = currentInputConnection ?: return
         val sel = ic.getSelectedText(0)
         if (sel != null && sel.isNotEmpty()) {
@@ -918,6 +1056,9 @@ class FlumeInputMethodService : InputMethodService() {
     }
 
     private fun onEnter() {
+        if (transformState == TransformState.COMPOSE && transformInstruction.trim().isNotEmpty()) {
+            sendTransform(); return
+        }
         val ic = currentInputConnection ?: return
         val action = (currentInputEditorInfo?.imeOptions ?: 0) and EditorInfo.IME_MASK_ACTION
         if (action != EditorInfo.IME_ACTION_NONE && action != EditorInfo.IME_ACTION_UNSPECIFIED)
@@ -936,6 +1077,7 @@ class FlumeInputMethodService : InputMethodService() {
         main.postDelayed(suggRunnable, 70)
     }
     private fun doUpdateSuggestions() {
+        if (transformState != TransformState.IDLE) return   // compose UI owns the suggestion strip
         val strip = suggestionStrip ?: return
         strip.removeAllViews()
         if (activeOverlay != null) return
@@ -1075,6 +1217,7 @@ class FlumeInputMethodService : InputMethodService() {
             text = when (which) {
                 "snippets" -> "Tap to expand"
                 "history" -> "Tap to insert"
+                "clipboard" -> "Tap to insert"
                 "vocabulary" -> "${cfg?.optJSONArray("vocabulary")?.length() ?: 0} words"
                 else -> "→ $deviceName"
             }
@@ -1117,6 +1260,18 @@ class FlumeInputMethodService : InputMethodService() {
                     })
                 }
                 list.addView(footerRow("See all history") { openCanvas() })
+            }
+            "clipboard" -> {
+                loadClipboardHistoryIfNeeded()
+                if (clipboardCache.isEmpty()) list.addView(emptyRow("No clipboard items yet — copy something to get started"))
+                else {
+                    for ((t, at) in clipboardCache) {
+                        list.addView(historyRow(formatTime(at), t) {
+                            currentInputConnection?.commitText(t, 1); showKeyboard()
+                        })
+                    }
+                    list.addView(footerRow("Clear clipboard history") { clearClipboardHistory() })
+                }
             }
             "vocabulary" -> {
                 val arr = cfg?.optJSONArray("vocabulary")
@@ -1404,6 +1559,342 @@ class FlumeInputMethodService : InputMethodService() {
             cfgCache
         }
     } catch (e: Exception) { null }
+
+    // ── clipboard (self-contained: unlike flume_kbd_config.json above, this file is
+    // written AND read by this service itself; the main app never touches clipboard content)
+    private fun clipboardFile(): File = File(filesDir, "flume_kbd_clipboard.json")
+
+    private fun loadClipboardHistoryIfNeeded() {
+        if (clipboardLoaded) return
+        clipboardLoaded = true
+        try {
+            val f = clipboardFile()
+            if (!f.exists()) return
+            val obj = JSONObject(f.readText())
+            val arr = obj.optJSONArray("items") ?: return
+            clipboardCache.clear()
+            for (i in 0 until arr.length()) {
+                val item = arr.optJSONObject(i) ?: continue
+                val text = item.optString("text"); if (text.isEmpty()) continue
+                clipboardCache.add(Pair(text, item.optString("at")))
+            }
+        } catch (e: Exception) {}
+    }
+
+    private fun saveClipboardHistory() {
+        try {
+            val arr = JSONArray()
+            for ((text, at) in clipboardCache.take(CLIPBOARD_CAP)) {
+                arr.put(JSONObject().apply { put("text", text); put("at", at) })
+            }
+            val obj = JSONObject().apply { put("items", arr) }
+            clipboardFile().writeText(obj.toString())
+        } catch (e: Exception) {}
+    }
+
+    // java.time requires API 26+ without desugaring (not configured in this project's
+    // build.gradle) — SimpleDateFormat works on every supported API level instead.
+    private fun nowIsoUtc(): String {
+        val fmt = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US)
+        fmt.timeZone = TimeZone.getTimeZone("UTC")
+        return fmt.format(Date())
+    }
+
+    private fun clearClipboardHistory() {
+        clipboardCache.clear()
+        saveClipboardHistory()
+        showKeyboard()
+    }
+
+    // Fires on every clipboard change (listener) and as a fallback on every new input
+    // session (onStartInputView) in case the service was relaunched since the last change.
+    private fun checkClipboardForNewContent() {
+        try {
+            if (!((readConfig()?.optBoolean("clipboardHistoryEnabled", true)) ?: true)) return
+            val cm = getSystemService(CLIPBOARD_SERVICE) as? ClipboardManager ?: return
+            val clip = cm.primaryClip ?: return
+            val desc = clip.description
+            if (!desc.hasMimeType(ClipDescription.MIMETYPE_TEXT_PLAIN) && !desc.hasMimeType(ClipDescription.MIMETYPE_TEXT_HTML)) return
+            // Respect the password-manager convention for "don't capture this" content.
+            if (Build.VERSION.SDK_INT >= 33 && desc.extras?.getBoolean(ClipDescription.EXTRA_IS_SENSITIVE, false) == true) return
+            if (clip.itemCount == 0) return
+            val text = clip.getItemAt(0).coerceToText(applicationContext)?.toString() ?: return
+            if (text.isEmpty()) return
+            val hash = text.hashCode()
+            if (hash == lastClipHash) return
+            lastClipHash = hash
+
+            loadClipboardHistoryIfNeeded()
+            val stored = if (text.length > CLIPBOARD_ENTRY_CHAR_CAP) text.take(CLIPBOARD_ENTRY_CHAR_CAP) else text
+            clipboardCache.removeAll { it.first == stored }
+            clipboardCache.add(0, Pair(stored, nowIsoUtc()))
+            if (clipboardCache.size > CLIPBOARD_CAP) {
+                while (clipboardCache.size > CLIPBOARD_CAP) clipboardCache.removeAt(clipboardCache.size - 1)
+            }
+            saveClipboardHistory()
+
+            pendingQuickPaste = text
+            refreshQuickPasteChip()
+        } catch (e: Exception) {}
+    }
+
+    // Shared bar-chip slot: shows whichever ephemeral affordance is most recent — a
+    // just-replaced transform's Undo takes priority over an older pending quick-paste,
+    // since it's the more contextually relevant action. The two never show at once;
+    // that's an acceptable, expected degrade (newest ephemeral action wins).
+    private fun refreshQuickPasteChip() {
+        val chip = quickPasteChip ?: return
+        val undo = pendingUndo
+        val text = pendingQuickPaste
+        when {
+            undo != null -> { chip.text = "↩︎ Undo (${undo.first} chars)"; chip.visibility = View.VISIBLE }
+            text != null && text.isNotEmpty() -> {
+                chip.text = "📋 " + if (text.length > 8) text.take(8) + "…" else text
+                chip.visibility = View.VISIBLE
+            }
+            else -> chip.visibility = View.GONE
+        }
+    }
+
+    private fun tapQuickPasteChip() {
+        pendingUndo?.let { (length, original) ->
+            undoRunnable?.let { main.removeCallbacks(it) }
+            val ic = currentInputConnection
+            ic?.deleteSurroundingText(length, 0)
+            ic?.commitText(original, 1)
+            pendingUndo = null
+            refreshQuickPasteChip()
+            return
+        }
+        val text = pendingQuickPaste ?: return
+        currentInputConnection?.commitText(text, 1)
+        pendingQuickPaste = null
+        refreshQuickPasteChip()
+    }
+
+    // ── transform (select text elsewhere → instruction → LLM rewrite → replace) ─────────
+    private fun onTransformTap() {
+        if (readConfig()?.optBoolean("transformEnabled", false) != true || transformState != TransformState.IDLE) return
+        val selected = currentInputConnection?.getSelectedText(0)?.toString()?.trim() ?: ""
+        if (selected.isEmpty()) {
+            flashTransformMessage("Select some text first")
+            return
+        }
+        transformOriginalText = if (selected.length > TRANSFORM_SELECTION_CHAR_CAP)
+            selected.take(TRANSFORM_SELECTION_CHAR_CAP) else selected
+        transformInstruction = ""
+        enterCompose()
+    }
+
+    private fun flashTransformMessage(msg: String) {
+        suggestionStrip?.removeAllViews()
+        suggestionStrip?.addView(TextView(this).apply {
+            text = msg; setTextColor(mutedText); textSize = 13f; gravity = Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+        })
+        main.postDelayed({ if (transformState == TransformState.IDLE) updateSuggestions() }, 1500)
+    }
+
+    private fun enterCompose() {
+        transformState = TransformState.COMPOSE
+        iconGroup?.visibility = View.GONE
+        transformButton?.visibility = View.GONE
+        transformCancelButton?.visibility = View.VISIBLE
+        refreshTransformComposeUI()
+    }
+
+    private fun exitCompose() {
+        transformState = TransformState.IDLE
+        iconGroup?.visibility = View.VISIBLE
+        transformButton?.visibility = if (readConfig()?.optBoolean("transformEnabled", false) == true) View.VISIBLE else View.GONE
+        transformCancelButton?.visibility = View.GONE
+        showKeyboard()
+    }
+
+    // Suggestion-strip band is repurposed while composing: the growing instruction
+    // preview (typed via the SAME letter keys — see commit()/onSpace()/onBackspace()
+    // below) plus a horizontally-scrollable row of one-tap presets.
+    private fun refreshTransformComposeUI() {
+        val strip = suggestionStrip ?: return
+        strip.removeAllViews()
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+            setPadding(dp(8), 0, dp(8), 0)
+        }
+        row.addView(TextView(this).apply {
+            text = transformInstruction.ifEmpty { "Type or tap a preset…" }
+            setTextColor(if (transformInstruction.isEmpty()) mutedText else keyText)
+            textSize = 13f; ellipsize = android.text.TextUtils.TruncateAt.START; maxLines = 1
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        })
+        val chipsScroll = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false }
+        val chips = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        for ((title, instruction) in transformPresets) {
+            chips.addView(TextView(this).apply {
+                text = title; setTextColor(keyText); textSize = 12f; typeface = geist
+                background = rounded(highlightBg, 13)
+                setPadding(dp(10), dp(6), dp(10), dp(6))
+                layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                    .apply { marginEnd = dp(6) }
+                setOnClickListener { fireTransformPreset(instruction) }
+            })
+        }
+        chipsScroll.addView(chips)
+        row.addView(chipsScroll)
+        strip.addView(row)
+    }
+
+    private fun fireTransformPreset(instruction: String) {
+        transformInstruction = instruction
+        sendTransform()
+    }
+
+    private fun sendTransform() {
+        if (transformState != TransformState.COMPOSE) return
+        val instruction = transformInstruction.trim()
+        transformState = TransformState.BUSY
+        refreshTransformBusyUI()
+        val isImprovise = instruction.isEmpty()
+        val system = if (isImprovise) IMPROVISE_SYSTEM_PROMPT else TRANSFORM_SYSTEM_PROMPT
+        val user = if (isImprovise) transformOriginalText
+            else "INSTRUCTION: $instruction\n\nTEXT:\n$transformOriginalText"
+        Thread {
+            val raw = try { proxyChat(system, user) } catch (e: Exception) { null }
+            main.post {
+                if (transformState != TransformState.BUSY) return@post   // cancelled meanwhile
+                if (raw.isNullOrEmpty()) {
+                    transformState = TransformState.COMPOSE
+                    refreshTransformComposeUI()
+                    flashTransformMessage("Couldn't transform — try again")
+                } else {
+                    transformRewrite = stripTransformWrapping(raw, transformOriginalText)
+                    transformState = TransformState.PREVIEW
+                    refreshTransformPreviewUI()
+                }
+            }
+        }.start()
+    }
+
+    private fun refreshTransformBusyUI() {
+        val wrap = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER
+            layoutParams = FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        }
+        wrap.addView(android.widget.ProgressBar(this).apply {
+            layoutParams = LinearLayout.LayoutParams(dp(28), dp(28))
+        })
+        wrap.addView(TextView(this).apply {
+            text = "Transforming…"; setTextColor(mutedText); textSize = 13f; gravity = Gravity.CENTER
+            setPadding(0, dp(8), 0, 0)
+        })
+        content?.removeAllViews(); content?.addView(wrap)
+    }
+
+    private fun refreshTransformPreviewUI() {
+        val wrap = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(230))
+            setPadding(dp(8), dp(8), dp(8), dp(8))
+        }
+        val scroll = ScrollView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
+        }
+        scroll.addView(TextView(this).apply {
+            text = transformRewrite; setTextColor(keyText); textSize = 14f; typeface = geist
+        })
+        wrap.addView(scroll)
+        val buttons = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(44)).apply { topMargin = dp(8) }
+        }
+        buttons.addView(TextView(this).apply {
+            text = "Cancel"; setTextColor(mutedText); textSize = 14f; gravity = Gravity.CENTER
+            background = rounded(highlightBg, 10)
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f).apply { marginEnd = dp(4) }
+            setOnClickListener { exitCompose() }
+        })
+        buttons.addView(TextView(this).apply {
+            text = "Replace"; setTextColor(Color.WHITE); textSize = 14f; gravity = Gravity.CENTER
+            background = rounded(ACCENT, 10)
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f).apply { marginStart = dp(4) }
+            setOnClickListener { applyTransformReplace() }
+        })
+        wrap.addView(buttons)
+        content?.removeAllViews(); content?.addView(wrap)
+    }
+
+    private fun applyTransformReplace() {
+        if (transformState != TransformState.PREVIEW) return
+        currentInputConnection?.commitText(transformRewrite, 1)
+        val original = transformOriginalText
+        val rewriteLen = transformRewrite.length
+        transformState = TransformState.IDLE
+        iconGroup?.visibility = View.VISIBLE
+        transformButton?.visibility = if (readConfig()?.optBoolean("transformEnabled", false) == true) View.VISIBLE else View.GONE
+        transformCancelButton?.visibility = View.GONE
+        showKeyboard()
+        pendingUndo = Pair(rewriteLen, original)
+        refreshQuickPasteChip()
+        undoRunnable?.let { main.removeCallbacks(it) }
+        val r = Runnable { pendingUndo = null; refreshQuickPasteChip() }
+        undoRunnable = r
+        main.postDelayed(r, 6000)
+    }
+
+    // Mirrors whisperflow/app/transform.py::_strip_wrapping — models occasionally wrap
+    // output in quotes/fences despite the prompt saying not to.
+    private fun stripTransformWrapping(out: String, original: String): String {
+        var s = out.trim()
+        if (s.startsWith("```")) {
+            s = s.trim('`').trim()
+            for (lang in listOf("text", "markdown", "md")) {
+                if (s.startsWith("$lang\n", ignoreCase = true)) s = s.substring(lang.length + 1)
+            }
+        }
+        if (s.length > 1) {
+            val first = s.first(); val last = s.last()
+            val wrapped = (first == '"' && last == '"') || (first == '\'' && last == '\'') ||
+                (first == '“' && last == '”')
+            if (wrapped && original.isNotEmpty() && original.first() !in setOf('"', '\'', '“')) {
+                s = s.substring(1, s.length - 1)
+            }
+        }
+        return s
+    }
+
+    // JSON chat-completions call — sibling of proxyTranscribe() below (same endpoint/auth,
+    // same Thread{}.start()+main.post{} threading convention), just a different body shape.
+    private fun proxyChat(system: String, user: String): String? {
+        val supabaseUrl = "https://ovpcthjingugwvpxlsna.supabase.co"
+        val anon = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im92cGN0aGppbmd1Z3d2cHhsc25hIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzgyNjQzMDYsImV4cCI6MjA5Mzg0MDMwNn0.XwTBo8L-aEUmmSl6dJXNqA2QXzGFOpIVB5W9eDI8j28"
+        val conn = URL(supabaseUrl + "/functions/v1/groq-proxy").openConnection() as HttpURLConnection
+        try {
+            conn.requestMethod = "POST"; conn.doOutput = true
+            conn.connectTimeout = 15000; conn.readTimeout = 30000
+            conn.setRequestProperty("Authorization", "Bearer " + anon)
+            conn.setRequestProperty("apikey", anon)
+            conn.setRequestProperty("x-flume-device", readConfig()?.optString("deviceId", "android-keyboard") ?: "android-keyboard")
+            conn.setRequestProperty("Content-Type", "application/json")
+            val payload = JSONObject().apply {
+                put("model", "llama-3.3-70b-versatile")
+                put("messages", JSONArray().apply {
+                    put(JSONObject().apply { put("role", "system"); put("content", system) })
+                    put(JSONObject().apply { put("role", "user"); put("content", user) })
+                })
+                put("temperature", 0)
+                put("max_tokens", 2048)
+            }
+            conn.outputStream.use { it.write(payload.toString().toByteArray(Charsets.UTF_8)) }
+            if (conn.responseCode !in 200..299) return null
+            val resp = conn.inputStream.bufferedReader().use { it.readText() }
+            val obj = JSONObject(resp)
+            val choices = obj.optJSONArray("choices") ?: return null
+            val message = choices.optJSONObject(0)?.optJSONObject("message") ?: return null
+            val content = message.optString("content", "").trim()
+            return content.ifEmpty { null }
+        } finally { conn.disconnect() }
+    }
 
     private fun transcribe(f: File): String? {
         val cfg = readConfig() ?: return null

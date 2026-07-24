@@ -5,7 +5,10 @@
  * groq proxy (same MEETING_NOTES_SYSTEM prompt) and persists for every device.
  */
 import React, { useEffect, useMemo, useState } from 'react';
-import { View, StyleSheet, Pressable, ScrollView, ActivityIndicator } from 'react-native';
+import {
+  View, StyleSheet, Pressable, ScrollView, ActivityIndicator, TextInput,
+  KeyboardAvoidingView, Platform,
+} from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { Text } from '../components';
@@ -17,6 +20,7 @@ import { updateNotesRemote } from '../../lib/meetings';
 type Props = {
   meetingId: string;
   onBack: () => void;
+  onOpenPlayback: (meetingId: string) => void;
 };
 
 const SPEAKER_DOT = '#D98A72';
@@ -144,13 +148,19 @@ function MdView({ md }: { md: string }) {
   return <View>{out}</View>;
 }
 
-export const MeetingNotesScreen: React.FC<Props> = ({ meetingId, onBack }) => {
+export const MeetingNotesScreen: React.FC<Props> = ({ meetingId, onBack, onOpenPlayback }) => {
   const insets = useSafeAreaInsets();
-  const { getMeeting, refresh } = useMeetings();
+  const { getMeeting, refresh, updateNotes } = useMeetings();
   const meeting = getMeeting(meetingId);
   const [notes, setNotes] = useState<string | null>(meeting?.notesMd ?? null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
+  const [editing, setEditing] = useState(false);
+
+  const onNotesChange = (text: string) => {
+    setNotes(text);
+    if (meeting) updateNotes(meeting.id, text);
+  };
 
   useEffect(() => {
     if (meeting?.notesMd && !notes) setNotes(meeting.notesMd);
@@ -172,7 +182,10 @@ export const MeetingNotesScreen: React.FC<Props> = ({ meetingId, onBack }) => {
   };
 
   return (
-    <View style={[styles.container, { paddingTop: insets.top + 8 }]}>
+    <KeyboardAvoidingView
+      style={[styles.container, { paddingTop: insets.top + 8 }]}
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+    >
       <View style={styles.header}>
         <Pressable onPress={onBack} hitSlop={12} style={styles.backBtn}>
           <Ionicons name="chevron-back" size={22} color={colors.textPrimary} />
@@ -181,18 +194,38 @@ export const MeetingNotesScreen: React.FC<Props> = ({ meetingId, onBack }) => {
           <Text variant="metaSm" color={colors.textMuted}>MEETING NOTES</Text>
           <Text variant="subtitle" numberOfLines={1}>{meeting?.title ?? 'Meeting'}</Text>
         </View>
+        {!!notes && (
+          <Pressable onPress={() => setEditing(e => !e)} hitSlop={12} style={styles.backBtn}>
+            <Ionicons name={editing ? 'checkmark' : 'pencil-outline'} size={20} color={colors.textPrimary} />
+          </Pressable>
+        )}
       </View>
 
       {!meeting ? (
         <View style={styles.center}>
           <Text variant="bodyXs" color={colors.textMuted}>Meeting not found.</Text>
         </View>
-      ) : notes ? (
+      ) : notes ? editing ? (
+        <TextInput
+          style={styles.notesInput}
+          value={notes}
+          onChangeText={onNotesChange}
+          multiline
+          autoFocus
+        />
+      ) : (
         <ScrollView
           contentContainerStyle={{ paddingBottom: insets.bottom + 90 }}
           showsVerticalScrollIndicator={false}
         >
           <MdView md={notes} />
+          <Pressable style={styles.playBtn} disabled={!meeting.audioUrl && !meeting.transcript.length}
+            onPress={() => onOpenPlayback(meeting.id)}>
+            <Ionicons name="play" size={16} color={colors.primaryInk} />
+            <Text variant="buttonSm" color={colors.primaryInk} style={{ fontFamily: fonts.semibold }}>
+              {meeting.audioUrl ? 'Play with transcript' : 'View transcript'}
+            </Text>
+          </Pressable>
           <Pressable style={styles.regenBtn} disabled={busy} onPress={generate}>
             {busy
               ? <ActivityIndicator size="small" color={colors.textMuted} />
@@ -234,7 +267,7 @@ export const MeetingNotesScreen: React.FC<Props> = ({ meetingId, onBack }) => {
           )}
         </View>
       )}
-    </View>
+    </KeyboardAvoidingView>
   );
 };
 
@@ -254,6 +287,15 @@ const styles = StyleSheet.create({
   regenBtn: {
     marginTop: 26, alignSelf: 'center', paddingVertical: 10, paddingHorizontal: 18,
     borderRadius: radius.pill, borderWidth: 1, borderColor: colors.borderSubtle,
+  },
+  playBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
+    backgroundColor: colors.inkLight, borderRadius: radius.md, paddingVertical: 13,
+    marginTop: 20,
+  },
+  notesInput: {
+    flex: 1, fontFamily: fonts.regular, fontSize: 14, lineHeight: 21,
+    color: colors.textPrimary, textAlignVertical: 'top', paddingBottom: 24,
   },
   ctx: {
     borderLeftWidth: 2, borderLeftColor: colors.primary, paddingLeft: 12, marginBottom: 16,

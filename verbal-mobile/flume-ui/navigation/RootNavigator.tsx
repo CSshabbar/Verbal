@@ -129,6 +129,7 @@ function NotesNavigator() {
           <MeetingNotesScreen
             meetingId={route.params.meetingId}
             onBack={() => navigation.goBack()}
+            onOpenPlayback={(meetingId) => navigation.navigate('MeetingPlayback', { meetingId })}
           />
         )}
       </NotesStack.Screen>
@@ -315,9 +316,10 @@ function TabsNavigator({ onRecord, onOpenMenu }: TabsNavigatorProps) {
         component={NotesNavigator}
         options={({ route }) => ({
           // Hide the whole bottom tab bar (incl. the floating center mic) while a
-          // note is open, so the editor owns the screen and shows a single, centered
-          // mic. Restored automatically on returning to the notes list.
-          tabBarStyle: (getFocusedRouteNameFromRoute(route) ?? 'NotesList') === 'NoteEditor'
+          // note or a meeting's full AI notes are open, so the screen owns the
+          // whole view and shows a single, centered mic. Restored automatically
+          // on returning to the notes list.
+          tabBarStyle: ['NoteEditor', 'MeetingNotes'].includes(getFocusedRouteNameFromRoute(route) ?? 'NotesList')
             ? { display: 'none' }
             : tabBarStyle,
           tabBarIcon: ({ color }) => <Ionicons name="reorder-three-outline" size={27} color={color} />,

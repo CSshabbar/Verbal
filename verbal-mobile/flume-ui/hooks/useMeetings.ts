@@ -5,7 +5,7 @@
  */
 import { useState, useCallback, useEffect, useRef } from 'react';
 import {
-  fetchMeetings, updateScratchpadRemote, subscribeMeetings,
+  fetchMeetings, updateScratchpadRemote, updateNotesRemote, subscribeMeetings,
 } from '../../lib/meetings';
 import { getUserId, getSyncEnabled } from '../../lib/storage';
 import type { Meeting } from './useMeetings.mock';
@@ -19,6 +19,7 @@ export function useMeetings() {
   const [meetings, setMeetings] = useState<Meeting[]>([]);
   const [loading, setLoading] = useState(true);
   const scratchTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  const notesTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
 
   const refresh = useCallback(async () => {
     try {
@@ -58,5 +59,13 @@ export function useMeetings() {
     timers[id] = setTimeout(() => { updateScratchpadRemote(id, text); }, 600);
   }, []);
 
-  return { meetings, loading, getMeeting, refresh, updateScratchpad };
+  /** Manual notes_md edits — same optimistic + debounced-write shape as updateScratchpad. */
+  const updateNotes = useCallback((id: string, text: string) => {
+    setMeetings(prev => prev.map(m => (m.id === id ? { ...m, notesMd: text } : m)));
+    const timers = notesTimers.current;
+    if (timers[id]) clearTimeout(timers[id]);
+    timers[id] = setTimeout(() => { updateNotesRemote(id, text); }, 600);
+  }, []);
+
+  return { meetings, loading, getMeeting, refresh, updateScratchpad, updateNotes };
 }

@@ -43,12 +43,18 @@ missing** — it was never provisioned in the live DB, so Notes was local-only u
 `id` **text** PK · `user_id` text · `title` text `''` · `content` text `''` (AI-formatted) · `folder` text `''` ·
 `is_pinned` bool `false` · `device_name` text · `created_at` · `updated_at`. Indexes on `(user_id)` and
 `(user_id, updated_at DESC)`. In the `supabase_realtime` publication.
-**`id` is `text`, not uuid** (v2 converts an existing uuid column in-place): desktop writes `uuid4().hex`,
-mobile writes `note_<ts>` (not a valid uuid) — a text column lets each client supply its **own** id so the
-note's local id === its cloud id. That equality is load-bearing: mobile `updateNote` does
-`.update().eq('id', localId)`, and without it every edit matches 0 rows and the pulled-back row duplicates.
-Mobile `createNote` upserts **with** the id (gated on `getSyncEnabled`), and `useNotes.load` **back-fills** any
-locally-cached note missing from the cloud (notes created before the table existed never got pushed otherwise).
+**`id` is *supposed to be* `text`, not uuid** (v2's guarded `ALTER COLUMN id TYPE text` converts an existing
+uuid column in-place): desktop writes `uuid4().hex`, mobile writes `note_<ts>` (not valid uuid syntax) — a
+text column lets each client supply its **own** id so the note's local id === its cloud id. That equality
+is load-bearing: mobile `updateNote` does `.update().eq('id', localId)`, and without it every edit matches
+0 rows and the pulled-back row duplicates. Mobile `createNote` upserts **with** the id (gated on
+`getSyncEnabled`), and `useNotes.load` **back-fills** any locally-cached note missing from the cloud
+(notes created before the table existed never got pushed otherwise).
+**⚠️ Live-DB check (2026-07): the ALTER never actually ran — `notes.id` is still `uuid` in production.**
+Desktop's `uuid4().hex` happens to parse as a valid dashless uuid so its writes silently succeed; mobile's
+`note_<ts>` ids do **not** parse as uuid, so mobile-created notes likely fail to upsert against the live
+table today. This needs an actual fix (re-run/verify the `ALTER COLUMN` against the live DB), not just a
+doc correction — filed here because it was only found via a live-schema audit, not by reading code.
 **v2 columns** (`supabase_notes_v2.sql`, idempotent): `raw_content` text nullable (raw Whisper transcript;
 NULL for typed/pre-existing notes — `content` holds the formatted version, "show original" reveals this);
 `audio_segments` jsonb `'[]'` (append-only list of source recordings, shape `[{id,url,created_at}]`,
@@ -58,11 +64,33 @@ but only if `notes` already has RLS enabled; if it has no RLS, it leaves it unto
 
 **`groq_usage`** — `create_groq_usage` migration. Usage + rate-limit ledger for the `groq-proxy` Edge
 Function: one row per successful Groq call — `id`, `identity` (`user:<uuid>`|`device:<id>`|`ip:<addr>`),
-`user_id?`, `kind` (`transcription`|`chat`|`chat-ollama`), `created_at`. **RLS on** (read-your-own for
-`authenticated`); only the function writes, via the service role (fire-and-forget). Metering ledger —
-rate-limit *enforcement* is currently off for latency (see `05-conventions` Hard Rule #15). (The earlier
-`app_config` key-table idea was dropped — provider keys must never be readable by a client, so they live
-only as the function's `GROQ_API_KEY` / `OLLAMA_API_KEY` secrets.)
+`user_id?`, `kind`, `created_at`. **RLS on** (read-your-own for `authenticated`); only the function writes,
+via the service role (fire-and-forget). Metering ledger — rate-limit *enforcement* is currently off for
+latency (see `05-conventions` Hard Rule #15).
+**⚠️ Live-DB check (2026-07): the `kind` check constraint only allows `'transcription'|'chat'` —
+`'chat-ollama'` is NOT in the allowed set**, even though `groq-proxy/index.ts` sets exactly
+`kind = "chat-ollama"` for every Ollama-routed (meeting notes) call. Since `logUsage` is
+fire-and-forget with `.catch(()=>{})`, every one of those inserts is silently rejected by Postgres —
+**Ollama usage metering is currently a complete no-op in production.** Needs a constraint migration
+(add `'chat-ollama'` to the allowed values), not just a doc fix.
+
+**`app_config` — referenced by code, does not exist in the live DB.** The provider-secret-key-table idea
+(`GROQ_API_KEY` readable by clients) was correctly dropped — that must never exist; keys live only as the
+`groq-proxy` function's own `GROQ_API_KEY`/`OLLAMA_API_KEY` secrets. But a *same-named*, different-purpose
+table (general app-wide settings / cached shared Groq key, per `whisperflow/supabase_app_config.sql` and
+mobile's `lib/remoteConfig.ts`, warmed in `RootNavigator.tsx` and read in `storage.ts`) is still actively
+queried by mobile code — and a live-schema check found **no `app_config` table in the current `public`
+schema at all**. Either the migration was never applied live, or this code path is currently dead/failing
+silently. Needs verification, not just documentation, before relying on it.
+
+**`push_tokens`** — `(user_id, token)` composite PK, `platform`, `device_name`, `updated_at`. RLS on.
+Backs the meeting-start push-notification feature (`verbal-mobile/lib/notifications.ts::
+registerForMeetingPush` upserts here) — undocumented until this pass.
+
+**`device_presence`** — near-duplicate of `devices` (same columns minus `sync_enabled`). **Zero rows,
+zero code references anywhere in `whisperflow/` or `verbal-mobile/`** — looks like an abandoned/orphaned
+table (possibly an early false-started rename of `devices`). Flagging rather than documenting as a real
+feature; worth confirming with whoever added it whether it's safe to drop.
 
 **Edge Functions:** `groq-proxy` (`supabase/functions/groq-proxy/index.ts`) — the only holder of the
 provider keys (`GROQ_API_KEY`, plus `OLLAMA_API_KEY` for the meeting-notes model `gpt-oss:120b`); brokers
@@ -86,6 +114,8 @@ per captured meeting.
 | `hybrid_notes` | jsonb | `[{user_line, ai_addition}]` — widget #21 (added after the base migration) |
 | `device_id`, `device_name` | text | |
 | `status` | text | `processing` \| `ready` \| `failed` (failed = summary failed, transcript intact) |
+| `notes_md` | text | nullable — cached full AI meeting-notes markdown (`meetings.generate_meeting_notes`); see `03-features.md`'s Meeting Notes page. Mobile can now edit this directly, not just generate it |
+| `live` | bool | default `false` — set while a meeting is actively being captured; surfaced to mobile as the live-transcript-in-progress flag |
 
 Indexes `(user_id)`, `(user_id, started_at desc)`. **Realtime publication: yes** (mobile subscribes
 INSERT+UPDATE on `verbal_meetings_<uid>` — the live-transcript stream). **`REPLICA IDENTITY FULL`**
@@ -113,12 +143,16 @@ Columns added later (code writes/reads them, **no SQL anywhere**): `audio_url` t
 default `'done'`, `target_device_id` text, `edited_text` text (read as `edited_text ?? text`),
 `is_pinned` bool. In the realtime publication.
 
-**`devices`** — device registry/presence. Cols from upserts: `user_id`, `device_id`, `device_name`,
-`device_type` (`mac`/`win`/`ios`), `last_seen` timestamptz. Upsert `on_conflict=user_id,device_id`.
-"Online" = `last_seen` within 5 min.
+**`devices`** — device registry/presence. `id` uuid PK (not just `user_id`/`device_id` — worth noting
+since the doc previously implied those two were the only key). Cols from upserts: `user_id`, `device_id`,
+`device_name`, `device_type` (`mac`/`win`/`ios`), `last_seen` timestamptz, plus **`sync_enabled`** bool
+default `true` (actively read/written by mobile `lib/deviceSync.ts` to gate per-device sync — previously
+undocumented). Upsert `on_conflict=user_id,device_id`. "Online" = `last_seen` within 5 min.
 
-**`canvas`** — one shared row/user. Cols: `user_id` (conflict key), `content` text, `image_url` text,
-`device_name`, `updated_at`. In the realtime publication.
+**`canvas`** — one shared row/user. `id` uuid PK (`gen_random_uuid()` default — upserts still target
+`user_id` as the effective conflict key, so this is informational, not a behavior change). Cols:
+`user_id` (conflict key), `content` text, `image_url` text, `device_name`, `updated_at`. In the realtime
+publication.
 
 ## Storage buckets (all public)
 
@@ -223,6 +257,12 @@ Pragmatic, matches code + `GOOGLE_AUTH_SETUP.md`:
   by default — `supabase_notes_v2.sql` only broadens a *pre-existing* anon-only policy if one is present).
   Any caller who
   knows a `user_id` could read that user's rows — data is scoped, not cryptographically enforced.
+- **⚠️ `notes` currently has RLS fully DISABLED live** (not just "no policy" — Supabase's own security
+  advisor flags this as **critical**: any anon/authenticated caller can read or write every user's notes,
+  not just ones whose `user_id` they happen to know). This is a step worse than the "scoped but not
+  cryptographically enforced" posture described above and should be treated as a real security gap to
+  close (enable RLS + at least the same wide-open-but-`TO public` policy the other tables have), not just
+  a documentation note.
 - **RLS role gotcha:** the desktop uses the raw anon key (role `anon`); a *signed-in* client (mobile SDK)
   sends the user's JWT (role `authenticated`). A policy scoped `TO anon` silently filters out the
   authenticated client's rows. So any table both clients share must use `TO public` (or include
@@ -252,3 +292,15 @@ Pragmatic, matches code + `GOOGLE_AUTH_SETUP.md`:
 - Mobile `useNotes` note: there's still no `is_voice` column, but v2 `toNote` now infers `isVoice` from the
   presence of `raw_content` or a non-empty `audio_segments` (a voice note has at least one), so it survives
   reloads for dictated notes without a dedicated column.
+- **New from a 2026-07 live-schema audit (found via direct DB inspection, not code reading — re-verify
+  periodically, code and live DB can and do drift):**
+  - `notes.id` is still `uuid` live despite the v2 migration's intent to convert it to `text` — see the
+    full callout in the `notes` table section above. **Likely-active bug**, not just a doc gap.
+  - `groq_usage.kind`'s check constraint doesn't allow `'chat-ollama'` — see the `groq_usage` section
+    above. **Likely-active bug** (Ollama usage metering silently no-ops).
+  - `app_config` is referenced by mobile code (`lib/remoteConfig.ts`) but doesn't exist in the live
+    schema at all — see the `app_config` callout above.
+  - Two more undocumented-until-now tables: `push_tokens` (real, in active use) and `device_presence`
+    (appears orphaned/unused — flag for cleanup, don't treat as a feature).
+  - Undocumented columns that do exist and are actively used: `meetings.notes_md`, `meetings.live`,
+    `devices.id`, `devices.sync_enabled`, `canvas.id`.

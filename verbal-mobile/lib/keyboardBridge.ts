@@ -10,7 +10,7 @@
 
 import { Platform } from 'react-native';
 import * as FileSystem from 'expo-file-system/legacy';
-import { getHistory, getDeviceId, getDeviceName } from './storage';
+import { getHistory, getDeviceId, getDeviceName, getClipboardHistoryEnabled, getTransformEnabled } from './storage';
 import { fetchRemote, getDictionary } from './dictionary';
 import { KEYBOARD_THEME } from './keyboardTokens';
 import { writeToGroup } from '../modules/flume-shared-store';
@@ -35,8 +35,8 @@ export async function syncKeyboardConfig(): Promise<void> {
     } catch {
       dict = await getDictionary();
     }
-    const [history, deviceId, deviceName] = await Promise.all([
-      getHistory(), getDeviceId(), getDeviceName(),
+    const [history, deviceId, deviceName, clipboardHistoryEnabled, transformEnabled] = await Promise.all([
+      getHistory(), getDeviceId(), getDeviceName(), getClipboardHistoryEnabled(), getTransformEnabled(),
     ]);
     const payload = JSON.stringify({
       // v2: theme tokens + richer overlay shapes (see FLUME_KEYBOARD_V2_DESIGN.md).
@@ -56,6 +56,13 @@ export async function syncKeyboardConfig(): Promise<void> {
       history: (history || []).slice(0, 15)
         .map((h) => ({ text: h.text, at: h.created_at }))
         .filter((x) => x.text),
+      // Gates the native clipboard-history feature (flume_kbd_clipboard.json is a
+      // SEPARATE, extension/IME-authored file — clipboard content itself never
+      // passes through this bridge, only this on/off preference does).
+      clipboardHistoryEnabled,
+      // Gates the Transform button (select text elsewhere → instruction → LLM rewrite →
+      // replace) — an opt-in, LLM-driven feature, default OFF to match desktop's posture.
+      transformEnabled,
     });
     if (Platform.OS === 'ios') {
       // Write into the App Group container the keyboard extension reads from.

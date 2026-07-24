@@ -4,7 +4,7 @@
  * No regenerate / no capture controls on mobile (by design).
  */
 import React, { useState, useEffect } from 'react';
-import { View, StyleSheet, Pressable, ScrollView, TextInput } from 'react-native';
+import { View, StyleSheet, Pressable, ScrollView, TextInput, KeyboardAvoidingView, Platform } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { Text } from '../components';
@@ -79,7 +79,10 @@ export const MeetingDetailScreen: React.FC<Props> = ({ meetingId, onBack, onOpen
   const speakers = Object.entries(meeting.speakers);
 
   return (
-    <View style={[styles.container, { paddingTop: insets.top + 8 }]}>
+    <KeyboardAvoidingView
+      style={[styles.container, { paddingTop: insets.top + 8 }]}
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+    >
       <View style={styles.header}>
         <Pressable onPress={onBack} hitSlop={12} style={styles.backBtn}>
           <Ionicons name="chevron-back" size={22} color={colors.textPrimary} />
@@ -243,7 +246,7 @@ export const MeetingDetailScreen: React.FC<Props> = ({ meetingId, onBack, onOpen
           </Text>
         </Pressable>
       </ScrollView>
-    </View>
+    </KeyboardAvoidingView>
   );
 };
 

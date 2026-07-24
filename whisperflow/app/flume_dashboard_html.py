@@ -1403,6 +1403,9 @@ function renderMeetSettings(){
   const dd=(key,opts,labels)=>`
     <select onchange="setMeetSetting('${key}', parseInt(this.value))" style="margin-left:auto">
       ${opts.map((o,i)=>`<option value="${o}" ${s[key]===o?'selected':''}>${labels[i]}</option>`).join('')}</select>`;
+  const ddStr=(key,opts,labels)=>`
+    <select onchange="setMeetSetting('${key}', this.value)" style="margin-left:auto">
+      ${opts.map((o,i)=>`<option value="${o}" ${(s[key]||'en')===o?'selected':''}>${labels[i]}</option>`).join('')}</select>`;
   box.innerHTML = `
     <h3>Meetings</h3><p class="ssub">Capture a meeting's system audio + your mic, live-transcribe it, and get an AI summary. Meeting text is never sent to analytics — ever.</p>
     <div class="scard">
@@ -1411,6 +1414,8 @@ function renderMeetSettings(){
       ${tgl('meetings_enabled','Enable meetings')}
       ${tgl('meetings_hud_enabled','Floating HUD when tabbed away')}
       ${tgl('meetings_speaker_labels','Speaker labeling')}
+      <div class="saverow"><span style="font:500 13px Geist">Meeting notes language</span>
+        ${ddStr('meetings_notes_language',['en','auto'],['Always English','Same as meeting'])}</div>
       ${tgl('meetings_keep_audio','Keep audio files')}
       <div class="saverow"><span style="font:500 13px Geist">Auto-delete audio after</span>
         ${dd('meetings_keep_audio_days',[7,30,90,0],['7 days','30 days','90 days','Never'])}</div>
