@@ -375,8 +375,24 @@ deletes real files under `~/.verbal/` and this development machine has a real, i
   playback+scrub session) before playing. See `04-data-model.md`.
 - **Status/limitations:** system audio requires macOS 13+ and the Screen & System Audio Recording
   permission (31h checklist + 3 s capture self-test). Speaker identity is source-based v1 (no diarization);
-  meeting text NEVER goes to analytics; `meetings_max_minutes` enforcement and audio auto-delete are
-  settings stored but not yet enforced by a reaper (v1 known gap).
+  meeting text NEVER goes to analytics; `meetings_max_minutes` (capture-length cap) is still stored but not
+  enforced — a separate, not-yet-built concern from the reaper below.
+- **Meeting-audio retention reaper (MER-31, 2026-07):** audio-only deletion, **off by default**. A daily
+  `pg_cron` job (`reap-meeting-audio-daily`, 03:00 UTC) POSTs to the `reap-meeting-audio` Edge Function,
+  which deletes the `meeting-audio/<user_id>/<meeting_id>.wav` object for meetings where `pinned = false`,
+  `audio_expired = false`, `retention_days > 0`, and `now() - started_at > retention_days` — **never**
+  touching `transcript`/`summary`/`decisions`/`action_items`/`hybrid_notes`/`notes_md`; the readable record
+  survives, only the heavy audio goes. Fail-closed ordering: storage delete happens first, `audio_expired`
+  (+ clearing `audio_url`) is only set if that actually succeeded, and rows still `status = 'processing'`
+  are never touched (avoids the zombie-row race). `retention_days` is stamped **per meeting at capture
+  time** from the desktop setting `meetings_keep_audio_days` (default **0 = never expire** — changing the
+  setting only affects meetings captured afterward, not retroactively; a future billing tier would write
+  this same column instead of it being user-editable — the seam is already there, no schema change needed).
+  Clients: desktop's meeting summary screen shows "Audio expired — notes and transcript kept" and clicks on
+  the transcript no-op instead of erroring (`meeting_html.py`); mobile's `MeetingPlaybackScreen`/
+  `MeetingDetailScreen` already degraded gracefully on a missing `audioUrl` (hide the player bar / show
+  "View transcript" instead of "Play with transcript") — that same path now also covers the expired case,
+  plus a small "Audio expired — transcript kept" line where the player bar would be.
 
 ## Recording overlay / popover / hotkey / onboarding / updater / permissions / sounds (desktop)
 

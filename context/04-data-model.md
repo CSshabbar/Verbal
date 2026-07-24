@@ -114,6 +114,12 @@ last — a partial failure leaves a recoverable signed-in state). Idempotent; se
 deletion entry for the full design and live-verification notes. Apple-token revocation is an intentionally
 deferred stub (`revokeAppleToken()`, Batch C).
 
+`reap-meeting-audio` (`supabase/functions/reap-meeting-audio/index.ts`, MER-31, 2026-07) — invoked by the
+daily `reap-meeting-audio-daily` `pg_cron` job (`supabase_meetings.sql`, via `pg_net.http_post` with the
+anon key — only needs to pass the gateway's `verify_jwt`, the function's own privileged work uses its
+internal service-role key like every other function here). See `03-features.md`'s retention-reaper entry
+and the `meetings.audio_expired`/`retention_days` columns above for the full design.
+
 **`meetings`** — `supabase_meetings.sql` (applied live 2026-07 + follow-up `hybrid_notes` column). One row
 per captured meeting.
 | col | type | notes |
@@ -134,6 +140,8 @@ per captured meeting.
 | `status` | text | `processing` \| `ready` \| `failed` (failed = summary failed, transcript intact) |
 | `notes_md` | text | nullable — cached full AI meeting-notes markdown (`meetings.generate_meeting_notes`); see `03-features.md`'s Meeting Notes page. Mobile can now edit this directly, not just generate it |
 | `live` | bool | default `false` — set while a meeting is actively being captured; surfaced to mobile as the live-transcript-in-progress flag |
+| `audio_expired` | bool | default `false` — MER-31, 2026-07. Set by the `reap-meeting-audio` reaper once the audio object is actually deleted; the single authoritative "no audio left" signal (never inferred from `audio_url` alone) |
+| `retention_days` | int | nullable, MER-31. `null`/`0` = never expire (default). Stamped **per meeting at capture time** from desktop's `meetings_keep_audio_days` setting — not a live/retroactive per-user lookup |
 
 Indexes `(user_id)`, `(user_id, started_at desc)`. **Realtime publication: yes** (mobile subscribes
 INSERT+UPDATE on `verbal_meetings_<uid>` — the live-transcript stream). **`REPLICA IDENTITY FULL`**
