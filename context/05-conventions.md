@@ -57,8 +57,11 @@
    RLS had been fully DISABLED there, not just `TO anon`; see `whisperflow/supabase_notes_rls.sql`) and to
    the **`recordings` Storage bucket's policies** (Linear MER-27, 2026-07 — found mid-fix while making the
    bucket private: its read/insert/update policies were `TO anon` only, which would have silently broken
-   signed-in mobile clients' `createSignedUrl` calls; see `whisperflow/supabase_recordings_meeting_audio_private.sql`).
-   `pairings` still has the latent `TO anon` pattern.
+   signed-in mobile clients' `createSignedUrl` calls; see `whisperflow/supabase_recordings_meeting_audio_private.sql`)
+   and to **`pairings`** (Linear MER-28, 2026-07 — its 3 policies were `TO anon`; migrated in place in
+   `whisperflow/supabase_pairings.sql`). `transcriptions`/`devices`/`canvas` were checked as part of the
+   same MER-28 pass and were already correctly `TO public` — no table in this codebase is known to still
+   have the `TO anon` trap.
 
 11. **Preserve unknown fields verbatim on write-back (forward-compat sync).** A client must never replace a
    synced row with only the fields it knows about — a newer client's columns would be silently dropped.

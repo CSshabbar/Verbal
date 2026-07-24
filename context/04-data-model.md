@@ -126,28 +126,31 @@ in `config['meetings']` (`MEETINGS_CAP=30`) and the mixed WAV at `~/.verbal/meet
 `file_hash` (sha256) · `file_size` · `released_at` · `UNIQUE(platform,version)`. RLS on; public SELECT;
 inserts use **service_role** (release script) — no anon insert.
 
-### Tables WITHOUT committed SQL (exist only in the live DB — inferred from code) ⚠️
+### `transcriptions`, `devices`, `canvas` (MER-28, 2026-07: now have committed SQL)
 
-**`transcriptions`** — the core dictation history / cross-device shared clipboard. Base DDL only written
-down in `whisperflow/CROSSPLATFORM_SYNC_PLAN.md`:
-```
-id uuid PK default gen_random_uuid(), user_id text, device_id text, device_name text,
-text text, created_at timestamptz default now()   -- index (user_id, created_at desc)
-```
-Columns added later (code writes/reads them, **no SQL anywhere**): `audio_url` text, `status` text
-default `'done'`, `target_device_id` text, `edited_text` text (read as `edited_text ?? text`),
-`is_pinned` bool. In the realtime publication.
+Previously existed only in the live DB, inferred from code, with no committed SQL — the single biggest
+schema-vs-source gap this doc used to carry. Closed via `whisperflow/supabase_transcriptions.sql` /
+`supabase_devices.sql` / `supabase_canvas.sql` (idempotent `CREATE TABLE IF NOT EXISTS` + RLS, written to
+reproduce exactly what the live DB already had — **not** a behavior change; see the RLS note below).
 
-**`devices`** — device registry/presence. `id` uuid PK (not just `user_id`/`device_id` — worth noting
-since the doc previously implied those two were the only key). Cols from upserts: `user_id`, `device_id`,
-`device_name`, `device_type` (`mac`/`win`/`ios`), `last_seen` timestamptz, plus **`sync_enabled`** bool
-default `true` (actively read/written by mobile `lib/deviceSync.ts` to gate per-device sync — previously
-undocumented). Upsert `on_conflict=user_id,device_id`. "Online" = `last_seen` within 5 min.
+**`transcriptions`** — the core dictation history / cross-device shared clipboard.
+`id` uuid PK · `user_id` text · `device_id` text · `device_name` text default `''` · `text` text ·
+`created_at` timestamptz default `now()` · `is_pinned` bool default `false` · `edited_text` text nullable
+(read as `edited_text ?? text`) · `target_device_id` text nullable (Canvas-style targeting) ·
+`audio_url` text nullable (private `recordings` bucket object path, see MER-27) · `status` text default
+`'done'` (`'done'`\|`'failed'`, retryable). Indexes `(user_id, created_at desc)` and
+`(user_id, is_pinned, created_at desc)`. In the realtime publication.
 
-**`canvas`** — one shared row/user. `id` uuid PK (`gen_random_uuid()` default — upserts still target
-`user_id` as the effective conflict key, so this is informational, not a behavior change). Cols:
-`user_id` (conflict key), `content` text, `image_url` text, `device_name`, `updated_at`. In the realtime
-publication.
+**`devices`** — device registry/presence. `id` uuid PK · `user_id` text · `device_id` text ·
+`device_name` text · `device_type` text default `'mac'` (`mac`/`win`/`ios`) · `last_seen` timestamptz
+default `now()` · **`sync_enabled`** bool default `true` (read/written by mobile `lib/deviceSync.ts` to
+gate per-device sync). Unique index `(user_id, device_id)` (the upsert conflict target). "Online" =
+`last_seen` within 5 min. In the realtime publication.
+
+**`canvas`** — one shared row/user. `id` uuid PK (`gen_random_uuid()` default) · `user_id` text ·
+`content` text default `''` · `device_name` text default `''` · `updated_at` timestamptz default `now()` ·
+`image_url` text nullable. Unique index on `user_id` (the actual upsert conflict target — `id` is
+informational, doesn't change upsert behavior). In the realtime publication.
 
 ## Storage buckets
 
@@ -259,19 +262,20 @@ and `verbal://auth-callback` (mobile). Consent screen in "Testing" mode. No sepa
 Pragmatic, matches code + `GOOGLE_AUTH_SETUP.md`:
 - Both apps use the **anon key for all data requests**; users separated purely by the `user_id` value in
   the query/filter. The user's JWT/access_token is stored but **not** used to authorize REST/realtime.
-- RLS: enabled with a wide-open `true` policy on `dictionary` (now **`TO public`**), `pairings`
-  (still `TO anon`), and — as of the MER-26 fix (2026-07, `whisperflow/supabase_notes_rls.sql`) — **`notes`**
-  too (`TO public`, matching `dictionary`). `transcriptions`/`devices`/`canvas` have **no committed RLS**
-  (scoped only by the `user_id` value in the query, not enforced). Any caller who knows a `user_id` could
-  read that user's rows — data is scoped, not cryptographically enforced; this is the accepted interim
-  posture across every shared table now, `notes` included. True `auth.uid()`-based per-user isolation
-  (so a caller who *knows* another `user_id` still can't read it) is a tracked follow-up (Linear MER-29),
-  not yet done.
+- RLS: **every shared table now has RLS enabled with a wide-open `TO public` `true` policy** —
+  `dictionary`, `pairings` (migrated off `TO anon`, MER-28 2026-07), `notes` (MER-26, 2026-07),
+  `transcriptions`/`devices`/`canvas` (already correctly configured live when checked for MER-28; that
+  ticket's real remaining work was `pairings`' role scoping + committing reproducible SQL for these three
+  — see Schema gaps below). Any caller who knows a `user_id` could still read that user's rows — data is
+  scoped, not cryptographically enforced; this is the accepted interim posture across the board now.
+  True `auth.uid()`-based per-user isolation (so a caller who *knows* another `user_id` still can't read
+  it) is a tracked follow-up (Linear MER-29), not yet done.
 - **RLS role gotcha:** the desktop uses the raw anon key (role `anon`); a *signed-in* client (mobile SDK)
   sends the user's JWT (role `authenticated`). A policy scoped `TO anon` silently filters out the
   authenticated client's rows. So any table both clients share must use `TO public` (or include
-  `authenticated`). This bit `dictionary` — fixed in `supabase_dictionary_rls_fix.sql`; `pairings` still
-  has the latent `TO anon` pattern.
+  `authenticated`). This bit `dictionary` (fixed via `supabase_dictionary_rls_fix.sql`) and `pairings`
+  (fixed via MER-28, 2026-07 — `supabase_pairings.sql` updated in place) — no table is known to still have
+  this trap.
 - Proper JWT + `auth.uid()` RLS is a **documented deferred** hardening (the setup doc has the migration).
 - `recordings` and `meeting-audio` are **private** (MER-27, 2026-07) — signed URLs only, see Storage
   buckets above. `canvas-images` and `releases` remain public (lower-sensitivity / app binaries).
@@ -287,10 +291,11 @@ Pragmatic, matches code + `GOOGLE_AUTH_SETUP.md`:
 
 ## Schema gaps & stale docs (important) ⚠️
 
-- **No committed SQL for `transcriptions`, `devices`, `canvas`** (nor the `canvas-images` bucket) — they
-  exist only in the live DB. `transcriptions.target_device_id`, `edited_text`, `is_pinned` appear in **no**
-  SQL/doc. **This is the biggest schema-vs-source gap** — treat `GOOGLE_AUTH_SETUP.md`'s table list +
-  `CROSSPLATFORM_SYNC_PLAN.md`'s base DDL as the only written references, and re-derive columns from code.
+- ~~No committed SQL for `transcriptions`, `devices`, `canvas`~~ — **closed** (MER-28, 2026-07):
+  `whisperflow/supabase_transcriptions.sql` / `supabase_devices.sql` / `supabase_canvas.sql` now reproduce
+  the live schema (including `target_device_id`/`edited_text`/`is_pinned`, previously undocumented
+  anywhere). The `canvas-images` **bucket** still has no committed SQL beyond its policy file
+  (`supabase_canvas_images_policy.sql` doesn't create the bucket itself) — narrower remaining gap.
 - **`CROSSPLATFORM_SYNC_PLAN.md` is largely stale** (placeholder URL, a `sync_token` scheme that doesn't
   exist, `sync_listen()` as a stub) — its only current value is the base `transcriptions` DDL.
 - `config.py DEFAULT_CONFIG` omits `sync_enabled` and `sync_target_device_id` though both are used —
