@@ -22,16 +22,20 @@ create index if not exists pairings_token_idx on public.pairings (token);
 
 alter table public.pairings enable row level security;
 
--- Anon key is used by both apps (same as the rest of the sync tables).
--- Tokens are random + short-lived + single-use, so anon access is acceptable.
+-- TO public, NOT TO anon (Hard Rule #10, MER-28 2026-07 fix) — desktop uses the
+-- raw anon key (role `anon`); a signed-in mobile client sends the user's JWT
+-- (role `authenticated`) and a TO anon policy would silently drop its rows, the
+-- same trap that bit dictionary/notes/recordings. Tokens are random + short-lived
+-- + single-use, so the permissive USING/WITH CHECK (true) is acceptable either way.
 drop policy if exists "pairings anon insert" on public.pairings;
-create policy "pairings anon insert" on public.pairings
-  for insert to anon with check (true);
-
 drop policy if exists "pairings anon select" on public.pairings;
-create policy "pairings anon select" on public.pairings
-  for select to anon using (true);
-
 drop policy if exists "pairings anon update" on public.pairings;
-create policy "pairings anon update" on public.pairings
-  for update to anon using (true) with check (true);
+
+create policy "pairings insert" on public.pairings
+  for insert to public with check (true);
+
+create policy "pairings select" on public.pairings
+  for select to public using (true);
+
+create policy "pairings update" on public.pairings
+  for update to public using (true) with check (true);
