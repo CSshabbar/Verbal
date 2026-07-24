@@ -37,7 +37,7 @@ sips -z 512 512 assets/icon.png --out assets/icon.iconset/icon_512x512.png
 iconutil -c icns assets/icon.iconset -o assets/Verbal.icns
 
 # 6. Build .app
-pyinstaller verbal.spec --clean --noconfirm
+pyinstaller whisperflow.spec --clean --noconfirm
 
 # 7. Ad-hoc code sign
 codesign --sign - --force --deep dist/Verbal.app

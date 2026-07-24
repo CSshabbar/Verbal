@@ -1,5 +1,17 @@
 # -*- mode: python ; coding: utf-8 -*-
 import os
+import sys
+
+# Single-source the bundled version from config.APP_VERSION (MER-33) — this is
+# the ONE place to bump for a release; the plist below reads it instead of a
+# separate hardcoded string. Invoked with `whisperflow/` as CWD (matches how
+# the relative `datas=` paths below already resolve), so '.' is on sys.path;
+# insert it explicitly anyway so this doesn't silently break if that ever
+# changes. NOTE: whatever this is at build time must match the version you
+# register in `app_versions` (platform='mac') when publishing, or the
+# auto-updater's comparison (updater.py) breaks — see context/05-conventions.md.
+sys.path.insert(0, '.')
+from app.config import APP_VERSION
 
 block_cipher = None
 
@@ -27,13 +39,20 @@ a = Analysis(
         'sounddevice',
         'soundfile',
         'numpy',
+        'scipy',
+        'scipy.signal',
         'rumps',
         'pyperclip',
-        'pyautogui',
+        'websocket',
         'google.generativeai',
         'huggingface_hub',
         'objc',
         'WebKit',
+        'Foundation',
+        'AppKit',
+        'Quartz',
+        'ScreenCaptureKit',
+        'CoreMedia',
         'app.flume_web_dashboard',
         'app.flume_popover',
         'app.flume_popover_html',
@@ -46,9 +65,6 @@ a = Analysis(
         'app.auth',
         'app.permissions',
         'app.flume_dashboard_html',
-        'Foundation',
-        'AppKit',
-        'Quartz',
     ],
     hookspath=[],
     hooksconfig={},
@@ -96,6 +112,7 @@ app = BUNDLE(
         'NSMicrophoneUsageDescription': 'Verbal needs microphone access for voice dictation.',
         'NSAccessibilityUsageDescription': 'Verbal needs accessibility access to inject text into apps.',
         'LSUIElement': False,
-        'CFBundleShortVersionString': '1.3.0',
+        'CFBundleShortVersionString': APP_VERSION,
+        'CFBundleVersion': APP_VERSION,
     },
 )
