@@ -309,7 +309,8 @@ class CanvasWindow:
     def _save_to_supabase(self, text: str):
         try:
             import httpx
-            from app.sync import SUPABASE_URL, SUPABASE_KEY
+            from app.sync import SUPABASE_URL
+            from app.auth import auth_header
             user_id     = self._config.get("sync_user_id", "")
             device_name = self._config.get("sync_device_name", "Mac")
             if not user_id:
@@ -317,9 +318,7 @@ class CanvasWindow:
             httpx.post(
                 f"{SUPABASE_URL}/rest/v1/canvas?on_conflict=user_id",
                 headers={
-                    "apikey":        SUPABASE_KEY,
-                    "Authorization": f"Bearer {SUPABASE_KEY}",
-                    "Content-Type":  "application/json",
+                    **auth_header(self._config, json=True),
                     "Prefer":        "return=minimal,resolution=merge-duplicates",
                 },
                 json={"user_id": user_id, "content": text, "device_name": device_name,
@@ -340,13 +339,14 @@ class CanvasWindow:
     def _fetch_canvas(self):
         try:
             import httpx
-            from app.sync import SUPABASE_URL, SUPABASE_KEY
+            from app.sync import SUPABASE_URL
+            from app.auth import auth_header
             user_id = self._config.get("sync_user_id", "")
             if not user_id:
                 return
             resp = httpx.get(
                 f"{SUPABASE_URL}/rest/v1/canvas",
-                headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"},
+                headers=auth_header(self._config),
                 params={"user_id": f"eq.{user_id}", "select": "content"},
                 timeout=5,
             )
@@ -400,6 +400,7 @@ class CanvasWindow:
     def _listen_canvas(self, user_id: str, device_name: str):
         import json, websocket, time
         from app.sync import WS_URL, SUPABASE_KEY
+        from app.auth import get_access_token
 
         def on_open(ws):
             ws.send(json.dumps({
@@ -413,7 +414,8 @@ class CanvasWindow:
                             "table":  "canvas",
                             "filter": f"user_id=eq.{user_id}",
                         }]
-                    }
+                    },
+                    "access_token": get_access_token(self._config) or SUPABASE_KEY,
                 },
                 "ref": "canvas_1",
             }))
@@ -437,9 +439,10 @@ class CanvasWindow:
 
         while True:
             try:
+                ws_token = get_access_token(self._config) or SUPABASE_KEY
                 ws = websocket.WebSocketApp(
                     WS_URL,
-                    header={"Authorization": f"Bearer {SUPABASE_KEY}"},
+                    header={"Authorization": f"Bearer {ws_token}"},
                     on_open=on_open, on_message=on_message,
                     on_error=on_error, on_close=on_close,
                 )

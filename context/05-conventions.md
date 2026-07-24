@@ -483,6 +483,24 @@
     suspenders: a realtime-driven live view should ALSO poll (`MeetingLiveScreen` refetches every 3s while
     `isLiveNow`) so a dropped socket on mobile can't freeze it. Realtime is the fast path, not the only one.
 
+20. **Desktop: any new Supabase REST/Realtime call site must use `app/auth.py`'s `auth_header()`/
+    `get_access_token()`, never the raw `SUPABASE_KEY` anon key directly (MER-29, 2026-07).** `auth_header(cfg,
+    json=False)` returns `Authorization: Bearer <access_token>` when signed in (refreshing via the stored
+    `refresh_token` when near-expiry), else falls back to the anon key — safe to use unconditionally,
+    including when signed out. For Phoenix Realtime `phx_join` payloads, also set `"access_token":
+    get_access_token(cfg) or SUPABASE_KEY` (Realtime evaluates `postgres_changes` RLS off that field, not
+    just the WS handshake header). **Exception: Storage object calls** (`recordings`/`meeting-audio`/
+    `canvas-images` uploads, signed URLs) stay on the anon key — those bucket policies are `TO public` and
+    don't discriminate by caller identity (MER-27). This exists because RLS on `notes`/`transcriptions`/
+    `devices`/`canvas`/`dictionary`/`meetings` is *currently* still permissive (`USING (true)`) — seeded
+    ahead of a real `auth.uid()` cutover so that flipping those policies later is a pure backend/SQL change,
+    not also a client rollout. See `context/04-data-model.md` §Security posture's MER-29 note for exactly
+    why that cutover (`whisperflow/supabase_auth_uid_rls.sql`, written + live-verified via a rolled-back
+    transaction) hasn't been applied yet: device pairing (`app/pairing.py`/`pairing.ts::claimPairing`) lets
+    a second device adopt a `user_id` **without ever getting a Supabase session**, so it structurally cannot
+    satisfy `auth.uid()` under the current pairing design — this needs a product decision, not just an
+    engineering rollout, before the migration can go live.
+
 ## Design system (Flume)
 
 Single source: desktop `app/theme.py` + `app/fonts_css.py`; mobile `flume-ui/theme/`. Also

@@ -167,13 +167,15 @@ class FlumeWebDashboard:
             return
         import websocket
         from app.sync import SUPABASE_KEY, WS_URL
+        from app.auth import get_access_token
 
         def on_open(ws):
             ws.send(json.dumps({
                 "topic": "realtime:*", "event": "phx_join",
                 "payload": {"config": {"postgres_changes": [
                     {"event": "*", "schema": "public", "table": "canvas",
-                     "filter": f"user_id=eq.{user_id}"}]}},
+                     "filter": f"user_id=eq.{user_id}"}]},
+                    "access_token": get_access_token(self.app.config) or SUPABASE_KEY},
                 "ref": "flume_canvas"}))
 
         def on_message(ws, raw):
@@ -192,8 +194,9 @@ class FlumeWebDashboard:
             except Exception as e:
                 logger.debug("canvas msg ignored: %s", e)
 
+        ws_token = get_access_token(self.app.config) or SUPABASE_KEY
         ws = websocket.WebSocketApp(
-            WS_URL, header={"Authorization": f"Bearer {SUPABASE_KEY}"},
+            WS_URL, header={"Authorization": f"Bearer {ws_token}"},
             on_open=on_open, on_message=on_message)
         ws.run_forever(ping_interval=25, ping_timeout=10)
 

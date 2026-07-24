@@ -261,12 +261,12 @@ def _fetch_meeting_rows(config, limit=25):
         if not user_id:
             return []
         import httpx
-        from app.sync import SUPABASE_URL, SUPABASE_KEY
+        from app.sync import SUPABASE_URL
+        from app.auth import auth_header
         r = httpx.get(
             f"{SUPABASE_URL}/rest/v1/meetings?user_id=eq.{user_id}"
             f"&order=started_at.desc&limit={limit}",
-            headers={"apikey": SUPABASE_KEY,
-                     "Authorization": f"Bearer {SUPABASE_KEY}"}, timeout=15)
+            headers=auth_header(config), timeout=15)
         return r.json() if r.status_code == 200 else []
     except Exception as e:
         logger.debug("ask: fetch rows failed: %s", e)
@@ -1195,12 +1195,11 @@ class MeetingSession:
             if not self.app.config.get("sync_user_id") or not self._cloud_ok:
                 return
             import httpx
-            from app.sync import SUPABASE_URL, SUPABASE_KEY
+            from app.sync import SUPABASE_URL
+            from app.auth import auth_header
             httpx.patch(
                 f"{SUPABASE_URL}/rest/v1/meetings?id=eq.{self.id}",
-                headers={"apikey": SUPABASE_KEY,
-                         "Authorization": f"Bearer {SUPABASE_KEY}",
-                         "Content-Type": "application/json"},
+                headers=auth_header(self.app.config, json=True),
                 json={"transcript": self.transcript, "speakers": self.speakers,
                       "duration_seconds": self.elapsed, "live": True,
                       "status": "processing", "updated_at": _now_iso()}, timeout=10)
@@ -1212,12 +1211,11 @@ class MeetingSession:
             if not self.app.config.get("sync_user_id"):
                 return
             import httpx
-            from app.sync import SUPABASE_URL, SUPABASE_KEY
+            from app.sync import SUPABASE_URL
+            from app.auth import auth_header
             r = httpx.post(
                 f"{SUPABASE_URL}/rest/v1/meetings",
-                headers={"apikey": SUPABASE_KEY,
-                         "Authorization": f"Bearer {SUPABASE_KEY}",
-                         "Content-Type": "application/json",
+                headers={**auth_header(self.app.config, json=True),
                          "Prefer": "resolution=merge-duplicates"},
                 content=json.dumps(self.row(), default=str), timeout=15)
             self._cloud_ok = r.status_code in (200, 201)
@@ -1229,13 +1227,12 @@ class MeetingSession:
             if not self.app.config.get("sync_user_id"):
                 return
             import httpx
-            from app.sync import SUPABASE_URL, SUPABASE_KEY
+            from app.sync import SUPABASE_URL
+            from app.auth import auth_header
             row = self.row()
             r = httpx.patch(
                 f"{SUPABASE_URL}/rest/v1/meetings?id=eq.{self.id}",
-                headers={"apikey": SUPABASE_KEY,
-                         "Authorization": f"Bearer {SUPABASE_KEY}",
-                         "Content-Type": "application/json"},
+                headers=auth_header(self.app.config, json=True),
                 content=json.dumps(row, default=str), timeout=20)
             if r.status_code in (200, 204) and not self._cloud_ok:
                 # row may not exist yet (insert failed earlier) — upsert it
@@ -1380,11 +1377,12 @@ class MeetingManager:
                 try:
                     import httpx
                     from app.sync import SUPABASE_URL, SUPABASE_KEY
-                    hdrs = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}
+                    from app.auth import auth_header
+                    storage_hdrs = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}
                     httpx.delete(f"{SUPABASE_URL}/rest/v1/meetings?id=eq.{meeting_id}",
-                                 headers=hdrs, timeout=10)
+                                 headers=auth_header(cfg), timeout=10)
                     httpx.delete(f"{SUPABASE_URL}/storage/v1/object/meeting-audio/"
-                                 f"{user_id}/{meeting_id}.wav", headers=hdrs, timeout=10)
+                                 f"{user_id}/{meeting_id}.wav", headers=storage_hdrs, timeout=10)
                 except Exception as e:
                     logger.debug("cloud delete failed: %s", e)
             try:
@@ -1464,12 +1462,11 @@ class MeetingManager:
                     row.update(patch)
                     if self.app.config.get("sync_user_id"):
                         import httpx
-                        from app.sync import SUPABASE_URL, SUPABASE_KEY
+                        from app.sync import SUPABASE_URL
+                        from app.auth import auth_header
                         httpx.patch(
                             f"{SUPABASE_URL}/rest/v1/meetings?id=eq.{meeting_id}",
-                            headers={"apikey": SUPABASE_KEY,
-                                     "Authorization": f"Bearer {SUPABASE_KEY}",
-                                     "Content-Type": "application/json"},
+                            headers=auth_header(self.app.config, json=True),
                             content=json.dumps(patch, default=str), timeout=20)
                     # refresh local metadata status
                     cfg = self.app.config
@@ -1514,9 +1511,9 @@ class MeetingManager:
                     break
             if self.app.config.get("sync_user_id"):
                 import httpx
-                from app.sync import SUPABASE_URL, SUPABASE_KEY
-                hdrs = {"apikey": SUPABASE_KEY,
-                        "Authorization": f"Bearer {SUPABASE_KEY}"}
+                from app.sync import SUPABASE_URL
+                from app.auth import auth_header
+                hdrs = auth_header(self.app.config)
                 r = httpx.get(
                     f"{SUPABASE_URL}/rest/v1/meetings?id=eq.{meeting_id}"
                     f"&select={field}&limit=1", headers=hdrs, timeout=10)
@@ -1581,12 +1578,11 @@ class MeetingManager:
             save_config(self.app.config)
             if self.app.config.get("sync_user_id"):
                 import httpx
-                from app.sync import SUPABASE_URL, SUPABASE_KEY
+                from app.sync import SUPABASE_URL
+                from app.auth import auth_header
                 httpx.patch(
                     f"{SUPABASE_URL}/rest/v1/meetings?id=eq.{meeting_id}",
-                    headers={"apikey": SUPABASE_KEY,
-                             "Authorization": f"Bearer {SUPABASE_KEY}",
-                             "Content-Type": "application/json"},
+                    headers=auth_header(self.app.config, json=True),
                     json={"speakers": speakers}, timeout=10)
             learned = False
             try:
@@ -1622,12 +1618,11 @@ class MeetingManager:
             if self.app.config.get("sync_user_id"):
                 try:
                     import httpx
-                    from app.sync import SUPABASE_URL, SUPABASE_KEY
+                    from app.sync import SUPABASE_URL
+                    from app.auth import auth_header
                     httpx.patch(
                         f"{SUPABASE_URL}/rest/v1/meetings?id=eq.{meeting_id}",
-                        headers={"apikey": SUPABASE_KEY,
-                                 "Authorization": f"Bearer {SUPABASE_KEY}",
-                                 "Content-Type": "application/json"},
+                        headers=auth_header(self.app.config, json=True),
                         json={"notes_md": notes}, timeout=15)
                 except Exception as e:
                     logger.debug("notes_md persist failed: %s", e)
@@ -1646,12 +1641,11 @@ class MeetingManager:
             save_config(self.app.config)
             if self.app.config.get("sync_user_id"):
                 import httpx
-                from app.sync import SUPABASE_URL, SUPABASE_KEY
+                from app.sync import SUPABASE_URL
+                from app.auth import auth_header
                 httpx.patch(
                     f"{SUPABASE_URL}/rest/v1/meetings?id=eq.{meeting_id}",
-                    headers={"apikey": SUPABASE_KEY,
-                             "Authorization": f"Bearer {SUPABASE_KEY}",
-                             "Content-Type": "application/json"},
+                    headers=auth_header(self.app.config, json=True),
                     json={"pinned": pinned}, timeout=10)
             return {"ok": True}
         except Exception as e:
@@ -1755,13 +1749,13 @@ class MeetingManager:
                     break
             if self.app.config.get("sync_user_id"):
                 import httpx
-                from app.sync import SUPABASE_URL, SUPABASE_KEY
+                from app.sync import SUPABASE_URL
+                from app.auth import auth_header
                 if not items:
                     r = httpx.get(
                         f"{SUPABASE_URL}/rest/v1/meetings?id=eq.{meeting_id}"
                         "&select=action_items&limit=1",
-                        headers={"apikey": SUPABASE_KEY,
-                                 "Authorization": f"Bearer {SUPABASE_KEY}"}, timeout=10)
+                        headers=auth_header(self.app.config), timeout=10)
                     rows = r.json() if r.status_code == 200 else []
                     items = (rows[0].get("action_items") if rows else None) or []
                     if 0 <= index < len(items):
@@ -1769,9 +1763,7 @@ class MeetingManager:
                 if items:   # only patch when there is something real to write
                     httpx.patch(
                         f"{SUPABASE_URL}/rest/v1/meetings?id=eq.{meeting_id}",
-                        headers={"apikey": SUPABASE_KEY,
-                                 "Authorization": f"Bearer {SUPABASE_KEY}",
-                                 "Content-Type": "application/json"},
+                        headers=auth_header(self.app.config, json=True),
                         json={"action_items": items}, timeout=10)
             return {"ok": True}
         except Exception as e:
@@ -1786,11 +1778,11 @@ class MeetingManager:
                 return {"ok": True, "meeting": s.row(), "live": bool(self.active)}
             if self.app.config.get("sync_user_id"):
                 import httpx
-                from app.sync import SUPABASE_URL, SUPABASE_KEY
+                from app.sync import SUPABASE_URL
+                from app.auth import auth_header
                 r = httpx.get(
                     f"{SUPABASE_URL}/rest/v1/meetings?id=eq.{meeting_id}&limit=1",
-                    headers={"apikey": SUPABASE_KEY,
-                             "Authorization": f"Bearer {SUPABASE_KEY}"}, timeout=10)
+                    headers=auth_header(self.app.config), timeout=10)
                 rows = r.json() if r.status_code == 200 else []
                 if rows:
                     return {"ok": True, "meeting": rows[0], "live": False}

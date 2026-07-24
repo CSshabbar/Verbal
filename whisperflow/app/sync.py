@@ -14,16 +14,10 @@ import time
 import httpx
 
 from app.config import PLATFORM
+from app.supabase_config import SUPABASE_URL, SUPABASE_KEY, REST_URL
 
 logger = logging.getLogger("verbal.sync")
 
-SUPABASE_URL = "https://ovpcthjingugwvpxlsna.supabase.co"
-SUPABASE_KEY = (
-    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"
-    ".eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im92cGN0aGppbmd1Z3d2cHhsc25hIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzgyNjQzMDYsImV4cCI6MjA5Mzg0MDMwNn0"
-    ".XwTBo8L-aEUmmSl6dJXNqA2QXzGFOpIVB5W9eDI8j28"
-)
-REST_URL = f"{SUPABASE_URL}/rest/v1"
 # Supabase Realtime WebSocket endpoint
 WS_URL = (
     f"wss://ovpcthjingugwvpxlsna.supabase.co/realtime/v1/websocket"
@@ -48,14 +42,13 @@ class SyncClient:
 
     def _register_device(self):
         """Register this device in Supabase and update last_seen every 60s."""
+        from app.auth import auth_header
         while True:
             try:
                 httpx.post(
                     f"{REST_URL}/devices?on_conflict=user_id,device_id",
                     headers={
-                        "apikey":        SUPABASE_KEY,
-                        "Authorization": f"Bearer {SUPABASE_KEY}",
-                        "Content-Type":  "application/json",
+                        **auth_header(json=True),
                         "Prefer":        "return=minimal,resolution=merge-duplicates",
                     },
                     json={
@@ -82,6 +75,7 @@ class SyncClient:
         threading.Thread(target=self._push_rest, args=(text, target_device_id), daemon=True).start()
 
     def _push_rest(self, text: str, target_device_id: str | None = None):
+        from app.auth import auth_header
         try:
             payload = {
                 "user_id":     self.user_id,
@@ -98,12 +92,7 @@ class SyncClient:
 
             resp = httpx.post(
                 f"{REST_URL}/transcriptions",
-                headers={
-                    "apikey":        SUPABASE_KEY,
-                    "Authorization": f"Bearer {SUPABASE_KEY}",
-                    "Content-Type":  "application/json",
-                    "Prefer":        "return=minimal",
-                },
+                headers={**auth_header(json=True), "Prefer": "return=minimal"},
                 json=payload,
                 timeout=5,
             )
@@ -125,11 +114,19 @@ class SyncClient:
     def _listen(self):
         import websocket
         import time
+        from app.auth import get_access_token
+
+        # Realtime evaluates postgres_changes RLS off the JWT in the join
+        # payload's `access_token` (falls back to the apikey/anon role if
+        # omitted) — MER-29: forward the signed-in user's token here too, so
+        # a future auth.uid()-scoped policy on `transcriptions` doesn't also
+        # require a Realtime protocol change at cutover time.
+        ws_token = get_access_token() or SUPABASE_KEY
 
         def on_open(ws):
             self._connected = True
             logger.info("Sync WebSocket connected — subscribing to postgres_changes")
-            
+
             # Single join message with postgres_changes config
             # Topic must be "realtime:*" for postgres_changes
             ws.send(json.dumps({
@@ -145,7 +142,8 @@ class SyncClient:
                                 "filter": f"user_id=eq.{self.user_id}",
                             }
                         ]
-                    }
+                    },
+                    "access_token": ws_token,
                 },
                 "ref": self._next_ref(),
             }))
@@ -214,16 +212,39 @@ class SyncClient:
             # Don't let errors crash the entire application
             pass
 
+        def _refresh_ws_token_loop(ws):
+            # Access tokens are short-lived (~1h) but this WS connection can
+            # stay open far longer — push a refreshed token onto the already
+            # joined channel every 20 min so a long session doesn't silently
+            # start running on a stale/expired JWT. Exits once this specific
+            # connection is replaced (reconnect) or closed.
+            while self._ws is ws:
+                time.sleep(1200)
+                if self._ws is not ws or not self._connected:
+                    return
+                try:
+                    fresh = get_access_token()
+                    if fresh:
+                        ws.send(json.dumps({
+                            "topic": "realtime:*",
+                            "event": "access_token",
+                            "payload": {"access_token": fresh},
+                            "ref": self._next_ref(),
+                        }))
+                except Exception as e:
+                    logger.debug(f"WS token refresh push failed: {e}")
+
         try:
             ws = websocket.WebSocketApp(
                 WS_URL,
-                header={"Authorization": f"Bearer {SUPABASE_KEY}"},
+                header={"Authorization": f"Bearer {ws_token}"},
                 on_open=on_open,
                 on_message=on_message,
                 on_close=on_close,
                 on_error=on_error,
             )
             self._ws = ws
+            threading.Thread(target=_refresh_ws_token_loop, args=(ws,), daemon=True).start()
             ws.run_forever(ping_interval=25, ping_timeout=10)
         except Exception as e:
             logger.error(f"Sync WebSocket failed to start: {e}")
@@ -243,13 +264,14 @@ class SyncClient:
 
 def fetch_devices(user_id: str, exclude_device_id: str) -> list:
     """Fetch all devices for this user except the current one (seen in last 5 min)."""
+    from app.auth import auth_header
     try:
         import datetime
         cutoff = (datetime.datetime.now(datetime.timezone.utc) -
                   datetime.timedelta(minutes=5)).isoformat()
         resp = httpx.get(
             f"{REST_URL}/devices",
-            headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"},
+            headers=auth_header(),
             params={
                 "user_id":   f"eq.{user_id}",
                 "device_id": f"neq.{exclude_device_id}",

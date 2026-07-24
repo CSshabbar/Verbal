@@ -29,13 +29,14 @@ import webbrowser
 import httpx
 
 from app.config import load_config, save_config
-from app.sync import SUPABASE_URL, SUPABASE_KEY
+from app.supabase_config import SUPABASE_URL, SUPABASE_KEY
 
 logger = logging.getLogger("verbal.auth")
 
 REDIRECT_PORT = 8765
 REDIRECT_URI = f"http://localhost:{REDIRECT_PORT}/callback"
 AUTH_BASE = f"{SUPABASE_URL}/auth/v1"
+_refresh_lock = threading.Lock()
 
 _DONE_PAGE = (
     "<!doctype html><html><head><meta charset='utf-8'><title>Flume</title></head>"
@@ -167,6 +168,7 @@ def _store_session(session):
         "avatar_url": meta.get("avatar_url", ""),
         "access_token": session.get("access_token", ""),
         "refresh_token": session.get("refresh_token", ""),
+        "expires_at": time.time() + session.get("expires_in", 3600),
     }
     cfg = load_config()
     cfg["auth"] = auth
@@ -193,3 +195,84 @@ def sign_out():
     cfg["sync_enabled"] = False
     save_config(cfg)
     logger.info("Signed out")
+
+
+# ── Per-user JWT forwarding (MER-29) ─────────────────────────────────────────
+# Every Supabase REST/Realtime call historically used the shared anon key only,
+# scoping data purely by the `user_id` *value* in the query/filter — not
+# cryptographically enforced. This adds real Supabase-session auth: when
+# signed in (with a fresh-enough access_token, refreshing via the stored
+# refresh_token when needed), REST calls carry `Authorization: Bearer
+# <access_token>`; otherwise they fall back to the anon key exactly as before.
+# This is deliberately backward-compatible and additive — RLS policies remain
+# `USING (true)` for now (see context/04-data-model.md §Security posture), so
+# sending the anon key still works identically. It's shipped ahead of any RLS
+# tightening specifically so that a future cutover to `auth.uid()`-scoped
+# policies doesn't ALSO require a client code change at the same time.
+def _refresh_access_token(cfg: dict) -> str | None:
+    """Return a valid access_token for the signed-in user, refreshing via the
+    stored refresh_token if the cached one is expired/near-expiry. Returns
+    None if signed out. Never raises — falls back to the last-known token (or
+    None) on any refresh error, so a network hiccup degrades to "try the old
+    token" rather than breaking the caller."""
+    auth = cfg.get("auth") or {}
+    access_token = auth.get("access_token")
+    if not access_token:
+        return None
+    if time.time() < auth.get("expires_at", 0) - 60:
+        return access_token  # still valid (60s safety margin)
+    refresh_token = auth.get("refresh_token")
+    if not refresh_token:
+        return access_token  # no refresh_token on record; use what we have
+    with _refresh_lock:
+        # Re-read + re-check under the lock — another thread may have already
+        # refreshed while we were waiting.
+        cfg2 = load_config()
+        auth2 = cfg2.get("auth") or {}
+        if time.time() < auth2.get("expires_at", 0) - 60:
+            return auth2.get("access_token")
+        try:
+            resp = httpx.post(
+                f"{AUTH_BASE}/token?grant_type=refresh_token",
+                headers={"apikey": SUPABASE_KEY, "Content-Type": "application/json"},
+                json={"refresh_token": auth2.get("refresh_token", refresh_token)},
+                timeout=10,
+            )
+            if resp.status_code != 200:
+                logger.warning("Token refresh failed (%s): %s", resp.status_code, resp.text[:200])
+                return auth2.get("access_token", access_token)
+            session = resp.json()
+            auth2["access_token"] = session.get("access_token", auth2.get("access_token"))
+            auth2["refresh_token"] = session.get("refresh_token", auth2.get("refresh_token"))
+            auth2["expires_at"] = time.time() + session.get("expires_in", 3600)
+            cfg2["auth"] = auth2
+            save_config(cfg2)
+            return auth2["access_token"]
+        except Exception as e:
+            logger.warning("Token refresh error: %s", e)
+            return auth2.get("access_token", access_token)
+
+
+def get_access_token(cfg: dict | None = None) -> str | None:
+    """Public helper: a valid access_token if signed in (refreshing as
+    needed), else None. Fails closed to None on any error."""
+    try:
+        return _refresh_access_token(cfg if cfg is not None else load_config())
+    except Exception as e:
+        logger.warning("get_access_token error (falling back to anon): %s", e)
+        return None
+
+
+def auth_header(cfg: dict | None = None, json: bool = False) -> dict:
+    """REST headers for any Supabase call: the signed-in user's JWT when
+    available and valid, else the shared anon key (signed-out desktop, or a
+    paired device that adopted a user_id without ever signing in itself —
+    see the `pairings` note in context/04-data-model.md §Security posture).
+    `apikey` is always the project's anon key regardless — that's the
+    project identifier, not the caller's identity; `Authorization` is what
+    Supabase's RLS actually evaluates."""
+    token = get_access_token(cfg) or SUPABASE_KEY
+    h = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {token}"}
+    if json:
+        h["Content-Type"] = "application/json"
+    return h

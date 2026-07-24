@@ -314,10 +314,11 @@ def fetch_remote(config, save_config_fn):
         return get(config)
     try:
         import httpx
-        from app.sync import SUPABASE_KEY, SUPABASE_URL
+        from app.sync import SUPABASE_URL
+        from app.auth import auth_header
         resp = httpx.get(
             f"{SUPABASE_URL}/rest/v1/dictionary",
-            headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"},
+            headers=auth_header(config),
             params={"user_id": f"eq.{user_id}", "select": "vocabulary,replacements,snippets", "limit": "1"},
             timeout=8,
         )
@@ -339,11 +340,11 @@ def _push_remote(config, d):
     try:
         import datetime as _dt
         import httpx
-        from app.sync import SUPABASE_KEY, SUPABASE_URL
+        from app.sync import SUPABASE_URL
+        from app.auth import auth_header
         httpx.post(
             f"{SUPABASE_URL}/rest/v1/dictionary?on_conflict=user_id",
-            headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}",
-                     "Content-Type": "application/json",
+            headers={**auth_header(config, json=True),
                      "Prefer": "resolution=merge-duplicates,return=minimal"},
             json={"user_id": user_id, "vocabulary": d["vocabulary"],
                   "replacements": d["replacements"],

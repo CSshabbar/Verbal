@@ -140,7 +140,9 @@ def extract_object_path(stored_value: str, bucket: str) -> str:
 def sign_url(bucket: str, object_path: str, expires_in: int = 180) -> str | None:
     """Generate a short-lived signed URL for a private-bucket object. Both
     buckets' storage.objects policies are `TO public` (Hard Rule #10), so the
-    anon key is sufficient — desktop never has a per-user JWT."""
+    anon key is sufficient regardless of caller identity — unlike the table
+    RLS forwarding in `app.auth` (MER-29), storage calls intentionally stay
+    on the anon key here (see conventions Hard Rule #20)."""
     try:
         import httpx
         r = httpx.post(

@@ -310,12 +310,18 @@ class SharedDashboard:
         import websocket
 
         from app.sync import SUPABASE_KEY, WS_URL
+        from app.auth import get_access_token
 
         user_id = self.app.config.get("sync_user_id", "")
         device_name = self.app.config.get("sync_device_name", "Windows")
         if not user_id:
             time.sleep(5)
             return
+
+        # MER-29: forward the signed-in user's JWT (falls back to the anon key)
+        # so a future auth.uid()-scoped policy on `canvas` doesn't also require
+        # a Realtime protocol change at cutover time.
+        ws_token = get_access_token(self.app.config) or SUPABASE_KEY
 
         def on_open(ws):
             ws.send(
@@ -333,7 +339,8 @@ class SharedDashboard:
                                         "filter": f"user_id=eq.{user_id}",
                                     }
                                 ]
-                            }
+                            },
+                            "access_token": ws_token,
                         },
                         "ref": "shared_canvas",
                     }
@@ -372,7 +379,7 @@ class SharedDashboard:
 
         ws = websocket.WebSocketApp(
             WS_URL,
-            header={"Authorization": f"Bearer {SUPABASE_KEY}"},
+            header={"Authorization": f"Bearer {ws_token}"},
             on_open=on_open,
             on_message=on_message,
         )
@@ -1157,11 +1164,12 @@ class DashboardApi:
         if self._sync_on():
             try:
                 import httpx
-                from app.sync import SUPABASE_KEY, SUPABASE_URL
+                from app.sync import SUPABASE_URL
+                from app.auth import auth_header
                 user_id = self.app.config.get("sync_user_id", "")
                 resp = httpx.get(
                     f"{SUPABASE_URL}/rest/v1/notes",
-                    headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"},
+                    headers=auth_header(self.app.config),
                     # select=* so raw_content, audio_segments, and any newer-client
                     # columns come back and can be preserved verbatim (forward-compat).
                     params={"user_id": f"eq.{user_id}", "order": "updated_at.desc",
@@ -1268,7 +1276,8 @@ class DashboardApi:
         if self._sync_on() and "::conflict::" not in nid:
             try:
                 import httpx
-                from app.sync import SUPABASE_KEY, SUPABASE_URL
+                from app.sync import SUPABASE_URL
+                from app.auth import auth_header
                 payload = {"id": nid, "user_id": self.app.config.get("sync_user_id", ""),
                            "title": title, "content": content,
                            "audio_segments": saved.get("audio_segments", []),
@@ -1283,8 +1292,7 @@ class DashboardApi:
                         payload[k] = v
                 httpx.post(
                     f"{SUPABASE_URL}/rest/v1/notes?on_conflict=id",
-                    headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}",
-                             "Content-Type": "application/json",
+                    headers={**auth_header(self.app.config, json=True),
                              "Prefer": "resolution=merge-duplicates,return=minimal"},
                     json=payload,
                     timeout=10,
@@ -1301,10 +1309,11 @@ class DashboardApi:
         if self._sync_on():
             try:
                 import httpx
-                from app.sync import SUPABASE_KEY, SUPABASE_URL
+                from app.sync import SUPABASE_URL
+                from app.auth import auth_header
                 httpx.delete(
                     f"{SUPABASE_URL}/rest/v1/notes?id=eq.{note_id}",
-                    headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"},
+                    headers=auth_header(self.app.config),
                     timeout=10,
                 )
             except Exception as e:
@@ -1447,20 +1456,21 @@ class DashboardApi:
     def toggle_note_pin(self, note_id):
         try:
             import httpx
-            from app.sync import SUPABASE_KEY, SUPABASE_URL
+            from app.sync import SUPABASE_URL
+            from app.auth import auth_header
             user_id = self.app.config.get("sync_user_id", "")
             if not user_id:
                 return _err("Set User ID in Settings first")
             notes_resp = httpx.get(
                 f"{SUPABASE_URL}/rest/v1/notes",
-                headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"},
+                headers=auth_header(self.app.config),
                 params={"id": f"eq.{note_id}", "select": "is_pinned"},
                 timeout=8,
             )
             current = notes_resp.json()[0].get("is_pinned", False) if notes_resp.status_code == 200 and notes_resp.json() else False
             resp = httpx.patch(
                 f"{SUPABASE_URL}/rest/v1/notes?id=eq.{note_id}",
-                headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}", "Content-Type": "application/json"},
+                headers=auth_header(self.app.config, json=True),
                 json={"is_pinned": not current},
                 timeout=10,
             )
@@ -1710,14 +1720,15 @@ class DashboardApi:
         try:
             import httpx
 
-            from app.sync import SUPABASE_KEY, SUPABASE_URL
+            from app.sync import SUPABASE_URL
+            from app.auth import auth_header
 
             user_id = self.app.config.get("sync_user_id", "")
             if not user_id:
                 return _ok(content="", image_url=None, status="Set User ID in Settings first")
             resp = httpx.get(
                 f"{SUPABASE_URL}/rest/v1/canvas",
-                headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"},
+                headers=auth_header(self.app.config),
                 params={"user_id": f"eq.{user_id}", "select": "content,image_url"},
                 timeout=8,
             )
@@ -1734,7 +1745,8 @@ class DashboardApi:
         try:
             import httpx
 
-            from app.sync import SUPABASE_KEY, SUPABASE_URL
+            from app.sync import SUPABASE_URL
+            from app.auth import auth_header
 
             user_id = self.app.config.get("sync_user_id", "")
             if not user_id:
@@ -1742,9 +1754,7 @@ class DashboardApi:
             resp = httpx.post(
                 f"{SUPABASE_URL}/rest/v1/canvas?on_conflict=user_id",
                 headers={
-                    "apikey": SUPABASE_KEY,
-                    "Authorization": f"Bearer {SUPABASE_KEY}",
-                    "Content-Type": "application/json",
+                    **auth_header(self.app.config, json=True),
                     "Prefer": "return=minimal,resolution=merge-duplicates",
                 },
                 json={
