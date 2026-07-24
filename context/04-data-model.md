@@ -60,14 +60,26 @@ MER-26, 2026-07) — the base file and `supabase_notes_v2.sql` wrote none (v2's 
 broadens a *pre-existing* policy if RLS was already enabled, which it wasn't, so it was a silent no-op
 until this fix landed).
 
-**`groq_usage`** — `create_groq_usage` migration. Usage + rate-limit ledger for the `groq-proxy` Edge
-Function: one row per successful Groq call — `id`, `identity` (`user:<uuid>`|`device:<id>`|`ip:<addr>`),
-`user_id?`, `kind` (`transcription`|`chat`|`chat-ollama` — the `groq_usage_kind_check` constraint was
-fixed 2026-07 to actually allow `chat-ollama`; it silently rejected every Ollama-routed usage-log insert
-before that, since `logUsage` is fire-and-forget with `.catch(()=>{})`, so Ollama metering was a
-no-op in production until this migration), `created_at`. **RLS on** (read-your-own for `authenticated`);
-only the function writes, via the service role (fire-and-forget). Metering ledger — rate-limit
-*enforcement* is currently off for latency (see `05-conventions` Hard Rule #15).
+**`groq_usage`** — `create_groq_usage` migration. Usage ledger (analytics only, not enforcement) for the
+`groq-proxy` Edge Function: one row per request that reached the upstream call — `id`, `identity`
+(`user:<uuid>`|`device:<id>`|`ip:<addr>`), `user_id?`, `kind` (`transcription`|`chat`|`chat-ollama` — the
+`groq_usage_kind_check` constraint was fixed 2026-07 to actually allow `chat-ollama`; it silently rejected
+every Ollama-routed usage-log insert before that, since `logUsage` is fire-and-forget with `.catch(()=>{})`,
+so Ollama metering was a no-op in production until this migration), `created_at`. **RLS on**
+(read-your-own for `authenticated`); only the function writes, via the service role (fire-and-forget).
+Requests rejected by the rate limiter below never reach this table (they short-circuit before the upstream
+call). Rate-limit *enforcement* itself now lives in `groq_rate_limits` (see below; MER-30, 2026-07 —
+see `05-conventions` Hard Rule #15).
+
+**`groq_rate_limits`** — `whisperflow/supabase_groq_rate_limits.sql` (MER-30, 2026-07). Per-identity
+fixed-window (60s) request/token counters enforcing the `groq-proxy` rate limit. `identity` text ·
+`window_start` timestamptz (epoch-aligned 60s bucket) · `requests` int · `tokens` int (coarse per-request
+estimate, not real usage — see Hard Rule #15); PK `(identity, window_start)`. RLS on, **no policies** — the
+table is only ever touched via the `groq_check_rate_limit` SECURITY DEFINER RPC, and `EXECUTE` on that RPC
+is revoked from `anon`/`authenticated` and granted only to `service_role` (the Edge Function's own key) —
+without that revoke, any client could call the RPC directly via PostgREST with an arbitrary `p_identity` to
+tamper with another identity's counter; this was caught and fixed live via the security advisor during
+MER-30 verification. Opportunistic cleanup (~1% of calls) deletes rows older than 10 minutes.
 
 **`app_config` — referenced by code, does not exist in the live DB.** The provider-secret-key-table idea
 (`GROQ_API_KEY` readable by clients) was correctly dropped — that must never exist; keys live only as the
@@ -89,7 +101,9 @@ feature; worth confirming with whoever added it whether it's safe to drop.
 
 **Edge Functions:** `groq-proxy` (`supabase/functions/groq-proxy/index.ts`) — the only holder of the
 provider keys (`GROQ_API_KEY`, plus `OLLAMA_API_KEY` for the meeting-notes model `gpt-oss:120b`); brokers
-all transcription + chat for every client. `verify_jwt` on.
+all transcription + chat for every client. `verify_jwt` on. Per-identity rate limiting (MER-30, 2026-07)
+enforced via the `groq_rate_limits` table + `groq_check_rate_limit` RPC, called with the service-role key
+before any upstream fetch — see `groq_rate_limits` above and Hard Rule #15.
 
 **`meetings`** — `supabase_meetings.sql` (applied live 2026-07 + follow-up `hybrid_notes` column). One row
 per captured meeting.

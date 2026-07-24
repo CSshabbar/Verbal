@@ -100,8 +100,24 @@
    Android keyboards) plus an `x-flume-device` fallback id. The function (`verify_jwt` on, source in
    `supabase/functions/groq-proxy/index.ts`) decodes the caller id from the JWT locally (no `getUser`
    round-trip) and **logs usage** to `groq_usage` fire-and-forget, then streams the Groq response back.
-   It is deliberately lean for latency: **no SDK import, no blocking pre-checks** (a synchronous
-   rate-limit query was removed — re-add a *fast* limiter, e.g. in-isolate/Upstash, if abuse appears).
+   It is deliberately lean for latency: no SDK import, no `getUser` round-trip.
+   **Per-identity rate limiting (MER-30, 2026-07):** before any upstream call, the function computes the
+   same identity used for usage logging and calls the `groq_check_rate_limit` Postgres RPC (service-role
+   key), which does one indexed upsert+read against `groq_rate_limits` (fixed 60s window, per-identity
+   request count + a coarse token-estimate — 500 for transcription, 2048 for chat, both env-configurable via
+   `RATE_LIMIT_PER_MINUTE`/`RATE_LIMIT_TOKENS_PER_MINUTE`, defaults 30 req/min and 20000 tokens/min). Over
+   either limit → `429` with a `Retry-After` header; the limiter **fails open** on any RPC/network error
+   (Hard Rule #1). **This replaced an in-memory (in-isolate) counter that shipped first and turned out not
+   to work**: live testing (a 35-request sequential burst from one identity) showed **zero** rejections from
+   the in-memory version — every request reached Groq, confirmed via `groq_usage` row counts — because
+   Supabase's edge runtime does not reliably keep module-level state warm across invocations for this
+   traffic pattern. A DB round-trip on the hot path was accepted as the necessary trade-off once the
+   zero-infra version was proven non-functional; correctness beat the latency micro-optimization. **The RPC
+   is `SECURITY DEFINER` and its `EXECUTE` grant MUST stay revoked from `anon`/`authenticated`** (granted
+   only to `service_role`) — otherwise any client can call it directly via PostgREST with an arbitrary
+   `p_identity` and tamper with another identity's counter; the security advisor caught this live during
+   MER-30 and it was fixed in the same migration (`supabase_groq_rate_limits.sql`). See
+   `04-data-model.md`'s `groq_rate_limits` entry.
    Rotate/revoke centrally: `supabase secrets set GROQ_API_KEY=…` (no app update). The key is **never** in an
    app bundle, the repo, or a log. **Meeting NOTES route through the same function but to Ollama Cloud**
    (`gpt-oss:120b`): the client adds `{"provider":"ollama"}` to the chat payload → the function strips it
