@@ -8,10 +8,12 @@
 ```
 Verbal/
 ├── whisperflow/     # desktop (macOS primary, Windows variant)
-│   └── app/         # ~34 Python modules
-├── verbal-mobile/   # Expo / React Native (iOS)
+│   └── app/         # ~48 Python modules
+├── verbal-mobile/   # Expo / React Native — ONE codebase for iOS + Android
 │   ├── flume-ui/    # canonical UI: screens/ hooks/ components/ theme/ navigation/
-│   └── lib/         # backend-facing TS modules
+│   ├── lib/         # backend-facing TS modules
+│   ├── targets/keyboard/   # iOS keyboard extension (Swift)
+│   └── plugins/keyboard/   # Android IME (Kotlin) + Expo config plugin
 └── (Supabase)       # one shared project: ovpcthjingugwvpxlsna
 ```
 
@@ -60,6 +62,7 @@ separate users purely by `user_id` (the Supabase auth id after sign-in). Details
   | Menubar popover | `flume_popover.py::FlumePopover` | `flume_popover_html.py::popover_html()` | `NSPopover` |
   | Recording overlay | `overlay.py::OverlayBar` | `overlay_html.py::overlay_html()` | non-activating `NSPanel` |
   | Auto-learn widget | `autolearn_widget.py::AutoLearnWidget` | inline HTML | non-activating `NSPanel` |
+  | Meeting surface | `meeting_window.py::MeetingWindow` | `meeting_html.py::meeting_html()` | ONE morphing `NSPanel`: ambient **bar** (borderless, non-activating, top-center, 500×54) ⇄ **expanded** window (titled+hidden-titlebar, 880×620, floating level, Stage-Manager opt-out `.auxiliary`+`.canJoinAllApplications`, never activates the app — `orderFrontRegardless` + key-only-if-needed, webview subclass accepts first mouse) via `NSAnimationContext` frame animation + styleMask flip; auto-collapses to the bar on focus loss while recording; close-while-recording collapses instead |
 
 - **JS↔Python bridge** (defined once in `flume_web_dashboard.py`, reused by every surface):
   - `_SHIM` (injected at document start) fakes `window.pywebview.api` as a Proxy — any
@@ -71,15 +74,60 @@ separate users purely by `user_id` (the Supabase auth id after sign-in). Details
   - **Python→JS events:** `_emit(event, payload)` → `window.VerbalNative(event, payload)`
     (`recordingState`, `result`, `state`, `selectTab`, `devices`, `canvasRemote`, `notesUpdated`).
     Overlay uses `window.VerbalOverlay(mode,data)`; the auto-learn widget uses
-    `window.VerbalAutolearn(data)` / `VerbalAutolearnHide()`.
+    `window.VerbalAutolearn(data)` / `VerbalAutolearnHide()`. The meeting window uses
+    `window.VerbalMeeting(event, payload)` (`mode`, `state`, `utterance`, `elapsed`, `moment`,
+    `speakers`, `meeting`, `permissions`, `testLevel`); the meeting HUD uses
+    `window.VerbalMeetingHud(event, payload)` (`state`, `elapsed`).
   - **Shared backend for the JS = `shared_dashboard.py::DashboardApi`** — one class serving both the
     macOS WKWebView controllers and the Windows pywebview dashboard. Popover/overlay/widget
     controllers **duck-type** the dashboard interface so `main.py`/`DashboardApi` treat them uniformly.
+  - **Shared *frontend* too (Windows parity):** `flume_dashboard_html.py::flume_html()` is **dual-target**
+    — it waits for `pywebviewready` and calls `window.pywebview.api.*` (the shared `DashboardApi`) with
+    native events via `window.VerbalNative(event,payload)`. On macOS a `_SHIM` (`flume_web_dashboard.py`)
+    *fakes* `window.pywebview.api` inside WKWebView; on Windows real pywebview provides it natively. So
+    `SharedDashboard.show()` now renders the **same** `flume_html()` the Mac uses (the old light-theme
+    inline `_html()` is retired), giving Windows visual parity. Same pattern applies to the other Flume
+    surfaces (`overlay_html`, `flume_popover_html`, `meeting_html`, `meeting_hud_html`, `autolearn_widget`).
 - **Config:** `~/.verbal/config.json`, written by `config.py::save_config` — **atomic** (`tempfile.mkstemp`
   unique name + `os.replace`) under a module-level `_config_lock`. This is the desktop source of truth
   for user data/settings; cloud syncs on top.
 - **Fonts:** Geist + JetBrains Mono. AppKit views use CoreText-registered faces (`theme.py`); WKWebViews
   can't resolve those by name, so `fonts_css.py::web_font_css()` inlines the TTFs as base64 `@font-face`.
+
+### Meetings pipeline (desktop-only capture)
+
+`meetings.py::MeetingManager/MeetingSession` — dual-source capture, entirely separate from the dictation
+`Recorder` (Rule #1): the mic gets its **own** `sounddevice.InputStream` (16 kHz mono) and the call's other
+side comes from `system_audio.py::SystemAudioCapture` — **ScreenCaptureKit audio-only** (2×2 video frames
+dropped, `excludesCurrentProcessAudio`, gated by the Screen-Recording permission,
+`pyobjc-framework-ScreenCaptureKit`+`CoreMedia` wrappers). Each source is silence-chunked (8–22 s) and fed
+through the normal `transcriber` chain into utterances `{speaker, t0, t1, text}` (speakers are
+source-based: mic=`self`, system=`s1..N` with a 90 s-gap heuristic; rename is retroactive). Stop → WAV mix →
+`meeting-audio` bucket → structured summary LLM call (`groq_proxy.chat_via_proxy`, strict-JSON
+summary/decisions/action_items/hybrid_notes) → `meetings` row upsert. Local metadata mirrors history:
+bounded `config['meetings']` (`MEETINGS_CAP`). The HUD appears when the meeting window resigns key
+(NSNotification observers) and never steals focus.
+
+## Windows stack (`whisperflow/app/win_*.py`)
+
+- **Runtime:** `win_main.py::VerbalWinApp` (893 lines) is the Windows equivalent of `main.py::VerbalApp` —
+  same role, different shell: **`pystray`** owns the tray icon + menu (recording mode, Whisper model,
+  Groq/Gemini key management, auth toggle, Open Verbal/Canvas/Notes/Settings) instead of `rumps`. No
+  Cocoa-style run loop to own; the pywebview window and pystray tray each run their own loop, wired
+  together rather than sharing one.
+- **Shares the SAME pipeline core as macOS:** `Recorder`, `transcriber` (`transcribe`/
+  `transcribe_with_status`), `ai_cleanup.process_text`, `recordings`, `auth` — imported directly from
+  `app.*`, not reimplemented. This is *why* Windows parity work is additive (new shell code) rather than
+  a port of the whole app.
+- **`win_overlay.py::WinOverlay`** (378 lines) — the Windows floating recording pill, parallel to macOS
+  `overlay.py::OverlayBar`; renders the shared `overlay_html()` (see the JS↔Python bridge note above —
+  same dual-target `flume_html()`/`overlay_html()`/etc. pattern serves both OSes).
+- **Dashboard:** `win_dashboard.py` + `shared_dashboard.py::DashboardApi` (the same backend class macOS
+  uses) render the identical `flume_dashboard_html.py::flume_html()` via real pywebview (WebView2) instead
+  of WKWebView + `_SHIM` — see "Also shared across the two desktops" below.
+- **Native-heavy features not yet ported:** meetings (ScreenCaptureKit → needs WASAPI loopback), auto-learn
+  and file-tagging (macOS Accessibility → need UI Automation) — specced in `whisperflow/WINDOWS_PARITY_PLAN.md`
+  and `whisperflow/windows_specs/*.md`, not yet implemented.
 
 ## Mobile stack (`verbal-mobile/`)
 
@@ -88,8 +136,12 @@ separate users purely by `user_id` (the Supabase auth id after sign-in). Details
 - **Navigation** (`flume-ui/navigation/`): a root native-stack gated in three states —
   `Onboarding` (until AsyncStorage `flume_onboarded==='1'`) → `Welcome` (until a Supabase session
   exists) → `Main`. `Main` is bottom tabs **Home · Notes · [center mic] · Canvas · History**
-  (center mic is a floating button opening the `Recording` modal; Settings via Home header gear).
-  Modals: `Recording`, `Confirmation`, `Settings`. Sub-stacks: Notes, History, Settings→Devices→PairDevice.
+  (center mic is a floating button opening the `Recording` modal). The Home header **☰** opens the **Menu**
+  modal — the navigation hub for the secondary destinations (Settings, Snippets, Dictionary, Device pairing,
+  a Sync toggle, Sign out) that used to be buried in Settings. The tab bar is **hidden while a note or a
+  meeting's full AI notes are open** (`NoteEditor`, `MeetingNotes`) so the screen owns the view.
+  Modals: `Recording`, `Confirmation`, `Menu`. Sub-stacks: Notes (→NoteEditor), History (→HistoryDetail),
+  Menu (→Settings/Snippets/Dictionary/Devices→PairDevice).
 - **Layered architecture:** presentational **screens** (`flume-ui/screens/*.tsx`) receive callbacks as
   props → read data via **hooks** (`flume-ui/hooks/*.ts`) → hooks call **`lib/*.ts`** (Supabase, Groq,
   AsyncStorage). Theme tokens in `flume-ui/theme/` (colors/typography/spacing/shadow/motion).
@@ -100,12 +152,31 @@ separate users purely by `user_id` (the Supabase auth id after sign-in). Details
 - **Client:** `lib/supabase.ts` — one `@supabase/supabase-js` client, `flowType:'pkce'`,
   `storage: AsyncStorage`, `detectSessionInUrl:false`.
 - **iOS native project** committed at `ios/` (`Verbal.xcworkspace`, CocoaPods) — a dev-client/prebuilt
-  Expo app; EAS profiles in `eas.json`.
+  Expo app; **Android native project** committed at `android/` (Gradle, `gradlew`); EAS profiles for both
+  in `eas.json`.
+- **Shared dictation pipeline contract:** `lib/dictationPipeline.ts` wraps transcribe → AI-cleanup →
+  dictionary-replacement → snippet-expansion as ONE function so every entry point (in-app recorder, the
+  iOS keyboard extension's main-app handoff, any future RN-hosted path) runs identical logic instead of
+  each reimplementing it. iOS's keyboard extension can't run JS at all, so it hands off to the main app,
+  which calls this. Android's IME (Kotlin, native) can't call this TS either — `FlumeInputMethodService.kt`
+  mirrors the same sequence natively, with this file as the reference contract that mirror must match.
+- **Custom keyboards are separate native targets, not RN screens:** the iOS keyboard extension
+  (`targets/keyboard/KeyboardViewController.swift`) and Android IME (`plugins/keyboard/
+  FlumeInputMethodService.kt`) are full from-scratch keyboards (QWERTY layers, suggestions, dictation,
+  snippets/history/vocabulary/clipboard overlays, Transform) — see `05-conventions.md` Hard Rule #16 for
+  the app→keyboard config bridge and all the native-specific gotchas.
 
 ## Backend (Supabase)
 
 - **Tables:** `transcriptions` (history / shared clipboard), `dictionary`, `notes`, `canvas`, `devices`,
-  `pairings`, `app_versions`. **Storage buckets:** `recordings`, `canvas-images`, `releases` (all public).
+  `pairings`, `app_versions`, `groq_usage` (proxy rate-limit/usage ledger). **Storage buckets:**
+  `recordings`, `canvas-images`, `releases` (all public).
+- **Edge Functions:** `groq-proxy` (`supabase/functions/groq-proxy/index.ts`) brokers AI access —
+  provider keys are server-side function secrets, never in any client. Clients POST audio/chat with their
+  Supabase JWT (or anon key); the function logs usage per identity (`groq_usage`) and forwards to Groq —
+  except **meeting notes**, which send `provider:"ollama"` and are forwarded to **Ollama Cloud
+  `gpt-oss:120b`** (`OLLAMA_API_KEY` secret, OpenAI-compatible passthrough) with an automatic Groq
+  `llama-3.3-70b` fallback. See `04-data-model.md` and `05-conventions.md` Hard Rule #15.
   **Auth:** Google provider.
 - **Access model:** both apps use the **anon key** for all REST/realtime; scoping is by `user_id` value
   (not JWT/RLS — that's a documented deferred hardening). Realtime over Phoenix WebSocket.
@@ -117,8 +188,18 @@ separate users purely by `user_id` (the Supabase auth id after sign-in). Details
   (history entry, replacement rule, note, device, canvas). Desktop `dictionary.py` ↔ mobile
   `lib/dictionary.ts` are deliberate mirrors; likewise `recordings.py` ↔ `lib/recordings.ts`,
   `pairing.py` ↔ `lib/pairing.ts`.
-- **What's platform-specific:** desktop AX features (file-tagging, auto-learn), the WKWebView UIs +
-  bridge, the rumps menubar; mobile's Expo screens/hooks and native audio (`expo-audio`).
+- **Also shared across the two desktops:** the Flume HTML surfaces (`flume_dashboard_html.py` et al.)
+  now render on both macOS (WKWebView + `_SHIM`) and Windows (pywebview/WebView2), plus the
+  cross-platform pipeline modules (`recorder`, `transcriber`, `ai_cleanup`, `dictionary`, `recordings`,
+  `auth`, `sync`, `updater`, `meetings`).
+- **What's platform-specific:** the *host container* per surface (WKWebView `NSPanel`/`NSWindow` vs
+  pywebview windows), the tray/menubar shell (`rumps` vs `pystray`), input/audio natives
+  (`injector`↔`win_injector`, `hotkey` NSEvent vs `pynput`, ScreenCaptureKit↔WASAPI loopback), and the
+  macOS AX features (file-tagging, auto-learn) whose Windows equivalents use UI Automation
+  (`win_ax.py`/`win_editwatch.py`, planned — see `whisperflow/WINDOWS_PARITY_PLAN.md`); mobile's Expo
+  screens/hooks and native audio (`expo-audio`); and, within mobile itself, the custom keyboard's native
+  layer (iOS Swift extension vs Android Kotlin IME — two independent implementations of the same feature
+  set, kept in sync by convention, not shared code).
 
 See `05-conventions.md` for the non-obvious rules that keep all this from breaking, and the list of
 dead/legacy modules to ignore.
