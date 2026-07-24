@@ -274,23 +274,69 @@ and `verbal://auth-callback` (mobile). Consent screen in "Testing" mode. No sepa
 ## Security posture (as implemented)
 
 Pragmatic, matches code + `GOOGLE_AUTH_SETUP.md`:
-- Both apps use the **anon key for all data requests**; users separated purely by the `user_id` value in
-  the query/filter. The user's JWT/access_token is stored but **not** used to authorize REST/realtime.
 - RLS: **every shared table now has RLS enabled with a wide-open `TO public` `true` policy** —
   `dictionary`, `pairings` (migrated off `TO anon`, MER-28 2026-07), `notes` (MER-26, 2026-07),
   `transcriptions`/`devices`/`canvas` (already correctly configured live when checked for MER-28; that
   ticket's real remaining work was `pairings`' role scoping + committing reproducible SQL for these three
   — see Schema gaps below). Any caller who knows a `user_id` could still read that user's rows — data is
-  scoped, not cryptographically enforced; this is the accepted interim posture across the board now.
-  True `auth.uid()`-based per-user isolation (so a caller who *knows* another `user_id` still can't read
-  it) is a tracked follow-up (Linear MER-29), not yet done.
+  scoped, not cryptographically enforced; this is the accepted **live** posture — see the MER-29 note
+  immediately below for why the tightened version exists but hasn't been switched on.
 - **RLS role gotcha:** the desktop uses the raw anon key (role `anon`); a *signed-in* client (mobile SDK)
   sends the user's JWT (role `authenticated`). A policy scoped `TO anon` silently filters out the
   authenticated client's rows. So any table both clients share must use `TO public` (or include
   `authenticated`). This bit `dictionary` (fixed via `supabase_dictionary_rls_fix.sql`) and `pairings`
   (fixed via MER-28, 2026-07 — `supabase_pairings.sql` updated in place) — no table is known to still have
   this trap.
-- Proper JWT + `auth.uid()` RLS is a **documented deferred** hardening (the setup doc has the migration).
+- **MER-29 (2026-07) — JWT forwarding shipped, `auth.uid()` enforcement written but NOT applied.**
+  - **Mobile** already sent the real session JWT for every table call (`@supabase/supabase-js` auto-attaches
+    it once signed in) — no mobile code change was needed for `transcriptions`/`notes`/`dictionary`/`canvas`/
+    `devices`/`meetings`. The two mobile call sites that use the raw anon key
+    (`lib/recordings.ts::uploadCloud`, `flume-ui/hooks/useCanvas.ts` image upload) are **Storage** uploads,
+    not table rows — both buckets (`recordings`, `canvas-images`) are `TO public` policies, out of this
+    ticket's scope, left unchanged.
+  - **Desktop** had zero JWT-forwarding plumbing before this — every REST/Realtime call used the shared
+    anon key unconditionally. Added: `app/auth.py::get_access_token(cfg)` (refreshes the stored
+    `refresh_token` via `POST {AUTH}/token?grant_type=refresh_token` when the cached `expires_at` is near,
+    fails closed to `None`/the stale token on any error — never raises) and
+    `app/auth.py::auth_header(cfg, json=False)` (returns `Authorization: Bearer <access_token>` when
+    signed in and valid, else the anon key — **fully backward-compatible**, since RLS is still permissive
+    either way). `_store_session` now also stores `expires_at`. Applied across every desktop REST call site
+    for `meetings`/`notes`/`canvas`/`dictionary`/`devices` (`app/sync.py`, `app/meetings.py`,
+    `app/shared_dashboard.py`, `app/dictionary.py`, `app/canvas_window.py`, `app/dashboard.py`) and to every
+    Phoenix Realtime `phx_join` payload (`access_token` field) + WS handshake header
+    (`app/flume_web_dashboard.py` too) — Realtime evaluates `postgres_changes` RLS off that field, so this
+    was needed for Realtime to ever honor a future `auth.uid()` policy. Storage calls (`recordings.py`,
+    the `meeting-audio`/`canvas-images` uploads inside `meetings.py`/`dashboard.py`) were deliberately left
+    on the anon key — same reasoning as mobile, those buckets are `TO public`.
+    `whisperflow/app/supabase_config.py` is a new zero-dependency module holding
+    `SUPABASE_URL`/`SUPABASE_KEY`/`REST_URL` (split out of `sync.py`, which now re-exports them) so
+    `auth.py` doesn't have to import `sync.py` and every call site can import `app.auth` without a cycle.
+  - **The `auth.uid()` migration is written and live-verified, but intentionally NOT applied**:
+    `whisperflow/supabase_auth_uid_rls.sql` (drops each table's permissive policy, replaces with
+    `FOR ALL TO authenticated USING (user_id = auth.uid()::text) WITH CHECK (...)` for
+    `notes`/`transcriptions`/`devices`/`canvas`/`dictionary`/`meetings`). Verified correct live (inside a
+    transaction that applied it, tested with simulated JWT claims for two fake users, then `ROLLBACK` —
+    prod's actual policies were never changed) — confirmed: each user sees only their own rows, cross-user
+    writes affect 0 rows, and a plain anon-role request (no JWT — i.e. every *currently installed* app
+    build) sees **zero** rows once the policy is `TO authenticated`.
+  - **Why it's being held back — two real blockers, not just caution:**
+    1. **Device pairing structurally can't satisfy `auth.uid()`.** `pairing.ts::claimPairing` /
+       `app/pairing.py` let a second device adopt the host's `user_id` **without ever creating a Supabase
+       Auth session** — it has no JWT at all, ever, by design (that's the point of pairing without a second
+       Google sign-in). The moment any of the six tables above requires `TO authenticated`, every
+       paired-but-never-signed-in device loses ALL cloud access instantly and permanently, not just until an
+       app update — there's no client fix that restores it under the current pairing design. This needs a
+       **product decision**: accept that trade-off (paired devices become local-only unless they also sign
+       in with Google), or redesign pairing to mint the joining device a real session for the host's account
+       (not implemented anywhere today) — before this migration can ever be applied.
+    2. **Client rollout coordination.** Even once (1) is resolved, applying this migration instantly 401s
+       every *currently-running* desktop/mobile build that hasn't yet received the JWT-forwarding code above
+       (old builds only ever send the anon key) — a real outage, not a soft degrade, until users update.
+       This must be sequenced behind an actual release + adoption window, which is outside what a single
+       backend change can control.
+  - `pairings` itself is **deliberately unchanged** (kept on its existing random/short-lived/single-use
+    token model, per the ticket) — the claiming device isn't signed in as the host yet, so `auth.uid()`
+    can't apply to its own rows either.
 - `recordings` and `meeting-audio` are **private** (MER-27, 2026-07) — signed URLs only, see Storage
   buckets above. `canvas-images` and `releases` remain public (lower-sensitivity / app binaries).
   `app_versions` inserts are service_role-gated.
