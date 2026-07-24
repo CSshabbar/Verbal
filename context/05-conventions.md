@@ -53,7 +53,9 @@
    talks to Supabase with the raw anon key (role `anon`); a *signed-in* mobile client sends the user's JWT
    (role `authenticated`). A policy scoped `TO anon` silently filters out the authenticated client's rows —
    this is what broke dictionary/snippet sync to signed-in phones (fixed via
-   `whisperflow/supabase_dictionary_rls_fix.sql`). `pairings` still has the latent `TO anon` pattern.
+   `whisperflow/supabase_dictionary_rls_fix.sql`). Same fix applied to `notes` (Linear MER-26, 2026-07 —
+   RLS had been fully DISABLED there, not just `TO anon`; see `whisperflow/supabase_notes_rls.sql`).
+   `pairings` still has the latent `TO anon` pattern.
 
 11. **Preserve unknown fields verbatim on write-back (forward-compat sync).** A client must never replace a
    synced row with only the fields it knows about — a newer client's columns would be silently dropped.

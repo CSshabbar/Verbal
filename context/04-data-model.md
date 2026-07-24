@@ -55,9 +55,10 @@ is load-bearing: mobile `updateNote` does `.update().eq('id', localId)`, and wit
 **v2 columns** (`supabase_notes_v2.sql`, idempotent): `raw_content` text nullable (raw Whisper transcript;
 NULL for typed/pre-existing notes — `content` holds the formatted version, "show original" reveals this);
 `audio_segments` jsonb `'[]'` (append-only list of source recordings, shape `[{id,url,created_at}]`,
-**UNION-on-merge** during sync). **RLS:** base file writes none. `supabase_notes_v2.sql` has a guarded
-`DO` block that broadens an existing anon-only policy to `TO public` (the dictionary/snippets lesson) —
-but only if `notes` already has RLS enabled; if it has no RLS, it leaves it untouched.
+**UNION-on-merge** during sync). **RLS:** enabled, `TO public` (`whisperflow/supabase_notes_rls.sql`,
+MER-26, 2026-07) — the base file and `supabase_notes_v2.sql` wrote none (v2's guarded `DO` block only
+broadens a *pre-existing* policy if RLS was already enabled, which it wasn't, so it was a silent no-op
+until this fix landed).
 
 **`groq_usage`** — `create_groq_usage` migration. Usage + rate-limit ledger for the `groq-proxy` Edge
 Function: one row per successful Groq call — `id`, `identity` (`user:<uuid>`|`device:<id>`|`ip:<addr>`),
@@ -246,17 +247,14 @@ and `verbal://auth-callback` (mobile). Consent screen in "Testing" mode. No sepa
 Pragmatic, matches code + `GOOGLE_AUTH_SETUP.md`:
 - Both apps use the **anon key for all data requests**; users separated purely by the `user_id` value in
   the query/filter. The user's JWT/access_token is stored but **not** used to authorize REST/realtime.
-- RLS: enabled with a wide-open `true` policy on `dictionary` (now **`TO public`**) and `pairings`
-  (still `TO anon`); `transcriptions`/`devices`/`canvas` have **no committed RLS** (`notes` also ships none
-  by default — `supabase_notes_v2.sql` only broadens a *pre-existing* anon-only policy if one is present).
-  Any caller who
-  knows a `user_id` could read that user's rows — data is scoped, not cryptographically enforced.
-- **⚠️ `notes` currently has RLS fully DISABLED live** (not just "no policy" — Supabase's own security
-  advisor flags this as **critical**: any anon/authenticated caller can read or write every user's notes,
-  not just ones whose `user_id` they happen to know). This is a step worse than the "scoped but not
-  cryptographically enforced" posture described above and should be treated as a real security gap to
-  close (enable RLS + at least the same wide-open-but-`TO public` policy the other tables have), not just
-  a documentation note.
+- RLS: enabled with a wide-open `true` policy on `dictionary` (now **`TO public`**), `pairings`
+  (still `TO anon`), and — as of the MER-26 fix (2026-07, `whisperflow/supabase_notes_rls.sql`) — **`notes`**
+  too (`TO public`, matching `dictionary`). `transcriptions`/`devices`/`canvas` have **no committed RLS**
+  (scoped only by the `user_id` value in the query, not enforced). Any caller who knows a `user_id` could
+  read that user's rows — data is scoped, not cryptographically enforced; this is the accepted interim
+  posture across every shared table now, `notes` included. True `auth.uid()`-based per-user isolation
+  (so a caller who *knows* another `user_id` still can't read it) is a tracked follow-up (Linear MER-29),
+  not yet done.
 - **RLS role gotcha:** the desktop uses the raw anon key (role `anon`); a *signed-in* client (mobile SDK)
   sends the user's JWT (role `authenticated`). A policy scoped `TO anon` silently filters out the
   authenticated client's rows. So any table both clients share must use `TO public` (or include
