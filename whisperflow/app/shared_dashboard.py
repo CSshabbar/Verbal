@@ -901,10 +901,13 @@ class DashboardApi:
                 if m else {"ok": False, "error": "unavailable"})
 
     def get_meeting_audio(self, meeting_id):
-        """Local WAV as a data-URI when present, else the public cloud URL."""
+        """Local WAV as a data-URI when present, else a short-lived signed cloud
+        URL (meeting-audio is private, MER-27 — long TTL since a meeting can run
+        long and the URL must stay valid for the whole playback+scrub session)."""
         try:
             import base64
             import os
+            from app import recordings
             from app.meetings import MEETINGS_DIR
             path = os.path.join(MEETINGS_DIR, f"{meeting_id}.wav")
             if os.path.exists(path) and os.path.getsize(path) < 80 * 1024 * 1024:
@@ -913,9 +916,12 @@ class DashboardApi:
                 return _ok(src=f"data:audio/wav;base64,{b64}")
             m = self._meetings()
             got = m.get_meeting(meeting_id) if m else {"ok": False}
-            url = (got.get("meeting") or {}).get("audio_url") if got.get("ok") else None
-            if url:
-                return _ok(src=url)
+            stored = (got.get("meeting") or {}).get("audio_url") if got.get("ok") else None
+            if stored:
+                object_path = recordings.extract_object_path(stored, "meeting-audio")
+                signed = recordings.sign_url("meeting-audio", object_path, expires_in=3600)
+                if signed:
+                    return _ok(src=signed)
             return {"ok": False, "error": "No audio for this meeting."}
         except Exception as e:
             return {"ok": False, "error": str(e)}
@@ -1613,19 +1619,24 @@ class DashboardApi:
         return None
 
     def _ensure_local_audio(self, entry):
-        """Return a local WAV path for the entry, downloading from cloud if needed."""
+        """Return a local WAV path for the entry, downloading from cloud if needed.
+        recordings is private (MER-27) — sign a short-lived URL before fetching;
+        `stored` may be a bare object path (new) or a legacy public URL (old rows)."""
         from app import recordings
         path = entry.get("audio") or ""
         if path and os.path.exists(path):
             return path
-        url = entry.get("audio_url") or ""
-        if url:
-            dest = recordings.path_for(entry.get("id") or recordings.new_id())
-            recordings.ensure_dir()
-            if recordings.download(url, dest):
-                entry["audio"] = dest
-                save_config(self.app.config)
-                return dest
+        stored = entry.get("audio_url") or ""
+        if stored:
+            object_path = recordings.extract_object_path(stored, "recordings")
+            signed = recordings.sign_url("recordings", object_path)
+            if signed:
+                dest = recordings.path_for(entry.get("id") or recordings.new_id())
+                recordings.ensure_dir()
+                if recordings.download(signed, dest):
+                    entry["audio"] = dest
+                    save_config(self.app.config)
+                    return dest
         return path if path else None
 
     def play_recording(self, entry_id):

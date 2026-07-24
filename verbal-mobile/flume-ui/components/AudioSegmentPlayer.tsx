@@ -11,12 +11,13 @@
  * The caller only renders this when there ARE segments AND the audio-linkage flag
  * is on; there is deliberately no disabled/empty state here.
  */
-import React, { useCallback } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { View, StyleSheet, Pressable } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useAudioPlayer, useAudioPlayerStatus } from 'expo-audio';
 import { Text } from './Text';
 import { colors, radius } from '../theme';
+import { resolvePlaybackUrl } from '../../lib/recordings';
 
 function segTime(createdAt: string): string {
   const d = new Date(createdAt);
@@ -35,7 +36,17 @@ export type AudioSegmentPlayerProps = {
 };
 
 export const AudioSegmentPlayer: React.FC<AudioSegmentPlayerProps> = ({ url, createdAt, index }) => {
-  const player = useAudioPlayer(url);
+  // recordings is private (MER-27) — resolve a signed URL before playing.
+  const [signedUrl, setSignedUrl] = useState<string | null>(null);
+  useEffect(() => {
+    setSignedUrl(null);
+    if (!url) return;
+    let cancelled = false;
+    resolvePlaybackUrl(url, 'recordings').then((u) => { if (!cancelled) setSignedUrl(u); });
+    return () => { cancelled = true; };
+  }, [url]);
+
+  const player = useAudioPlayer(signedUrl);
   const status = useAudioPlayerStatus(player);
   const playing = !!status?.playing;
   const label = segTime(createdAt);

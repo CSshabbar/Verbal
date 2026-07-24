@@ -1291,8 +1291,9 @@ class MeetingSession:
                          "x-upsert": "true"},
                 content=data, timeout=120)
             if r.status_code in (200, 201):
-                self.audio_url = (f"{SUPABASE_URL}/storage/v1/object/public/"
-                                  f"meeting-audio/{object_path}")
+                # Bare object path, not a public URL — meeting-audio is private
+                # (MER-27); consumers sign a short-lived URL at read time.
+                self.audio_url = object_path
         except Exception as e:
             logger.debug("meeting audio upload failed: %s", e)
 

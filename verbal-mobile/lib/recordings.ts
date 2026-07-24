@@ -7,7 +7,7 @@
  * prefers the local file and falls back to downloading the cloud URL.
  */
 import * as FileSystem from 'expo-file-system/legacy';
-import { SUPABASE_URL, SUPABASE_ANON_KEY } from './supabase';
+import { SUPABASE_URL, SUPABASE_ANON_KEY, supabase } from './supabase';
 
 const DIR = FileSystem.documentDirectory + 'recordings/';
 const BUCKET = 'recordings';
@@ -42,7 +42,8 @@ export async function persist(tempUri: string, id: string): Promise<string | nul
   }
 }
 
-/** Upload a local recording to the cloud bucket. Returns its public URL. */
+/** Upload a local recording to the cloud bucket. Returns the bare object path
+ * (NOT a URL — the bucket is private, MER-27). */
 export async function uploadCloud(localUri: string, userId: string, id: string): Promise<string | null> {
   if (!userId || !localUri) return null;
   try {
@@ -59,13 +60,46 @@ export async function uploadCloud(localUri: string, userId: string, id: string):
       },
     });
     if (res.status >= 200 && res.status < 300) {
-      return `${STORAGE}/object/public/${BUCKET}/${objectPath}`;
+      return objectPath;
     }
     console.warn('recordings.uploadCloud failed', res.status, (res.body || '').slice(0, 160));
   } catch (e) {
     console.warn('recordings.uploadCloud error:', e);
   }
   return null;
+}
+
+/** `stored` may be a bare object path (new writes, MER-27) or a legacy
+ * `.../object/public/<bucket>/<path>` URL (rows written before MER-27) — accept
+ * either so old rows keep working without a backfill migration. */
+export function extractObjectPath(stored: string, bucket: string): string {
+  const marker = `/object/public/${bucket}/`;
+  const i = stored.indexOf(marker);
+  return i >= 0 ? stored.slice(i + marker.length) : stored;
+}
+
+/** Generate a short-lived signed URL for a private-bucket object via the SDK
+ * (runs under the signed-in user's JWT when signed in — both buckets' storage
+ * policies are `TO public`, Hard Rule #10, so this works signed-in or not). */
+export async function signUrl(bucket: string, objectPath: string, expiresIn = 180): Promise<string | null> {
+  try {
+    const { data, error } = await supabase.storage.from(bucket).createSignedUrl(objectPath, expiresIn);
+    if (error || !data?.signedUrl) {
+      console.warn('recordings.signUrl failed:', error);
+      return null;
+    }
+    return data.signedUrl;
+  } catch (e) {
+    console.warn('recordings.signUrl error:', e);
+    return null;
+  }
+}
+
+/** Resolve whatever's stored (bare path or legacy public URL) to a fresh signed
+ * URL for immediate playback. Shared by MeetingPlaybackScreen and AudioSegmentPlayer. */
+export async function resolvePlaybackUrl(stored: string, bucket: string, expiresIn = 180): Promise<string | null> {
+  if (!stored) return null;
+  return signUrl(bucket, extractObjectPath(stored, bucket), expiresIn);
 }
 
 /** Return a local uri for playback/retry, downloading from the cloud if needed. */
@@ -78,10 +112,13 @@ export async function ensureLocal(id: string, audioUri?: string, audioUrl?: stri
   }
   if (audioUrl) {
     try {
-      await ensureDir();
-      const dest = `${DIR}${id}.${extOf(audioUrl)}`;
-      const r = await FileSystem.downloadAsync(audioUrl, dest);
-      if (r.status === 200) return dest;
+      const signed = await resolvePlaybackUrl(audioUrl, BUCKET);
+      if (signed) {
+        await ensureDir();
+        const dest = `${DIR}${id}.${extOf(audioUrl)}`;
+        const r = await FileSystem.downloadAsync(signed, dest);
+        if (r.status === 200) return dest;
+      }
     } catch (e) {
       console.warn('recordings.ensureLocal download failed:', e);
     }

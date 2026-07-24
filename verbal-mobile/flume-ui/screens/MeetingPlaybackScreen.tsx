@@ -3,7 +3,7 @@
  * the current utterance highlights as audio plays; tapping a line seeks to it.
  * Read-only. Falls back to a static transcript when there is no audio.
  */
-import React, { useMemo, useRef, useEffect } from 'react';
+import React, { useMemo, useRef, useEffect, useState } from 'react';
 import { View, StyleSheet, Pressable, FlatList } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -11,6 +11,7 @@ import { useAudioPlayer, useAudioPlayerStatus } from 'expo-audio';
 import { Text } from '../components';
 import { colors, radius } from '../theme';
 import { useMeetings, MeetingUtterance } from '../hooks/useMeetings';
+import { resolvePlaybackUrl } from '../../lib/recordings';
 
 type Props = {
   meetingId: string;
@@ -28,7 +29,21 @@ export const MeetingPlaybackScreen: React.FC<Props> = ({ meetingId, onBack }) =>
   const meeting = getMeeting(meetingId);
   const listRef = useRef<FlatList<MeetingUtterance>>(null);
 
-  const player = useAudioPlayer(meeting?.audioUrl ? { uri: meeting.audioUrl } : null);
+  // meeting-audio is private (MER-27) — resolve a signed URL before playing.
+  // Long TTL: a meeting can run long, and the URL must stay valid for the whole
+  // playback+scrub session, not just the first byte.
+  const [signedUrl, setSignedUrl] = useState<string | null>(null);
+  useEffect(() => {
+    setSignedUrl(null);
+    if (!meeting?.audioUrl) return;
+    let cancelled = false;
+    resolvePlaybackUrl(meeting.audioUrl, 'meeting-audio', 3600).then((url) => {
+      if (!cancelled) setSignedUrl(url);
+    });
+    return () => { cancelled = true; };
+  }, [meeting?.audioUrl]);
+
+  const player = useAudioPlayer(signedUrl ? { uri: signedUrl } : null);
   const status = useAudioPlayerStatus(player);
   const currentTime = status?.currentTime ?? 0;
   const playing = !!status?.playing;
