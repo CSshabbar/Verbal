@@ -43,18 +43,15 @@ missing** — it was never provisioned in the live DB, so Notes was local-only u
 `id` **text** PK · `user_id` text · `title` text `''` · `content` text `''` (AI-formatted) · `folder` text `''` ·
 `is_pinned` bool `false` · `device_name` text · `created_at` · `updated_at`. Indexes on `(user_id)` and
 `(user_id, updated_at DESC)`. In the `supabase_realtime` publication.
-**`id` is *supposed to be* `text`, not uuid** (v2's guarded `ALTER COLUMN id TYPE text` converts an existing
-uuid column in-place): desktop writes `uuid4().hex`, mobile writes `note_<ts>` (not valid uuid syntax) — a
+**`id` is `text`, not uuid** (migration `fix_notes_id_type_to_text`, applied 2026-07 after a live-schema
+audit found `supabase_notes_v2.sql`'s guarded `ALTER COLUMN id TYPE text` had never actually run against
+this DB — the column was still `uuid` in production until then, verified fixed and default reset to
+`gen_random_uuid()::text`): desktop writes `uuid4().hex`, mobile writes `note_<ts>` (not valid uuid syntax) — a
 text column lets each client supply its **own** id so the note's local id === its cloud id. That equality
 is load-bearing: mobile `updateNote` does `.update().eq('id', localId)`, and without it every edit matches
 0 rows and the pulled-back row duplicates. Mobile `createNote` upserts **with** the id (gated on
 `getSyncEnabled`), and `useNotes.load` **back-fills** any locally-cached note missing from the cloud
 (notes created before the table existed never got pushed otherwise).
-**⚠️ Live-DB check (2026-07): the ALTER never actually ran — `notes.id` is still `uuid` in production.**
-Desktop's `uuid4().hex` happens to parse as a valid dashless uuid so its writes silently succeed; mobile's
-`note_<ts>` ids do **not** parse as uuid, so mobile-created notes likely fail to upsert against the live
-table today. This needs an actual fix (re-run/verify the `ALTER COLUMN` against the live DB), not just a
-doc correction — filed here because it was only found via a live-schema audit, not by reading code.
 **v2 columns** (`supabase_notes_v2.sql`, idempotent): `raw_content` text nullable (raw Whisper transcript;
 NULL for typed/pre-existing notes — `content` holds the formatted version, "show original" reveals this);
 `audio_segments` jsonb `'[]'` (append-only list of source recordings, shape `[{id,url,created_at}]`,
@@ -64,15 +61,12 @@ but only if `notes` already has RLS enabled; if it has no RLS, it leaves it unto
 
 **`groq_usage`** — `create_groq_usage` migration. Usage + rate-limit ledger for the `groq-proxy` Edge
 Function: one row per successful Groq call — `id`, `identity` (`user:<uuid>`|`device:<id>`|`ip:<addr>`),
-`user_id?`, `kind`, `created_at`. **RLS on** (read-your-own for `authenticated`); only the function writes,
-via the service role (fire-and-forget). Metering ledger — rate-limit *enforcement* is currently off for
-latency (see `05-conventions` Hard Rule #15).
-**⚠️ Live-DB check (2026-07): the `kind` check constraint only allows `'transcription'|'chat'` —
-`'chat-ollama'` is NOT in the allowed set**, even though `groq-proxy/index.ts` sets exactly
-`kind = "chat-ollama"` for every Ollama-routed (meeting notes) call. Since `logUsage` is
-fire-and-forget with `.catch(()=>{})`, every one of those inserts is silently rejected by Postgres —
-**Ollama usage metering is currently a complete no-op in production.** Needs a constraint migration
-(add `'chat-ollama'` to the allowed values), not just a doc fix.
+`user_id?`, `kind` (`transcription`|`chat`|`chat-ollama` — the `groq_usage_kind_check` constraint was
+fixed 2026-07 to actually allow `chat-ollama`; it silently rejected every Ollama-routed usage-log insert
+before that, since `logUsage` is fire-and-forget with `.catch(()=>{})`, so Ollama metering was a
+no-op in production until this migration), `created_at`. **RLS on** (read-your-own for `authenticated`);
+only the function writes, via the service role (fire-and-forget). Metering ledger — rate-limit
+*enforcement* is currently off for latency (see `05-conventions` Hard Rule #15).
 
 **`app_config` — referenced by code, does not exist in the live DB.** The provider-secret-key-table idea
 (`GROQ_API_KEY` readable by clients) was correctly dropped — that must never exist; keys live only as the
@@ -294,10 +288,12 @@ Pragmatic, matches code + `GOOGLE_AUTH_SETUP.md`:
   reloads for dictated notes without a dedicated column.
 - **New from a 2026-07 live-schema audit (found via direct DB inspection, not code reading — re-verify
   periodically, code and live DB can and do drift):**
-  - `notes.id` is still `uuid` live despite the v2 migration's intent to convert it to `text` — see the
-    full callout in the `notes` table section above. **Likely-active bug**, not just a doc gap.
-  - `groq_usage.kind`'s check constraint doesn't allow `'chat-ollama'` — see the `groq_usage` section
-    above. **Likely-active bug** (Ollama usage metering silently no-ops).
+  - ~~`notes.id` was still `uuid` live despite the v2 migration's intent~~ — **fixed** (migration
+    `fix_notes_id_type_to_text`, 2026-07): now `text`, default `gen_random_uuid()::text`, verified against
+    the live table (no FKs/views depended on it; all 6 existing rows were valid uuid literals, cast cleanly).
+  - ~~`groq_usage.kind`'s check constraint didn't allow `'chat-ollama'`~~ — **fixed** (migration
+    `allow_chat_ollama_in_groq_usage_kind`, 2026-07): constraint now allows it, verified with a live
+    insert+delete round-trip.
   - `app_config` is referenced by mobile code (`lib/remoteConfig.ts`) but doesn't exist in the live
     schema at all — see the `app_config` callout above.
   - Two more undocumented-until-now tables: `push_tokens` (real, in active use) and `device_presence`
