@@ -30,7 +30,8 @@ type Props = { onOpenDevices: () => void; onOpenSnippets: () => void };
  */
 export const SettingsScreen: React.FC<Props> = ({ onOpenDevices, onOpenSnippets }) => {
   const insets = useSafeAreaInsets();
-  const { user, signOut } = useAuth();
+  const { user, signOut, deleteAccount } = useAuth();
+  const [deletingAccount, setDeletingAccount] = useState(false);
 
   const [deviceName, setDeviceNameState] = useState('');
   const [userId, setUserIdState] = useState('');
@@ -143,6 +144,43 @@ export const SettingsScreen: React.FC<Props> = ({ onOpenDevices, onOpenSnippets 
       ],
       { cancelable: true },
     );
+  };
+
+  // MER-32: two native Alerts in sequence (same reasoning as confirmSignOut —
+  // this screen is a native-stack modal, so the custom `confirm()` JS modal
+  // wouldn't reliably receive touches here). Destructive + irreversible, so it
+  // gets a harder second confirmation than sign-out.
+  const confirmDeleteAccount = () => {
+    Alert.alert(
+      'Delete account?',
+      'This permanently erases your account and all cloud data — history, notes, dictionary, meetings, recordings — on every device. This cannot be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete', style: 'destructive', onPress: () => {
+            Alert.alert(
+              'Are you absolutely sure?',
+              'This is your last chance to cancel — confirming will delete everything permanently.',
+              [
+                { text: 'Cancel', style: 'cancel' },
+                { text: 'Delete forever', style: 'destructive', onPress: doDeleteAccount },
+              ],
+              { cancelable: true },
+            );
+          },
+        },
+      ],
+      { cancelable: true },
+    );
+  };
+
+  const doDeleteAccount = async () => {
+    setDeletingAccount(true);
+    const result = await deleteAccount();
+    setDeletingAccount(false);
+    if (!result.ok) {
+      Alert.alert('Could not delete account', result.error || 'Unknown error — please try again.');
+    }
   };
 
   return (
@@ -369,6 +407,13 @@ export const SettingsScreen: React.FC<Props> = ({ onOpenDevices, onOpenSnippets 
           <ListRow icon="information-circle-outline" title="Verbal" subtitle="v1.0 · Voice dictation" trailing={null} />
           <View style={{ height: 12 }} />
           <Button label="Sign out" variant="ghost" onPress={confirmSignOut} />
+          <View style={{ height: 8 }} />
+          <Button
+            label={deletingAccount ? 'Deleting…' : 'Delete account'}
+            variant="ghost"
+            loading={deletingAccount}
+            onPress={confirmDeleteAccount}
+          />
         </Section>
       </ScrollView>
     </View>

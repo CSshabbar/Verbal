@@ -1308,6 +1308,11 @@ function renderSettings(){
         <div style="flex:1;min-width:0"><div style="font:600 13.5px 'Geist'">${esc(u.name||'Signed in')}</div>
           <div style="font:400 12px 'Geist';color:var(--mut)">${esc(u.email||'')}</div></div>
         <button class="btn ghost" style="flex:none" onclick="api('sign_out_account')">Sign out</button>
+      </div>
+      <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--bd2);display:flex;align-items:center;gap:12px">
+        <div style="flex:1;min-width:0"><div style="font:600 13px 'Geist';color:#f0b39a">Delete account</div>
+          <div style="font:400 12px 'Geist';color:var(--mut)">Permanently erases your account and all cloud data. Cannot be undone.</div></div>
+        <button id="deleteAcctBtn" class="btn ghost" style="flex:none;color:#f0b39a" onclick="deleteAccount()">Delete account</button>
       </div></div>` : `
     <div class="ssection"><h3>Account</h3>
       <div class="scard"><div class="ssub" style="margin:0 0 10px">Sign in to sync across your devices.</div>
@@ -1667,6 +1672,23 @@ function saveSettings(){
     sync_user_id:document.getElementById('userId').value,
     sync_device_name:document.getElementById('devName').value,
   }).then(load);
+}
+// MER-32: two-step confirm (this is destructive and irreversible — server-side
+// deletes every DB row + storage object + the auth user itself, then the local
+// caches are wiped and the app returns to signed-out state, mirrored via load()).
+async function deleteAccount(){
+  if(!confirm('Delete your account? This permanently erases your account and ALL cloud data — history, notes, dictionary, meetings, recordings — on every device. This cannot be undone.')) return;
+  if(!confirm('Are you absolutely sure? This is your last chance to cancel — confirming will delete everything permanently.')) return;
+  const btn = document.getElementById('deleteAcctBtn');
+  if(btn){ btn.disabled = true; btn.textContent = 'Deleting…'; }
+  try {
+    const r = await api('delete_account');
+    if(r && r.ok){ await load(); }
+    else { alert('Could not delete account: ' + ((r&&r.error)||'unknown error')); if(btn){ btn.disabled=false; btn.textContent='Delete account'; } }
+  } catch(e) {
+    alert('Could not delete account: ' + e);
+    if(btn){ btn.disabled=false; btn.textContent='Delete account'; }
+  }
 }
 // Notes v2 feature flags (Decision 4). Toggle immediately; send a FULL settings
 // payload built from the persisted STATE so a partial write never clobbers API keys

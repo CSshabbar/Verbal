@@ -105,6 +105,15 @@ all transcription + chat for every client. `verify_jwt` on. Per-identity rate li
 enforced via the `groq_rate_limits` table + `groq_check_rate_limit` RPC, called with the service-role key
 before any upstream fetch — see `groq_rate_limits` above and Hard Rule #15.
 
+`delete-account` (`supabase/functions/delete-account/index.ts`, MER-32, 2026-07) — `verify_jwt` on;
+identity derived from the caller's JWT locally, never a body-supplied id. Service-role-only: purges every
+row across `transcriptions`/`notes`/`dictionary`/`canvas`/`devices`/`meetings`/`push_tokens`/`groq_usage`
+for that `user_id`, deletes storage objects under `recordings/<user_id>/` + `meeting-audio/<user_id>/` +
+the matching flat-namespaced `canvas-images` objects, then deletes the Supabase auth user itself (always
+last — a partial failure leaves a recoverable signed-in state). Idempotent; see `03-features.md`'s Account
+deletion entry for the full design and live-verification notes. Apple-token revocation is an intentionally
+deferred stub (`revokeAppleToken()`, Batch C).
+
 **`meetings`** — `supabase_meetings.sql` (applied live 2026-07 + follow-up `hybrid_notes` column). One row
 per captured meeting.
 | col | type | notes |

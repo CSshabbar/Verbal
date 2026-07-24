@@ -958,6 +958,22 @@ class DashboardApi:
             return _ok()
         return {"ok": False, "error": "not supported"}
 
+    def delete_account(self):
+        """MER-32: permanently delete the signed-in account — DB rows,
+        storage objects, and the auth user itself (server-side, via the
+        `delete-account` Edge Function), then wipe every local trace.
+        Unlike sign_out_account, this returns the REAL result synchronously
+        (not an optimistic _ok()) since the caller needs to know whether the
+        destructive action actually succeeded before showing a confirmation."""
+        from app.auth import delete_account_remote, wipe_local_account_data
+        result = delete_account_remote(self.app.config)
+        if not result.get("ok"):
+            return {"ok": False, "error": result.get("error", "Deletion failed — please try again")}
+        wipe_local_account_data()
+        if hasattr(self.app, "_sign_out"):
+            self.app._on_main(self.app._sign_out)
+        return _ok()
+
     def start_recording(self):
         self.app._on_record_start()
         return _ok()

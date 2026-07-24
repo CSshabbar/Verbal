@@ -11,7 +11,7 @@ import { useState, useCallback, useEffect } from 'react';
 import { Linking } from 'react-native';
 import * as WebBrowser from 'expo-web-browser';
 import * as QueryParams from 'expo-auth-session/build/QueryParams';
-import { supabase } from '../../lib/supabase';
+import { supabase, SUPABASE_URL, SUPABASE_ANON_KEY } from '../../lib/supabase';
 import { setUserId, setSyncEnabled, getDeviceName, getDeviceId, getStoredUserId, clearAccountData } from '../../lib/storage';
 import * as historyStore from './historyStore';
 import { notify } from '../components/ConfirmDialog';
@@ -207,6 +207,33 @@ export function useAuth() {
     setUser(null);
   }, []);
 
+  // MER-32: permanently delete the account — server-side (DB rows, storage
+  // objects, the auth user itself) via the `delete-account` Edge Function,
+  // then the same local teardown as signOut(). Unlike signOut, this can't be
+  // undone, so it returns {ok,error} instead of firing-and-forgetting — the
+  // caller (Settings) needs the real result before telling the user it's done.
+  const deleteAccount = useCallback(async (): Promise<{ ok: boolean; error?: string }> => {
+    try {
+      const { data } = await supabase.auth.getSession();
+      const token = data.session?.access_token;
+      if (!token) return { ok: false, error: 'Not signed in' };
+      const res = await fetch(`${SUPABASE_URL}/functions/v1/delete-account`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, apikey: SUPABASE_ANON_KEY },
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok || !body.ok) return { ok: false, error: body.error || `Server error (${res.status})` };
+    } catch (e: any) {
+      return { ok: false, error: e?.message || String(e) };
+    }
+    try { await supabase.auth.signOut({ scope: 'local' }); } catch { /* ignore */ }
+    try { await setSyncEnabled(false); } catch { /* ignore */ }
+    try { await clearAccountData(); } catch { /* ignore */ }
+    try { await historyStore.reset(); } catch { /* ignore */ }
+    setUser(null);
+    return { ok: true };
+  }, []);
+
   return {
     user,
     isLoading,
@@ -214,5 +241,6 @@ export function useAuth() {
     signInWithApple: notAvailable,
     signInWithEmail: notAvailable,
     signOut,
+    deleteAccount,
   };
 }

@@ -197,6 +197,67 @@ def sign_out():
     logger.info("Signed out")
 
 
+# ── Account deletion (MER-32) ────────────────────────────────────────────────
+def delete_account_remote(cfg: dict | None = None) -> dict:
+    """Call the `delete-account` Edge Function using the signed-in user's JWT.
+    Returns {"ok": True} or {"ok": False, "error": "..."}. There is no
+    user_id parameter — the function derives identity from the JWT itself,
+    so this can only ever delete the CURRENTLY signed-in account. Requires
+    being signed in with a real session (the anon key alone can't authorize
+    this — the function 401s without a valid authenticated JWT)."""
+    cfg = cfg if cfg is not None else load_config()
+    token = get_access_token(cfg)
+    if not token:
+        return {"ok": False, "error": "Not signed in"}
+    try:
+        resp = httpx.post(
+            f"{SUPABASE_URL}/functions/v1/delete-account",
+            headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {token}"},
+            timeout=30,
+        )
+        data = resp.json() if resp.content else {}
+    except Exception as e:
+        return {"ok": False, "error": f"Network error: {e}"}
+    if resp.status_code == 200 and data.get("ok"):
+        return {"ok": True}
+    return {"ok": False, "error": data.get("error") or f"HTTP {resp.status_code}"}
+
+
+def wipe_local_account_data(cfg: dict | None = None) -> None:
+    """Full local teardown after a successful account deletion. Deliberately
+    goes further than `sign_out()` (which keeps local caches so re-signing in
+    as the same user finds their data still there) — MER-32 requires nothing
+    of the deleted account surviving on-device: history, pinned items, local
+    notes/meetings cache, the local dictionary, and cached recording/meeting
+    audio files all go."""
+    cfg = cfg if cfg is not None else load_config()
+    cfg.pop("auth", None)
+    cfg["sync_enabled"] = False
+    cfg["sync_user_id"] = ""
+    cfg["history"] = []
+    cfg["pinned"] = []
+    cfg["notes"] = []
+    cfg["meetings"] = []
+    cfg["dictionary"] = {}
+    save_config(cfg)
+    try:
+        import shutil
+        from app.recordings import RECORDINGS_DIR
+        if RECORDINGS_DIR.exists():
+            shutil.rmtree(RECORDINGS_DIR, ignore_errors=True)
+    except Exception as e:
+        logger.debug("wipe_local_account_data: recordings cleanup skipped: %s", e)
+    try:
+        import os
+        import shutil
+        meetings_dir = os.path.expanduser("~/.verbal/meetings")
+        if os.path.isdir(meetings_dir):
+            shutil.rmtree(meetings_dir, ignore_errors=True)
+    except Exception as e:
+        logger.debug("wipe_local_account_data: meetings cleanup skipped: %s", e)
+    logger.info("Local account data wiped")
+
+
 # ── Per-user JWT forwarding (MER-29) ─────────────────────────────────────────
 # Every Supabase REST/Realtime call historically used the shared anon key only,
 # scoping data purely by the `user_id` *value* in the query/filter — not
