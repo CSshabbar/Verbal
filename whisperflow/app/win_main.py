@@ -18,7 +18,7 @@ faulthandler.enable()
 
 from app.config import (
     load_config, save_config, add_to_history, update_history_entry,
-    update_daily_words, add_gemini_key, remove_gemini_key,
+    update_daily_words,
     _entry_text, _entry_app, LOG_DIR, ensure_dirs, APP_VERSION, PLATFORM,
 )
 from app.recorder import Recorder
@@ -155,8 +155,6 @@ class VerbalWinApp:
             pystray.MenuItem("Settings...", self._tray_open_settings),
             pystray.MenuItem("Recording Mode", mode_menu),
             pystray.MenuItem("Whisper Model", model_menu),
-            pystray.MenuItem("Groq API Key...", self._tray_manage_groq),
-            pystray.MenuItem("Gemini API Key...", self._tray_manage_gemini),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem(lambda item: self._auth_menu_label(), self._tray_toggle_auth),
             pystray.Menu.SEPARATOR,
@@ -249,64 +247,6 @@ class VerbalWinApp:
         self.config["whisper_model"] = model_name
         save_config(self.config)
         self._update_tray_menu()
-
-    def _tray_manage_groq(self, icon=None, item=None):
-        import tkinter as tk
-        from tkinter import simpledialog
-        keys = self.config.get("groq_api_keys", [])
-        if keys:
-            key_list = "\n".join(f"  {i+1}. ...{k[-8:]}" for i, k in enumerate(keys))
-            msg = f"Groq keys (for transcription):\n{key_list}\n\nPaste a new key, or 'remove N':"
-        else:
-            msg = "No Groq API key set.\n\nGet a FREE key at console.groq.com\nPaste it here:"
-        root = tk.Tk()
-        root.withdraw()
-        text = simpledialog.askstring("Verbal - Groq API Key", msg, parent=root)
-        root.destroy()
-        if text:
-            text = text.strip()
-            if text.lower().startswith("remove "):
-                try:
-                    idx = int(text.split()[1]) - 1
-                    if 0 <= idx < len(keys):
-                        keys.pop(idx)
-                        self.config["groq_api_keys"] = keys
-                        save_config(self.config)
-                except (ValueError, IndexError):
-                    pass
-            else:
-                if text not in keys:
-                    keys.append(text)
-                    self.config["groq_api_keys"] = keys
-                    save_config(self.config)
-
-    def _tray_manage_gemini(self, icon=None, item=None):
-        import tkinter as tk
-        from tkinter import simpledialog
-        keys = self.config.get("gemini_api_keys", [])
-        active_idx = self.config.get("active_gemini_key_index", 0)
-        if keys:
-            key_list = "\n".join(
-                f"{'> ' if i == active_idx else '  '}{i+1}. ...{k[-8:]}"
-                for i, k in enumerate(keys)
-            )
-            msg = f"Current keys:\n{key_list}\n\nPaste a new key, or 'remove N':"
-        else:
-            msg = "No Gemini API keys configured.\n\nPaste a key to add:"
-        root = tk.Tk()
-        root.withdraw()
-        text = simpledialog.askstring("Verbal - Gemini API Keys", msg, parent=root)
-        root.destroy()
-        if text:
-            text = text.strip()
-            if text.lower().startswith("remove "):
-                try:
-                    idx = int(text.split()[1]) - 1
-                    self.config = remove_gemini_key(self.config, idx)
-                except (ValueError, IndexError):
-                    pass
-            else:
-                self.config = add_gemini_key(self.config, text)
 
     def _tray_quit(self, icon=None, item=None):
         if self._tray_icon:

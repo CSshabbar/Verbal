@@ -24,13 +24,13 @@ Each feature: **what it does · desktop impl · mobile impl · backend · status
   module-level `lastRecording` read once via `consumeLastRecording()`.
 - **Backend:** all Groq calls (transcription + cleanup) now route through the **`groq-proxy` Edge Function**
   — the Groq key is server-side only, clients hold none, and the **in-app API-key entry has been removed**
-  on macOS/mobile (mobile Settings card + desktop dashboard field + the menu-bar "Groq/Gemini API Key…"
-  items are gone — macOS's `main.py::_manage_groq_keys` is dead code, unattached to any `rumps.MenuItem`).
-  **Windows is the one live exception:** `win_main.py`'s tray still wires reachable
-  `"Groq API Key…"`/`"Gemini API Key…"` menu items (`_tray_manage_groq`/`_tray_manage_gemini`) that let a
-  user paste/remove a LOCAL key — not yet brought in line with the removed-entry posture above.
-  A user's pre-existing local Groq/Gemini key stays only as a silent *fallback*. Audio → `recordings` bucket.
-  See `05-conventions` Hard Rule #15.
+  on macOS/mobile **and Windows** (mobile Settings card + desktop dashboard field + the menu-bar "Groq/Gemini
+  API Key…" items are gone on all three platforms — macOS's `main.py::_manage_groq_keys` is dead code,
+  unattached to any `rumps.MenuItem`; Windows's `win_main.py::_tray_manage_groq`/`_tray_manage_gemini` and
+  their tray `MenuItem`s were removed MER-34, 2026-07, closing the one platform that still exposed reachable
+  key entry). A user's pre-existing local Groq/Gemini key still works as a silent *fallback* (the read path
+  in `transcriber.py`/`ai_cleanup.py` was untouched — only the management UI is gone) — the proxy is always
+  tried first. Audio → `recordings` bucket. See `05-conventions` Hard Rule #15.
 - **Status:** solid. Local Whisper is a desktop-only offline fallback (`faster_whisper` bundled).
 
 ## AI cleanup / formatting
