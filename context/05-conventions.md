@@ -433,6 +433,14 @@
   body rows). `MdView` uses an **index loop, not `forEach`** — table rendering must look ahead and
   skip consumed rows. Truth discipline is unchanged: never invent numbers/names; compute only
   derived values the speakers implied; OUTPUT LANGUAGE is computed in code, never judged by the LLM.
+- **`MdView` table columns must NOT be equal `flex:1`.** Desktop's `<table>` auto-sizes columns to
+  content; RN has no equivalent, so equal-flex crushed asymmetric columns (e.g. a one-word
+  "Duration" column next to a long "Notes" column) into an unreadable wrapped mess — this is what
+  "tables don't format correctly on mobile" meant in practice, not a parse failure (parsing was
+  already correct). Fixed by computing a per-column width from `max(header, body cells)` length
+  (clamped 76–200px) and wrapping the table in a horizontal `ScrollView`. Any future table-style
+  tweak must keep both the content-aware widths and the horizontal scroll — reverting to `flex:1`
+  reintroduces the bug.
 
 ### Transform rules (TRANSFORM_SWARM.md)
 
@@ -516,6 +524,21 @@
     Edit one → edit the other in the same change. Live eval: `whisperflow/self_correction_fixtures.py`
     (desktop pass over the real `SYSTEM_PROMPT` + `build_dictation_user_message()`, plus a mobile pass over
     a manually-synced copy of `groq.ts`'s prompt — see that file's own docstring).
+
+22. **Context grounding is grounding DATA, never a directive (MER-44 Phase 0).** `ai_cleanup.build_context_block`
+    (mirrored in `groq.ts::formatText`) prepends the user's known terms + active-app hint to the cleanup
+    call. Two hard rules when editing it: (a) it must stay **fail-closed** — any error returns `""` (no
+    context) and the cleanup path proceeds unchanged; the grounding block is prepended to the *user*
+    message, never the `SYSTEM_PROMPT`. (b) It must NOT tell the model to collapse/correct more aggressively
+    — it only lists terms the model should prefer spelling-wise. Adding "collapse when you see a known
+    prefix"-style language would raise the identifier over-collapse rate that rule 18 deliberately keeps
+    near zero; the `context_grounding_fixtures.py` harness asserts the block contains no "collapse"
+    directive. Known terms come from `dictionary.known_terms()` (vocabulary + replacement `to`-targets), so
+    auto-learned fixes ground the cleanup automatically — no extra plumbing. Gated by
+    `context_grounding_enabled` (default on). Windows passes only the window *title* as the app hint (no
+    bundle id); mobile passes no app hint at all (JS has no frontmost-app API) — known-terms grounding
+    still applies on both. **MER-44 Phases 1–2 (fine-tuned model, flywheel, implicit correction) are NOT
+    built** — gated on a serving-provider dependency + a plateau signal; do not start them without that.
 
 ## Design system (Flume)
 
