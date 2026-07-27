@@ -1040,7 +1040,9 @@ class VerbalApp(rumps.App):
             except Exception as e:
                 logger.debug("transform inline skipped: %s", e)
             if result is None:
-                result = process_text(text, self.config)
+                # Phase-0 context grounding (MER-44): pass the target app so the
+                # cleanup LLM grounds on it + the user's dictionary terms.
+                result = process_text(text, self.config, active_app=get_focused_app_name())
             if self._cancel_flag.is_set():
                 return
 

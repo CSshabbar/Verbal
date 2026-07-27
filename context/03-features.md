@@ -56,7 +56,19 @@ Each feature: **what it does · desktop impl · mobile impl · backend · status
   this one calls the live groq-proxy path deliberately, since a prompt's real behavior can't be verified
   by stubbing the LLM) — covers the full content-type matrix (numbers, dates, currency, percentages,
   names, places, emails, URLs, code identifiers), punctuation-shape invariance, hard/edge cases, and the
-  multilingual seed set (Roman-Urdu, Hindi, Spanish, French, Arabic). Separate
+  multilingual seed set (Roman-Urdu, Hindi, Spanish, French, Arabic).
+- **Context grounding (MER-44 Phase 0, 2026-07):** `process_text(text, config, active_app=None)` prepends
+  a `build_context_block()` preamble to the cleanup call — the user's **known terms** (dictionary
+  vocabulary + the corrected side of replacement rules, via `dictionary.known_terms()`, so auto-learned
+  fixes ground the cleanup too) plus the **active app** name (from `injector.get_focused_app_name()` at the
+  `main.py`/`win_main.py` inject sites). It's framed as *grounding data, never a directive to collapse* —
+  so it helps the model prefer a known spelling/ID over a phonetic guess without raising the
+  identifier over-collapse rate (rule 18 still governs *when* to collapse). Gated by
+  `context_grounding_enabled` (default on), fully fail-closed (any error → no context, cleanup proceeds).
+  Distinct from `build_prompt()`, which still feeds *Whisper's* transcription bias (vocabulary only).
+  Pure-logic harness `context_grounding_fixtures.py`. **Phase 1 (fine-tuned correction model) and Phase 2
+  (opt-in flywheel + words-only implicit correction) are explicitly deferred** — they need a paid
+  fine-tune serving provider + a plateau signal on the prompt+context path; not started. Separate
   `NOTES_FORMATTER_SYSTEM_PROMPT`; `build_notes_system_prompt(structure_detection, autotitle)` appends the
   checklist/structure-detection and `TITLE:` rules only when those flags are on (see §Notes).
   `format_note(text, cfg, …)` returns `{title, formatted_content}`; `_parse_note_response` peels a leading
@@ -66,7 +78,9 @@ Each feature: **what it does · desktop impl · mobile impl · backend · status
   cue families, 4-part test, anti-cues, and-carve-out, asymmetry, punctuation-invariance, directionality —
   terser prose, no dropped rules; MER-42 had shipped it with several gaps vs. desktop, closed in MER-43).
   Kept in sync deliberately, same discipline as the notes/meeting-notes prompts — each file's rule 18 /
-  SELF-CORRECTIONS block carries a comment pointing at its counterpart. `formatNotes` /
+  SELF-CORRECTIONS block carries a comment pointing at its counterpart. `formatText` also prepends the
+  MER-44 Phase-0 grounding preamble (known terms via `dictionary.knownTerms()`; mobile has **no**
+  active-app signal, so it's known-terms only), fail-closed. `formatNotes` /
   `formatNoteWithTitle(text, apiKey, {timeoutMs, detectStructure,
   withTitle})` are now **wired into the note editor** via `useNotes.saveDictation` (see §Notes) — mobile
   notes are no longer stored raw-only.
@@ -79,10 +93,13 @@ Each feature: **what it does · desktop impl · mobile impl · backend · status
   deterministically rewrite a misheard word (`{from,to}`).
 - **Desktop:** `dictionary.py` — `build_prompt` ("Glossary: w1, w2, …", ≤180 words) injected into the
   Whisper `prompt`; `apply_replacements` (word-boundary, case-insensitive `re.sub`); `add_replacement`
-  de-dupes by `from`, tags auto rules `auto:True` (✨ in UI). Stored `config["dictionary"]`, synced to
-  Supabase `dictionary` (one row/user) via `fetch_remote`/`_push_remote`.
-- **Mobile:** `lib/dictionary.ts` — direct mirror (`buildPrompt`, `applyReplacements`, `addReplacement`,
-  `fetchRemote`), AsyncStorage `flume_dictionary` + Supabase upsert. Managed in `SettingsScreen`.
+  de-dupes by `from`, tags auto rules `auto:True` (✨ in UI). `known_terms(config, limit=60)` (MER-44)
+  returns vocabulary + replacement `to`-targets, deduped — this is what grounds the **cleanup** LLM (see
+  §AI cleanup), distinct from `build_prompt` which grounds *Whisper*. Stored `config["dictionary"]`, synced
+  to Supabase `dictionary` (one row/user) via `fetch_remote`/`_push_remote`.
+- **Mobile:** `lib/dictionary.ts` — direct mirror (`buildPrompt`, `knownTerms`, `applyReplacements`,
+  `addReplacement`, `fetchRemote`), AsyncStorage `flume_dictionary` + Supabase upsert. Managed in
+  `SettingsScreen`.
 - **Backend:** `dictionary` table (`user_id` PK, `vocabulary` jsonb, `replacements` jsonb, `updated_at`).
 - **Status:** full parity. Rule shape `{from, to, auto?}`.
 

@@ -525,6 +525,21 @@
     (desktop pass over the real `SYSTEM_PROMPT` + `build_dictation_user_message()`, plus a mobile pass over
     a manually-synced copy of `groq.ts`'s prompt — see that file's own docstring).
 
+22. **Context grounding is grounding DATA, never a directive (MER-44 Phase 0).** `ai_cleanup.build_context_block`
+    (mirrored in `groq.ts::formatText`) prepends the user's known terms + active-app hint to the cleanup
+    call. Two hard rules when editing it: (a) it must stay **fail-closed** — any error returns `""` (no
+    context) and the cleanup path proceeds unchanged; the grounding block is prepended to the *user*
+    message, never the `SYSTEM_PROMPT`. (b) It must NOT tell the model to collapse/correct more aggressively
+    — it only lists terms the model should prefer spelling-wise. Adding "collapse when you see a known
+    prefix"-style language would raise the identifier over-collapse rate that rule 18 deliberately keeps
+    near zero; the `context_grounding_fixtures.py` harness asserts the block contains no "collapse"
+    directive. Known terms come from `dictionary.known_terms()` (vocabulary + replacement `to`-targets), so
+    auto-learned fixes ground the cleanup automatically — no extra plumbing. Gated by
+    `context_grounding_enabled` (default on). Windows passes only the window *title* as the app hint (no
+    bundle id); mobile passes no app hint at all (JS has no frontmost-app API) — known-terms grounding
+    still applies on both. **MER-44 Phases 1–2 (fine-tuned model, flywheel, implicit correction) are NOT
+    built** — gated on a serving-provider dependency + a plateau signal; do not start them without that.
+
 ## Design system (Flume)
 
 Single source: desktop `app/theme.py` + `app/fonts_css.py`; mobile `flume-ui/theme/`. Also

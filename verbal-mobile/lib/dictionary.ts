@@ -130,6 +130,27 @@ export function buildPrompt(d: Dictionary): string | undefined {
   return 'Glossary: ' + d.vocabulary.slice(0, 200).join(', ') + '.';
 }
 
+/**
+ * Distinct user-specific terms for GROUNDING THE CLEANUP LLM (MER-44 Phase 0).
+ * Mirrors whisperflow/app/dictionary.py::known_terms — vocabulary plus the
+ * corrected ("to") side of every replacement rule (so auto-learned/manual fixes
+ * ground the cleanup pass), deduped case-insensitively, capped. Distinct from
+ * buildPrompt() (which feeds Whisper's transcription bias, vocabulary only).
+ */
+export function knownTerms(d: Dictionary, limit = 60): string[] {
+  const terms: string[] = [];
+  const seen = new Set<string>();
+  for (const w of [...d.vocabulary, ...d.replacements.map((r) => r.to)]) {
+    const t = (w || '').trim();
+    const k = t.toLowerCase();
+    if (t && !seen.has(k)) {
+      seen.add(k);
+      terms.push(t);
+    }
+  }
+  return terms.slice(0, limit);
+}
+
 function escapeRe(s: string) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 
 export function applyReplacements(text: string, d: Dictionary): string {

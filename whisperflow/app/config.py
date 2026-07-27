@@ -73,6 +73,11 @@ DEFAULT_CONFIG = {
     # non-English pins route Groq to full whisper-large-v3.
     "spoken_language": "en",
     "hotkey_label": "Right ⌘",            # display label for the dictation key
+    # Context grounding (MER-44 Phase 0). Feeds the user's dictionary terms +
+    # active-app hint into the cleanup LLM so it grounds identifiers/names instead
+    # of guessing. Default ON — it's low-risk grounding DATA (never a directive to
+    # collapse), fail-closed, and adds only a small bounded token cost per call.
+    "context_grounding_enabled": True,
 }
 
 # Bounded local meeting-metadata list (mirrors the history cap pattern).

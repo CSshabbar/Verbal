@@ -657,7 +657,10 @@ class VerbalWinApp:
                 self._refresh_dashboards()
                 return
 
-            result = process_text(text, self.config)
+            # Phase-0 context grounding (MER-44): pass the target window title
+            # (Windows has no bundle id) so the cleanup LLM grounds on it + the
+            # user's dictionary terms.
+            result = process_text(text, self.config, active_app=get_focused_app_name())
             if self._cancel_flag.is_set():
                 return
 

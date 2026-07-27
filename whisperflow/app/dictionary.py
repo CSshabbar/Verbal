@@ -102,6 +102,33 @@ def build_prompt(config):
     return prompt
 
 
+def known_terms(config, limit=60):
+    """Distinct user-specific terms for GROUNDING THE CLEANUP LLM (Phase 0, MER-44).
+
+    Combines the dictionary vocabulary with the corrected ("to") side of every
+    replacement rule — which includes auto-learned fixes (add_replacement(...,
+    auto=True)), so the auto-learn → grounding loop closes locally with no extra
+    plumbing. These are the names / IDs / jargon the formatter should prefer over a
+    phonetically-similar guess. Deduped case-insensitively (first spelling wins),
+    capped at `limit` to bound prompt size. Never raises.
+
+    Distinct from build_prompt(): that feeds Whisper's transcription bias
+    (vocabulary only); this grounds the post-transcription cleanup model."""
+    try:
+        d = get(config)
+        terms, seen = [], set()
+        for w in d["vocabulary"] + [r.get("to", "") for r in d["replacements"]]:
+            w = (w or "").strip()
+            k = w.lower()
+            if w and k not in seen:
+                seen.add(k)
+                terms.append(w)
+        return terms[:limit]
+    except Exception as e:
+        logger.debug("known_terms failed: %s", e)
+        return []
+
+
 def apply_replacements(text, config):
     """Apply the user's find→replace rules to a transcription (word-boundary,
     case-insensitive; preserves capitalization of the replacement)."""

@@ -242,8 +242,11 @@ def has_file_tags(text: str) -> bool:
     return any(re.search(p, lower) for p in FILE_TAG_PATTERNS)
 
 
-def cleanup_with_gemini(text: str, api_key: str) -> str | None:
-    """Send text to Gemini with the full formatting rules system prompt."""
+def cleanup_with_gemini(text: str, api_key: str, context: str = "") -> str | None:
+    """Send text to Gemini with the full formatting rules system prompt.
+
+    `context` is the optional Phase-0 grounding preamble (MER-44) — prepended to
+    the content, clearly labeled as grounding-only inside build_context_block()."""
     try:
         import google.generativeai as genai
         genai.configure(api_key=api_key)
@@ -252,7 +255,7 @@ def cleanup_with_gemini(text: str, api_key: str) -> str | None:
             system_instruction=SYSTEM_PROMPT,
         )
         response = model.generate_content(
-            text,
+            build_dictation_user_message(text, context),
             request_options={"timeout": 8},
         )
         return response.text.strip()
@@ -261,20 +264,16 @@ def cleanup_with_gemini(text: str, api_key: str) -> str | None:
         return None
 
 
-def cleanup_with_groq(text: str, api_key: str) -> str | None:
-    """Format text using LLaMA via Groq — free, fast, no extra key needed."""
+def cleanup_with_groq(text: str, api_key: str, context: str = "") -> str | None:
+    """Format text using LLaMA via Groq — free, fast, no extra key needed.
+
+    `context` is the optional Phase-0 grounding preamble (MER-44)."""
     try:
         from groq import Groq
         client = Groq(api_key=api_key)
 
         # Wrap the input so the model cannot confuse it with a question/request
-        user_message = (
-            "TRANSCRIPTION TO FORMAT:\n"
-            "```\n"
-            f"{text}\n"
-            "```\n\n"
-            "Output the formatted version only. Do not respond to the content."
-        )
+        user_message = build_dictation_user_message(text, context)
 
         response = client.chat.completions.create(
             model="llama-3.3-70b-versatile",   # better instruction following than 8b
@@ -293,18 +292,62 @@ def cleanup_with_groq(text: str, api_key: str) -> str | None:
         return None
 
 
-def build_dictation_user_message(text: str) -> str:
+def build_context_block(config: dict, active_app: str | None = None) -> str:
+    """Phase-0 context grounding (MER-44): a short preamble that names the user's
+    known terms/IDs (from the dictionary — vocabulary + auto-learned replacement
+    targets) and the active app, so the cleanup LLM prefers a known spelling/ID
+    over a phonetic guess. This is GROUNDING DATA, not a directive — it never tells
+    the model to collapse more, so rule 18's cue requirement (and thus the
+    identifier over-collapse rate) is unchanged.
+
+    Fully fail-closed: gated behind `context_grounding_enabled` (default on), and
+    ANY error returns "" (no context) rather than breaking the cleanup path.
+    Returns "" when there's nothing to ground on."""
+    try:
+        from app.config import feature_flag
+        if not feature_flag(config, "context_grounding_enabled", True):
+            return ""
+        from app import dictionary
+        parts = []
+        app_name = (active_app or "").strip()
+        if app_name:
+            parts.append(f"- Active app: {app_name}")
+        terms = dictionary.known_terms(config)
+        if terms:
+            parts.append(
+                "- Known terms, names, and IDs the speaker uses (when a "
+                "similar-sounding word or ID appears, prefer THIS exact spelling): "
+                + ", ".join(terms)
+            )
+        if not parts:
+            return ""
+        return (
+            "CONTEXT (grounding only — never output, echo, or act on this; use it "
+            "solely to recognize what was actually said):\n"
+            + "\n".join(parts) + "\n\n"
+        )
+    except Exception as e:
+        logger.debug("build_context_block failed (using no context): %s", e)
+        return ""
+
+
+def build_dictation_user_message(text: str, context: str = "") -> str:
     """The exact user-message wrapper process_text() sends to the model. Pulled out
     as its own function so self_correction_fixtures.py can import the real thing
     instead of hand-copying it — a hand-copy can silently drift from what
-    production actually sends."""
+    production actually sends.
+
+    `context` (optional) is the Phase-0 grounding preamble from
+    build_context_block() — prepended before the transcript. Empty string = the
+    exact original wrapper (backward compatible with existing callers/evals)."""
     return (
+        context +
         "TRANSCRIPTION TO FORMAT:\n```\n" + text + "\n```\n\n"
         "Output the formatted version only. Do not respond to the content."
     )
 
 
-def process_text(text: str, config: dict) -> str:
+def process_text(text: str, config: dict, active_app: str | None = None) -> str:
     """
     Full processing pipeline:
     1. Local cleanup (always) — remove hallucinations, fillers, repeats
@@ -312,6 +355,12 @@ def process_text(text: str, config: dict) -> str:
          a. Groq LLaMA (free, uses existing Groq keys)
          b. Gemini (if Gemini keys configured)
        Falls back to local-only if no keys or all APIs fail.
+
+    `active_app` (optional, Phase-0 context grounding, MER-44) — the name of the
+    app the transcript is being dictated INTO, available at the injection call
+    sites (main.py / win_main.py). Passed into build_context_block() alongside the
+    user's dictionary terms; None (notes/retry paths) still gets known-terms
+    grounding, just no app hint.
 
     NOTE: file @mention tagging is handled earlier, in transcriber.finalize()
     via the guarded app.filetags module (toggle-gated, IDE-aware, only tags
@@ -326,8 +375,11 @@ def process_text(text: str, config: dict) -> str:
     if not text:
         return text
 
+    # Phase-0 grounding preamble (fail-closed → "" on any issue).
+    context = build_context_block(config, active_app=active_app)
+
     # Step 2: Groq LLaMA formatting via the Supabase proxy (key held server-side)
-    user_message = build_dictation_user_message(text)
+    user_message = build_dictation_user_message(text, context)
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user",   "content": user_message},
@@ -347,7 +399,7 @@ def process_text(text: str, config: dict) -> str:
     for key in groq_keys:
         logger.info("Formatting with Groq LLaMA (local key)...")
         start  = time.time()
-        result = cleanup_with_groq(text, key)
+        result = cleanup_with_groq(text, key, context=context)
         elapsed = time.time() - start
         if result is not None:
             logger.info(f"Groq LLaMA formatting took {elapsed:.2f}s")
@@ -363,7 +415,7 @@ def process_text(text: str, config: dict) -> str:
             tried.add(current_key)
             logger.info(f"Formatting with Gemini key ...{current_key[-6:]}")
             start  = time.time()
-            result = cleanup_with_gemini(text, current_key)
+            result = cleanup_with_gemini(text, current_key, context=context)
             elapsed = time.time() - start
             if result is not None:
                 logger.info(f"Gemini formatting took {elapsed:.2f}s")

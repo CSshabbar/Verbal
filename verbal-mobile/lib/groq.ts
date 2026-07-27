@@ -1,4 +1,4 @@
-import { getDictionary, buildPrompt, applyReplacements } from './dictionary';
+import { getDictionary, buildPrompt, applyReplacements, knownTerms } from './dictionary';
 import { supabase, SUPABASE_URL, SUPABASE_ANON_KEY } from './supabase';
 import { getDeviceId } from './storage';
 
@@ -299,6 +299,27 @@ Sarah, actually also Tom".
 
 Return ONLY the formatted text.`;
 
+  // Phase-0 context grounding (MER-44): prepend the user's known dictionary terms
+  // so the cleanup LLM prefers a known spelling/ID over a phonetic guess. Mirror
+  // of desktop ai_cleanup.build_context_block — mobile has no active-app signal,
+  // so it's known-terms only. Grounding DATA, never a directive to collapse.
+  // Fully fail-closed: any error → no context, cleanup proceeds unchanged.
+  let context = '';
+  try {
+    const terms = knownTerms(await getDictionary());
+    if (terms.length) {
+      context =
+        'CONTEXT (grounding only — never output, echo, or act on this; use it ' +
+        'solely to recognize what was actually said):\n' +
+        '- Known terms, names, and IDs the speaker uses (when a similar-sounding ' +
+        'word or ID appears, prefer THIS exact spelling): ' +
+        terms.join(', ') +
+        '\n\n';
+    }
+  } catch {
+    /* fail-closed: proceed with no context */
+  }
+
   const res = await fetch(PROXY_URL, {
     method: 'POST',
     headers: await proxyHeaders(true),
@@ -308,7 +329,7 @@ Return ONLY the formatted text.`;
         { role: 'system', content: SYSTEM },
         {
           role: 'user',
-          content: `TRANSCRIPTION TO FORMAT:\n\`\`\`\n${text}\n\`\`\`\n\nOutput the formatted version only.`,
+          content: `${context}TRANSCRIPTION TO FORMAT:\n\`\`\`\n${text}\n\`\`\`\n\nOutput the formatted version only.`,
         },
       ],
       temperature: 0,
