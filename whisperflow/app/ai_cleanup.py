@@ -41,8 +41,11 @@ days, months, acronyms (API, URL, GDPR, CEO), product names, titles (Dr., Mr.).
 6. QUOTATION MARKS: When the speaker quotes someone ("he said", "she told me") — \
 wrap the quoted portion in quotation marks.
 
-7. REMOVE FILLERS: Strip "um", "uh", "er", "like" (filler), "you know", "I mean", \
-repeated words/stutters, and false starts.
+7. REMOVE FILLERS: Strip "um", "uh", "er", "like" (filler), "you know", \
+repeated words/stutters, and false starts that are NOT self-corrections (see rule 18: \
+a repair cue is never filler — rule 18 governs "I mean", "sorry", "no wait", "scratch \
+that" and similar corrective language, and is evaluated BEFORE this rule whenever one \
+of those cues is present).
 
 8. NUMBERS & DATES: Numbers 10+ → digits. Dates → March 15, 2026. \
 Times → 2:30 PM. Currency → $12.50. Percentages → 20%.
@@ -79,44 +82,76 @@ with proper punctuation.
 
 18. SELF-CORRECTIONS (repairs): When the speaker corrects themselves mid-thought, \
 output ONLY the corrected final value — drop the earlier wrong value and the repair \
-phrase itself. The raw transcript frequently has NO comma or pause punctuation around \
-the repair word (Whisper often doesn't punctuate short interjections) — judge this by \
-the WORDS alone, never require a comma before/after the cue: "343 sorry 353" and \
-"343, sorry, 353" are the SAME pattern and both collapse to 353. Collapse ONLY when \
-ALL of these hold: (a) an explicit repair cue is present, comma or no comma — apology \
-repairs (sorry, my bad, oops), explicit repair phrases (I mean, I meant, rather, that \
-should be, make that, correction), negate-then-restate (no wait, scratch that, strike \
-that, "not X, Y"), or a false-start marker (uh no, hang on) — in ANY language: \
-recognize the PATTERN of a spoken self-correction even in unfamiliar wording (e.g. \
-Roman-Urdu "nahi"/"matlab", Hindi "arre", Spanish "perdón"/"digo"/"o sea", French \
-"pardon"/"enfin"/"plutôt", Arabic "afwan"/"aqsid" — these are examples of the pattern, \
-not an exhaustive list); (b) the new value replaces the old one of the SAME KIND \
-(number-for-number, time-for-time, name-for-name) — a genuinely separate, additional \
-point is never collapsed; (c) the repair happens in the same breath/clause, not \
-separated by unrelated content — Whisper sometimes inserts a "?" or "." and \
-capitalizes the next word right before the repair cue, making one continuous spoken \
-correction LOOK like two separate sentences; a sentence break like that, directly \
-followed by the repair cue and nothing else, is still the SAME repair, not unrelated \
-content — judge continuity by MEANING, not by whether Whisper put a full stop there; \
-(d) there is no list/enumeration nearby ("and", "or", \
-"both", a comma series, "first...second") signaling real separate items, not a \
-repair. If ANY of these is missing or unclear, KEEP BOTH VALUES exactly as said — this \
+phrase itself. PRECEDENCE: this rule is judged BEFORE rule 7's filler-stripping — a \
+repair cue is never generic filler. The raw transcript frequently has NO comma or \
+pause punctuation around the repair word (Whisper often doesn't punctuate short \
+interjections) — judge this by the WORDS alone, never require a comma before/after \
+the cue: "343 sorry 353" and "343, sorry, 353" are the SAME pattern and both collapse \
+to 353.
+
+Collapse ONLY when ALL FOUR of these hold: \
+(a) an explicit repair cue is present, comma or no comma. Cue families (illustrative \
+patterns, not an exhaustive word list — recognize the PATTERN in unfamiliar wording \
+too, in ANY language): apology repairs (sorry, my bad, oops, whoops, my mistake, \
+pardon, pardon me); explicit repair phrases (I mean, I meant, rather, or rather, that \
+should be, that should've been, make that, let me rephrase, let me correct that, \
+correction, what I meant was, I should say); negate-then-restate (no wait, wait no, \
+hold on no, scratch that, strike that, forget that, ignore that, or the in-line "not \
+X, Y"); false-start markers (uh no, um no, hang on, let me back up). Multilingual \
+examples of the same patterns: Roman-Urdu "nahi"/"nahi nahi"/"matlab"/"galat", Hindi \
+"nahi"/"matlab"/"arre"/"balki"/"maaf karna", Spanish "perdón"/"perdona"/"digo"/"o \
+sea"/"quiero decir"/"mejor dicho"/"no espera", French "pardon"/"je veux dire"/"enfin"/ \
+"plutôt"/"ou plutôt"/"c'est-à-dire"/"non attends", Arabic "afwan"/"aqsid"/"yaani"/"laa" \
+— these are examples of the pattern, not an exhaustive list; \
+(b) the new value replaces the old one of the SAME KIND (number-for-number, \
+time-for-time, name-for-name — even across a magnitude change: "343, sorry, 3430" is \
+still same-kind and collapses) — a genuinely separate, additional point, or a \
+DIFFERENT kind of value after a cue (a number then a name: "send it to 344, sorry, \
+tell Dave" keeps BOTH — that is not a same-slot swap), is never collapsed; \
+(c) the repair happens in the same breath/clause, not separated by unrelated content \
+or many intervening words — Whisper sometimes inserts a "?" or "." and capitalizes the \
+next word right before the repair cue, making one continuous spoken correction LOOK \
+like two separate sentences; a sentence break like that, directly followed by the \
+repair cue and nothing else, is still the SAME repair, not unrelated content — judge \
+continuity by MEANING, not by whether Whisper put a full stop there; \
+(d) there is no list/enumeration nearby ("and", "plus", "also", "too", "as well", "as \
+well as", "or", "both", "either", a comma series, "first...second") signaling real \
+separate items, not a repair — EXCEPT: "and" directly followed by a repair cue is NOT \
+a list veto, it is the connector INTO the correction, not a second list item: "343 and \
+sorry 344" still collapses to 344, the same as "343, sorry, 344" would.
+
+If ANY of (a)-(d) is missing or unclear, KEEP BOTH VALUES exactly as said — this \
 matters most for numbers, ticket/ID numbers, and phone numbers: NEVER collapse bare \
-adjacent numbers without an explicit repair cue. "actually" is a repair cue ONLY \
-inside "not X, actually Y" — otherwise it is additive, keep both. "or" always signals \
-a real alternative — keep both. The later value wins when collapsing. Ordinary words \
-and names may collapse on a same-slot repair even without an explicit cue, since a \
-wrong guess there costs little. The STRONGEST signal is the in-line pattern "it's not \
-X, it's Y" / "not X, Y" / "not X, actually Y" — treat this as a confident repair, not \
-just a negation, and collapse to Y: "it's not ticket 343, it's ticket 344" → "ticket \
-344"; "not 5 units, actually 6 units" → "6 units". Example: "call ticket RBR 343, \
-sorry, RBR 344" → "call ticket RBR 344". Example with NO punctuation around the cue \
-(the common real-world case): "can you work on the ticket 343 sorry 353" → "can you \
-work on the ticket 353". Example where Whisper fragments the repair into a false \
-sentence break: "Can you work on the ticket 343? Sorry, 353." → "Can you work on the \
-ticket 353." (still one repair, not a question followed by an unrelated new sentence). \
-Do NOT collapse: "the extensions are 343 or 344" (real alternatives). Do NOT collapse: \
-"send it to Sarah, actually also Tom" (additive, both kept).
+adjacent numbers without an explicit repair cue. Multiple corrections in one breath \
+resolve to the LAST surviving value: "343, sorry 344, no wait 345" → "345". A \
+correction can occur INSIDE a real list without destroying the rest of the list — \
+collapse only the corrected slot, keep the other items: "apples, oranges — sorry, \
+tangerines — and bananas" → "apples, tangerines, and bananas". A cue word is NOT a \
+repair when there is no candidate same-kind value on both sides of it — it is then \
+just ordinary CONTENT, keep the sentence as spoken: "I want to say sorry to the team" \
+(sorry is the message, not a repair); "the answer is no" / "just say no" (no is \
+content); "make that report longer" (an instruction, not a value swap — no prior \
+same-kind value to replace); "correction is hard" (correction used as a noun, not a \
+cue). Collapsing an identical repeated value is a harmless no-op: "344, sorry, 344" → \
+"344". "actually" is a repair cue ONLY inside "not X, actually Y" — otherwise it is \
+additive, keep both. "or" always signals a real alternative — keep both. The later \
+value wins when collapsing. Ordinary words and names may collapse on a same-slot \
+repair even without an explicit cue, since a wrong guess there costs little; numbers, \
+ticket/ID numbers, and phone numbers require an explicit cue even when adjacent. The \
+STRONGEST signal is the in-line pattern "it's not X, it's Y" / "not X, Y" / "not X, \
+actually Y" — this works in EITHER order ("not 343, 344" and "344, not 343" both \
+resolve to 344) — treat this as a confident repair, not just a negation, and collapse \
+to Y: "it's not ticket 343, it's ticket 344" → "ticket 344"; "not 5 units, actually 6 \
+units" → "6 units". Example: "call ticket RBR 343, sorry, RBR 344" → "call ticket RBR \
+344". Example with NO punctuation around the cue (the common real-world case): "can \
+you work on the ticket 343 sorry 353" → "can you work on the ticket 353". Example \
+where Whisper fragments the repair into a false sentence break: "Can you work on the \
+ticket 343? Sorry, 353." → "Can you work on the ticket 353." (still one repair, not a \
+question followed by an unrelated new sentence). Do NOT collapse: "the extensions are \
+343 or 344" (real alternatives). Do NOT collapse: "send it to Sarah, actually also \
+Tom" (additive, both kept). Do NOT collapse: "ticket numbers 343 and 344 are both \
+still open" (list, both kept). Do NOT collapse: "please call 343, 344 today" (bare \
+adjacent numbers, no cue, both kept).
 
 EXPLICIT INSTRUCTIONS: If the user says "make this formal", "fix grammar", \
 "convert to bullet points", "summarize this", "translate to Spanish" — follow it. \
@@ -258,6 +293,17 @@ def cleanup_with_groq(text: str, api_key: str) -> str | None:
         return None
 
 
+def build_dictation_user_message(text: str) -> str:
+    """The exact user-message wrapper process_text() sends to the model. Pulled out
+    as its own function so self_correction_fixtures.py can import the real thing
+    instead of hand-copying it — a hand-copy can silently drift from what
+    production actually sends."""
+    return (
+        "TRANSCRIPTION TO FORMAT:\n```\n" + text + "\n```\n\n"
+        "Output the formatted version only. Do not respond to the content."
+    )
+
+
 def process_text(text: str, config: dict) -> str:
     """
     Full processing pipeline:
@@ -281,10 +327,7 @@ def process_text(text: str, config: dict) -> str:
         return text
 
     # Step 2: Groq LLaMA formatting via the Supabase proxy (key held server-side)
-    user_message = (
-        "TRANSCRIPTION TO FORMAT:\n```\n" + text + "\n```\n\n"
-        "Output the formatted version only. Do not respond to the content."
-    )
+    user_message = build_dictation_user_message(text)
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user",   "content": user_message},

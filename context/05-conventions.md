@@ -501,6 +501,22 @@
     satisfy `auth.uid()` under the current pairing design — this needs a product decision, not just an
     engineering rollout, before the migration can go live.
 
+21. **Self-correction resolution (`ai_cleanup.SYSTEM_PROMPT` rule 18 / `groq.ts`'s SELF-CORRECTIONS
+    block, MER-42/MER-43): a repair cue is never filler, and "and" only vetoes as list grammar.** Rule 18
+    is judged BEFORE rule 7's filler-stripping — rule 7 used to list "I mean" as a filler to strip while
+    rule 18 relied on that exact phrase as a repair cue, silently deleting the token the correction logic
+    needed (MER-43 1.1). If you touch rule 7's filler list, never re-add a word rule 18 treats as a cue.
+    Separately: "and" is listed as a list/enumeration veto (so "343 and 344" doesn't collapse), but "and"
+    directly followed by a repair cue is the connector INTO the correction, not a second list item ("343
+    and sorry 344" must still collapse to 344) — this exception must stay explicit in the prompt text, not
+    just work by accident, or a future reword breaks it silently (MER-43 1.3). Desktop (`ai_cleanup.py`)
+    and mobile (`groq.ts`) must encode identical logic here (cue families, the 4-part collapse test,
+    anti-cues, content-type asymmetry, punctuation-invariance, directionality) — mobile shipped with real
+    gaps vs. desktop in MER-42 (missing cue families, no words-without-cue asymmetry), closed in MER-43.
+    Edit one → edit the other in the same change. Live eval: `whisperflow/self_correction_fixtures.py`
+    (desktop pass over the real `SYSTEM_PROMPT` + `build_dictation_user_message()`, plus a mobile pass over
+    a manually-synced copy of `groq.ts`'s prompt — see that file's own docstring).
+
 ## Design system (Flume)
 
 Single source: desktop `app/theme.py` + `app/fonts_css.py`; mobile `flume-ui/theme/`. Also
