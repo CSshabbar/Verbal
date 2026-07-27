@@ -596,6 +596,14 @@ class VerbalApp(rumps.App):
             def bg():
                 try:
                     from app import transform as _tf
+                    # Remember the app that holds the selection BEFORE anything
+                    # else, while it's still frontmost. Mode B never entered the
+                    # dictation core, so injector._previous_app_pid was stale/None
+                    # and Replace's inject_text→restore_focused_app() re-activated
+                    # the wrong app (or nothing) — the paste landed nowhere. This
+                    # is the "Replace does nothing" bug. Mirrors the dictation
+                    # path's save_focused_app() at record start.
+                    save_focused_app()
                     sel = _tf.capture_selection()
                     if not sel:
                         return                      # nothing selected → silent no-op

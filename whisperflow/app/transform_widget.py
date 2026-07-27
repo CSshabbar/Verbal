@@ -291,8 +291,18 @@ class TransformWidget:
                     if not self._visible:
                         return
                     if status == "ok" and instr:
+                        # Show the transcribed instruction and let the user REVIEW
+                        # and EDIT it before transforming — they press Go / Enter
+                        # to run it (previously we fired the LLM immediately, so the
+                        # text only flashed by). makeKeyWindow so the field is
+                        # editable at once; the nonactivating panel never becomes
+                        # the ACTIVE app, so the target selection survives for the
+                        # eventual Replace.
                         self._emit({"state": "heard", "instruction": instr})
-                        self.tf_prompt(instr)
+                        try:
+                            self._window.makeKeyWindow()
+                        except Exception:
+                            pass
                     else:
                         self._emit({"state": "error", "msg": "Didn't catch that — try again."})
                 self.app._on_main(ui)
@@ -340,7 +350,7 @@ class TransformWidget:
 _CSS = """
 *{box-sizing:border-box;margin:0;padding:0}
 :root{--cream:#EADFCE;--ink:#2a1f18;--ink-mut:rgba(42,31,24,.58);--dark:#1a1512;
---line:rgba(42,31,24,.14)}
+--line:rgba(42,31,24,.14);--acc:#E8522A}
 html,body{height:100%;background:transparent}
 body{font-family:'Geist',-apple-system,system-ui,sans-serif;-webkit-font-smoothing:antialiased;
 display:flex;align-items:flex-end;justify-content:center;overflow:visible;padding:14px 40px 32px}
@@ -360,8 +370,16 @@ color:var(--ink);cursor:pointer;font:600 12px 'Geist';flex:none}
 .mic{width:34px;height:34px;border-radius:50%;border:1px solid var(--line);background:none;
 color:var(--ink);cursor:pointer;display:flex;align-items:center;justify-content:center;flex:none}
 .mic:hover{background:rgba(42,31,24,.07)}
-.mic.on{background:var(--dark);color:var(--cream);border-color:var(--dark)}
+/* recording: accent fill + a pulsing ring so it's unmistakable the mic is live */
+.mic.on{background:var(--acc);color:#fff;border-color:var(--acc);animation:micPulse 1.4s ease-out infinite}
+@keyframes micPulse{0%{box-shadow:0 0 0 0 rgba(232,82,42,.5)}
+70%{box-shadow:0 0 0 11px rgba(232,82,42,0)}100%{box-shadow:0 0 0 0 rgba(232,82,42,0)}}
 .mic svg{width:14px;height:14px}
+/* live waveform shown next to the mic while recording (mirrors the overlay pill) */
+.wave{display:none;align-items:center;gap:2px;height:16px;flex:none}
+.wave.on{display:flex}
+.wave i{width:2px;border-radius:2px;background:var(--acc);animation:wv .9s ease-in-out infinite}
+@keyframes wv{0%,100%{height:4px}50%{height:14px}}
 .pin{flex:1;min-width:0;border:1px solid var(--line);border-radius:11px;padding:9px 12px;
 font:400 12.5px 'Geist';color:var(--ink);background:rgba(255,255,255,.35);outline:none}
 .pin::placeholder{color:var(--ink-mut)}
@@ -387,21 +405,33 @@ function esc(s){return String(s==null?'':s).replace(/[&<>]/g,function(c){return 
 var S={state:null};
 function show(id){ ['pPrompt','pBusy','pPreview','pDone'].forEach(function(x){
   document.getElementById(x).className = 'pill'+(x===id?' show':''); }); }
+function setRecording(on){
+  var mb=document.getElementById('micBtn'); if(mb) mb.className = on ? 'mic on' : 'mic';
+  var w=document.getElementById('micWave'); if(w) w.className = on ? 'wave on' : 'wave';
+}
 window.VerbalTransform=function(d){
   d=d||{}; S.state=d.state;
-  if(d.state!=='speaking'){ var mb=document.getElementById('micBtn'); if(mb) mb.className='mic'; }
+  if(d.state!=='speaking'){ setRecording(false); }
   if(d.state==='hide'){ show(''); return; }
   if(d.state==='prompt'){
     document.getElementById('exc').textContent=d.excerpt||'';
     document.getElementById('chars').textContent=(d.chars||0)+' chars selected';
     var i=document.getElementById('pin'); i.value='';
-    document.getElementById('micBtn').className='mic';
+    setRecording(false);
     document.getElementById('perr').textContent='';
     show('pPrompt');
   }
-  else if(d.state==='speaking'){ document.getElementById('micBtn').className='mic on';
+  else if(d.state==='speaking'){ setRecording(true);
     document.getElementById('perr').textContent='Listening — click the mic again when done.'; }
-  else if(d.state==='heard'){ document.getElementById('pin').value=d.instruction||''; }
+  else if(d.state==='heard'){
+    // Show what we heard and let the user edit it BEFORE transforming — don't
+    // auto-run. Go / Enter runs the (possibly edited) instruction.
+    show('pPrompt');
+    setRecording(false);
+    var pin=document.getElementById('pin'); pin.value=d.instruction||'';
+    document.getElementById('perr').textContent='Heard you — edit if needed, then Go (or press Enter).';
+    try{ pin.focus(); pin.setSelectionRange(pin.value.length, pin.value.length); }catch(e){}
+  }
   else if(d.state==='busy'){ document.getElementById('busyLabel').textContent=d.label||'Working…'; show('pBusy'); }
   else if(d.state==='preview'){
     document.getElementById('pvText').textContent=(d.rewrite||'')+(d.truncated?' …':'');
@@ -435,6 +465,8 @@ def transform_widget_html():
     x = ('<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" '
          'stroke-linecap="round"><line x1="6" y1="6" x2="18" y2="18"/>'
          '<line x1="18" y1="6" x2="6" y2="18"/></svg>')
+    # staggered waveform bars (same idiom as the recording overlay pill)
+    bars = "".join('<i style="animation-delay:%.2fs"></i>' % (i * 0.08) for i in range(11))
     body = """
     <div class="pill" id="pPrompt">
       <div class="row"><span class="eyebrow">TRANSFORM SELECTION</span>
@@ -447,7 +479,7 @@ def transform_widget_html():
         <input class="pin" id="pin" placeholder="…or type an instruction — “make the tone professional”"/>
         <button class="btnS" onclick="sendPrompt()">Go</button>
       </div>
-      <div class="row"><span class="err" id="perr"></span></div>
+      <div class="row"><div class="wave" id="micWave">{bars}</div><span class="err" id="perr"></span></div>
     </div>
     <div class="pill" id="pBusy">
       <div class="row"><span class="spin"></span><span class="hint" id="busyLabel">Working…</span></div>
@@ -470,7 +502,7 @@ def transform_widget_html():
         <span style="flex:1"></span>
         <button class="x" onclick="api('tf_cancel')">{x}</button></div>
     </div>
-    """.format(x=x, mic=mic)
+    """.format(x=x, mic=mic, bars=bars)
     return (
         "<!doctype html><html><head><meta charset='utf-8'>"
         "<style>" + web_font_css() + _CSS + "</style></head><body>"

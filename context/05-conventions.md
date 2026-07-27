@@ -450,6 +450,13 @@
   ≥3-word body, and the instruction must start with an editing verb (`transform.INSTRUCTION_VERBS`).
 - **Clipboard capture must save/restore in try/finally** (`transform.capture_selection`) — the user's
   clipboard always survives, selection or not.
+- **Mode B must call `injector.save_focused_app()` at hotkey time** (`_on_transform_hotkey`, before
+  `capture_selection`). Mode B never enters the dictation core, so it doesn't otherwise capture the target
+  pid — and `inject_text`→`restore_focused_app()` (the Replace paste) re-activates
+  `injector._previous_app_pid`. Without the save, that global is stale/None → Replace pastes into the wrong
+  app or nowhere ("Replace does nothing"). The spoken instruction is **shown for review/edit, never
+  auto-run** — landing in `heard` (populate `#pin` + `makeKeyWindow`) instead of firing the LLM; don't
+  re-add an immediate `tf_prompt` after transcription.
 - `transform_widget.py` joins the non-activating-panel family (cream pill, ScreenSaver level,
   becomesKeyOnlyIfNeeded, acceptsFirstMouse webview subclass). The spoken prompt is BLOCKED while a
   meeting holds the mic (one mic stream process-wide).

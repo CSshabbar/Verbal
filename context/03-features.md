@@ -688,12 +688,21 @@ default ON, Settings → Keyboard) — gates the feature without carrying any cl
   overlay shows *“✦ Transformed · <instruction>”* so a wrong split is catchable. ANY failure falls
   back to the untouched `process_text` path (Rule #1). Hook lives in `main`'s transcribe worker,
   BEFORE `process_text`.
-- **Mode B — selection (Agentic):** select text anywhere → **⌘⇧T** → `transform.capture_selection`
-  (save clipboard → synth ⌘C → read → ALWAYS restore) → `transform_widget.TransformWidget` cream pill
-  (non-activating, bottom-center): **Improvise** (IMPROVISE_SYSTEM_PROMPT clarity pass), typed
-  instruction, or SPOKEN instruction (reuses Recorder+transcriber; blocked while a meeting holds the
-  mic). Result is a **preview** — Replace pastes over the still-highlighted selection
-  (`injector.inject_text`), then a 6-s **Undo** (target-app ⌘Z). Cancel/no-selection/too-long
+- **Mode B — selection (Agentic):** select text anywhere → **⌘⇧T** → `_on_transform_hotkey` calls
+  `injector.save_focused_app()` **first** (captures the target app's pid *while it's still frontmost*),
+  then `transform.capture_selection` (save clipboard → synth ⌘C → read → ALWAYS restore) →
+  `transform_widget.TransformWidget` cream pill (non-activating, bottom-center): **Improvise**
+  (IMPROVISE_SYSTEM_PROMPT clarity pass), typed instruction, or SPOKEN instruction (reuses
+  Recorder+transcriber; blocked while a meeting holds the mic). While recording the **mic pulses (accent
+  ring) + a live waveform** shows (`.mic.on` micPulse + `#micWave`, same idiom as the overlay pill) so
+  it's unmistakable the mic is live. A spoken instruction is **transcribed then shown in the editable
+  field for review/edit — it does NOT auto-transform**; the user presses Go / Enter to run the
+  (possibly edited) instruction (`heard` state populates `#pin` and `makeKeyWindow`s the panel so it's
+  editable at once — nonactivating, so the target selection survives). Result is a **preview** — Replace
+  pastes over the still-highlighted selection via `injector.inject_text`, then a 6-s **Undo** (target-app
+  ⌘Z). **The `save_focused_app()` call is load-bearing:** Mode B never enters the dictation core, so
+  without it `injector._previous_app_pid` was stale/None and `inject_text`→`restore_focused_app()`
+  re-activated the wrong app (or nothing) — Replace silently pasted nowhere. Cancel/no-selection/too-long
   (>12k chars) are all no-ops.
 - **Mobile — Mode B on the keyboard (Jul 2026):** a dedicated Transform button (iOS SF Symbol
   `wand.and.stars`, Android Ionicons `sparkles-outline`) on both custom keyboards
