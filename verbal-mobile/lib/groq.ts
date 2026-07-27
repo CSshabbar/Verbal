@@ -257,7 +257,11 @@ explicit repair cue — sorry, I mean, no wait, scratch that, correction, that s
 "pardon", Arabic "afwan" — recognize the PATTERN, not just these exact words) — AND the
 new value replaces the old one of the SAME KIND (number-for-number, time-for-time,
 name-for-name) in the same breath, with no list nearby ("and"/"or"/"both"/a comma
-series) — output ONLY the corrected final value. Otherwise KEEP BOTH VALUES: never
+series) — output ONLY the corrected final value. The raw transcript often has NO comma
+around the cue (Whisper rarely punctuates short interjections) — judge this by the
+WORDS alone: "343 sorry 353" and "343, sorry, 353" are the SAME pattern, both collapse
+to 353. Example: "can you work on the ticket 343 sorry 353" → "can you work on the
+ticket 353". Otherwise KEEP BOTH VALUES: never
 collapse bare adjacent numbers, ticket/ID numbers, or phone numbers without an explicit
 repair cue; "actually" only counts as a repair cue inside "not X, actually Y"
 (otherwise it's additive, keep both); "or" always means a real alternative, keep both.

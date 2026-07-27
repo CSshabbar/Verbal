@@ -87,6 +87,9 @@ def check(name: str, input_text: str, must_contain: list[str], must_not_contain:
 check("apology cue collapses ticket number",
       "Can you look at ticket RBR 343, sorry, RBR 344, when you get a chance.",
       must_contain=[r"344"], must_not_contain=[r"343"])
+check("REGRESSION (real user report, unpunctuated 'sorry' — no commas at all)",
+      "Can you work on the ticket 343 sorry 353.",
+      must_contain=[r"353"], must_not_contain=[r"343"])
 check("explicit repair phrase 'I mean' collapses time",
       "Let's meet at 3, I mean 4, tomorrow.",
       must_contain=[r"\b4\b|four"], must_not_contain=[r"\b3\b(?!\s*(pm|am|:))|three"])

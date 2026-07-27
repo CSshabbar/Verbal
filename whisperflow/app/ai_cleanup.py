@@ -79,18 +79,22 @@ with proper punctuation.
 
 18. SELF-CORRECTIONS (repairs): When the speaker corrects themselves mid-thought, \
 output ONLY the corrected final value — drop the earlier wrong value and the repair \
-phrase itself. Collapse ONLY when ALL of these hold: (a) an explicit repair cue is \
-present — apology repairs (sorry, my bad, oops), explicit repair phrases (I mean, I \
-meant, rather, that should be, make that, correction), negate-then-restate (no wait, \
-scratch that, strike that, "not X, Y"), or a false-start marker (uh no, hang on) — in \
-ANY language: recognize the PATTERN of a spoken self-correction even in unfamiliar \
-wording (e.g. Roman-Urdu "nahi"/"matlab", Hindi "arre", Spanish "perdón"/"digo"/"o \
-sea", French "pardon"/"enfin"/"plutôt", Arabic "afwan"/"aqsid" — these are examples of \
-the pattern, not an exhaustive list); (b) the new value replaces the old one of the \
-SAME KIND (number-for-number, time-for-time, name-for-name) — a genuinely separate, \
-additional point is never collapsed; (c) the repair happens in the same breath/clause, \
-not separated by unrelated content; (d) there is no list/enumeration nearby ("and", \
-"or", "both", a comma series, "first...second") signaling real separate items, not a \
+phrase itself. The raw transcript frequently has NO comma or pause punctuation around \
+the repair word (Whisper often doesn't punctuate short interjections) — judge this by \
+the WORDS alone, never require a comma before/after the cue: "343 sorry 353" and \
+"343, sorry, 353" are the SAME pattern and both collapse to 353. Collapse ONLY when \
+ALL of these hold: (a) an explicit repair cue is present, comma or no comma — apology \
+repairs (sorry, my bad, oops), explicit repair phrases (I mean, I meant, rather, that \
+should be, make that, correction), negate-then-restate (no wait, scratch that, strike \
+that, "not X, Y"), or a false-start marker (uh no, hang on) — in ANY language: \
+recognize the PATTERN of a spoken self-correction even in unfamiliar wording (e.g. \
+Roman-Urdu "nahi"/"matlab", Hindi "arre", Spanish "perdón"/"digo"/"o sea", French \
+"pardon"/"enfin"/"plutôt", Arabic "afwan"/"aqsid" — these are examples of the pattern, \
+not an exhaustive list); (b) the new value replaces the old one of the SAME KIND \
+(number-for-number, time-for-time, name-for-name) — a genuinely separate, additional \
+point is never collapsed; (c) the repair happens in the same breath/clause, not \
+separated by unrelated content; (d) there is no list/enumeration nearby ("and", "or", \
+"both", a comma series, "first...second") signaling real separate items, not a \
 repair. If ANY of these is missing or unclear, KEEP BOTH VALUES exactly as said — this \
 matters most for numbers, ticket/ID numbers, and phone numbers: NEVER collapse bare \
 adjacent numbers without an explicit repair cue. "actually" is a repair cue ONLY \
@@ -101,9 +105,11 @@ wrong guess there costs little. The STRONGEST signal is the in-line pattern "it'
 X, it's Y" / "not X, Y" / "not X, actually Y" — treat this as a confident repair, not \
 just a negation, and collapse to Y: "it's not ticket 343, it's ticket 344" → "ticket \
 344"; "not 5 units, actually 6 units" → "6 units". Example: "call ticket RBR 343, \
-sorry, RBR 344" → "call ticket RBR 344". Do NOT collapse: "the extensions are 343 or \
-344" (real alternatives). Do NOT collapse: "send it to Sarah, actually also Tom" \
-(additive, both kept).
+sorry, RBR 344" → "call ticket RBR 344". Example with NO punctuation around the cue \
+(the common real-world case): "can you work on the ticket 343 sorry 353" → "can you \
+work on the ticket 353". Do NOT collapse: "the extensions are 343 or 344" (real \
+alternatives). Do NOT collapse: "send it to Sarah, actually also Tom" (additive, both \
+kept).
 
 EXPLICIT INSTRUCTIONS: If the user says "make this formal", "fix grammar", \
 "convert to bullet points", "summarize this", "translate to Spanish" — follow it. \
