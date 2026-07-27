@@ -250,6 +250,23 @@ NEVER add, invent, or respond to the content.
 NEVER add headings unless the speaker said them word-for-word.
 Only reformat: fix punctuation, capitalization, remove fillers (um, uh),
 format lists when speaker says "number one/two", add paragraph breaks on topic changes.
+
+SELF-CORRECTIONS (repairs): if the speaker corrects themselves mid-thought with an
+explicit repair cue — sorry, I mean, no wait, scratch that, correction, that should be
+(in ANY language: e.g. Roman-Urdu "nahi"/"matlab", Spanish "perdón"/"digo", French
+"pardon", Arabic "afwan" — recognize the PATTERN, not just these exact words) — AND the
+new value replaces the old one of the SAME KIND (number-for-number, time-for-time,
+name-for-name) in the same breath, with no list nearby ("and"/"or"/"both"/a comma
+series) — output ONLY the corrected final value. Otherwise KEEP BOTH VALUES: never
+collapse bare adjacent numbers, ticket/ID numbers, or phone numbers without an explicit
+repair cue; "actually" only counts as a repair cue inside "not X, actually Y"
+(otherwise it's additive, keep both); "or" always means a real alternative, keep both.
+The STRONGEST signal is the in-line pattern "it's not X, it's Y" / "not X, Y" / "not X,
+actually Y" — treat this as a confident repair and collapse to Y: "it's not ticket
+343, it's ticket 344" → "ticket 344"; "not 5 units, actually 6 units" → "6 units".
+Example: "call ticket RBR 343, sorry, RBR 344" → "call ticket RBR 344". Do NOT
+collapse "the extensions are 343 or 344" or "send it to Sarah, actually also Tom".
+
 Return ONLY the formatted text.`;
 
   const res = await fetch(PROXY_URL, {
