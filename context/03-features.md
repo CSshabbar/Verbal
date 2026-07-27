@@ -39,22 +39,34 @@ Each feature: **what it does · desktop impl · mobile impl · backend · status
 - **Desktop:** `ai_cleanup.py::process_text` — ① `clean_raw_transcript` (regex: strip hallucinations,
   fillers, doubled words; capitalize; terminal punctuation), ② LLM format via Groq
   `llama-3.3-70b-versatile` (`cleanup_with_groq`) → Gemini fallback with key rotation. `SYSTEM_PROMPT` =
-  18 rules ("you are a TEXT FORMATTER, not an assistant") — rule 18 (MER-42, 2026-07) resolves spoken
-  self-corrections to the final value ("ticket RBR 343, sorry, RBR 344" → "ticket RBR 344") the same way
-  the notes/meeting-notes prompts already did, but hardened for injected dictation text: collapses only
-  with an explicit repair cue (in any language — Roman-Urdu code-switching, e.g. "nahi"/"sorry", is the
-  v1-priority case) **+** a same-kind value swap **+** tight adjacency **+** no nearby list grammar:
-  bare adjacent numbers/ticket-IDs/phone numbers are **never** collapsed without an explicit cue (fail-
-  closed — keep both when unsure). This is cleanup, not Transform — no new mode/gate, stays inside
-  `SYSTEM_PROMPT`. Live-verified against the real model via `whisperflow/self_correction_fixtures.py`
-  (unlike this repo's other `*_fixtures.py`, this one calls the live groq-proxy path deliberately, since
-  a prompt's real behavior can't be verified by stubbing the LLM). Separate `NOTES_FORMATTER_SYSTEM_PROMPT`;
-  `build_notes_system_prompt(structure_detection, autotitle)` appends the checklist/structure-detection
-  and `TITLE:` rules only when those flags are on (see §Notes). `format_note(text, cfg, …)` returns
-  `{title, formatted_content}`; `_parse_note_response` peels a leading `TITLE:` line.
+  18 rules ("you are a TEXT FORMATTER, not an assistant") — rule 18 (MER-42, 2026-07; hardened MER-43,
+  2026-07) resolves spoken self-corrections to the final value ("ticket RBR 343, sorry, RBR 344" →
+  "ticket RBR 344") the same way the notes/meeting-notes prompts already did, but hardened for injected
+  dictation text: collapses only with an explicit repair cue (in any language — Roman-Urdu code-switching,
+  e.g. "nahi"/"sorry", is the v1-priority case) **+** a same-kind value swap **+** tight adjacency **+** no
+  nearby list grammar: bare adjacent numbers/ticket-IDs/phone numbers are **never** collapsed without an
+  explicit cue (fail-closed — keep both when unsure). Rule 18 is evaluated **before** rule 7's filler
+  stripping — MER-43 fixed a contradiction where rule 7 told the model to strip "I mean" as filler while
+  rule 18 relied on it as a repair cue. Also covers: multiple corrections in one breath resolve to the
+  LAST value; a correction can occur inside a real list without eating the other items; a cue word with
+  no candidate same-kind value nearby is ordinary content, not a repair (e.g. "I want to say sorry to the
+  team"); "and" directly before a repair cue is not a list veto ("343 and sorry 344" still collapses).
+  This is cleanup, not Transform — no new mode/gate, stays inside `SYSTEM_PROMPT`. Live-verified against
+  the real model via `whisperflow/self_correction_fixtures.py` (unlike this repo's other `*_fixtures.py`,
+  this one calls the live groq-proxy path deliberately, since a prompt's real behavior can't be verified
+  by stubbing the LLM) — covers the full content-type matrix (numbers, dates, currency, percentages,
+  names, places, emails, URLs, code identifiers), punctuation-shape invariance, hard/edge cases, and the
+  multilingual seed set (Roman-Urdu, Hindi, Spanish, French, Arabic). Separate
+  `NOTES_FORMATTER_SYSTEM_PROMPT`; `build_notes_system_prompt(structure_detection, autotitle)` appends the
+  checklist/structure-detection and `TITLE:` rules only when those flags are on (see §Notes).
+  `format_note(text, cfg, …)` returns `{title, formatted_content}`; `_parse_note_response` peels a leading
+  `TITLE:` line.
 - **Mobile:** `lib/groq.ts::formatText` (same `llama-3.3-70b-versatile`) — used on **retry** and where
-  screens call it. Mirrors desktop's self-correction rule (MER-42) in its own shorter prompt wording —
-  kept in sync deliberately, same discipline as the notes/meeting-notes prompts. `formatNotes` /
+  screens call it. Brought to full **logic parity** with desktop's self-correction rule in MER-43 (same
+  cue families, 4-part test, anti-cues, and-carve-out, asymmetry, punctuation-invariance, directionality —
+  terser prose, no dropped rules; MER-42 had shipped it with several gaps vs. desktop, closed in MER-43).
+  Kept in sync deliberately, same discipline as the notes/meeting-notes prompts — each file's rule 18 /
+  SELF-CORRECTIONS block carries a comment pointing at its counterpart. `formatNotes` /
   `formatNoteWithTitle(text, apiKey, {timeoutMs, detectStructure,
   withTitle})` are now **wired into the note editor** via `useNotes.saveDictation` (see §Notes) — mobile
   notes are no longer stored raw-only.
