@@ -90,6 +90,12 @@ check("apology cue collapses ticket number",
 check("REGRESSION (real user report, unpunctuated 'sorry' — no commas at all)",
       "Can you work on the ticket 343 sorry 353.",
       must_contain=[r"353"], must_not_contain=[r"343"])
+check("REGRESSION (real user report, 'and sorry' — 'and' must not trigger the list veto)",
+      "Today I would be working on ticket 343 and sorry 344.",
+      must_contain=[r"344"], must_not_contain=[r"343"])
+check("REGRESSION (real user report, Whisper fragments the repair into a false '?' sentence break)",
+      "Can you work on the ticket 343? Sorry, 353.",
+      must_contain=[r"353"], must_not_contain=[r"343"])
 check("explicit repair phrase 'I mean' collapses time",
       "Let's meet at 3, I mean 4, tomorrow.",
       must_contain=[r"\b4\b|four"], must_not_contain=[r"\b3\b(?!\s*(pm|am|:))|three"])

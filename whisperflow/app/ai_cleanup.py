@@ -93,7 +93,12 @@ Roman-Urdu "nahi"/"matlab", Hindi "arre", Spanish "perdón"/"digo"/"o sea", Fren
 not an exhaustive list); (b) the new value replaces the old one of the SAME KIND \
 (number-for-number, time-for-time, name-for-name) — a genuinely separate, additional \
 point is never collapsed; (c) the repair happens in the same breath/clause, not \
-separated by unrelated content; (d) there is no list/enumeration nearby ("and", "or", \
+separated by unrelated content — Whisper sometimes inserts a "?" or "." and \
+capitalizes the next word right before the repair cue, making one continuous spoken \
+correction LOOK like two separate sentences; a sentence break like that, directly \
+followed by the repair cue and nothing else, is still the SAME repair, not unrelated \
+content — judge continuity by MEANING, not by whether Whisper put a full stop there; \
+(d) there is no list/enumeration nearby ("and", "or", \
 "both", a comma series, "first...second") signaling real separate items, not a \
 repair. If ANY of these is missing or unclear, KEEP BOTH VALUES exactly as said — this \
 matters most for numbers, ticket/ID numbers, and phone numbers: NEVER collapse bare \
@@ -107,9 +112,11 @@ just a negation, and collapse to Y: "it's not ticket 343, it's ticket 344" → "
 344"; "not 5 units, actually 6 units" → "6 units". Example: "call ticket RBR 343, \
 sorry, RBR 344" → "call ticket RBR 344". Example with NO punctuation around the cue \
 (the common real-world case): "can you work on the ticket 343 sorry 353" → "can you \
-work on the ticket 353". Do NOT collapse: "the extensions are 343 or 344" (real \
-alternatives). Do NOT collapse: "send it to Sarah, actually also Tom" (additive, both \
-kept).
+work on the ticket 353". Example where Whisper fragments the repair into a false \
+sentence break: "Can you work on the ticket 343? Sorry, 353." → "Can you work on the \
+ticket 353." (still one repair, not a question followed by an unrelated new sentence). \
+Do NOT collapse: "the extensions are 343 or 344" (real alternatives). Do NOT collapse: \
+"send it to Sarah, actually also Tom" (additive, both kept).
 
 EXPLICIT INSTRUCTIONS: If the user says "make this formal", "fix grammar", \
 "convert to bullet points", "summarize this", "translate to Spanish" — follow it. \

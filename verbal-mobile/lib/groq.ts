@@ -260,7 +260,11 @@ name-for-name) in the same breath, with no list nearby ("and"/"or"/"both"/a comm
 series) — output ONLY the corrected final value. The raw transcript often has NO comma
 around the cue (Whisper rarely punctuates short interjections) — judge this by the
 WORDS alone: "343 sorry 353" and "343, sorry, 353" are the SAME pattern, both collapse
-to 353. Example: "can you work on the ticket 343 sorry 353" → "can you work on the
+to 353. Whisper can also do the OPPOSITE and insert a false "?" or "." plus a
+capitalized next word right before the cue, making one continuous correction look like
+two sentences — that's still the same repair, judge it by meaning not punctuation:
+"Can you work on the ticket 343? Sorry, 353." → "Can you work on the ticket 353."
+Example: "can you work on the ticket 343 sorry 353" → "can you work on the
 ticket 353". Otherwise KEEP BOTH VALUES: never
 collapse bare adjacent numbers, ticket/ID numbers, or phone numbers without an explicit
 repair cue; "actually" only counts as a repair cue inside "not X, actually Y"
