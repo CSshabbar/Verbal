@@ -681,6 +681,14 @@ default ON, Settings → Keyboard) — gates the feature without carrying any cl
 **What:** reshape text with an instruction instead of just dictating it. Master switch
 `transform_enabled` (default OFF) + per-mode flags, in Settings → Transform.
 
+Both modes share `transform._chat`, which is resilient like `process_text`: primary = Groq
+`llama-3.3-70b-versatile` via the shared proxy; on any failure (including Groq's **daily-token 429**)
+it retries the SAME `groq-proxy` against **Ollama Cloud** (`gpt-oss:120b`, `provider="ollama"`, model
+const `transform.OLLAMA_FALLBACK_MODEL`) — a separate quota with a server-held key (the same path
+meeting-notes uses, reversed order). So Transform keeps working when the shared Groq key is exhausted.
+Fully fail-closed — both down → `None` → "Couldn't transform, try again" (Mode B) / untouched text
+(Mode A).
+
 - **Mode A — inline (Capture):** end a dictation with *“…so Flume, make this formal”*. A free
   tail-gate (`transform.detect_trailing_instruction` — trigger homophones `transform_trigger_words`,
   ≥3-word body, instruction must START with an editing verb from `INSTRUCTION_VERBS`) splits body from

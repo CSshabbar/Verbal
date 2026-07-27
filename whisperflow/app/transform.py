@@ -128,13 +128,37 @@ def _strip_wrapping(out, original):
     return s
 
 
+# Ollama Cloud fallback model (open-weight, served via the same groq-proxy with
+# provider="ollama"). It's a SEPARATE quota from Groq with a server-held key, so it
+# survives Groq's daily-token cap — the same path meeting-notes already uses.
+OLLAMA_FALLBACK_MODEL = "gpt-oss:120b"
+
+
 def _chat(system, user, config, max_tokens=2048):
+    """Transform's LLM call. Primary = Groq llama-3.3 via the shared proxy; on any
+    failure (including Groq's daily-token 429) it retries the SAME proxy against
+    Ollama Cloud (provider="ollama") — a separate quota — so Transform keeps working
+    when the shared Groq key is exhausted. Returns text or None; fully fail-closed
+    (Mode B is outside the dictation core, so None just shows 'try again')."""
     from app.groq_proxy import chat_via_proxy
-    raw = chat_via_proxy(
-        [{"role": "system", "content": system},
-         {"role": "user", "content": user}],
-        config, max_tokens=max_tokens, timeout=30.0)
-    return raw
+    messages = [{"role": "system", "content": system},
+                {"role": "user", "content": user}]
+    try:
+        raw = chat_via_proxy(messages, config, max_tokens=max_tokens, timeout=30.0)
+        if (raw or "").strip():
+            return raw
+    except Exception as e:
+        logger.warning("transform Groq chat failed: %s", e)
+    # Fallback: Ollama Cloud (separate quota) — survives Groq daily-cap exhaustion.
+    try:
+        logger.info("transform: Groq empty/failed — falling back to Ollama %s", OLLAMA_FALLBACK_MODEL)
+        raw = chat_via_proxy(messages, config, model=OLLAMA_FALLBACK_MODEL,
+                             provider="ollama", max_tokens=max_tokens, timeout=60.0)
+        if (raw or "").strip():
+            return raw
+    except Exception as e:
+        logger.warning("transform Ollama fallback failed: %s", e)
+    return None
 
 
 def apply_instruction(text, instruction, config):
