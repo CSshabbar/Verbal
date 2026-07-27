@@ -433,6 +433,14 @@
   body rows). `MdView` uses an **index loop, not `forEach`** — table rendering must look ahead and
   skip consumed rows. Truth discipline is unchanged: never invent numbers/names; compute only
   derived values the speakers implied; OUTPUT LANGUAGE is computed in code, never judged by the LLM.
+- **`MdView` table columns must NOT be equal `flex:1`.** Desktop's `<table>` auto-sizes columns to
+  content; RN has no equivalent, so equal-flex crushed asymmetric columns (e.g. a one-word
+  "Duration" column next to a long "Notes" column) into an unreadable wrapped mess — this is what
+  "tables don't format correctly on mobile" meant in practice, not a parse failure (parsing was
+  already correct). Fixed by computing a per-column width from `max(header, body cells)` length
+  (clamped 76–200px) and wrapping the table in a horizontal `ScrollView`. Any future table-style
+  tweak must keep both the content-aware widths and the horizontal scroll — reverting to `flex:1`
+  reintroduces the bug.
 
 ### Transform rules (TRANSFORM_SWARM.md)
 

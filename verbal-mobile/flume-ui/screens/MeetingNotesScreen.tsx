@@ -73,27 +73,36 @@ function MdView({ md }: { md: string }) {
         body.push(rowCells(lines[j].trim()));
         j++;
       }
+      // Content-aware column widths (equal flex crushes asymmetric columns —
+      // e.g. "Duration"="2 yrs" vs "Notes"="Public, German B2 required" — into
+      // an unreadable equal split). Horizontal scroll covers the overflow.
+      const colWidths = header.map((h, k) => {
+        const maxLen = Math.max(h.length, ...body.map((row) => (row[k] ?? '').length));
+        return Math.max(76, Math.min(200, maxLen * 6.5 + 28));
+      });
       out.push(
-        <View key={i} style={styles.table}>
-          <View style={styles.trHead}>
-            {header.map((c, k) => (
-              <View key={k} style={styles.cell}>
-                <Text variant="metaSm" color={colors.primaryAccent} style={styles.th}>
-                  {c.toUpperCase()}
-                </Text>
-              </View>
-            ))}
-          </View>
-          {body.map((cells, r) => (
-            <View key={r} style={[styles.tr, r === body.length - 1 && styles.trLast]}>
-              {header.map((_, k) => (
-                <View key={k} style={styles.cell}>
-                  <Inline text={cells[k] ?? ''} />
+        <ScrollView key={i} horizontal showsHorizontalScrollIndicator={false} style={styles.table}>
+          <View>
+            <View style={styles.trHead}>
+              {header.map((c, k) => (
+                <View key={k} style={[styles.cell, { width: colWidths[k] }]}>
+                  <Text variant="metaSm" color={colors.primaryAccent} style={styles.th}>
+                    {c.toUpperCase()}
+                  </Text>
                 </View>
               ))}
             </View>
-          ))}
-        </View>,
+            {body.map((cells, r) => (
+              <View key={r} style={[styles.tr, r === body.length - 1 && styles.trLast]}>
+                {header.map((_, k) => (
+                  <View key={k} style={[styles.cell, { width: colWidths[k] }]}>
+                    <Inline text={cells[k] ?? ''} />
+                  </View>
+                ))}
+              </View>
+            ))}
+          </View>
+        </ScrollView>,
       );
       first = false;
       i = j - 1;
@@ -324,7 +333,7 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
   },
   trLast: { borderBottomWidth: 0 },
-  cell: { flex: 1, paddingRight: 10 },
+  cell: { paddingRight: 14 },
   th: { letterSpacing: 1, lineHeight: 15 },
 });
 
