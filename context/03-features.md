@@ -274,9 +274,22 @@ Each feature: **what it does · desktop impl · mobile impl · backend · status
 - **What:** history/notes/canvas kept in sync across your signed-in devices; all keyed by `user_id`.
 - **Desktop:** `sync.py::SyncClient` — Phoenix WebSocket to Supabase Realtime, subscribes to
   `transcriptions` INSERTs filtered by `user_id`, skips own inserts, honors `target_device_id`; `push()`
-  inserts via REST; heartbeat upsert into `devices` every 60 s; `fetch_devices` = others seen in last 5 min.
-  On receive, `main._on_sync_receive` copies+pastes into the focused app + overlay toast. Push targeting
-  from `dashboard._target_device_id` (`__all__`/`__none__`/specific).
+  inserts via REST; heartbeat upsert into `devices` every 60 s. On receive, `main._on_sync_receive`
+  copies+pastes into the focused app + overlay toast. Push targeting from `dashboard._target_device_id`
+  (`__all__`/`__none__`/specific).
+- **Devices LIST vs sync-target (fixed Jul 2026):** the dashboard "Paired devices" list is built from
+  `sync.fetch_account_devices(user_id)` — **every** device on the account, each with an `online` flag
+  (`last_seen` within 5 min) — NOT `fetch_devices` (which returns only the last-5-min set and is now kept
+  only for the sign-in "is another device online right now?" detection). Both desktop hosts
+  (`flume_web_dashboard._load_devices`, `shared_dashboard._load_devices`) list devices whenever **signed
+  in** — no longer gated on the live `SyncClient` (`self.app._sync`), which previously forced the list
+  EMPTY whenever content-sync wasn't actively running (so a signed-in-but-sync-off Mac showed no devices
+  and, because it never heartbeat, was invisible to the phone). Those loops now also call
+  `sync.register_device_presence(...)` every 30 s so a device shows **online** to others while its
+  dashboard is open, independent of the content-sync toggle. Mobile's `DevicesScreen` already used the
+  account-wide `fetchAccountDevices` (shows offline devices + a per-device sync switch), so this brings
+  desktop to parity. Root cause of "phone and Mac can't see each other": the list was a live-only,
+  sync-loop-gated view, not a persistent account-devices view.
 - **Mobile:** `flume-ui/hooks/historyStore.ts` — local AsyncStorage cache is source of truth; realtime
   channel `verbal_history_${userId}` merges remote INSERTs (skips own, respects `target_device_id`).
   `useDevices` heartbeats every 60 s; sync gated by `getSyncEnabled()`.

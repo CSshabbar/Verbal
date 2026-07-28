@@ -330,12 +330,23 @@ class FlumeWebDashboard:
     def _load_devices(self):
         cfg = self.app.config
         user_id = cfg.get("sync_user_id", "")
-        if not user_id or not getattr(self.app, "_sync", None):
+        # List devices whenever SIGNED IN — do NOT gate on the live SyncClient.
+        # A signed-in Mac with sync toggled off still has an account and must show
+        # its other devices (and itself must show online to them), or the two apps
+        # never see each other. (Was: `not user_id or not self.app._sync` → empty.)
+        if not user_id:
+            self._known_devices = []
+            self._refresh()
             return
         try:
-            from app.sync import fetch_devices
-            device_id = self.app._sync.device_id if self.app._sync else ""
-            self._known_devices = fetch_devices(user_id, device_id) or []
+            import platform
+            from app.sync import fetch_account_devices, register_device_presence
+            my_id = self.app._sync.device_id if getattr(self.app, "_sync", None) else platform.node()
+            # Heartbeat our own presence so other devices see this Mac ONLINE even
+            # when content-sync isn't running (runs every 30s off this loop).
+            register_device_presence(user_id, my_id, cfg.get("sync_device_name") or platform.node())
+            # ALL account devices (online + offline), not just the last-5-min set.
+            self._known_devices = fetch_account_devices(user_id, my_id) or []
             self._refresh()
         except Exception as e:
-            logger.debug("fetch_devices failed: %s", e)
+            logger.debug("load_devices failed: %s", e)

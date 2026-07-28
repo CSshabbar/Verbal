@@ -262,8 +262,75 @@ class SyncClient:
                 pass
 
 
+def register_device_presence(user_id: str, device_id: str, device_name: str) -> None:
+    """Lightweight presence upsert — refresh THIS device's last_seen so other
+    devices see it online, INDEPENDENT of whether the content-sync SyncClient is
+    running (being signed in is enough). Called off the dashboard's device-refresh
+    loop. Best-effort / fail-closed."""
+    if not user_id or not device_id:
+        return
+    from app.auth import auth_header
+    import datetime
+    try:
+        httpx.post(
+            f"{REST_URL}/devices?on_conflict=user_id,device_id",
+            headers={**auth_header(json=True),
+                     "Prefer": "return=minimal,resolution=merge-duplicates"},
+            json={"user_id": user_id, "device_id": device_id,
+                  "device_name": device_name or device_id, "device_type": PLATFORM,
+                  "last_seen": datetime.datetime.now(datetime.timezone.utc).isoformat()},
+            timeout=5,
+        )
+    except Exception as e:
+        logger.debug(f"register_device_presence error: {e}")
+
+
+def fetch_account_devices(user_id: str, exclude_device_id: str = "") -> list:
+    """ALL devices on the account, each tagged with an ``online`` flag (last_seen
+    within 5 min) — NOT just the last-5-min set that ``fetch_devices`` returns.
+
+    This backs the "your devices" list: a device must stay VISIBLE even when its
+    heartbeat is stale (app closed / sync off), or two apps can't see each other
+    unless both are actively syncing right now. Optionally excludes the current
+    device. Fail-closed to []."""
+    from app.auth import auth_header
+    import datetime
+    try:
+        params = {
+            "user_id": f"eq.{user_id}",
+            "select":  "device_id,device_name,device_type,last_seen",
+            "order":   "last_seen.desc",
+        }
+        if exclude_device_id:
+            params["device_id"] = f"neq.{exclude_device_id}"
+        resp = httpx.get(f"{REST_URL}/devices", headers=auth_header(), params=params, timeout=5)
+        if resp.status_code != 200:
+            return []
+        now = datetime.datetime.now(datetime.timezone.utc)
+        rows = resp.json() or []
+        for d in rows:
+            ls = d.get("last_seen")
+            online = False
+            if ls:
+                try:
+                    t = datetime.datetime.fromisoformat(str(ls).replace("Z", "+00:00"))
+                    if t.tzinfo is None:
+                        t = t.replace(tzinfo=datetime.timezone.utc)
+                    online = (now - t).total_seconds() < 300
+                except Exception:
+                    online = False
+            d["online"] = online
+        return rows
+    except Exception as e:
+        logger.error(f"fetch_account_devices error: {e}")
+        return []
+
+
 def fetch_devices(user_id: str, exclude_device_id: str) -> list:
-    """Fetch all devices for this user except the current one (seen in last 5 min)."""
+    """Fetch all devices for this user except the current one (seen in last 5 min).
+
+    Kept for the sign-in "is another device online right now?" detection; the
+    dashboard device LIST uses fetch_account_devices (which also shows offline)."""
     from app.auth import auth_header
     try:
         import datetime

@@ -176,7 +176,11 @@ reproduce exactly what the live DB already had — **not** a behavior change; se
 `device_name` text · `device_type` text default `'mac'` (`mac`/`win`/`ios`) · `last_seen` timestamptz
 default `now()` · **`sync_enabled`** bool default `true` (read/written by mobile `lib/deviceSync.ts` to
 gate per-device sync). Unique index `(user_id, device_id)` (the upsert conflict target). "Online" =
-`last_seen` within 5 min. In the realtime publication.
+`last_seen` within 5 min. In the realtime publication. The desktop device LIST reads
+`sync.fetch_account_devices` (ALL rows for the `user_id`, each tagged `online`), not `fetch_devices` (last
+5 min only) — and desktop hosts call `sync.register_device_presence` off their 30 s refresh loop so a
+signed-in device heartbeats presence even when the content-sync `SyncClient` isn't running (Jul 2026 fix
+for "phone and Mac can't see each other").
 
 **`canvas`** — one shared row/user. `id` uuid PK (`gen_random_uuid()` default) · `user_id` text ·
 `content` text default `''` · `device_name` text default `''` · `updated_at` timestamptz default `now()` ·

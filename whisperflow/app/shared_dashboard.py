@@ -243,12 +243,18 @@ class SharedDashboard:
     def _load_devices(self):
         cfg = self.app.config
         user_id = cfg.get("sync_user_id", "")
-        if not user_id or not self.app._sync:
+        # List devices whenever SIGNED IN — not gated on the live SyncClient, so a
+        # signed-in-but-sync-off device still shows its account's other devices and
+        # heartbeats its own presence (mirrors flume_web_dashboard._load_devices).
+        if not user_id:
             self._known_devices = []
             return
-        from app.sync import fetch_devices
+        import platform
+        from app.sync import fetch_account_devices, register_device_presence
 
-        devices = fetch_devices(user_id, self.app._sync.device_id)
+        my_id = self.app._sync.device_id if getattr(self.app, "_sync", None) else platform.node()
+        register_device_presence(user_id, my_id, cfg.get("sync_device_name") or platform.node())
+        devices = fetch_account_devices(user_id, my_id)
         self._known_devices = devices
         # Ensure our target_device_id is still valid if it was a specific device
         if self._target_device_id not in ("__all__", "__none__") and self._target_device_id is not None:

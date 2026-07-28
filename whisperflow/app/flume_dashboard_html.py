@@ -43,7 +43,7 @@ _CSS = """
 :root{--bg:#0e1012;--chrome:#0a0c0e;--card:#17191c;--tx:#f2f2f2;--mut:rgba(240,240,240,.55);--sub:rgba(240,240,240,.42);--acc:#C85A3E;--acc-soft:rgba(200,90,62,.14);--acc-bd:rgba(200,90,62,.35);--bd:rgba(240,240,240,.06);--bd2:rgba(240,240,240,.1);--on:#4ad15a}
 html,body{height:100%}
 body{background:var(--bg);font-family:'Geist',-apple-system,system-ui,sans-serif;color:var(--tx);-webkit-font-smoothing:antialiased;overflow:hidden}
-.app{display:grid;grid-template-columns:196px minmax(0,1fr);height:100vh}
+.app{display:grid;grid-template-columns:196px minmax(0,1fr);grid-template-rows:100vh;height:100vh;overflow:hidden}
 /* ── sign-in (two-pane) ── */
 #signin{position:fixed;inset:0;z-index:50;background:var(--bg);display:grid;grid-template-columns:1fr 1fr}
 #signin[hidden]{display:none}
@@ -106,8 +106,12 @@ body{background:var(--bg);font-family:'Geist',-apple-system,system-ui,sans-serif
 .avatar{width:30px;height:30px;border-radius:50%;background:var(--acc);color:#fff5ea;display:flex;align-items:center;justify-content:center;font:600 13px 'Geist'}
 .uname{font:600 13px 'Geist'}
 .ficon{background:transparent;border:0;color:var(--mut);cursor:pointer;padding:4px;display:flex}.ficon svg{width:16px;height:16px}.ficon.push{margin-left:auto}.ficon:hover{color:var(--tx)}
-.main{padding:24px 28px;height:100%;overflow-y:auto;overflow-x:hidden}
+.main{padding:24px 28px;height:100%;min-height:0;overflow-y:auto;overflow-x:hidden;overscroll-behavior:contain}
 .screen[hidden]{display:none}
+/* The visible screen fills the grid row; min-height:0 lets the inner .main be the
+   real scroller (without this the height chain can collapse to content height and
+   body{overflow:hidden} clips everything past the fold — e.g. after Meetings). */
+.screen{height:100%;min-height:0;overflow:hidden}
 .mhead{display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:24px}
 .eyebrow{font:400 11px 'Geist';color:var(--mut);margin-bottom:5px}
 .title{font:600 24px 'Geist';letter-spacing:-.01em}
@@ -1238,7 +1242,7 @@ function renderDevices(){
   const cards = devs.map(d=>`
     <div class="dcard"><div class="dtile">${SVG.phone}</div>
       <div class="dinfo"><div class="dname">${esc(d.device_name||'Device')}</div>
-      <div class="dmeta">${esc(d.device_type||'')}${d.last_seen?' · '+esc(String(d.last_seen)):''}</div></div>
+      <div class="dmeta">${esc(d.device_type||'')}</div></div>
       <span class="statpill ${d.online?'on':'offl'}"><span class="pdot"></span>${d.online?'Online':'Offline'}</span></div>`).join('')
     || '<div class="empty">No paired devices yet. Tap “Pair a device”.</div>';
   const pairBtn = PAIR.active ? '' :

@@ -547,6 +547,16 @@
     still applies on both. **MER-44 Phases 1–2 (fine-tuned model, flywheel, implicit correction) are NOT
     built** — gated on a serving-provider dependency + a plateau signal; do not start them without that.
 
+23. **Dashboard scroll (`flume_dashboard_html.py`): the scroller is the per-screen `.main`, and its height
+    chain must stay pinned.** `body{overflow:hidden}` (intentional — body never scrolls); each visible
+    `section.screen` fills the grid, and `.main{height:100%;overflow-y:auto}` is the actual scroller. This
+    only works if the chain resolves to the viewport: `.app` sets `grid-template-rows:100vh`, `.screen`
+    sets `height:100%;min-height:0`, and `.main` sets `min-height:0`. If you drop the pinned row / screen
+    height, WebKit can size the auto grid row to content, `.main` never engages `overflow-y`, and
+    everything past the fold is clipped by `body{overflow:hidden}` — the "can't scroll after the meetings
+    section" bug (Jul 2026). Also keep `overscroll-behavior:contain` on `.main` (kills the rubber-band
+    "resistance" at the scroll boundary in the WKWebView).
+
 ## Design system (Flume)
 
 Single source: desktop `app/theme.py` + `app/fonts_css.py`; mobile `flume-ui/theme/`. Also
