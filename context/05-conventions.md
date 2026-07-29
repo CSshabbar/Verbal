@@ -557,6 +557,18 @@
     section" bug (Jul 2026). Also keep `overscroll-behavior:contain` on `.main` (kills the rubber-band
     "resistance" at the scroll boundary in the WKWebView).
 
+24. **A dead refresh token must fall back to the anon key, never send an expired JWT (`auth.py`).** When
+    `_refresh_access_token` gets a 400/401/403 from the token endpoint (invalid_grant /
+    `refresh_token_not_found` — the session is unrecoverable), it MUST return `None` (so `auth_header`
+    uses the anon key, which works under the current `USING (true)` RLS) and drop the dead tokens, NOT
+    return the stale `access_token`. The old code returned the expired token, so every authed REST read
+    401'd silently — which manifested as **"can't open meeting notes"** (`get_meeting`'s cloud fetch 401'd
+    → fell back to local metadata that has no `notes_md`/`transcript` → notes regeneration failed), an
+    empty device list, and dead dictionary sync. A module-level `_dead_session` flag short-circuits further
+    refresh attempts within the process (some callers pass an in-memory config that still holds the stale
+    tokens); a fresh `_store_session` resets it. This is safe only because RLS is still permissive — when
+    RLS tightens to `auth.uid()`, a dead session must instead force re-authentication.
+
 ## Design system (Flume)
 
 Single source: desktop `app/theme.py` + `app/fonts_css.py`; mobile `flume-ui/theme/`. Also

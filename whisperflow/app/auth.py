@@ -37,6 +37,10 @@ REDIRECT_PORT = 8765
 REDIRECT_URI = f"http://localhost:{REDIRECT_PORT}/callback"
 AUTH_BASE = f"{SUPABASE_URL}/auth/v1"
 _refresh_lock = threading.Lock()
+# Set once a refresh definitively fails (dead refresh token) so we stop firing a
+# doomed refresh before every authed call — even when a caller passes an in-memory
+# config that still holds the stale tokens. Reset on a fresh sign-in.
+_dead_session = False
 
 _DONE_PAGE = (
     "<!doctype html><html><head><meta charset='utf-8'><title>Flume</title></head>"
@@ -179,6 +183,8 @@ def _store_session(session):
             import platform
             cfg["sync_device_name"] = platform.node()
     save_config(cfg)
+    global _dead_session
+    _dead_session = False   # a fresh session revives authed calls
     logger.info("Signed in as %s", auth.get("email"))
     return auth
 
@@ -276,6 +282,9 @@ def _refresh_access_token(cfg: dict) -> str | None:
     None if signed out. Never raises — falls back to the last-known token (or
     None) on any refresh error, so a network hiccup degrades to "try the old
     token" rather than breaking the caller."""
+    global _dead_session
+    if _dead_session:
+        return None   # refresh token already proven dead this session → use anon
     auth = cfg.get("auth") or {}
     access_token = auth.get("access_token")
     if not access_token:
@@ -301,6 +310,28 @@ def _refresh_access_token(cfg: dict) -> str | None:
             )
             if resp.status_code != 200:
                 logger.warning("Token refresh failed (%s): %s", resp.status_code, resp.text[:200])
+                # A 400/401/403 means the refresh token is permanently dead
+                # (invalid_grant / refresh_token_not_found) — the session is
+                # unrecoverable. DROP the unusable tokens and return None so
+                # auth_header() falls back to the anon key (which works under the
+                # current permissive `USING (true)` RLS) instead of sending a
+                # KNOWN-EXPIRED JWT that 401s every authed read — which silently
+                # broke opening meeting notes (cloud row fetch 401 → local
+                # metadata has no notes_md/transcript → "can't open notes"), the
+                # device list, and dictionary sync. Dropping the tokens also stops
+                # a failing 10s refresh from firing before EVERY authed call.
+                # sync_user_id is kept, so user_id-keyed reads/writes keep working;
+                # the user can re-sign-in for a fresh session.
+                if resp.status_code in (400, 401, 403):
+                    _dead_session = True
+                    try:
+                        for k in ("access_token", "refresh_token", "expires_at"):
+                            auth2.pop(k, None)
+                        cfg2["auth"] = auth2
+                        save_config(cfg2)
+                    except Exception:
+                        pass
+                    return None
                 return auth2.get("access_token", access_token)
             session = resp.json()
             auth2["access_token"] = session.get("access_token", auth2.get("access_token"))
