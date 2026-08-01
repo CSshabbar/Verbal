@@ -9,9 +9,11 @@ import hashlib
 import logging
 import os
 import platform
+import shutil
 import subprocess
 import sys
 import tempfile
+import time
 
 import httpx
 
@@ -60,6 +62,21 @@ def check_for_update() -> dict | None:
         return None
 
 
+_KNOWN_SUFFIXES = (".exe", ".dmg", ".AppImage", ".deb", ".rpm", ".tar.gz", ".tar.xz", ".zip")
+
+_DEFAULT_SUFFIX = {"win": ".exe", "mac": ".dmg", "linux": ".AppImage"}
+
+
+def _artifact_suffix(url: str) -> str:
+    """Pick the temp-file suffix from the artifact URL, falling back per platform."""
+    from urllib.parse import urlparse
+    path = urlparse(url).path
+    for suffix in _KNOWN_SUFFIXES:
+        if path.endswith(suffix):
+            return suffix
+    return _DEFAULT_SUFFIX.get(PLATFORM, "")
+
+
 def download_update(version_info: dict, on_progress=None) -> str | None:
     """Download the installer to a temp file. Returns local path or None."""
     max_retries = 3
@@ -69,7 +86,10 @@ def download_update(version_info: dict, on_progress=None) -> str | None:
             expected_hash = version_info.get("file_hash")
             total_size = version_info.get("file_size", 0)
 
-            suffix = ".exe" if PLATFORM == "win" else ".dmg"
+            # Derive from the URL where possible — Linux artifacts are .AppImage/.deb/
+            # .tar.gz, and defaulting everything non-Windows to .dmg gave Linux a macOS
+            # disk image it could never install.
+            suffix = _artifact_suffix(url)
             fd, tmp_path = tempfile.mkstemp(suffix=suffix)
             os.close(fd)
 
@@ -114,6 +134,23 @@ def install_update(file_path: str, silent: bool = False):
             args,
             creationflags=0x00000008 | 0x00000200,  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
         )
+    elif PLATFORM == "linux":
+        # There is no "run the installer" story on Linux: an AppImage is the app, and a
+        # .deb needs a privileged package manager we must not invoke silently. Hand the
+        # file to the desktop and let the user decide.
+        if file_path.endswith(".AppImage"):
+            try:
+                os.chmod(file_path, 0o755)
+            except Exception as e:
+                logger.warning(f"Could not mark AppImage executable: {e}")
+        opener = shutil.which("xdg-open") or shutil.which("gio")
+        if not opener:
+            logger.error(f"No xdg-open available; update left at {file_path}")
+            return
+        args = [opener, "open", file_path] if opener.endswith("gio") else [opener, file_path]
+        subprocess.Popen(args, start_new_session=True)
+        logger.info(f"Handed update to the desktop: {file_path}")
+        return   # do NOT exit — nothing has been installed yet
     else:
         subprocess.Popen(["open", file_path])
     sys.exit(0)

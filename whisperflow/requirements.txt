@@ -3,9 +3,8 @@ pynput>=1.7.6
 sounddevice>=0.4.6
 soundfile>=0.12.0
 numpy>=1.24.0
-# faster-whisper is optional - only needed for offline transcription
-# Install separately if needed: pip install faster-whisper
-# Note: May have dependency conflicts on Python 3.14+
+scipy>=1.11.0
+faster-whisper>=1.0.0
 groq>=0.9.0
 google-generativeai>=0.7.0
 pyperclip>=1.8.2
@@ -17,3 +16,4 @@ httpx>=0.27.0
 pystray>=0.19.5
 pywebview>=5.3
 pyobjc-framework-WebKit; sys_platform == 'darwin'
+anthropic>=0.30.0

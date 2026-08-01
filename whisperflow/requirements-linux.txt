@@ -1,0 +1,39 @@
+# Linux runtime + build dependencies.
+#
+# requirements.txt is NOT sufficient for Linux: it omits scipy (imported at module scope by
+# app/recorder.py) and comments out faster-whisper, so a clean build fails on the first
+# import of the recording path.
+#
+# SYSTEM packages are required too — install these BEFORE pip, and create the venv with
+# --system-site-packages so PyGObject is visible to it:
+#
+#   sudo apt install -y \
+#       python3-gi gir1.2-ayatanaappindicator3-0.1 gir1.2-webkit2-4.1 \
+#       python3-tk libportaudio2 xdotool xclip wl-clipboard
+#   python3 -m venv --system-site-packages .venv
+#
+# Why each system package: python3-gi + appindicator GIR = a tray icon that actually docks
+# on GNOME/Wayland (without it pystray falls back to _xorg, which has NO menu); webkit2 GIR
+# = the pywebview GTK backend for the dashboard; python3-tk = the status overlay;
+# libportaudio2 = sounddevice; xdotool/xclip = paste + clipboard; wl-clipboard = native
+# Wayland clipboard (pyperclip prefers it automatically once wl-copy AND wl-paste exist).
+
+pynput>=1.7.6
+sounddevice>=0.4.6
+soundfile>=0.12.0
+numpy>=1.24.0
+scipy>=1.11.0
+faster-whisper>=1.0.0
+groq>=0.9.0
+google-generativeai>=0.7.0
+pyperclip>=1.8.2
+pyautogui>=0.9.54
+python-dotenv>=1.0.0
+Pillow>=10.0.0
+websocket-client>=1.6.0
+httpx>=0.27.0
+pystray>=0.19.5
+pywebview>=5.3
+
+# Build only
+pyinstaller>=6.0

@@ -430,7 +430,7 @@ class VerbalWinApp:
     def _on_esc_pressed(self):
         if self._processing:
             self._cancel_flag.set()
-            self._reset_to_ready()
+            self._reset_to_ready(preserve_processing=True)
         elif self._is_recording:
             self._cancel_recording()
 
@@ -465,7 +465,8 @@ class VerbalWinApp:
         self._update_tray_menu()
         self.dashboard.update_recording_state(False)
 
-        if audio is None or len(audio) < 8000: # 0.5s at 16kHz
+        min_samples = int(0.5 * self.recorder.sample_rate)
+        if audio is None or len(audio) < min_samples:
             self.overlay.hide()
             return
 
@@ -537,10 +538,12 @@ class VerbalWinApp:
         finally:
             self._processing = False
 
-    def _reset_to_ready(self):
-        self._processing = False
+    def _reset_to_ready(self, preserve_processing=False):
+        if not preserve_processing:
+            self._processing = False
         self._is_recording = False
-        self._cancel_flag.clear()
+        # Keep an ESC cancellation visible to the worker until the next recording.
+        # preserve_processing also blocks that next recording until worker.finally.
         try:
             self.recorder.cleanup()
         except Exception as e:

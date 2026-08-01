@@ -440,7 +440,7 @@ class VerbalApp(rumps.App):
         if self._processing:
             logger.info("ESC - cancelling transcription")
             self._cancel_flag.set()
-            self._on_main(self._reset_to_ready)
+            self._on_main(lambda: self._reset_to_ready(preserve_processing=True))
         elif self._is_recording:
             logger.info("ESC - cancelling recording")
             self._on_main(self._cancel_recording)
@@ -732,11 +732,13 @@ class VerbalApp(rumps.App):
         except Exception as e:
             logger.debug("autolearn result failed: %s", e)
 
-    def _reset_to_ready(self):
+    def _reset_to_ready(self, preserve_processing=False):
         try:
-            self._processing = False
+            if not preserve_processing:
+                self._processing = False
             self._is_recording = False
-            self._cancel_flag.clear()
+            # Keep an ESC cancellation visible to the worker until the next recording.
+            # preserve_processing also blocks that next recording until worker.finally.
             self.status_item.title = self._status_text()
             self.overlay.hide()
             if os.path.exists(ICON_PATH):

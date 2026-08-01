@@ -1,5 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
 import os
+from app.config import APP_VERSION
 
 block_cipher = None
 
@@ -96,6 +97,7 @@ app = BUNDLE(
         'NSMicrophoneUsageDescription': 'Verbal needs microphone access for voice dictation.',
         'NSAccessibilityUsageDescription': 'Verbal needs accessibility access to inject text into apps.',
         'LSUIElement': False,
-        'CFBundleShortVersionString': '1.3.0',
+        'CFBundleShortVersionString': APP_VERSION,
+        'CFBundleVersion': APP_VERSION,
     },
 )

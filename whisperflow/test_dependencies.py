@@ -4,18 +4,19 @@ test_dependencies.py - Test script to verify all dependencies are available
 """
 
 import sys
-import traceback
+import platform
 
-def test_import(module_name):
+def test_import(label, module_name=None):
+    module_name = module_name or label
     try:
         __import__(module_name)
-        print(f"✓ {module_name}")
+        print(f"✓ {label} ({module_name})" if label != module_name else f"✓ {label}")
         return True
     except ImportError as e:
-        print(f"✗ {module_name} - {e}")
+        print(f"✗ {label} ({module_name}) - {e}" if label != module_name else f"✗ {label} - {e}")
         return False
     except Exception as e:
-        print(f"? {module_name} - {e}")
+        print(f"? {label} ({module_name}) - {e}" if label != module_name else f"? {label} - {e}")
         return False
 
 def main():
@@ -24,27 +25,33 @@ def main():
     
     # Core dependencies
     deps = [
-        "faster_whisper",
-        "ctranslate2",
-        "sounddevice",
-        "soundfile",
-        "numpy",
-        "groq",
-        "google.generativeai",
-        "pyperclip",
-        "pyautogui",
-        "PIL",
-        "websocket",
-        "httpx",
-        "pystray",
-        "pywebview",
-        "pynput",
-        "rumps",  # Mac only, might fail on Windows
+        ("faster-whisper", "faster_whisper"),
+        ("ctranslate2", "ctranslate2"),
+        ("sounddevice", "sounddevice"),
+        ("soundfile", "soundfile"),
+        ("numpy", "numpy"),
+        ("groq", "groq"),
+        ("google-generativeai", "google.generativeai"),
+        ("pyperclip", "pyperclip"),
+        ("pyautogui", "pyautogui"),
+        ("Pillow", "PIL"),
+        ("websocket-client", "websocket"),
+        ("httpx", "httpx"),
+        ("pystray", "pystray"),
+        # pywebview is the distribution name; its importable package is `webview`.
+        ("pywebview", "webview"),
+        ("pynput", "pynput"),
     ]
+    system = platform.system()
+    if system == "Darwin":
+        deps.append(("rumps", "rumps"))
+    elif system == "Linux":
+        # recorder.py imports scipy at module scope on Linux too.
+        deps.append(("scipy", "scipy"))
     
     failed = 0
-    for dep in deps:
-        if not test_import(dep):
+    for label, module_name in deps:
+        if not test_import(label, module_name):
             failed += 1
     
     print("=" * 40)

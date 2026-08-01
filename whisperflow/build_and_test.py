@@ -84,7 +84,7 @@ def test_dependencies():
         "websocket",
         "httpx",
         "pystray",
-        "pywebview",
+        "webview",  # distribution name is pywebview
         "pynput"
     ]
     

@@ -1,0 +1,22 @@
+[Desktop Entry]
+Type=Application
+Name=Verbal
+GenericName=Voice Dictation
+Comment=Voice to text, instantly
+Exec=verbal
+Icon=verbal
+Terminal=false
+Categories=Utility;Accessibility;AudioVideo;
+Keywords=dictation;voice;speech;transcription;whisper;
+StartupNotify=false
+# The app lives in the system tray; it has no primary window of its own.
+NoDisplay=false
+Actions=Toggle;Dashboard;
+
+[Desktop Action Toggle]
+Name=Toggle dictation
+Exec=verbal --toggle
+
+[Desktop Action Dashboard]
+Name=Open Verbal
+Exec=verbal --show

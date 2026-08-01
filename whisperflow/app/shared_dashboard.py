@@ -1206,7 +1206,7 @@ async function notesTogglePin(id){ const r=await api('toggle_note_pin',id); if(r
 async function notesAiFormat(){
   const ta=$('noteContent'); if(!ta||!ta.value.trim())return;
   const original=ta.value; ta.value='Formatting with AI...'; ta.disabled=true;
-  const r=await api('format_note_with_ai',ta.value);
+  const r=await api('format_note_with_ai',original);
   if(r.ok&&r.content) ta.value=r.content; else ta.value=original;
   ta.disabled=false;
 }

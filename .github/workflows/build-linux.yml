@@ -1,0 +1,75 @@
+name: Build Linux Binary
+
+# Manual only, matching build-windows-exe.yml. The Linux artifact has no release channel
+# yet (release.sh rejects any platform that isn't mac/win), so this builds and smoke-tests
+# rather than publishing.
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'whisperflow/app/linux_*.py'
+      - 'whisperflow/verbal-linux.spec'
+      - 'whisperflow/build-linux.sh'
+      - 'whisperflow/requirements-linux.txt'
+      - '.github/workflows/build-linux.yml'
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          # PyGObject + the appindicator/webkit typelibs are what make the tray dock and the
+          # dashboard open; python3-tk backs the overlay; portaudio backs sounddevice.
+          sudo apt-get install -y \
+            python3-gi python3-gi-cairo gir1.2-gtk-3.0 \
+            gir1.2-ayatanaappindicator3-0.1 gir1.2-webkit2-4.1 \
+            python3-tk libportaudio2 xdotool xclip wl-clipboard \
+            libcairo2-dev libgirepository1.0-dev
+
+      - name: Create venv with system site-packages
+        working-directory: whisperflow
+        run: |
+          # --system-site-packages is REQUIRED: gi only ever installs system-wide, and
+          # without it pystray falls back to a backend with no menu support.
+          python3 -m venv --system-site-packages .venv
+          .venv/bin/python -m pip install --upgrade pip
+          .venv/bin/python -m pip install -r requirements-linux.txt
+
+      - name: Verify the Linux-critical backends resolve
+        working-directory: whisperflow
+        run: |
+          .venv/bin/python -c "import gi; print('gi:', gi.__file__)"
+          .venv/bin/python -c "import pystray; print('tray:', pystray.Icon.__module__, pystray.Icon.HAS_MENU); assert pystray.Icon.HAS_MENU"
+          .venv/bin/python -c "import importlib; print('webview:', importlib.import_module('webview.guilib').initialize().__name__)"
+
+      - name: Compile and import the Linux shell
+        working-directory: whisperflow
+        run: |
+          .venv/bin/python -m py_compile app/linux_main.py app/linux_overlay.py app/linux_injector.py
+          .venv/bin/python -c "import app.linux_main, app.linux_overlay, app.linux_injector; print('imports OK')"
+
+      - name: CLI smoke test (no running instance)
+        working-directory: whisperflow
+        run: |
+          .venv/bin/python -m app.linux_main --help
+          # Expected to fail: nothing is listening. Asserts the client path doesn't traceback.
+          .venv/bin/python -m app.linux_main --ping && echo "unexpected: ping succeeded" && exit 1 || echo "ping correctly reported not-running"
+
+      - name: Build with PyInstaller
+        working-directory: whisperflow
+        run: |
+          .venv/bin/python -m PyInstaller verbal-linux.spec --clean --noconfirm
+          ls -lh dist/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: verbal-linux
+          path: whisperflow/dist/Verbal
+          if-no-files-found: error

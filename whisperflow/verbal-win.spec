@@ -16,7 +16,7 @@ import PIL
 import websocket
 import httpx
 import pystray
-import pywebview
+import webview
 import scipy
 
 fw_dir = os.path.dirname(faster_whisper.__file__)
@@ -54,7 +54,7 @@ a = Analysis(
         (os.path.dirname(websocket.__file__), 'websocket'),
         (os.path.dirname(httpx.__file__), 'httpx'),
         (os.path.dirname(pystray.__file__), 'pystray'),
-        (os.path.dirname(pywebview.__file__), 'pywebview'),
+        (os.path.dirname(webview.__file__), 'webview'),
         (os.path.dirname(scipy.__file__), 'scipy'),
     ],
     hiddenimports=[
@@ -106,7 +106,6 @@ a = Analysis(
         'websocket',
         'httpx',
         'pystray',
-        'pywebview',
         'scipy',
         'scipy.signal',
         'scipy.fftpack',
