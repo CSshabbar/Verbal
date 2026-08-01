@@ -96,12 +96,19 @@ export async function addToHistory(
 
 export async function mergeRemoteEntries(remote: HistoryEntry[]): Promise<HistoryEntry[]> {
   const local = await getHistory();
-  const localIds = new Set(local.map(e => e.id));
-  const newEntries = remote
-    .filter(e => !localIds.has(e.id))
-    .map(e => ({ ...e, source: 'remote' as const }));
-  if (newEntries.length === 0) return local;
-  const merged = [...newEntries, ...local]
+  const byId = new Map(local.map(e => [e.id, e]));
+  for (const entry of remote) {
+    const existing = byId.get(entry.id);
+    byId.set(entry.id, {
+      ...existing,
+      ...entry,
+      // Remote updates should not discard the device-local playback/retry copy.
+      audio_uri: entry.audio_uri ?? existing?.audio_uri,
+      audio_url: entry.audio_url ?? existing?.audio_url,
+      source: 'remote',
+    });
+  }
+  const merged = Array.from(byId.values())
     .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
     .slice(0, 100);
   await AsyncStorage.setItem(KEYS.HISTORY, JSON.stringify(merged));

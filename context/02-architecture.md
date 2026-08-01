@@ -7,8 +7,8 @@
 
 ```
 Verbal/
-├── whisperflow/     # desktop (macOS primary, Windows variant)
-│   └── app/         # ~48 Python modules
+├── whisperflow/     # desktop (macOS primary, Windows + Linux variants)
+│   └── app/         # ~40 Python modules
 ├── verbal-mobile/   # Expo / React Native — ONE codebase for iOS + Android
 │   ├── flume-ui/    # canonical UI: screens/ hooks/ components/ theme/ navigation/
 │   ├── lib/         # backend-facing TS modules
@@ -129,6 +129,53 @@ bounded `config['meetings']` (`MEETINGS_CAP`). The HUD appears when the meeting 
   and file-tagging (macOS Accessibility → need UI Automation) — specced in `whisperflow/WINDOWS_PARITY_PLAN.md`
   and `whisperflow/windows_specs/*.md`, not yet implemented.
 
+## Linux stack (`whisperflow/app/linux_*.py`)
+
+- **Runtime:** `linux_main.py::VerbalLinuxApp` is the third desktop shell. Like Windows it uses
+  **`pystray`** for the tray and **`pynput`** for keys, and imports the same pipeline core
+  (`Recorder`, `transcriber.transcribe`, `ai_cleanup.process_text`, `sync`) rather than reimplementing it.
+  `start()` blocks on `pystray.Icon.run()` on the main thread; teardown happens *after* `run()` returns so
+  the mic, hotkey listener, IPC socket and instance lock are all released on the main thread.
+- **The tray backend is load-bearing.** `pystray` picks `_appindicator` only when PyGObject (`gi`) is
+  importable; otherwise it falls back to `_xorg`, where `Icon.HAS_MENU is False` and the icon will not
+  dock on GNOME/Wayland — the app runs with no icon, no menu and no way to quit. `start()` logs an
+  explicit ERROR when it detects a menu-less backend. See `05-conventions.md` § Linux desktop gotchas.
+- **`linux_overlay.py::LinuxOverlay`** — tkinter floating pill (like `win_overlay.py`, *not* the shared
+  `overlay_html()`), drawn with PIL into a `Canvas` on an override-redirect window. Its `tk.Tk()` root
+  lives on a daemon thread and runs `mainloop()` there; every cross-thread call is marshalled through
+  `_safe()` → `root.after(0, ...)`, gated on a `_loop_running` flag. It owns `tkinter._default_root`, so
+  no other code may create a second `Tk()` or a parentless dialog.
+- **`linux_injector.py`** — clipboard (`pyperclip`) + synthetic Ctrl+V (`pyautogui` XTEST, `xdotool`
+  fallback). Returns an `InjectResult(copied, paste_sent)` namedtuple: X11 cannot report whether a client
+  consumed the keystroke, so "we sent it" and "it landed" are deliberately distinct. All injection is
+  serialized behind a module lock (the dictation path and inbound sync pushes both paste), and
+  `inject_text` polls a `should_cancel` callback immediately before the keystroke so ESC can abort.
+- **IPC control socket (Wayland's answer to the hotkey problem).** Wayland forbids an unfocused client
+  from observing global keys — that is the security model, not a gap — so `pynput` only sees keys while an
+  XWayland surface has focus. Instead `linux_main` listens on a unix socket at `~/.verbal/verbal.sock`
+  (0600, guarded by a `flock` single-instance lock at `~/.verbal/verbal.lock`) and accepts
+  `toggle/start/stop/cancel/show/quit/ping`. `verbal --toggle` is a thin client; `verbal --install-hotkey`
+  registers a GNOME custom keybinding that runs it, so the *compositor* owns the key. Note GNOME
+  keybindings are press-only, so this gives toggle mode, not hold-to-talk (that needs the
+  `org.freedesktop.portal.GlobalShortcuts` portal).
+- **Dashboard:** the same `shared_dashboard.py::SharedDashboard` Windows uses, over pywebview's
+  **GTK/WebKit2** backend — which also needs `gi`. It serves the legacy inline `_html()`, not
+  `flume_html()`, so the dictionary / pairing / recordings-playback / onboarding / sign-in APIs that
+  `DashboardApi` exposes have no UI on Linux. `SharedDashboard.show()` only try/excepts `import webview`
+  (which succeeds); the backend failure surfaces later inside `webview.start()`, so callers must guard.
+  **`webview.start()` also refuses to run off the MainThread**, so `_tray_open_dashboard()` marshals
+  non-main-thread callers onto the GTK loop via `GLib.idle_add(self._open_dashboard)`. Tray clicks need no
+  marshalling (appindicator dispatches them *from* the GTK main loop, i.e. the main thread) but
+  `verbal --show` arrives on the IPC socket thread. See `05-conventions.md` § Linux desktop gotchas.
+- **Not wired:** `recordings` (no WAV persist/upload/retry — Linux calls plain `transcribe()`, not
+  `transcribe_with_status`), `auth`, `autolearn`, `filetags`, `permissions`, `updater`, meetings,
+  transform. `theme.py`/`permissions.py`/`autolearn.py` import AppKit at module scope and must never be
+  imported from the Linux shell.
+- **Packaging:** `verbal-linux.spec` + `build-linux.sh` (which enforces the system-site-packages venv and
+  asserts `pystray.Icon.HAS_MENU` before building), `requirements-linux.txt`, and
+  `packaging/verbal.desktop` + `packaging/install-desktop.sh` for the desktop entry, icon, `verbal`
+  launcher shim and optional autostart.
+
 ## Mobile stack (`verbal-mobile/`)
 
 - **Framework:** Expo SDK `~55`, React Native `0.83`, React 19, New Architecture on. Entry `index.ts` →
@@ -188,13 +235,17 @@ bounded `config['meetings']` (`MEETINGS_CAP`). The HUD appears when the meeting 
   (history entry, replacement rule, note, device, canvas). Desktop `dictionary.py` ↔ mobile
   `lib/dictionary.ts` are deliberate mirrors; likewise `recordings.py` ↔ `lib/recordings.ts`,
   `pairing.py` ↔ `lib/pairing.ts`.
-- **Also shared across the two desktops:** the Flume HTML surfaces (`flume_dashboard_html.py` et al.)
-  now render on both macOS (WKWebView + `_SHIM`) and Windows (pywebview/WebView2), plus the
-  cross-platform pipeline modules (`recorder`, `transcriber`, `ai_cleanup`, `dictionary`, `recordings`,
-  `auth`, `sync`, `updater`, `meetings`).
+- **Also shared across the three desktops:** the Flume HTML surfaces (`flume_dashboard_html.py` et al.)
+  render on macOS (WKWebView + `_SHIM`). Windows and Linux currently serve the legacy inline
+  `SharedDashboard._html()` because their shells do not yet implement the auth callbacks required by the
+  Flume screen's mandatory auth gate. The cross-platform pipeline modules (`recorder`,
+  `transcriber`, `ai_cleanup`, `dictionary`, `recordings`, `auth`, `sync`, `updater`, `meetings`). Linux
+  imports only `recorder`/`transcriber`/`ai_cleanup`/`sync` of those.
 - **What's platform-specific:** the *host container* per surface (WKWebView `NSPanel`/`NSWindow` vs
-  pywebview windows), the tray/menubar shell (`rumps` vs `pystray`), input/audio natives
-  (`injector`↔`win_injector`, `hotkey` NSEvent vs `pynput`, ScreenCaptureKit↔WASAPI loopback), and the
+  pywebview windows on Windows/Linux), the tray/menubar shell (`rumps` vs `pystray` — `_win32` on
+  Windows, `_appindicator` on Linux), input/audio natives (`injector`↔`win_injector`↔`linux_injector`,
+  `hotkey` NSEvent vs `pynput` — and on Wayland an IPC socket driven by a compositor-owned keybinding
+  because in-process capture is impossible; ScreenCaptureKit↔WASAPI loopback), and the
   macOS AX features (file-tagging, auto-learn) whose Windows equivalents use UI Automation
   (`win_ax.py`/`win_editwatch.py`, planned — see `whisperflow/WINDOWS_PARITY_PLAN.md`); mobile's Expo
   screens/hooks and native audio (`expo-audio`); and, within mobile itself, the custom keyboard's native

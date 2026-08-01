@@ -20,36 +20,37 @@ Core loop (all platforms): **hotkey → record → transcribe → AI-clean → i
 | **macOS desktop** | `whisperflow/` | Python 3, PyObjC/AppKit, `rumps` menubar, WKWebView UIs, cloud + local Whisper | Primary, most complete (`APP_VERSION` 1.0.10) |
 | **iOS + Android mobile** | `verbal-mobile/` | Expo SDK 55 / React Native 0.83, `flume-ui`, Supabase JS SDK — ONE codebase for both mobile OSes | Active; feature-parity for core, minus desktop-only features. Native code diverges only where it must: the custom keyboard ships as a real iOS keyboard extension (`targets/keyboard/KeyboardViewController.swift`, Swift) AND a real Android IME (`plugins/keyboard/FlumeInputMethodService.kt`, Kotlin) — see `05-conventions.md` Hard Rule #16 |
 | **Windows desktop** | `whisperflow/app/win_*.py` | `pystray` tray + `pynput` + pywebview (WebView2), shares core modules **and now the same Flume UI** | Being brought to full parity — renders the identical Flume dashboard (`flume_html()`); auth/dictation-pipeline/sync/notes/canvas wired. Native-heavy features (meetings, auto-learn, file-tagging) specced for a Windows dev session — see `whisperflow/WINDOWS_PARITY_PLAN.md` |
+| **Linux desktop** | `whisperflow/app/linux_*.py` | `pystray` (AppIndicator) tray + tkinter overlay + pywebview (GTK/WebKit2); clipboard + XTEST paste; shares the core pipeline | Newest and least complete. Core loop (record → transcribe → AI-clean → paste) + sync work. **On Wayland the in-process global hotkey cannot work** — the desktop owns the key and runs `verbal --toggle` over an IPC socket (`--install-hotkey`). Renders the legacy inline `SharedDashboard._html()`, not `flume_html()`, so dictionary/pairing/recordings/onboarding/sign-in UI is unreachable. No recordings persistence, auto-learn, file-tagging, meetings or transform |
 
-All three share **one Supabase backend** (project `ovpcthjingugwvpxlsna`) — see `04-data-model.md`. The
+All four share **one Supabase backend** (project `ovpcthjingugwvpxlsna`) — see `04-data-model.md`. The
 feature matrix below still uses a single "iOS" column for mobile (both platforms are the same RN code
 for anything not keyboard-extension-specific); where Android's *native* behavior genuinely differs, that's
-called out in the Notes column rather than adding a 4th matrix column.
+called out in the Notes column rather than adding a separate Android matrix column.
 
 ## Feature availability matrix
 
-| Feature | macOS | iOS | Windows | Notes |
-|---|:--:|:--:|:--:|---|
-| Recording + transcription (Groq→Gemini→local) | ✅ | ✅ (Groq only) | ✅ | Fallback chain desktop; mobile = Groq `whisper-large-v3-turbo` |
-| AI cleanup / formatting | ✅ | ✅ | ✅ | Desktop `process_text`; mobile `formatText`. Notes cleanup now wired on both (mobile `formatNotes`/`formatNoteWithTitle`) |
-| Custom dictionary (vocab bias + replacement rules) | ✅ | ✅ | ✅ | Synced, one row/user |
-| **Snippets** (spoken trigger → text expansion) | ✅ | ✅ | ✅ | On the `dictionary` row; longest-first, single-pass. Windows expands in-dictation via `dictionary.apply_snippets` |
-| **Keyboard clipboard history** (quick-paste chip + overlay) | — | ✅ | — | Custom keyboard only (`targets/keyboard/KeyboardViewController.swift` + Android IME `plugins/keyboard/FlumeInputMethodService.kt` — same Expo codebase, this table just doesn't carry a separate Android column). Self-contained in each keyboard target, never synced to the app or cloud; gated by the on/off setting `clipboardHistoryEnabled` (Settings → Keyboard, default ON) |
-| **Auto-learn** dictionary from corrections | ✅ | ❌ | ❌ | macOS AX read-back + cream pill widget. Windows port specced (UIA readback) — `windows_specs/W7-autolearn-uia.md` |
-| **File tagging** (`@name.ext` in IDEs) | ✅ | ❌ | ❌ | macOS Accessibility. Windows port specced (UI Automation harvest) — `windows_specs/W8-filetags-uia.md` |
-| Recordings save / playback / retry | ✅ | ✅ | ✅ | Local + cloud (`recordings` bucket). Windows `_process_audio` now saves WAV, uploads, and writes retryable `failed` entries |
-| Notes (voice-first, synced) | ✅ | ✅ | ✅ | Supabase `notes` table. **v2:** search, auto-title, structure/checklists, audio linkage, raw+formatted, conflict-pair sync; 4 flags (`notes_search/autotitle/structure_detection/audio_linkage_enabled`, default on). Windows uses the shared `DashboardApi` + Flume notes UI |
-| Canvas (shared clipboard: text/link/image) | ✅ | ✅ | ✅ | Supabase `canvas` row + realtime |
-| Cross-device sync (history/notes/canvas) | ✅ | ✅ | ✅ | Supabase realtime, keyed by `user_id` |
-| Device pairing (QR) | ✅ | ✅ | ✅ | `pairings` table, single-use token |
-| Google auth (Supabase) | ✅ | ✅ | ✅ | Desktop PKCE loopback (shared `auth.py`); mobile deep link. Windows wires `_sign_in`/`_sign_out` + tray item |
-| **Account deletion** (in-app, App Store 5.1.1(v)) | ✅ | ✅ | ✅ | Server-side `delete-account` Edge Function purges every table + storage bucket + the auth user itself; both clients call it with the real session JWT then wipe local caches. Windows shares `DashboardApi.delete_account()` with macOS. Apple-token revocation deferred (Batch C) |
-| Onboarding | ✅ | ✅ | ✅ | Windows now renders the same Flume onboarding/`#signin` screens |
-| Recording overlay / floating HUD | ✅ | ❌ | ✅ | Desktop pill; iOS uses a modal screen. Windows currently a tkinter pill; webview parity (`overlay_html()`) specced — `windows_specs/W3-overlay.md` |
-| **Meetings** (capture + live transcript + AI summary) | ✅ | 👁 read + edit | ❌ | macOS captures system audio (ScreenCaptureKit) + mic, with **Granola-style auto-detection** (a "Meeting detected · <source>" pill offers one-click capture when a Zoom/Meet/Teams call is in progress — `meeting_detect.py`). Mobile has full read parity: list, detail (summary, decisions, action items w/ due + tappable done, marked moments w/ notes), the **full AI Notes page** (renders `notes_md`; can generate on-device if absent) — **and edits both the scratchpad and the AI notes themselves** (`MeetingNotesScreen.tsx`, raw-markdown edit mode, debounced sync via `updateNotesRemote`), plus tap-to-seek playback with continuous transcript highlighting (`MeetingPlaybackScreen.tsx`, reachable from both Detail and Notes). No capture on mobile. Windows port specced — `windows_specs/W6-meetings-wasapi.md` |
-| **Transform — inline** (“…so Flume, make it formal”) | ✅ | ❌ (planned) | ❌ (TBD) | Trailing-instruction gate + LLM rewrite before paste; default OFF (`transform_enabled`) |
-| **Transform — selection** (⌘⇧T / keyboard button → preview → replace) | ✅ | ✅ | ❌ (TBD) | Desktop: clipboard-captured selection, cream pill (Improvise / spoken / typed), preview + undo. Mobile (iOS + Android via the shared Expo codebase, same no-separate-Android-column caveat as the clipboard row): a dedicated Transform button on the custom keyboard reads the host field's selection (`selectedText`/`getSelectedText`), same Improvise/typed/spoken instruction paths and prompts, preview before replace; "undo" is a soft delete-and-reinsert (no OS-level undo API on mobile). Default OFF (`transformEnabled`, Settings → Keyboard), matching desktop's opt-in posture |
-| Menubar popover | ✅ | — | ⚠️ | macOS NSPopover. Windows equivalent (tray-click pywebview `popover_html()`) specced — `windows_specs/W4-popover.md` |
+| Feature | macOS | iOS | Windows | Linux | Notes |
+|---|:--:|:--:|:--:|:--:|---|
+| Recording + transcription (Groq→Gemini→local) | ✅ | ✅ (Groq only) | ✅ | ✅ | Fallback chain desktop; mobile = Groq `whisper-large-v3-turbo` |
+| AI cleanup / formatting | ✅ | ✅ | ✅ | ✅ | Desktop `process_text`; mobile `formatText`. Notes cleanup now wired on both (mobile `formatNotes`/`formatNoteWithTitle`) |
+| Custom dictionary (vocab bias + replacement rules) | ✅ | ✅ | ✅ | ⚠️ | Synced, one row/user |
+| **Snippets** (spoken trigger → text expansion) | ✅ | ✅ | ✅ | ⚠️ | On the `dictionary` row; longest-first, single-pass. Windows expands in-dictation via `dictionary.apply_snippets` |
+| **Keyboard clipboard history** (quick-paste chip + overlay) | — | ✅ | — | — | Custom keyboard only (`targets/keyboard/KeyboardViewController.swift` + Android IME `plugins/keyboard/FlumeInputMethodService.kt` — same Expo codebase, this table just doesn't carry a separate Android column). Self-contained in each keyboard target, never synced to the app or cloud; gated by the on/off setting `clipboardHistoryEnabled` (Settings → Keyboard, default ON) |
+| **Auto-learn** dictionary from corrections | ✅ | ❌ | ❌ | ❌ | macOS AX read-back + cream pill widget. Windows port specced (UIA readback) — `windows_specs/W7-autolearn-uia.md` |
+| **File tagging** (`@name.ext` in IDEs) | ✅ | ❌ | ❌ | ❌ | macOS Accessibility. Windows port specced (UI Automation harvest) — `windows_specs/W8-filetags-uia.md` |
+| Recordings save / playback / retry | ✅ | ✅ | ✅ | ❌ | Local + cloud (`recordings` bucket). Windows `_process_audio` now saves WAV, uploads, and writes retryable `failed` entries |
+| Notes (voice-first, synced) | ✅ | ✅ | ✅ | ⚠️ | Supabase `notes` table. **v2:** search, auto-title, structure/checklists, audio linkage, raw+formatted, conflict-pair sync; 4 flags (`notes_search/autotitle/structure_detection/audio_linkage_enabled`, default on). Windows uses the shared `DashboardApi` + Flume notes UI |
+| Canvas (shared clipboard: text/link/image) | ✅ | ✅ | ✅ | ⚠️ | Supabase `canvas` row + realtime |
+| Cross-device sync (history/notes/canvas) | ✅ | ✅ | ✅ | ✅ | Supabase realtime, keyed by `user_id` |
+| Device pairing (QR) | ✅ | ✅ | ✅ | ❌ | `pairings` table, single-use token |
+| Google auth (Supabase) | ✅ | ✅ | ✅ | ❌ | Desktop PKCE loopback (shared `auth.py`); mobile deep link. Windows wires `_sign_in`/`_sign_out` + tray item |
+| **Account deletion** (in-app, App Store 5.1.1(v)) | ✅ | ✅ | ✅ | ❌ | Server-side `delete-account` Edge Function purges every table + storage bucket + the auth user itself; both clients call it with the real session JWT then wipe local caches. Windows shares `DashboardApi.delete_account()` with macOS. Apple-token revocation deferred (Batch C) |
+| Onboarding | ✅ | ✅ | ✅ | ❌ | Windows now renders the same Flume onboarding/`#signin` screens |
+| Recording overlay / floating HUD | ✅ | ❌ | ✅ | ✅ | Desktop pill; iOS uses a modal screen. Windows currently a tkinter pill; webview parity (`overlay_html()`) specced — `windows_specs/W3-overlay.md` |
+| **Meetings** (capture + live transcript + AI summary) | ✅ | 👁 read + edit | ❌ | ❌ | macOS captures system audio (ScreenCaptureKit) + mic, with **Granola-style auto-detection** (a "Meeting detected · <source>" pill offers one-click capture when a Zoom/Meet/Teams call is in progress — `meeting_detect.py`). Mobile has full read parity: list, detail (summary, decisions, action items w/ due + tappable done, marked moments w/ notes), the **full AI Notes page** (renders `notes_md`; can generate on-device if absent) — **and edits both the scratchpad and the AI notes themselves** (`MeetingNotesScreen.tsx`, raw-markdown edit mode, debounced sync via `updateNotesRemote`), plus tap-to-seek playback with continuous transcript highlighting (`MeetingPlaybackScreen.tsx`, reachable from both Detail and Notes). No capture on mobile. Windows port specced — `windows_specs/W6-meetings-wasapi.md` |
+| **Transform — inline** (“…so Flume, make it formal”) | ✅ | ❌ (planned) | ❌ (TBD) | ❌ | Trailing-instruction gate + LLM rewrite before paste; default OFF (`transform_enabled`) |
+| **Transform — selection** (⌘⇧T / keyboard button → preview → replace) | ✅ | ✅ | ❌ (TBD) | ❌ | Desktop: clipboard-captured selection, cream pill (Improvise / spoken / typed), preview + undo. Mobile (iOS + Android via the shared Expo codebase, same no-separate-Android-column caveat as the clipboard row): a dedicated Transform button on the custom keyboard reads the host field's selection (`selectedText`/`getSelectedText`), same Improvise/typed/spoken instruction paths and prompts, preview before replace; "undo" is a soft delete-and-reinsert (no OS-level undo API on mobile). Default OFF (`transformEnabled`, Settings → Keyboard), matching desktop's opt-in posture |
+| Menubar popover | ✅ | — | ⚠️ | ❌ | macOS NSPopover. Windows equivalent (tray-click pywebview `popover_html()`) specced — `windows_specs/W4-popover.md` |
 
 Legend: ✅ present · ⚠️ partial/legacy · ❌ not present · — N/A.
 
@@ -76,7 +77,7 @@ Legend: ✅ present · ⚠️ partial/legacy · ❌ not present · — N/A.
 
 ```
 Verbal/
-├── whisperflow/         # macOS + Windows desktop app (Python).  app/*.py
+├── whisperflow/         # macOS + Windows + Linux desktop app (Python).  app/*.py
 ├── verbal-mobile/       # Expo/React Native app.  flume-ui/ (canonical UI), lib/
 ├── context/             # THIS knowledge set (synced to the Claude project)
 ├── *.sql (in whisperflow/) # Supabase schema (partial — see 04-data-model.md)
@@ -85,4 +86,3 @@ Verbal/
 
 For the "how it fits together" view see `02-architecture.md`; per-feature detail `03-features.md`;
 backend/data `04-data-model.md`; conventions & gotchas `05-conventions.md`.
-

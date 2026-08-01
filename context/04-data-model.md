@@ -173,7 +173,7 @@ reproduce exactly what the live DB already had — **not** a behavior change; se
 `(user_id, is_pinned, created_at desc)`. In the realtime publication.
 
 **`devices`** — device registry/presence. `id` uuid PK · `user_id` text · `device_id` text ·
-`device_name` text · `device_type` text default `'mac'` (`mac`/`win`/`ios`) · `last_seen` timestamptz
+`device_name` text · `device_type` text default `'mac'` (`mac`/`win`/`ios`/`linux` — see Schema gaps) · `last_seen` timestamptz
 default `now()` · **`sync_enabled`** bool default `true` (read/written by mobile `lib/deviceSync.ts` to
 gate per-device sync). Unique index `(user_id, device_id)` (the upsert conflict target). "Online" =
 `last_seen` within 5 min. In the realtime publication.
@@ -374,7 +374,16 @@ Pragmatic, matches code + `GOOGLE_AUTH_SETUP.md`:
   anywhere). The `canvas-images` **bucket** still has no committed SQL beyond its policy file
   (`supabase_canvas_images_policy.sql` doesn't create the bucket itself) — narrower remaining gap.
 - **`CROSSPLATFORM_SYNC_PLAN.md` is largely stale** (placeholder URL, a `sync_token` scheme that doesn't
-  exist, `sync_listen()` as a stub) — its only current value is the base `transcriptions` DDL.
+  exist, `sync_listen()` as a stub) — its only current value is the base `transcriptions` DDL. Its platform
+  list ("Mac, iPhone, Android") also omits both Windows and Linux.
+- **`devices.device_type` now receives a 4th, undocumented value `linux`.** `sync.py` writes `PLATFORM`
+  verbatim and `config.py` resolves Linux to `"linux"`. Nothing rejects it and the dashboard renders any
+  non-mobile value with the 💻 icon, so it displays correctly — but the committed DDL's comment and default
+  still describe only `mac`/`win`/`ios`.
+- **No Linux release channel.** `app_versions.platform` has no `linux` row, so `updater.check_for_update`
+  queries `platform=eq.linux` and always gets zero rows; `release.sh` hard-errors on any platform that
+  isn't `mac`/`win`, so there is no way to publish a Linux build. `linux_main` doesn't call the updater at
+  all, so this is latent rather than broken-in-the-field.
 - `config.py DEFAULT_CONFIG` omits `sync_enabled` and `sync_target_device_id` though both are used —
   desktop sync must be turned on explicitly.
 - Mobile `useNotes` note: there's still no `is_voice` column, but v2 `toNote` now infers `isVoice` from the

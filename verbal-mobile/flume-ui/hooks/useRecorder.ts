@@ -109,6 +109,20 @@ export function useRecorder() {
     startTick();
   }, [recorder, startTick]);
 
+  /** Stop and discard without persisting or invoking transcription. */
+  const cancel = useCallback(async () => {
+    if (tickRef.current) clearInterval(tickRef.current);
+    try {
+      await recorder.stop();
+    } catch (err) {
+      console.warn('Failed to stop recorder on cancel:', err);
+    }
+    accumulatedRef.current = 0;
+    setDurationMs(0);
+    setStatus('idle');
+    setPartialText('');
+  }, [recorder]);
+
   const stop = useCallback(async (): Promise<StopResult | null> => {
     if (tickRef.current) clearInterval(tickRef.current);
     if (status === 'idle') return null;
@@ -172,6 +186,7 @@ export function useRecorder() {
     start,
     pause,
     resume,
+    cancel,
     stop,
   };
 }

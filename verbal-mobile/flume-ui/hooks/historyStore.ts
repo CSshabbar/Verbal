@@ -20,6 +20,7 @@ import {
   getSyncEnabled,
   getGroqKey,
   mergeRemoteEntries,
+  clearHistory as clearStoredHistory,
   HistoryEntry,
 } from '../../lib/storage';
 import { transcribeAudio, formatText } from '../../lib/groq';
@@ -190,6 +191,25 @@ export function ensureLoaded() {
   return loadPromise;
 }
 export function refresh() { loadPromise = load(); return loadPromise; }
+
+/** Tear down account-scoped singleton state on sign-out/account changes. */
+export async function reset() {
+  items = [];
+  started = false;
+  loadPromise = null;
+  if (channel) {
+    try { await supabase.removeChannel(channel); } catch { /* ignore */ }
+    channel = null;
+  }
+  emit();
+}
+
+/** Clear device-local history and publish the empty snapshot immediately. */
+export async function clear() {
+  await clearStoredHistory();
+  items = [];
+  emit();
+}
 
 /** Legacy contract helper — prepend an already-built item. */
 export async function add(item: HistoryItem) {

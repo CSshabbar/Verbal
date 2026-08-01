@@ -25,13 +25,27 @@ export const NoteEditorScreen: React.FC<Props> = ({ noteId, onBack }) => {
   const [body, setBody] = useState(note?.body ?? '');
   const [dictating, setDictating] = useState(false);
 
-  // Auto-save on changes (debounced in the hook).
+  // The editor owns a separate useNotes instance from the list. Wait for that
+  // instance to hydrate before resolving an existing note; otherwise opening a
+  // note briefly looks like a new-note request and creates a blank duplicate.
   useEffect(() => {
-    if (!note) {
-      const created = createNote({ title, body });
-      setNote(created);
-      return;
+    if (note) return;
+    if (noteId) {
+      const found = getNote(noteId);
+      if (found) {
+        setNote(found);
+        setTitle(found.title);
+        setBody(found.body);
+      }
+    } else {
+      setNote(createNote({ title, body }));
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [note, noteId, getNote]);
+
+  // Auto-save changes only after the intended note has been resolved/created.
+  useEffect(() => {
+    if (!note) return;
     updateNote(note.id, { title, body });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [title, body]);

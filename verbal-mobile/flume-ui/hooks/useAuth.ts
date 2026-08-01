@@ -14,6 +14,7 @@ import * as QueryParams from 'expo-auth-session/build/QueryParams';
 import { supabase } from '../../lib/supabase';
 import { setUserId, setSyncEnabled, getDeviceName, getDeviceId } from '../../lib/storage';
 import { confirm, notify } from '../components/ConfirmDialog';
+import * as historyStore from './historyStore';
 
 WebBrowser.maybeCompleteAuthSession();
 
@@ -111,6 +112,9 @@ async function afterSignIn(session: any) {
   } catch (e) {
     console.warn('device detect failed:', e);
   }
+  // RootNavigator loads the singleton once before sign-in, while sync is off.
+  // Re-run it after adopting the authenticated account and sync preference.
+  try { await historyStore.refresh(); } catch { /* ignore */ }
 }
 
 export function useAuth() {
@@ -120,7 +124,13 @@ export function useAuth() {
   useEffect(() => {
     let mounted = true;
     supabase.auth.getSession()
-      .then(({ data: { session } }) => {
+      .then(async ({ data: { session } }) => {
+        if (session?.user) {
+          // Keep the data key aligned with a restored Supabase session and pull
+          // account history even though the interactive sign-in path did not run.
+          await setUserId(session.user.id);
+          void historyStore.refresh().catch(() => {});
+        }
         if (mounted) { setUser(session?.user ? fromSupabaseUser(session.user) : null); setLoading(false); }
       })
       .catch(() => { if (mounted) { setUser(null); setLoading(false); } });
@@ -181,6 +191,7 @@ export function useAuth() {
   const signOut = useCallback(async () => {
     try { await supabase.auth.signOut(); } catch { /* ignore */ }
     try { await setSyncEnabled(false); } catch { /* ignore */ }
+    try { await historyStore.reset(); } catch { /* ignore */ }
     setUser(null);
   }, []);
 

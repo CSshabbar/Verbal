@@ -47,3 +47,6 @@ artifacts/windows-exe/
 dist-windows/
 build_exe.sh
 .commandcode/
+
+# Vendored external MCP server (separate git repo)
+GranolaMCP/

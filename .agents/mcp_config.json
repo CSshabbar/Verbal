@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "granola": {
+      "command": "/home/sajjad-zaidi/Documents/Idiaz.io/Verbal/GranolaMCP/.venv/bin/python3",
+      "args": [
+        "-m",
+        "granola_mcp.server"
+      ],
+      "env": {
+        "GRANOLA_CACHE_PATH": "/path/to/your/granola/cache-v3.json"
+      }
+    }
+  }
+}

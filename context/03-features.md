@@ -179,6 +179,16 @@ Each feature: **what it does · desktop impl · mobile impl · backend · status
   the text has an `@name.ext` in a tagging IDE, routes to `_inject_with_mentions` (falls back to plain
   paste on any failure). Windows equivalent: `win_injector.py` (clipboard + `pyautogui` Ctrl+V, `user32`
   foreground-window save/restore).
+- **Linux** (`linux_injector.py`): clipboard + `pyautogui` Ctrl+V (XTEST) with an `xdotool key` fallback;
+  no `allow_mentions` (file-tagging isn't wired). Returns `InjectResult(copied, paste_sent)` rather than a
+  single bool — X11 never reports whether a client consumed the keystroke, so the UI says
+  "Copied - press Ctrl+V" unless the keystroke actually went out. `inject_text` takes a `should_cancel`
+  callback polled immediately before the keystroke (ESC cancellation), and all injection is serialized
+  behind a module lock so inbound sync pushes can't interleave with a dictation paste.
+  **Target-app tracking does not work on Wayland**: `xdotool getactivewindow getwindowname` exits 0 with
+  empty output (it sees only Xwayland's focus proxy), so app attribution is blank and logs a WARNING.
+  Paste itself does work on GNOME Wayland because Mutter runs Xwayland with `-enable-ei-portal`, routing
+  XTEST through libei to the compositor — but that is compositor-dependent, not guaranteed.
 
 ## Recordings — save / playback / retry
 
@@ -442,14 +452,31 @@ deletes real files under `~/.verbal/` and this development machine has a real, i
 - **Popover** (`flume_popover*.py`): macOS menubar `NSPopover` mini-dashboard; attached via a retrying timer.
 - **Hotkey** (`hotkey.py`): `NSEvent` global monitor; default key **54 (Right Cmd)**, ESC cancels. Hold
   mode (down=start/up=stop) vs Toggle mode (debounced tap). Windows uses `pynput` (default `alt_r`).
+  Linux hand-rolls `pynput` too (default `alt_r`), **but on Wayland that cannot work at all** — a client
+  may not observe keys delivered to other clients. The supported path is `verbal --install-hotkey`, which
+  registers a GNOME custom keybinding (default `<Control><Alt>space`) running `verbal --toggle` against the
+  IPC socket at `~/.verbal/verbal.sock`, so the compositor owns the key. Press-only, so toggle mode only;
+  hold-to-talk would need the `org.freedesktop.portal.GlobalShortcuts` portal.
 - **Onboarding:** dashboard JS flow; `DashboardApi.complete_onboarding` sets `config['onboarded']`. Mobile:
   `OnboardingScreen` (3 slides) + AsyncStorage `flume_onboarded`.
 - **Updater** (`updater.py`): polls Supabase `app_versions` per platform, downloads to temp with sha256
-  verify, installs (`.dmg`/silent `.exe`) then exits. Binaries in `releases` bucket.
+  verify, installs (`.dmg`/silent `.exe`) then exits. Binaries in `releases` bucket. The temp suffix is
+  derived from the artifact URL (`_artifact_suffix`), defaulting per platform — it used to hardcode `.dmg`
+  for everything non-Windows, which handed Linux a macOS disk image. On Linux `install_update` hands the
+  file to `xdg-open` and **does not exit** (there is no silent-installer story: an AppImage *is* the app and
+  a `.deb` needs a privileged package manager). **Linux never calls the updater** — `linux_main` has no
+  `_check_update`, and there is no `linux` row in `app_versions` nor a Linux branch in `release.sh`.
 - **Permissions** (`permissions.py`): accessibility / microphone / system-audio / notifications status +
   request, surfaced via `DashboardApi.get_permissions/request_permission`.
 - **Sounds** (`sounds.py`): `afplay` system AIFFs — `play_start`(Tink), `play_stop`(Pop), `play_done`(Glass),
-  `play_added`(Hero, the auto-learn confirm chime).
+  `play_added`(Hero, the auto-learn confirm chime). `sounds.py` is macOS-only (no platform guard), so Linux
+  has its own `linux_main._play_sound` playing `assets/sounds/*.wav`. It **probes** `pw-play` → `paplay` →
+  `aplay` → `ffplay` → `canberra-gtk-play` once and caches the winner: `paplay` is absent on PipeWire-only
+  systems, and hardcoding it made every cue silently dead. Warns once if none resolve; no `added` cue
+  (auto-learn isn't wired on Linux).
+- **Overlay (Linux)** (`linux_overlay.py`): tkinter/PIL pill, not `overlay_html()`. `-alpha` works but only
+  after the window is mapped; `-topmost` is a silent no-op on an override-redirect window (no WM sets
+  `_NET_WM_STATE_ABOVE`), so the pill sits below native Wayland shell surfaces.
 
 ---
 

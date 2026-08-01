@@ -16,8 +16,8 @@ import {
   getDeviceName, setDeviceName,
   getSyncEnabled, setSyncEnabled,
   getUserId, setUserId,
-  clearHistory,
 } from '../../lib/storage';
+import { clear as clearHistory } from '../hooks/historyStore';
 
 type Props = { onOpenDevices: () => void };
 

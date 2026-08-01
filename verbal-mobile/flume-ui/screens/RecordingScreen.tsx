@@ -20,14 +20,15 @@ type Props = {
  */
 export const RecordingScreen: React.FC<Props> = ({ onCancel, onComplete }) => {
   const insets = useSafeAreaInsets();
-  const { start, stop, pause, resume, status, durationMs, uri } = useRecorder();
+  const { start, stop, pause, resume, cancel, status, durationMs, uri } = useRecorder();
   const [paused, setPaused] = useState(false);
+  const finalizedRef = useRef(false);
 
   useEffect(() => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     start();
-    // We intentionally only run this once on mount; stop() in cleanup if user navigates away.
-    return () => { stop(); };
+    // Unexpected navigation must release the mic without saving/transcribing.
+    return () => { if (!finalizedRef.current) void cancel(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -36,12 +37,16 @@ export const RecordingScreen: React.FC<Props> = ({ onCancel, onComplete }) => {
   const handleStop = async () => {
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     const result = await stop();
-    if (result?.uri) onComplete(result.uri, result.durationMs);
+    if (result?.uri) {
+      finalizedRef.current = true;
+      onComplete(result.uri, result.durationMs);
+    }
   };
 
   const handleCancel = async () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    await stop();
+    await cancel();
+    finalizedRef.current = true;
     onCancel();
   };
 

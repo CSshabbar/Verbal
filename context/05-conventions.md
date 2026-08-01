@@ -254,6 +254,11 @@
     stored/minted local id when signed out. This is load-bearing: it scopes ALL cloud data (notes, dictionary,
     snippets, history). The earlier bug where a **restored** session (afterSignIn didn't run) read a stray
     minted id and showed everything as 0 is fixed here — don't revert `getUserId` to a pure AsyncStorage read.
+    Remote history reconciliation must **upsert by row id**, not append only: the realtime `UPDATE` handler
+    refetches rows, so ignoring ids already in AsyncStorage leaves edited text/status stale forever. Preserve
+    the matching entry's device-local `audio_uri` while applying the remote fields. Likewise, UI-triggered
+    cache mutations such as **Clear history** must go through `historyStore` and `emit()` the new snapshot;
+    changing AsyncStorage alone leaves every mounted `useHistory()` screen stale until restart.
 
 18. **Meetings capture must never touch the dictation `Recorder` — and only ONE process-wide mic stream may
     exist.** A meeting opens its OWN `sounddevice.InputStream` (meetings.py); but when dictation starts
@@ -570,9 +575,15 @@ Single source: desktop `app/theme.py` + `app/fonts_css.py`; mobile `flume-ui/the
 - `transcriber._transcribe_local` has an unreachable duplicate VAD `_run()` block after its `return`.
 - `flume_dashboard_html.py` is **dual-target**: loaded into a WKWebView by `FlumeWebDashboard` on macOS
   and into a pywebview window by `SharedDashboard.show()` on Windows (its docstring is accurate again).
-- `shared_dashboard._html()` (the old light-theme Windows dashboard) and `win_dashboard.py`
-  (`WinDashboard`, tkinter) are **retired** — `_html()` is removed; `WinDashboard` remains only as a
-  last-resort fallback if `import webview` fails. Windows renders the Flume UI.
+- `shared_dashboard._html()` (the old light-theme dashboard) and `win_dashboard.py` (`WinDashboard`,
+  tkinter) are **meant to be retired**, but ⚠️ **in the current tree `_html()` still exists and is still
+  what `SharedDashboard.show()` serves** — so the Flume UI is NOT actually rendered by
+  `SharedDashboard`, and every `DashboardApi` method the inline HTML doesn't call (dictionary, pairing,
+  recordings playback/retry, onboarding, permissions, sign-in) has no UI on Windows *or* Linux. Porting
+  `show()` to `flume_html()` is the single highest-leverage fix for both.
+  `WinDashboard` is a last-resort fallback for `import webview` failing — note that on **Linux it is
+  unreachable dead code**, because `import webview` succeeds there and the GTK/Qt backend failure only
+  surfaces later inside `webview.start()`, outside that try/except.
 - `whisperflow/WINDOWS_PARITY_PLAN.md` + `whisperflow/windows_specs/W3–W9*.md` are the **active** handoff
   specs for the remaining Windows-native workstreams (overlay/popover/injection/meetings/auto-learn/
   file-tagging/visual-QA) — not legacy; execute on a Windows dev session.
@@ -609,12 +620,62 @@ Single source: desktop `app/theme.py` + `app/fonts_css.py`; mobile `flume-ui/the
 - `flume-ui/components/ConfirmDialog.tsx` **is live** (imported directly by `useAuth`, `SettingsScreen`,
   `RootNavigator`) but intentionally **not** in the `components/index.ts` barrel.
 
+### Linux desktop gotchas (`app/linux_*.py`)
+
+The Linux shell (`linux_main.py` / `linux_overlay.py` / `linux_injector.py`) is a third desktop variant
+alongside mac and win. Rules established by hard failure:
+
+- **The venv MUST see system `gi` (PyGObject).** `python3-gi` is only installable system-wide, never into a
+  venv built with `include-system-site-packages = false`. Without it two things break silently and
+  unrelatedly: `pystray` falls back to the `_xorg` backend, where **`Icon.HAS_MENU is False`** and
+  `_update_menu()` is a `pass` — so the entire tray menu silently does not exist, the icon never docks
+  (XEmbed trays are not shown by GNOME/Wayland), and there is no way to quit — and `pywebview` finds no
+  GUI toolkit, so `SharedDashboard.show()` raises. With `gi` visible, `pystray` resolves
+  `_appindicator` (`HAS_MENU: True`) and `pywebview` resolves `webview.platforms.gtk`. Verify with
+  `python -c "import pystray; print(pystray.Icon.__module__, pystray.Icon.HAS_MENU)"`.
+- **Never hardcode an audio player.** `paplay` (pulseaudio-utils) is absent on PipeWire-only systems.
+  `_play_sound` probes `pw-play` → `paplay` → `aplay` → `ffplay` → `canberra-gtk-play` once, caches the
+  winner, and logs at WARNING if none resolve. `app/sounds.py` is macOS-only (`afplay`) and is deliberately
+  **not** reused here.
+- **`SharedDashboard.show()`'s guard does not cover Linux failure.** It try/excepts `import webview`, but
+  `import webview` succeeds — the backend resolution fails later, inside `webview.start()`. So the
+  `WinDashboard` tkinter fallback is unreachable dead code on Linux, and the exception escapes into the
+  caller (a pystray menu callback).
+- **The dashboard can only be opened from the MainThread.** `webview.start()` begins with an
+  unconditional `if threading.current_thread().name != 'MainThread': raise WebViewException`, so it is a
+  thread-affinity rule, not a backend one — no amount of try/except makes an off-thread call work. A tray
+  click is safe (appindicator invokes menu actions *from* the GTK main loop, which is the main thread,
+  since `start()` calls `Icon.run()` there), but `verbal --show` runs on the IPC accept thread and used to
+  fail with "pywebview must be run on a main thread" — the dashboard simply never appeared. Fix:
+  `_tray_open_dashboard()` checks the thread name and hands off with `GLib.idle_add(self._open_dashboard)`
+  (the callback returns `False` so the source fires once). A **nested** `webview.start()` inside the
+  already-running GTK loop is fine — GTK supports nested main loops and the tray stays responsive.
+- **Wayland breaks the X11 assumptions, mostly silently.** `xdotool getactivewindow getwindowname` exits
+  **0 with empty stdout** (Xwayland reports its own 1×1 focus proxy), so a `check=True` +
+  `if stdout.strip()` guard swallows it with no log and app attribution is permanently blank.
+  `pynput`/`pystray` `_xorg` backends and XRecord cannot observe global keys on Wayland at all — that is
+  the security model, so the global hotkey needs a GNOME custom keybinding → IPC or the
+  `org.freedesktop.portal.GlobalShortcuts` portal. Ctrl+V injection *does* reach clients because Mutter
+  launches Xwayland with `-enable-ei-portal` (routes XTEST via libei), but XTEST never reports delivery —
+  do not return unconditional success from the injector.
+- **`-topmost` is a silent no-op on an `overrideredirect` window** (no WM manages it, so
+  `_NET_WM_STATE_ABOVE` is never set). `-alpha` does work, but only once the window has been mapped —
+  setting it before the first `deiconify()` creates no opacity property.
+- **Processing cancellation stays set until the next recording starts.** ESC can race with the worker at
+  transcription, cleanup, and injection boundaries. `_reset_to_ready()` must not clear `_cancel_flag`, or
+  the UI thread can erase the cancellation before the worker observes it and the supposedly cancelled text
+  can still be pasted. An ESC reset also preserves `_processing=True` until the worker's `finally`, blocking
+  a rapid restart from clearing the shared flag while the cancelled worker is still alive.
+  `_on_record_start()` is the single place that clears the flag for a new operation.
+
 ## Verification checklist (run before considering a desktop change done)
 
 ```
 cd whisperflow
 .venv/bin/python -m py_compile app/<changed>.py
-.venv/bin/python -c "import app.main"
+.venv/bin/python -c "import app.main"       # mac/shared changes only — rumps is darwin-gated,
+                                            # so this CANNOT run on Linux
+.venv/bin/python -c "import app.linux_main" # for Linux-shell changes
 # for dashboard/widget JS changes: node --check each rendered <script> block
 .venv/bin/python autolearn_fixtures.py     # if autolearn touched
 .venv/bin/python qa_filetags_fixtures.py    # if filetags touched
