@@ -12,8 +12,12 @@ import { Linking } from 'react-native';
 import * as WebBrowser from 'expo-web-browser';
 import * as QueryParams from 'expo-auth-session/build/QueryParams';
 import { supabase, SUPABASE_URL, SUPABASE_ANON_KEY } from '../../lib/supabase';
-import { setUserId, setPairedUserId, setSyncEnabled, getDeviceName, getDeviceId, getStoredUserId, clearAccountData } from '../../lib/storage';
+import { setUserId, setPairedUserId, getDeviceName, getDeviceId, getStoredUserId, clearAccountData } from '../../lib/storage';
+import { setSyncEnabled } from '../../lib/syncStore';
+import { clearKeyboardConfig } from '../../lib/keyboardBridge';
+import * as recordings from '../../lib/recordings';
 import * as historyStore from './historyStore';
+import * as canvasStore from './useCanvas';
 import { notify } from '../components/ConfirmDialog';
 import { showDevicesSheet } from '../components/DevicesSyncSheet';
 
@@ -67,6 +71,36 @@ const _handledCodes = new Set<string>();
 let _explicitSignOut = false;
 let _hadUser = false;
 let _sessionExpired = false;
+// Sibling flag for MER-32 / IDI-170: after a SUCCESSFUL account deletion the app
+// teleports to Welcome exactly like a sign-out, with no confirmation that the
+// irreversible thing actually happened. Set on success, cleared on the next
+// sign-in; WelcomeScreen renders it and it outranks the expired notice.
+let _accountDeleted = false;
+
+/**
+ * Local teardown shared by signOut and deleteAccount (IDI-170).
+ *
+ * Every step is best-effort and must never throw — a failure here cannot be
+ * allowed to strand the user in a half-signed-out state.
+ *
+ * `wipeRecordings` is only true for deletion / an account switch: a plain
+ * sign-out keeps the local audio so the same user can still retry a failed
+ * dictation after signing back in.
+ */
+async function teardownLocalAccountState(wipeRecordings: boolean) {
+  try { await setSyncEnabled(false); } catch { /* ignore */ }
+  try { await clearAccountData(); } catch { /* ignore */ }
+  try { await historyStore.reset(); } catch { /* ignore */ }
+  try { canvasStore.reset(); } catch { /* ignore */ }
+  // clearAccountData() is AsyncStorage-only, so the native keyboard's snapshot
+  // (last 15 dictations + vocabulary + snippets) outlived it. Wiped here rather
+  // than inside clearAccountData because keyboardBridge imports lib/storage —
+  // calling it from there would be an import cycle.
+  try { await clearKeyboardConfig(); } catch { /* ignore */ }
+  if (wipeRecordings) {
+    try { await recordings.removeAll(); } catch { /* ignore */ }
+  }
+}
 
 /** Turn a returned OAuth deep link into a Supabase session.
  *  Handles PKCE (`?code=`) and, as a fallback, implicit (`#access_token=`). */
@@ -101,6 +135,12 @@ async function afterSignIn(session: any) {
   if (prev && prev !== uid) {
     try { await clearAccountData(); } catch { /* ignore */ }
     try { await historyStore.reset(); } catch { /* ignore */ }
+    // Canvas kept the previous account's board + a channel keyed to the old uid.
+    try { canvasStore.reset(); } catch { /* ignore */ }
+    // …and the previous account's audio files sat in documentDirectory, where
+    // the new account's History could still play them (IDI-170).
+    try { await recordings.removeAll(); } catch { /* ignore */ }
+    try { await clearKeyboardConfig(); } catch { /* ignore */ }
   }
   // A real sign-in supersedes any paired-account override (IDI-156) — the
   // session is now the identity. (An override to a DIFFERENT account was
@@ -145,6 +185,7 @@ export function useAuth() {
   const [user, setUser] = useState<User | null>(null);
   const [isLoading, setLoading] = useState(true);
   const [sessionExpired, setSessionExpired] = useState(_sessionExpired);
+  const [accountDeleted, setAccountDeleted] = useState(_accountDeleted);
 
   useEffect(() => {
     let mounted = true;
@@ -157,6 +198,7 @@ export function useAuth() {
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_e, session) => {
       if (session?.user) {
         _hadUser = true; _explicitSignOut = false; _sessionExpired = false;
+        _accountDeleted = false;   // shown once — a new sign-in retires the notice
       } else if (_hadUser && !_explicitSignOut) {
         // Session died out from under a signed-in user — surface it on Welcome
         // instead of a silent teleport.
@@ -165,6 +207,7 @@ export function useAuth() {
       if (mounted) {
         setUser(session?.user ? fromSupabaseUser(session.user) : null);
         setSessionExpired(_sessionExpired);
+        setAccountDeleted(_accountDeleted);
       }
     });
 
@@ -224,11 +267,11 @@ export function useAuth() {
     // in every useAuth instance → RootNavigator flips to Welcome.
     _explicitSignOut = true;   // intentional — don't show "session expired"
     try { await supabase.auth.signOut({ scope: 'local' }); } catch { /* ignore */ }
-    try { await setSyncEnabled(false); } catch { /* ignore */ }
-    // Clear all account-scoped caches + tear down the history singleton so the
-    // next account that signs in on this device starts clean (no data leak).
-    try { await clearAccountData(); } catch { /* ignore */ }
-    try { await historyStore.reset(); } catch { /* ignore */ }
+    // Clear all account-scoped caches, tear down the history + canvas singletons
+    // and empty the native keyboard's snapshot so the next account that signs in
+    // on this device starts clean (no data leak). Local audio survives a plain
+    // sign-out — see teardownLocalAccountState.
+    await teardownLocalAccountState(false);
     setUser(null);
   }, []);
 
@@ -252,10 +295,13 @@ export function useAuth() {
       return { ok: false, error: e?.message || String(e) };
     }
     _explicitSignOut = true;   // intentional — don't show "session expired"
+    _accountDeleted = true;    // …show "Your account has been deleted." instead
     try { await supabase.auth.signOut({ scope: 'local' }); } catch { /* ignore */ }
-    try { await setSyncEnabled(false); } catch { /* ignore */ }
-    try { await clearAccountData(); } catch { /* ignore */ }
-    try { await historyStore.reset(); } catch { /* ignore */ }
+    // Same teardown as signOut PLUS the local recordings directory: the Edge
+    // Function erased the cloud copies, but the on-device audio would otherwise
+    // outlive the deleted account indefinitely (IDI-170).
+    await teardownLocalAccountState(true);
+    setAccountDeleted(true);
     setUser(null);
     return { ok: true };
   }, []);
@@ -265,6 +311,9 @@ export function useAuth() {
     isLoading,
     /** True when the session died involuntarily (expired/revoked) — shown on Welcome. */
     sessionExpired,
+    /** True right after a successful account deletion — shown on Welcome, and it
+     *  takes precedence over sessionExpired. Cleared by the next sign-in. */
+    accountDeleted,
     signInWithGoogle,
     signInWithApple: notAvailable,
     signInWithEmail: notAvailable,

@@ -81,6 +81,13 @@ body{background:var(--bg);font-family:'Geist',-apple-system,system-ui,sans-serif
 .siErr[hidden]{display:none}
 .siErr .ebang{flex:none;width:16px;height:16px;border-radius:50%;background:rgba(224,80,73,.16);
   color:#f0a5a0;display:flex;align-items:center;justify-content:center;font:700 10px 'Geist';margin-top:1px}
+/* Neutral one-shot notice on the same pane (IDI-170) — "Your account has been
+   deleted." is confirmation, not an error, so it must NOT read as red/failed. */
+.siNote{display:flex;align-items:flex-start;gap:9px;margin-top:12px;max-width:400px;
+  font:500 12.5px/1.5 'Geist';color:var(--mut)}
+.siNote[hidden]{display:none}
+.siNote .ntick{flex:none;width:16px;height:16px;border-radius:50%;background:rgba(242,242,242,.10);
+  color:var(--tx);display:flex;align-items:center;justify-content:center;font:700 9px 'Geist';margin-top:1px}
 .siCancel{background:0;border:0;color:var(--mut);cursor:pointer;font:500 13px 'Geist';
   padding:14px 0 0;text-align:left;max-width:400px}
 .siCancel[hidden]{display:none}
@@ -511,6 +518,7 @@ def flume_html() -> str:
         <p class="siSub">Continue with Google — we'll match you across your devices.</p>
         <button class="siGoogle" id="siGoogleBtn" onclick="signInGoogle()">{_googleg}<span id="siGoogleLbl">Continue with Google</span></button>
         <div class="siErr" id="siErr" hidden><span class="ebang">!</span><span id="siErrTx"></span></div>
+        <div class="siNote" id="siNote" hidden><span class="ntick">&#10003;</span><span id="siNoteTx"></span></div>
         <button class="siCancel" id="siCancelBtn" hidden onclick="cancelSignIn()">Cancel and try again</button>
         <p class="siTerms">By continuing you agree to our Terms and Privacy.</p>
       </div>
@@ -1990,20 +1998,28 @@ function renderSignin(){
   const b=document.getElementById('siGoogleBtn'), lbl=document.getElementById('siGoogleLbl');
   const err=document.getElementById('siErr'), errtx=document.getElementById('siErrTx');
   const cancel=document.getElementById('siCancelBtn');
+  const note=document.getElementById('siNote'), notetx=document.getElementById('siNoteTx');
   if(!b) return;
   const msg=(STATE&&STATE.auth_error)||'';
+  // Non-error confirmation on the signed-out screen (IDI-170) — today only
+  // "Your account has been deleted.", so the sign-in wall doesn't read as a
+  // failed deletion. Suppressed the moment a real error exists, and cleared
+  // when the next attempt starts.
+  const notice=(!msg && !SIGNIN_BUSY && STATE && STATE.auth_notice) || '';
   if(msg) SIGNIN_BUSY=false;            // an error means the attempt is over
   b.disabled=SIGNIN_BUSY;
   if(lbl) lbl.textContent = SIGNIN_BUSY ? 'Waiting for your browser…'
                           : (msg ? 'Try again with Google' : 'Continue with Google');
   if(err) err.hidden=!msg;
   if(errtx) errtx.textContent=msg;
+  if(note) note.hidden=!notice;
+  if(notetx) notetx.textContent=notice;
   if(cancel) cancel.hidden=!SIGNIN_BUSY;
 }
 function signInGoogle(){
   if(SIGNIN_BUSY) return;
   SIGNIN_BUSY=true;
-  if(STATE) STATE.auth_error='';
+  if(STATE){ STATE.auth_error=''; STATE.auth_notice=''; }
   renderSignin();
   api('sign_in_google').then(r=>{
     if(!r || r.ok===false){

@@ -40,3 +40,8 @@ create policy "Users access own transcriptions" on public.transcriptions
 -- INSERT/UPDATE filtered by user_id (verbal_history_<uid>). Already enabled
 -- live; if reproducing this table from scratch, also run:
 --   alter publication supabase_realtime add table public.transcriptions;
+
+-- IDI-172 (2026-08, live migration `transcriptions_deleted_at_tombstone`):
+-- history deletes are soft — deleted_at set + text cleared, never a hard
+-- DELETE — so every device's merge removes its copy and nothing resurrects.
+alter table public.transcriptions add column if not exists deleted_at timestamptz;

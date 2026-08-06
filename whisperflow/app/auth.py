@@ -195,6 +195,22 @@ def _store_session(session):
         "expires_at": time.time() + session.get("expires_in", 3600),
     }
     cfg = load_config()
+    # ── Account switch → wipe the previous account's local caches (IDI-170) ──
+    # Mobile has had this guard since MER (Hard Rule #13); desktop did not, so a
+    # SECOND Google account signing in on the same Mac inherited the first
+    # account's history/pinned/notes/meetings/dictionary/voice-prints (and then
+    # re-uploaded them under the new user_id). Everything account-scoped goes —
+    # including the on-disk recordings/meeting audio of the OLD account — while
+    # device-level config (Groq keys, hotkeys, device name, feature prefs) stays.
+    prev_uid = ((cfg.get("auth") or {}).get("user_id") or ""
+                or (cfg.get("sync_user_id") or ""))
+    if auth["user_id"] and prev_uid and prev_uid != auth["user_id"]:
+        logger.info("Account switch detected (%s… → %s…) — wiping local caches",
+                    prev_uid[:8], auth["user_id"][:8])
+        try:
+            _clear_account_caches(cfg)
+        except Exception as e:
+            logger.warning("account-switch wipe failed: %s", e)
     cfg["auth"] = auth
     # key all synced data by the real user id
     if auth["user_id"]:
@@ -243,11 +259,74 @@ def session_dead(cfg: dict | None = None) -> bool:
         return False
 
 
+def cloud_allowed(cfg: dict | None = None) -> bool:
+    """True when this desktop may talk to the cloud ON BEHALF OF AN ACCOUNT
+    (IDI-170).
+
+    Every cloud path here historically gated on `sync_user_id` alone, which
+    SURVIVED sign-out — so post-sign-out edits kept POSTing into the account
+    the user had just left. `sign_out()` now clears that id; this helper is the
+    belt-and-braces second gate, ANDed in at each call site.
+
+    Identity is taken from `current_user()` (a real stored session), not from
+    `sync_user_id`: the paired-desktop case that used to have an adopted
+    `sync_user_id` without an `auth` dict no longer exists — desktop only ever
+    HOSTS a pairing, and hosting requires being signed in (Hard Rule #26).
+
+    NOT gated on `session_dead`: a dead refresh token keeps the identity and
+    falls back to the anon key by design (Hard Rule #24 / IDI-166). Denying
+    cloud access there would re-break "can't open meeting notes", which is the
+    exact bug that rule exists to prevent. When RLS tightens to `auth.uid()`,
+    this is where the extra `and not session_dead(cfg)` belongs.
+    """
+    try:
+        cfg = cfg if cfg is not None else load_config()
+        return bool((cfg.get("auth") or {}).get("user_id"))
+    except Exception:
+        return False
+
+
+def _delete_device_row_async(user_id: str, headers: dict | None) -> None:
+    """Best-effort: remove THIS device's `devices` row so the account's other
+    devices stop showing a signed-out Mac (IDI-170). Runs off-thread — sign-out
+    must never block on the network. Headers are captured by the caller while
+    the session still exists."""
+    def work():
+        try:
+            from app.sync import delete_device_presence
+            delete_device_presence(user_id, headers=headers)
+        except Exception as e:
+            logger.debug("device row delete skipped: %s", e)
+    try:
+        threading.Thread(target=work, daemon=True).start()
+    except Exception as e:
+        logger.debug("device row delete dispatch failed: %s", e)
+
+
 def sign_out():
+    """Sign out: drop the session AND stop acting as this account's device.
+
+    Clearing `sync_user_id` is load-bearing, not cosmetic — see
+    `cloud_allowed()`. Local caches are deliberately KEPT (re-signing in as the
+    same user finds their data intact); the account-switch case is handled in
+    `_store_session`, full destruction in `wipe_local_account_data`."""
     cfg = load_config()
+    prev = cfg.get("auth") or {}
+    user_id = prev.get("user_id") or cfg.get("sync_user_id") or ""
+    # Grab REST headers while we still hold a session — the DELETE below runs
+    # after the local teardown has already dropped the tokens.
+    try:
+        headers = auth_header(cfg) if user_id else None
+    except Exception:
+        headers = None
     cfg.pop("auth", None)
     cfg["sync_enabled"] = False
+    cfg["sync_user_id"] = ""
     save_config(cfg)
+    global _dead_session
+    _dead_session = False   # no session at all now; a re-sign-in starts clean
+    if user_id:
+        _delete_device_row_async(user_id, headers)
     logger.info("Signed out")
 
 
@@ -283,30 +362,32 @@ def delete_account_remote(cfg: dict | None = None) -> dict:
     return {"ok": False, "error": data.get("error") or f"HTTP {resp.status_code}"}
 
 
-def wipe_local_account_data(cfg: dict | None = None) -> None:
-    """Full local teardown after a successful account deletion. Deliberately
-    goes further than `sign_out()` (which keeps local caches so re-signing in
-    as the same user finds their data still there) — MER-32 requires nothing
-    of the deleted account surviving on-device: history, pinned items, local
-    notes/meetings cache, the local dictionary, and cached recording/meeting
-    audio files all go."""
-    cfg = cfg if cfg is not None else load_config()
-    cfg.pop("auth", None)
-    cfg["sync_enabled"] = False
-    cfg["sync_user_id"] = ""
+def _clear_account_caches(cfg: dict) -> None:
+    """Drop every ACCOUNT-SCOPED local cache, mutating `cfg` IN PLACE and
+    without saving. Auth/identity keys are deliberately left alone so the
+    caller decides whether this is a sign-out, a deletion, or an account
+    switch. Also removes the on-disk recording/meeting audio.
+
+    Device-level config (Groq/Gemini keys, hotkeys, device name, feature
+    flags) is preserved — same split as mobile's `clearAccountData()`
+    (Hard Rule #13)."""
     cfg["history"] = []
     cfg["pinned"] = []
     cfg["notes"] = []
     cfg["meetings"] = []
+    cfg["meetings_opened"] = []
     cfg["dictionary"] = {}
-    save_config(cfg)
+    # Voice fingerprints are local-only biometric-adjacent data (Hard Rule #18)
+    # keyed to the people in THIS account's meetings — they must not survive
+    # into another account, or past a deletion.
+    cfg["voice_prints"] = {}
     try:
         import shutil
         from app.recordings import RECORDINGS_DIR
         if RECORDINGS_DIR.exists():
             shutil.rmtree(RECORDINGS_DIR, ignore_errors=True)
     except Exception as e:
-        logger.debug("wipe_local_account_data: recordings cleanup skipped: %s", e)
+        logger.debug("account wipe: recordings cleanup skipped: %s", e)
     try:
         import os
         import shutil
@@ -314,7 +395,29 @@ def wipe_local_account_data(cfg: dict | None = None) -> None:
         if os.path.isdir(meetings_dir):
             shutil.rmtree(meetings_dir, ignore_errors=True)
     except Exception as e:
-        logger.debug("wipe_local_account_data: meetings cleanup skipped: %s", e)
+        logger.debug("account wipe: meetings cleanup skipped: %s", e)
+
+
+def wipe_local_account_data(cfg: dict | None = None) -> None:
+    """Full local teardown after a successful account deletion. Deliberately
+    goes further than `sign_out()` (which keeps local caches so re-signing in
+    as the same user finds their data still there) — MER-32 requires nothing
+    of the deleted account surviving on-device: history, pinned items, local
+    notes/meetings cache, the local dictionary, voice prints, and cached
+    recording/meeting audio files all go.
+
+    **Pass the LIVE config object** when the caller has one (IDI-170). With no
+    argument this re-reads from disk, and the caller's in-memory
+    `app.config` — which still holds auth + history — resurrects everything
+    the moment any other thread fires `save_config(app.config)`. Given a live
+    dict we mutate it in place, so a concurrent save writes the WIPED state.
+    """
+    cfg = cfg if cfg is not None else load_config()
+    cfg.pop("auth", None)
+    cfg["sync_enabled"] = False
+    cfg["sync_user_id"] = ""
+    _clear_account_caches(cfg)
+    save_config(cfg)
     logger.info("Local account data wiped")
 
 

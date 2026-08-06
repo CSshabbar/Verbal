@@ -103,6 +103,9 @@ class VerbalApp(rumps.App):
         # Last interactive sign-in failure, surfaced in the dashboard's sign-in
         # pane via get_state (IDI-166). "" = nothing to report.
         self._auth_error = ""
+        # One-shot informational message for the SAME pane (IDI-170) — e.g.
+        # "Your account has been deleted." Cleared when a new sign-in starts.
+        self._auth_notice = ""
 
         history = self.config.get("history", [])
         self._total_transcriptions = len(history)
@@ -281,6 +284,7 @@ class VerbalApp(rumps.App):
         threading.Thread(target=self._preload_model, daemon=True).start()
         threading.Thread(target=self._check_update, daemon=True).start()
         threading.Thread(target=self._load_dictionary_once, daemon=True).start()
+        threading.Thread(target=self._presence_loop, daemon=True).start()
 
         # No bare accessibility prompt at launch (IDI-166): the onboarding
         # wizard's permission step asks for Accessibility WITH context
@@ -315,9 +319,41 @@ class VerbalApp(rumps.App):
         # Cloud transcription is primary — local model loads on first fallback use
         logger.info("Transcription: Groq (primary) -> Gemini (fallback) -> Local Whisper")
 
+    PRESENCE_INTERVAL = 30
+
+    def _presence_loop(self):
+        """APP-level device heartbeat (IDI-177).
+
+        This used to ride `FlumeWebDashboard._device_refresh_loop`, whose
+        condition is `while self._window is not None` — so closing the
+        dashboard silently stopped the heartbeat and the Mac showed Offline to
+        every other device within ~5 min. Presence is an app fact, not a
+        window fact, so it lives here: a daemon thread, every 30 s, gated on
+        being SIGNED IN (not on `sync_user_id`, which used to survive
+        sign-out). Fail-closed — it can never raise into the app."""
+        import platform
+        while True:
+            try:
+                user = auth.current_user()
+                if user:
+                    from app.sync import register_device_presence
+                    device_id = (self._sync.device_id if self._sync
+                                 else platform.node())
+                    register_device_presence(
+                        user.get("user_id", ""), device_id,
+                        self.config.get("sync_device_name") or platform.node())
+            except Exception as e:
+                logger.debug(f"presence heartbeat skipped: {e}")
+            time.sleep(self.PRESENCE_INTERVAL)
+
     def _init_sync(self):
         """Start sync client if enabled in config."""
         if not self.config.get("sync_enabled"):
+            return
+        # IDI-170/171: the user toggle alone isn't enough — a signed-out app
+        # must never open a realtime channel on the ex-account's user_id.
+        if not auth.cloud_allowed(self.config):
+            logger.info("Sync: not signed in, skipping")
             return
         user_id = self.config.get("sync_user_id", "").strip()
         if not user_id:
@@ -410,6 +446,7 @@ class VerbalApp(rumps.App):
         # Clear any previous failure the moment a new attempt starts, and push
         # it so the pane shows "Opening browser…" instead of the stale error.
         self._auth_error = ""
+        self._auth_notice = ""   # the "account deleted" notice is one-shot
         self._push_auth_state()
 
         def work():
@@ -443,7 +480,13 @@ class VerbalApp(rumps.App):
 
     def _after_sign_in(self, auth_info):
         self._auth_error = ""
+        self._auth_notice = ""
         self.config = load_config()  # picks up sync_user_id set during sign-in
+        # An account SWITCH wiped the previous account's caches inside
+        # auth._store_session — drop the stale in-memory counters too.
+        history = self.config.get("history", [])
+        self._total_transcriptions = len(history)
+        self._total_words = sum(len(_entry_text(h).split()) for h in history)
         self._update_auth_menu()
         threading.Thread(target=self._detect_and_prompt, args=(auth_info,), daemon=True).start()
 
@@ -485,14 +528,29 @@ class VerbalApp(rumps.App):
         except Exception:
             pass
 
+    def _stop_active_meeting(self, reason=""):
+        """Best-effort stop of an in-flight meeting capture. Same path the
+        meeting UI's Stop uses (`MeetingManager.stop_async` → the session's
+        stop on a worker thread), so the transcript/summary still finalize."""
+        try:
+            if self.meetings and self.meetings.active:
+                logger.info("Stopping active meeting (%s)", reason or "sign-out")
+                self.meetings.stop_async()
+        except Exception as e:
+            logger.debug(f"meeting stop on {reason or 'sign-out'} skipped: {e}")
+
     def _sign_out(self, _=None):
+        # Sign-out must stop ACTIVE work, not just the sync socket (IDI-170):
+        # a meeting left recording keeps capturing audio and then tries to
+        # upload/patch rows for an account this device no longer owns.
+        self._stop_active_meeting("sign-out")
         if self._sync:
             try:
                 self._sync.stop()
             except Exception:
                 pass
             self._sync = None
-        auth.sign_out()
+        auth.sign_out()   # also clears sync_user_id + deletes our devices row
         self.config = load_config()
         self._update_auth_menu()
         try:
@@ -1027,7 +1085,10 @@ class VerbalApp(rumps.App):
         def work():
             try:
                 user_id = self.config.get("sync_user_id", "")
-                if not user_id or not local_path:
+                # Recording uploads are a CAPTURE artifact, so they follow
+                # `cloud_allowed` (signed in) and NOT the `sync_enabled`
+                # toggle — but they must stop dead at sign-out (IDI-170/171).
+                if not user_id or not local_path or not auth.cloud_allowed(self.config):
                     return
                 url = recordings.upload_cloud(local_path, user_id, rec_id)
                 if url:

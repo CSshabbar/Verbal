@@ -40,6 +40,27 @@ def _session_dead(cfg) -> bool:
         return False
 
 
+def _cloud_allowed(cfg=None) -> bool:
+    """`auth.cloud_allowed` behind a fail-closed wrapper (IDI-170). False when
+    signed out — every cloud path must AND this in, because `sync_user_id`
+    alone used to survive sign-out and kept writing into the ex-account."""
+    try:
+        from app import auth as _auth
+        return bool(_auth.cloud_allowed(cfg))
+    except Exception:
+        return False
+
+
+# Shown once on the signed-out pane after a successful account deletion so the
+# user doesn't read the sign-in wall as "deletion failed" (IDI-170).
+ACCOUNT_DELETED_MSG = "Your account has been deleted."
+
+# What the user-facing sync TOGGLE gates (IDI-171): history, notes, canvas and
+# dictionary are "sync". Meetings + recording uploads are CAPTURE artifacts and
+# stay gated on `cloud_allowed` alone — mirrored on mobile.
+SYNC_OFF_MSG = "Sync is off — turn it on in Settings."
+
+
 def _ok(**data):
     return {"ok": True, **data}
 
@@ -242,6 +263,15 @@ class SharedDashboard:
         except Exception as e:
             logger.debug(f"Dashboard emit failed: {e}")
 
+    def _cloud_sync_on(self) -> bool:
+        """The uniform desktop sync gate (IDI-171): user toggle AND signed in
+        AND we have an account id. Applies to history/notes/canvas/dictionary —
+        NOT to meetings/recording uploads (capture artifacts, `_cloud_allowed`
+        only)."""
+        cfg = self.app.config
+        return bool(cfg.get("sync_user_id") and cfg.get("sync_enabled")
+                    and _cloud_allowed(cfg))
+
     def _device_refresh_loop(self):
         while True:
             try:
@@ -254,16 +284,18 @@ class SharedDashboard:
         cfg = self.app.config
         user_id = cfg.get("sync_user_id", "")
         # List devices whenever SIGNED IN — not gated on the live SyncClient, so a
-        # signed-in-but-sync-off device still shows its account's other devices and
-        # heartbeats its own presence (mirrors flume_web_dashboard._load_devices).
-        if not user_id:
+        # signed-in-but-sync-off device still shows its account's other devices
+        # (mirrors flume_web_dashboard._load_devices).
+        # This loop no longer HEARTBEATS: presence moved to the app-level
+        # `win_main._presence_loop` so closing/never-opening the dashboard can't
+        # make this device look Offline to the others (IDI-177).
+        if not user_id or not _cloud_allowed(cfg):
             self._known_devices = []
             return
         import platform
-        from app.sync import fetch_account_devices, register_device_presence
+        from app.sync import fetch_account_devices
 
         my_id = self.app._sync.device_id if getattr(self.app, "_sync", None) else platform.node()
-        register_device_presence(user_id, my_id, cfg.get("sync_device_name") or platform.node())
         devices = fetch_account_devices(user_id, my_id)
         self._known_devices = devices
         # Ensure our target_device_id is still valid if it was a specific device
@@ -330,7 +362,9 @@ class SharedDashboard:
 
         user_id = self.app.config.get("sync_user_id", "")
         device_name = self.app.config.get("sync_device_name", "Windows")
-        if not user_id:
+        # Canvas is "sync" (IDI-171): the user toggle gates it, and being
+        # signed in gates it again.
+        if not user_id or not self._cloud_sync_on():
             time.sleep(5)
             return
 
@@ -480,6 +514,10 @@ class DashboardApi:
             # Last interactive sign-in failure. The sign-in pane renders from
             # this, so a cancel/timeout can never latch the button again.
             auth_error=getattr(self.app, "_auth_error", "") or "",
+            # Non-error one-shot message for the same pane — currently only
+            # "Your account has been deleted." (IDI-170). Cleared when the next
+            # sign-in attempt starts, same mechanism as auth_error.
+            auth_notice=getattr(self.app, "_auth_notice", "") or "",
             user=({"email": cfg["auth"].get("email", ""),
                    "name": cfg["auth"].get("name", ""),
                    "avatar_url": cfg["auth"].get("avatar_url", "")}
@@ -1019,7 +1057,28 @@ class DashboardApi:
             return {"ok": False,
                     "error": result.get("error", "Deletion failed — please try again"),
                     "session_dead": bool(result.get("session_dead"))}
-        wipe_local_account_data()
+        # Stop anything still producing data for the account we just deleted,
+        # BEFORE the wipe — otherwise a draining meeting worker re-saves rows
+        # into the config we are about to clear (IDI-170).
+        try:
+            if hasattr(self.app, "_stop_active_meeting"):
+                self.app._stop_active_meeting("account deletion")
+        except Exception as e:
+            logger.debug(f"meeting stop before wipe skipped: {e}")
+        # Wipe the LIVE config object, synchronously, right here. Passing no
+        # cfg made `wipe_local_account_data` re-read from disk while
+        # `self.app.config` still held auth + history in memory — any
+        # concurrent `save_config(self.app.config)` (history append, device
+        # refresh, note save) then RESURRECTED the deleted account's data.
+        # Mutating the live dict first means a racing save writes the wiped
+        # state instead. Only then do we hand off to _sign_out, which reloads
+        # config from the already-wiped file.
+        wipe_local_account_data(self.app.config)
+        try:
+            self.app._auth_notice = ACCOUNT_DELETED_MSG
+            self.app._auth_error = ""
+        except Exception:
+            pass
         if hasattr(self.app, "_sign_out"):
             self.app._on_main(self.app._sign_out)
         return _ok()
@@ -1221,7 +1280,12 @@ class DashboardApi:
         save_config(self.app.config)
 
     def _sync_on(self):
-        return bool(self.app.config.get("sync_user_id", "") and self.app.config.get("sync_enabled"))
+        """Notes/canvas/dictionary/history sync gate — the user toggle AND a
+        real signed-in account (IDI-170/171). `sync_user_id` alone survived
+        sign-out, so it can't be the only check."""
+        cfg = self.app.config
+        return bool(cfg.get("sync_user_id", "") and cfg.get("sync_enabled")
+                    and _cloud_allowed(cfg))
 
     def fetch_notes(self):
         notes = list(self._local_notes())
@@ -1483,7 +1547,9 @@ class DashboardApi:
             "created_at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
         }
         user_id = self.app.config.get("sync_user_id", "")
-        if user_id:
+        # A recording is a CAPTURE artifact — signed-in gate only, no toggle
+        # (IDI-171 decision), but it must stop at sign-out (IDI-170).
+        if user_id and _cloud_allowed(self.app.config):
             def _upload():
                 try:
                     url = recordings.upload_cloud(local_path, user_id, rec_id)
@@ -1554,8 +1620,8 @@ class DashboardApi:
             from app.sync import SUPABASE_URL
             from app.auth import auth_header
             user_id = self.app.config.get("sync_user_id", "")
-            if not user_id:
-                return _err("Set User ID in Settings first")
+            if not user_id or not self._sync_on():
+                return _err(SYNC_OFF_MSG)
             notes_resp = httpx.get(
                 f"{SUPABASE_URL}/rest/v1/notes",
                 headers=auth_header(self.app.config),
@@ -1839,8 +1905,10 @@ class DashboardApi:
             from app.auth import auth_header
 
             user_id = self.app.config.get("sync_user_id", "")
-            if not user_id:
-                return _ok(content="", image_url=None, status="Set User ID in Settings first")
+            if not user_id or not _cloud_allowed(self.app.config):
+                return _ok(content="", image_url=None, status="Sign in to use Canvas")
+            if not self._sync_on():
+                return _ok(content="", image_url=None, status=SYNC_OFF_MSG)
             resp = httpx.get(
                 f"{SUPABASE_URL}/rest/v1/canvas",
                 headers=auth_header(self.app.config),
@@ -1864,8 +1932,10 @@ class DashboardApi:
             from app.auth import auth_header
 
             user_id = self.app.config.get("sync_user_id", "")
-            if not user_id:
-                return _err("Set User ID in Settings first")
+            if not user_id or not _cloud_allowed(self.app.config):
+                return _err("Sign in to use Canvas")
+            if not self._sync_on():
+                return _err(SYNC_OFF_MSG)
             resp = httpx.post(
                 f"{SUPABASE_URL}/rest/v1/canvas?on_conflict=user_id",
                 headers={
@@ -1999,8 +2069,8 @@ class DashboardApi:
         from app.sync import SUPABASE_KEY, SUPABASE_URL
 
         user_id = self.app.config.get("sync_user_id", "")
-        if not user_id:
-            return _err("Set User ID in Settings first")
+        if not user_id or not self._sync_on():
+            return _err("Sign in and turn on sync to use Canvas images")
         mime = "image/jpeg" if ext in ("jpg", "jpeg") else f"image/{ext}"
         path = f"canvas/{user_id}_{int(time.time())}.{ext}"
         upload = httpx.post(

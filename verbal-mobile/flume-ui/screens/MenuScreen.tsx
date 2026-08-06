@@ -1,11 +1,11 @@
-import React, { useEffect, useState } from 'react';
+import React from 'react';
 import { View, StyleSheet, ScrollView, Switch, Pressable, Alert } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { Text, ListRow } from '../components';
 import { colors, pressedStyle } from '../theme';
 import { useAuth } from '../hooks/useAuth';
-import { getSyncEnabled, setSyncEnabled } from '../../lib/storage';
+import { useSyncEnabled, setSyncEnabled } from '../hooks/useSyncEnabled';
 
 type Props = {
   onClose: () => void;
@@ -25,11 +25,11 @@ export const MenuScreen: React.FC<Props> = ({
 }) => {
   const insets = useSafeAreaInsets();
   const { user, signOut } = useAuth();
-  const [sync, setSync] = useState(false);
-
-  useEffect(() => { (async () => setSync(await getSyncEnabled()))(); }, []);
-
-  const toggleSync = async (v: boolean) => { setSync(v); await setSyncEnabled(v); };
+  // The ONE sync store (IDI-171) — same value Settings and the Devices self-row
+  // show, and writing it takes effect immediately (catch-up / channel teardown)
+  // instead of waiting for the next app launch.
+  const sync = useSyncEnabled();
+  const toggleSync = (v: boolean) => { setSyncEnabled(v); };
 
   const confirmSignOut = () => {
     // Native Alert: Menu is a native-stack modal, and a JS <Modal> over it doesn't

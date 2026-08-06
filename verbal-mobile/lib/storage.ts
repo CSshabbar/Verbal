@@ -9,7 +9,8 @@ const KEYS = {
   // write-back reverts the adoption milliseconds after the claim.
   PAIRED_UID:  'verbal_paired_user_id',
   DEVICE_NAME: 'verbal_device_name',
-  SYNC_ON:     'verbal_sync_enabled',
+  // NOTE: the sync flag's key lives in lib/syncStore — the single source of
+  // truth (IDI-171). getSyncEnabled/setSyncEnabled are re-exported below.
   HISTORY:     'verbal_history',
   PINNED:      'verbal_pinned',
   // Notes v2 per-user feature flags (Design Decision 4). Default ON.
@@ -99,6 +100,13 @@ export async function getStoredUserId(): Promise<string | null> {
 // getUserId() mints a fresh local id. Device-level config (Groq key, device name,
 // Notes feature-flag prefs) is intentionally preserved. Call on sign-out and on
 // an account change.
+//
+// NOT wiped here (IDI-170): the native keyboard's `flume_kbd_config.json`
+// snapshot (last 15 dictations + vocabulary + snippets). keyboardBridge imports
+// THIS module, so calling keyboardBridge.clearKeyboardConfig() from here would
+// be an import cycle — useAuth's signOut/deleteAccount call it right after
+// clearAccountData() instead. Likewise the local recordings directory, which
+// only account DELETION removes (recordings.removeAll(), also from useAuth).
 export async function clearAccountData(): Promise<void> {
   await AsyncStorage.multiRemove([
     KEYS.USER_ID,           // verbal_user_id
@@ -132,12 +140,11 @@ export async function getDeviceId(): Promise<string> {
 // in the live schema, so the empty-key gate falsely failed every dictation.
 
 // ── Sync ──────────────────────────────────────────────────────────────────────
-export async function getSyncEnabled(): Promise<boolean> {
-  return (await AsyncStorage.getItem(KEYS.SYNC_ON)) === 'true';
-}
-export async function setSyncEnabled(val: boolean) {
-  await AsyncStorage.setItem(KEYS.SYNC_ON, val ? 'true' : 'false');
-}
+// Delegated to lib/syncStore (IDI-171) so the toggle has ONE owner: one
+// persistence key, one cache, one set of listeners. Re-exported here purely for
+// backwards compatibility with the existing `from '../../lib/storage'` imports —
+// new code should import from './syncStore' (or the useSyncEnabled hook) directly.
+export { getSyncEnabled, setSyncEnabled } from './syncStore';
 
 // Absent key reads as ON, same convention as the Notes feature flags below.
 export async function getClipboardHistoryEnabled(): Promise<boolean> {

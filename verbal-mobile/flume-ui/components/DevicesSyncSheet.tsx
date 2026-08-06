@@ -3,8 +3,10 @@
  *
  * Shown right after sign-in (and reachable from Settings). Lists every device on
  * the account with a PER-DEVICE sync switch, backed by the cloud
- * `devices.sync_enabled` column. Toggling THIS device also mirrors to the local
- * `verbal_sync_enabled` flag that `lib/useSync` reads, so sync reacts immediately.
+ * `devices.sync_enabled` column. Toggling THIS device also writes the local sync
+ * store (lib/syncStore), which is what actually gates realtime here — so this
+ * sheet, the Menu toggle, the Settings toggle and the Devices screen self-row
+ * all show one value and a flip anywhere takes effect immediately (IDI-171).
  *
  * Imperative, like ConfirmDialog:
  *   import { showDevicesSheet } from '../components/DevicesSyncSheet';
@@ -19,6 +21,7 @@ import { colors, radius, pressedStyle } from '../theme';
 import {
   fetchAccountDevices, setDeviceSync, isDeviceOnline, AccountDevice,
 } from '../../lib/deviceSync';
+import { useSyncEnabled } from '../hooks/useSyncEnabled';
 
 let _open: (() => Promise<void>) | null = null;
 
@@ -38,6 +41,9 @@ export const DevicesSyncHost: React.FC = () => {
   const [visible, setVisible] = useState(false);
   const [resolver, setResolver] = useState<(() => void) | null>(null);
   const [rows, setRows] = useState<AccountDevice[] | null>(null);
+  // Self-row follows the local store, not the cloud snapshot — same rule as
+  // DevicesScreen, so the two can't show different things for this device.
+  const localSync = useSyncEnabled();
 
   useEffect(() => {
     _open = () =>
@@ -101,7 +107,7 @@ export const DevicesSyncHost: React.FC = () => {
                     </View>
                   </View>
                   <Switch
-                    value={r.syncEnabled}
+                    value={r.isSelf ? localSync : r.syncEnabled}
                     onValueChange={(v) => toggle(r, v)}
                     trackColor={{ true: colors.primary, false: colors.surface3 }}
                     thumbColor="#fff"

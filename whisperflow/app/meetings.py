@@ -38,6 +38,26 @@ from app.config import save_config, MEETINGS_CAP
 
 logger = logging.getLogger("verbal.meetings")
 
+
+def _cloud_gate(cfg) -> bool:
+    """May this meeting talk to Supabase for the current account? (IDI-170)
+
+    `sync_user_id` alone is NOT enough: it used to survive `sign_out()`, so
+    every meeting insert/patch/upload here kept writing into the account the
+    user had just left. Both halves are required — an account id to key the
+    rows by AND a real signed-in session (`auth.cloud_allowed`).
+
+    Meetings are deliberately NOT gated on the `sync_enabled` toggle
+    (IDI-171): they are capture artifacts, not "sync". Fail-closed."""
+    try:
+        if not (cfg or {}).get("sync_user_id"):
+            return False
+        from app import auth
+        return bool(auth.cloud_allowed(cfg))
+    except Exception:
+        return False
+
+
 SR = 16000                      # both sources normalized to 16 kHz mono float32
 CHUNK_MIN_S = 8.0               # earliest silence-aligned cut
 CHUNK_MAX_S = 22.0              # hard cut
@@ -258,7 +278,7 @@ def _fetch_meeting_rows(config, limit=25):
     """Recent meetings WITH transcripts from the cloud (local meta has none)."""
     try:
         user_id = config.get("sync_user_id", "")
-        if not user_id:
+        if not user_id or not _cloud_gate(config):
             return []
         import httpx
         from app.sync import SUPABASE_URL
@@ -1176,7 +1196,7 @@ class MeetingSession:
         fires the notify-meeting-start edge function; never blocks capture."""
         try:
             uid = self.app.config.get("sync_user_id")
-            if not uid:
+            if not uid or not _cloud_gate(self.app.config):
                 return
             import httpx
             from app.sync import SUPABASE_URL, SUPABASE_KEY
@@ -1196,7 +1216,7 @@ class MeetingSession:
         transcript stream in. Transcript-only PATCH (never touches scratchpad —
         mobile owns that during the meeting). Fails closed; throttled by caller."""
         try:
-            if not self.app.config.get("sync_user_id") or not self._cloud_ok:
+            if not _cloud_gate(self.app.config) or not self._cloud_ok:
                 return
             import httpx
             from app.sync import SUPABASE_URL
@@ -1212,7 +1232,7 @@ class MeetingSession:
 
     def _cloud_insert(self):
         try:
-            if not self.app.config.get("sync_user_id"):
+            if not _cloud_gate(self.app.config):
                 return
             import httpx
             from app.sync import SUPABASE_URL
@@ -1228,7 +1248,7 @@ class MeetingSession:
 
     def _cloud_update(self, final=False):
         try:
-            if not self.app.config.get("sync_user_id"):
+            if not _cloud_gate(self.app.config):
                 return
             import httpx
             from app.sync import SUPABASE_URL
@@ -1277,7 +1297,7 @@ class MeetingSession:
     def _upload_audio(self, path):
         try:
             user_id = self.app.config.get("sync_user_id", "")
-            if not user_id:
+            if not user_id or not _cloud_gate(self.app.config):
                 return
             import httpx
             from app.sync import SUPABASE_URL, SUPABASE_KEY
@@ -1377,7 +1397,7 @@ class MeetingManager:
                 return {"ok": False, "error": "Still processing — try again in a moment."}
             cfg = self.app.config
             user_id = cfg.get("sync_user_id", "")
-            if user_id:
+            if user_id and _cloud_gate(cfg):
                 try:
                     import httpx
                     from app.sync import SUPABASE_URL, SUPABASE_KEY
@@ -1464,7 +1484,7 @@ class MeetingManager:
                               "status": "ready", "updated_at": _now_iso()}
                              if parsed else {"status": "failed", "updated_at": _now_iso()})
                     row.update(patch)
-                    if self.app.config.get("sync_user_id"):
+                    if _cloud_gate(self.app.config):
                         import httpx
                         from app.sync import SUPABASE_URL
                         from app.auth import auth_header
@@ -1513,7 +1533,7 @@ class MeetingManager:
                         save_config(self.app.config)
                         wrote = True
                     break
-            if self.app.config.get("sync_user_id"):
+            if _cloud_gate(self.app.config):
                 import httpx
                 from app.sync import SUPABASE_URL
                 from app.auth import auth_header
@@ -1580,7 +1600,7 @@ class MeetingManager:
                     m["speakers"] = speakers
                     break
             save_config(self.app.config)
-            if self.app.config.get("sync_user_id"):
+            if _cloud_gate(self.app.config):
                 import httpx
                 from app.sync import SUPABASE_URL
                 from app.auth import auth_header
@@ -1619,7 +1639,7 @@ class MeetingManager:
                 return {"ok": False, "error": "Could not generate notes — try again."}
             if s and s.id == meeting_id:
                 s.notes_md = notes
-            if self.app.config.get("sync_user_id"):
+            if _cloud_gate(self.app.config):
                 try:
                     import httpx
                     from app.sync import SUPABASE_URL
@@ -1643,7 +1663,7 @@ class MeetingManager:
                     m["pinned"] = pinned
                     break
             save_config(self.app.config)
-            if self.app.config.get("sync_user_id"):
+            if _cloud_gate(self.app.config):
                 import httpx
                 from app.sync import SUPABASE_URL
                 from app.auth import auth_header
@@ -1751,7 +1771,7 @@ class MeetingManager:
                         from app.config import save_config
                         save_config(self.app.config)
                     break
-            if self.app.config.get("sync_user_id"):
+            if _cloud_gate(self.app.config):
                 import httpx
                 from app.sync import SUPABASE_URL
                 from app.auth import auth_header
@@ -1780,7 +1800,7 @@ class MeetingManager:
             s = self.session
             if s and s.id == meeting_id:
                 return {"ok": True, "meeting": s.row(), "live": bool(self.active)}
-            if self.app.config.get("sync_user_id"):
+            if _cloud_gate(self.app.config):
                 import httpx
                 from app.sync import SUPABASE_URL
                 from app.auth import auth_header

@@ -28,7 +28,7 @@ import objc
 
 from app import theme as _theme  # noqa: F401  — registers Geist/JBM for WKWebView
 from app.flume_dashboard_html import flume_html
-from app.shared_dashboard import DashboardApi
+from app.shared_dashboard import DashboardApi, _cloud_allowed
 
 logger = logging.getLogger("verbal.flumeweb")
 
@@ -216,9 +216,13 @@ class FlumeWebDashboard:
 
     def _canvas_listen_once(self):
         import time
-        user_id = self.app.config.get("sync_user_id", "")
-        device_name = self.app.config.get("sync_device_name", "") or ""
-        if not user_id:
+        cfg = self.app.config
+        user_id = cfg.get("sync_user_id", "")
+        device_name = cfg.get("sync_device_name", "") or ""
+        # Canvas is "sync" (IDI-171): the user toggle gates it, and being
+        # SIGNED IN gates it again — `sync_user_id` alone used to survive
+        # sign-out and kept a realtime channel open on the ex-account.
+        if not user_id or not cfg.get("sync_enabled") or not _cloud_allowed(cfg):
             time.sleep(5)
             return
         import websocket
@@ -390,17 +394,19 @@ class FlumeWebDashboard:
         # A signed-in Mac with sync toggled off still has an account and must show
         # its other devices (and itself must show online to them), or the two apps
         # never see each other. (Was: `not user_id or not self.app._sync` → empty.)
-        if not user_id:
+        if not user_id or not _cloud_allowed(cfg):
             self._known_devices = []
             self._refresh()
             return
         try:
             import platform
-            from app.sync import fetch_account_devices, register_device_presence
+            from app.sync import fetch_account_devices
             my_id = self.app._sync.device_id if getattr(self.app, "_sync", None) else platform.node()
-            # Heartbeat our own presence so other devices see this Mac ONLINE even
-            # when content-sync isn't running (runs every 30s off this loop).
-            register_device_presence(user_id, my_id, cfg.get("sync_device_name") or platform.node())
+            # NOTE: the presence heartbeat used to live HERE, inside a loop
+            # conditioned on `while self._window is not None` — so closing the
+            # dashboard made this Mac go Offline to every other device within
+            # ~5 min. It now runs app-level in `main._presence_loop` (IDI-177);
+            # this loop only REFRESHES the list.
             # ALL account devices (online + offline), not just the last-5-min set.
             self._known_devices = fetch_account_devices(user_id, my_id) or []
             self._refresh()

@@ -25,6 +25,24 @@ import objc
 
 logger = logging.getLogger("verbal.canvas")
 
+
+def _canvas_cloud_gate(cfg) -> bool:
+    """Canvas is "sync" (IDI-171): the `sync_enabled` toggle gates it, and a
+    real signed-in session gates it again — `sync_user_id` alone survived
+    `sign_out()` and kept writing into the ex-account (IDI-170). Fail-closed.
+
+    (This window is legacy/unused — the menu routes Canvas to the web
+    dashboard — but the gate is kept in step so reviving it can't reintroduce
+    the leak.)"""
+    try:
+        cfg = cfg or {}
+        if not cfg.get("sync_user_id") or not cfg.get("sync_enabled"):
+            return False
+        from app import auth
+        return bool(auth.cloud_allowed(cfg))
+    except Exception:
+        return False
+
 # ── Palette (matches dashboard) ───────────────────────────────────────────────
 def _hex(h, a=1.0):
     h = h.lstrip("#")
@@ -313,7 +331,7 @@ class CanvasWindow:
             from app.auth import auth_header
             user_id     = self._config.get("sync_user_id", "")
             device_name = self._config.get("sync_device_name", "Mac")
-            if not user_id:
+            if not user_id or not _canvas_cloud_gate(self._config):
                 return
             httpx.post(
                 f"{SUPABASE_URL}/rest/v1/canvas?on_conflict=user_id",
@@ -342,7 +360,7 @@ class CanvasWindow:
             from app.sync import SUPABASE_URL
             from app.auth import auth_header
             user_id = self._config.get("sync_user_id", "")
-            if not user_id:
+            if not user_id or not _canvas_cloud_gate(self._config):
                 return
             resp = httpx.get(
                 f"{SUPABASE_URL}/rest/v1/canvas",
@@ -389,7 +407,7 @@ class CanvasWindow:
         """Listen for canvas changes from other devices via WebSocket."""
         user_id = self._config.get("sync_user_id", "")
         device_name = self._config.get("sync_device_name", "Mac")
-        if not user_id:
+        if not user_id or not _canvas_cloud_gate(self._config):
             return
         threading.Thread(
             target=self._listen_canvas,

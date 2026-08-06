@@ -11,9 +11,9 @@ import { confirm } from '../components/ConfirmDialog';
 import { Dictionary, fetchRemote, saveDictionary } from '../../lib/dictionary';
 import { colors, radius, type, pressedStyle } from '../theme';
 import { useAuth } from '../hooks/useAuth';
+import { useSyncEnabled, setSyncEnabled } from '../hooks/useSyncEnabled';
 import {
   getDeviceName, setDeviceName,
-  getSyncEnabled, setSyncEnabled,
   getUserId, setUserId, setPairedUserId, getStoredUserId, clearAccountData,
   clearHistory,
   getNotesFeatureFlags, setNotesFeatureFlag,
@@ -35,7 +35,9 @@ export const SettingsScreen: React.FC<Props> = ({ onOpenDevices, onOpenSnippets 
 
   const [deviceName, setDeviceNameState] = useState('');
   const [userId, setUserIdState] = useState('');
-  const [sync, setSync] = useState(false);
+  // Live value from the ONE sync store (IDI-171) — no local copy to drift from
+  // the Menu toggle or the Devices self-row switch.
+  const sync = useSyncEnabled();
   const [savedName, setSavedName] = useState(false);
   const [savedUser, setSavedUser] = useState(false);
 
@@ -52,7 +54,6 @@ export const SettingsScreen: React.FC<Props> = ({ onOpenDevices, onOpenSnippets 
     (async () => {
       setDeviceNameState(await getDeviceName());
       setUserIdState(await getUserId());
-      setSync(await getSyncEnabled());
       setDict(await fetchRemote());
       setNotesFlags(await getNotesFeatureFlags());
       setClipboardHistory(await getClipboardHistoryEnabled());
@@ -124,10 +125,9 @@ export const SettingsScreen: React.FC<Props> = ({ onOpenDevices, onOpenSnippets 
     setTimeout(() => setSavedUser(false), 1600);
   };
 
-  const toggleSync = async (v: boolean) => {
-    setSync(v);
-    await setSyncEnabled(v);
-  };
+  // Writing the store is the whole toggle: it re-renders every reader and fires
+  // the live catch-up (ON) / channel teardown (OFF) listeners.
+  const toggleSync = (v: boolean) => { setSyncEnabled(v); };
 
   const confirmClearHistory = async () => {
     const ok = await confirm({

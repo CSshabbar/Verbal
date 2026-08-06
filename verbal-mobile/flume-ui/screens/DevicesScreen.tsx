@@ -7,6 +7,7 @@ import { colors, radius, pressedStyle } from '../theme';
 import {
   fetchAccountDevices, setDeviceSync, isDeviceOnline, AccountDevice,
 } from '../../lib/deviceSync';
+import { useSyncEnabled } from '../hooks/useSyncEnabled';
 
 type Props = {
   onBack: () => void;
@@ -28,6 +29,13 @@ export const DevicesScreen: React.FC<Props> = ({ onBack, onAddDevice }) => {
   const insets = useSafeAreaInsets();
   const [devices, setDevices] = useState<AccountDevice[] | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  // THIS device's row is driven by the local sync store, not by the cloud
+  // `devices.sync_enabled` snapshot (IDI-171). The cloud column is still written
+  // (setDeviceSync mirrors both ways), but the store is what actually gates
+  // realtime here — so this switch can never disagree with the Menu / Settings
+  // toggles, and a stale row read can't show "on" while sync is off.
+  const localSync = useSyncEnabled();
+  const valueFor = (d: AccountDevice) => (d.isSelf ? localSync : d.syncEnabled);
 
   const load = useCallback(async () => {
     setDevices(await fetchAccountDevices());
@@ -81,12 +89,12 @@ export const DevicesScreen: React.FC<Props> = ({ onBack, onAddDevice }) => {
               <View style={styles.statusRow}>
                 <View style={[styles.dot, { backgroundColor: isDeviceOnline(d) ? colors.online : colors.offline }]} />
                 <Text variant="metaSm" color={colors.textSubtle}>
-                  {isDeviceOnline(d) ? 'Online' : 'Offline'} · sync {d.syncEnabled ? 'on' : 'off'}
+                  {isDeviceOnline(d) ? 'Online' : 'Offline'} · sync {valueFor(d) ? 'on' : 'off'}
                 </Text>
               </View>
             </View>
             <Switch
-              value={d.syncEnabled}
+              value={valueFor(d)}
               onValueChange={(v) => toggle(d, v)}
               trackColor={{ true: colors.primary, false: colors.surface3 }}
               thumbColor="#fff"

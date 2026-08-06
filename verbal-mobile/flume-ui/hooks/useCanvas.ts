@@ -7,7 +7,18 @@
  *     system clipboard, + upload images to the canvas-images bucket)
  *   - a realtime channel receives changes from OTHER devices → prepend them as
  *     "sent" items and copy their text to the clipboard (matches old behavior)
- * All remote activity is gated by the Sync toggle (getSyncEnabled).
+ * All remote activity is gated by the Sync toggle (lib/syncStore).
+ *
+ * Lifecycle (IDI-171 / the subscribe half of IDI-173). The subscribe effect used
+ * to have an empty dep array that read the sync flag ONCE and bailed with
+ * `if (!syncEnabled) return` — so enabling sync after mount was permanently
+ * dead, the channel never followed an account change, and sign-out never tore it
+ * down. Now the effect is driven by the live store value plus an account epoch:
+ *   - toggle ON  → effect re-runs → channel joins
+ *   - toggle OFF → effect re-runs → channel closes, no remote reads/writes
+ *   - sign-out / account switch → reset() bumps the epoch → items dropped, the
+ *     old user's channel closed, a new one opened under the new id
+ *   - dropped connection → the subscribe() status callback rejoins
  *
  * Contract (consumed by CanvasScreen): { items, save, discard, addText, addLink, addPhoto }
  */
@@ -16,7 +27,9 @@ import * as Clipboard from 'expo-clipboard';
 import * as ImagePicker from 'expo-image-picker';
 import * as Haptics from 'expo-haptics';
 import { supabase, SUPABASE_URL, SUPABASE_ANON_KEY } from '../../lib/supabase';
-import { getUserId, getDeviceName, getSyncEnabled } from '../../lib/storage';
+import { getUserId, getDeviceName } from '../../lib/storage';
+import * as syncStore from '../../lib/syncStore';
+import { useSyncEnabled } from './useSyncEnabled';
 
 type BaseItem = { id: string; state: 'draft' | 'sent'; sentAt?: string };
 export type TextItem = BaseItem & { kind: 'text'; text: string };
@@ -58,12 +71,59 @@ async function uploadImage(localUri: string): Promise<string | null> {
   }
 }
 
+/* ── module-level lifecycle surface ──────────────────────────────────────────
+ * Canvas state lives in the hook (unlike historyStore), but sign-out and the
+ * AppState foreground listener are module-level events. These two tiny
+ * registries are the bridge — parallel to historyStore.reset()/catchUp(). */
+
+let accountEpoch = 0;
+const epochListeners = new Set<() => void>();
+/** The mounted hook instance's refresh(), if the Canvas screen is alive. */
+let activeRefresh: (() => Promise<void>) | null = null;
+
+/**
+ * Drop canvas state and re-key its channel to the current account (IDI-170/171).
+ * Called from useAuth's signOut / deleteAccount / account-switch branch — the
+ * canvas equivalent of historyStore.reset(). Safe when nothing is mounted: the
+ * epoch bump is picked up by whatever mounts next.
+ */
+export function reset() {
+  accountEpoch += 1;
+  epochListeners.forEach((l) => { try { l(); } catch { /* ignore */ } });
+}
+
+/** Foreground catch-up (AppState 'active') — pull the shared row we may have
+ *  missed while backgrounded. No-op when the Canvas screen isn't mounted. */
+export async function catchUp() {
+  if (!(await syncStore.getSyncEnabled())) return;
+  try { await activeRefresh?.(); } catch { /* best effort */ }
+}
+
 export function useCanvas() {
   const [items, setItems] = useState<CanvasItem[]>([]);
   const [toast, setToast] = useState<string | null>(null);
   const channelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
   const myNameRef = useRef<string>('');
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const syncEnabled = useSyncEnabled();
+  const [epoch, setEpoch] = useState(accountEpoch);
+  // Signature of the last shared-row payload we turned into an item. Guards the
+  // now-repeatable refresh() (foreground catch-up) against prepending the same
+  // clipboard row again and again. Real fetch/merge semantics are IDI-173's
+  // later wave; this is only the minimum that makes catch-up non-destructive.
+  const lastAppliedRef = useRef<string | null>(null);
+
+  // Account change / sign-out → forget the board, then let the subscribe effect
+  // below re-run against the new identity.
+  useEffect(() => {
+    const listener = () => {
+      setEpoch(accountEpoch);
+      setItems([]);
+      lastAppliedRef.current = null;
+    };
+    epochListeners.add(listener);
+    return () => { epochListeners.delete(listener); };
+  }, []);
 
   // Transient in-app banner ("Received from X — copied to clipboard"), auto-hides.
   const flashToast = useCallback((msg: string) => {
@@ -78,15 +138,20 @@ export function useCanvas() {
   useEffect(() => () => { if (toastTimer.current) clearTimeout(toastTimer.current); }, []);
 
   // Subscribe to the shared canvas row for cross-device receive.
+  // Deps: the LIVE sync flag + the account epoch, so the channel follows both
+  // (the old empty dep array is what made enabling sync after mount dead).
   useEffect(() => {
+    if (!syncEnabled) return;   // OFF → nothing joined; the cleanup below already ran
     let active = true;
-    (async () => {
-      if (!(await getSyncEnabled())) return;
+    let rejoinTimer: ReturnType<typeof setTimeout> | null = null;
+    let rejoinAttempts = 0;
+
+    const join = async () => {
       const userId = await getUserId();
       myNameRef.current = await getDeviceName();
       if (!active) return;
 
-      channelRef.current = supabase
+      const ch = supabase
         .channel(`canvas_${userId}`)
         .on(
           'postgres_changes',
@@ -99,6 +164,9 @@ export function useCanvas() {
 
             const id = `c_${Date.now()}`;
             const who = from || 'another device';
+            // Remember what we just showed so a foreground catch-up refresh()
+            // doesn't prepend the same shared row a second time.
+            lastAppliedRef.current = imageUrl || content || null;
             if (imageUrl) {
               setItems(prev => [{ id, kind: 'image', state: 'sent', sentAt: nowHHmm(), uri: imageUrl, filename: 'shared.jpg' }, ...prev]);
               // Copy the image's URL so it's pasteable even before the thumbnail loads.
@@ -118,18 +186,40 @@ export function useCanvas() {
               await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
             }
           },
-        )
-        .subscribe();
-    })();
+        );
+      channelRef.current = ch;
+      ch.subscribe((status) => {
+        if (!active) return;
+        if (status === 'SUBSCRIBED') { rejoinAttempts = 0; return; }
+        if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+          if (channelRef.current !== ch) return;   // superseded / intentional teardown
+          if (rejoinTimer) return;
+          const delay = Math.min(30_000, 1_000 * 2 ** rejoinAttempts);
+          rejoinAttempts += 1;
+          rejoinTimer = setTimeout(() => {
+            rejoinTimer = null;
+            if (!active) return;
+            // Null the ref first so this channel's own CLOSED can't re-enter.
+            const old = channelRef.current;
+            channelRef.current = null;
+            if (old) { try { supabase.removeChannel(old); } catch { /* ignore */ } }
+            join().catch(() => { /* the next status error retries */ });
+          }, delay);
+        }
+      });
+    };
+
+    join().catch((err) => console.error('Canvas subscribe failed:', err));
 
     return () => {
       active = false;
+      if (rejoinTimer) { clearTimeout(rejoinTimer); rejoinTimer = null; }
       if (channelRef.current) { supabase.removeChannel(channelRef.current); channelRef.current = null; }
     };
-  }, []);
+  }, [syncEnabled, epoch, flashToast]);
 
   const pushToShared = useCallback(async (payload: { content: string | null; image_url: string | null }) => {
-    if (!(await getSyncEnabled())) return;
+    if (!(await syncStore.getSyncEnabled())) return;   // OFF ⇒ no remote writes
     const userId = await getUserId();
     const deviceName = await getDeviceName();
     await supabase.from('canvas').upsert(
@@ -182,15 +272,22 @@ export function useCanvas() {
     setItems(prev => prev.map(i => (i.id === id && i.kind === 'text' ? { ...i, text } : i)));
   }, []);
 
-  /** Manually pull the current shared canvas row (in case realtime missed it). */
+  /** Manually pull the current shared canvas row (in case realtime missed it,
+   *  and on every foreground catch-up). */
   const refresh = useCallback(async () => {
     try {
-      if (!(await getSyncEnabled())) return;
+      if (!(await syncStore.getSyncEnabled())) return;
       const userId = await getUserId();
       const { data } = await supabase
         .from('canvas').select('content,image_url,device_name')
         .eq('user_id', userId).maybeSingle();
       if (!data) return;
+      // Now that refresh() runs on every foreground (IDI-171), the same shared
+      // row would be prepended again each time. Skip the payload we've already
+      // shown. (Minimum viable guard — proper fetch/merge is IDI-173.)
+      const signature = (data.image_url || data.content || null) as string | null;
+      if (!signature || signature === lastAppliedRef.current) return;
+      lastAppliedRef.current = signature;
       const id = `c_${Date.now()}`;
       if (data.image_url) {
         setItems(prev => [{ id, kind: 'image', state: 'sent', sentAt: nowHHmm(), uri: data.image_url, filename: 'shared.jpg' }, ...prev]);
@@ -208,6 +305,22 @@ export function useCanvas() {
       console.error('Canvas refresh failed:', err);
     }
   }, []);
+
+  // Hand this instance's refresh() to the module-level catchUp() the AppState
+  // foreground listener calls. Last mount wins; unregisters on unmount.
+  useEffect(() => {
+    activeRefresh = refresh;
+    return () => { if (activeRefresh === refresh) activeRefresh = null; };
+  }, [refresh]);
+
+  // Sync turned ON (or the account changed) → immediate catch-up pull, so the
+  // board shows whatever another device left on the shared row instead of
+  // waiting for the next realtime event. The lastAppliedRef guard inside
+  // refresh() stops this duplicating a row we already have.
+  useEffect(() => {
+    if (!syncEnabled) return;
+    refresh().catch(() => { /* best effort */ });
+  }, [syncEnabled, epoch, refresh]);
 
   const addLink = useCallback(async () => {
     let url = '';

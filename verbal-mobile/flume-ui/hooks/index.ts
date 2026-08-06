@@ -12,3 +12,5 @@ export { useCanvas } from './useCanvas';
 export type { CanvasItem, TextItem, LinkItem, ImageItem } from './useCanvas';
 export { useSnippets } from './useSnippets';
 export type { Snippet, SnippetPatch } from './useSnippets';
+export { useSyncEnabled, setSyncEnabled } from './useSyncEnabled';
+export { startSyncLifecycle, catchUpNow } from './syncLifecycle';

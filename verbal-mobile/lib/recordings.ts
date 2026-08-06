@@ -130,3 +130,21 @@ export async function remove(uri?: string) {
   if (!uri) return;
   try { await FileSystem.deleteAsync(uri, { idempotent: true }); } catch { /* ignore */ }
 }
+
+/**
+ * Delete every locally-persisted recording (IDI-170).
+ *
+ * `delete-account` erases the cloud copies, and clearAccountData() erases the
+ * AsyncStorage rows that point at them — but the audio files themselves sat in
+ * documentDirectory/recordings/ forever, surviving deletion and account
+ * switches. Removing the whole directory is enough: ensureDir() recreates it
+ * lazily on the next persist()/ensureLocal().
+ *
+ * Called from useAuth on account DELETION and on an account SWITCH (so the new
+ * account can't inherit the previous one's audio). Deliberately NOT called on a
+ * plain sign-out — signing back into the same account should still be able to
+ * retry/play a failed local dictation.
+ */
+export async function removeAll() {
+  try { await FileSystem.deleteAsync(DIR, { idempotent: true }); } catch { /* ignore */ }
+}

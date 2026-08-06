@@ -1,11 +1,13 @@
 /**
  * Account devices + per-device sync — shared by the sign-in DevicesSyncSheet and
  * the Devices screen. Backed by the cloud `devices.sync_enabled` column.
- * Toggling THIS device also mirrors to the local `verbal_sync_enabled` flag that
- * `lib/useSync` reads, so sync reacts immediately.
+ * Toggling THIS device also writes the local sync store (lib/syncStore), which
+ * is what actually drives realtime on this device — so the Devices self-row, the
+ * Menu toggle and the Settings toggle can never disagree (IDI-171).
  */
 import { supabase } from './supabase';
-import { getUserId, getDeviceId, setSyncEnabled } from './storage';
+import { getUserId, getDeviceId } from './storage';
+import { setSyncEnabled } from './syncStore';
 
 export type AccountDevice = {
   deviceId: string;
@@ -44,7 +46,8 @@ export async function fetchAccountDevices(): Promise<AccountDevice[]> {
   }
 }
 
-/** Set a device's sync flag in the cloud; mirror locally when it's this device. */
+/** Set a device's sync flag in the cloud; write the local store when it's this
+ *  device (which also fires the live catch-up / teardown listeners). */
 export async function setDeviceSync(deviceId: string, value: boolean): Promise<void> {
   try {
     const uid = await getUserId();

@@ -24,6 +24,19 @@ const CONFIG_FILE = 'flume_kbd_config.json';
 // in app.json ios.entitlements and the Swift extension's readConfig().
 const APP_GROUP = 'group.com.verbal.app';
 
+/** Write a finished payload to wherever this platform's keyboard reads it. */
+async function writeConfig(payload: string): Promise<void> {
+  if (Platform.OS === 'ios') {
+    // Write into the App Group container the keyboard extension reads from.
+    const ok = await writeToGroup(APP_GROUP, CONFIG_FILE, payload);
+    if (ok) return;
+    // Fall through to the sandbox write (dev client without the native module).
+  }
+  const dir = FileSystem.documentDirectory;
+  if (!dir) return; // web / unsupported — no keyboard there anyway
+  await FileSystem.writeAsStringAsync(dir + CONFIG_FILE, payload);
+}
+
 export async function syncKeyboardConfig(): Promise<void> {
   try {
     // fetchRemote pulls the LATEST cloud dictionary (incl. snippets) and refreshes
@@ -70,17 +83,43 @@ export async function syncKeyboardConfig(): Promise<void> {
       // a picker, getSpokenLanguage() returns its 'en' default.
       spokenLanguage,
     });
-    if (Platform.OS === 'ios') {
-      // Write into the App Group container the keyboard extension reads from.
-      const ok = await writeToGroup(APP_GROUP, CONFIG_FILE, payload);
-      if (ok) return;
-      // Fall through to the sandbox write (dev client without the native module).
-    }
-    const dir = FileSystem.documentDirectory;
-    if (!dir) return; // web / unsupported — no keyboard there anyway
-    await FileSystem.writeAsStringAsync(dir + CONFIG_FILE, payload);
+    await writeConfig(payload);
   } catch {
     // best-effort — the keyboard falls back to "config not found" and shows a
     // retry message; never throw into the app.
+  }
+}
+
+/**
+ * Wipe the keyboard's snapshot on sign-out / account deletion (IDI-170).
+ *
+ * clearAccountData() only touches AsyncStorage, so before this the config file
+ * kept serving the last 15 dictations, the whole vocabulary and every snippet to
+ * the native keyboard of a signed-OUT (or deleted) account — readable by anyone
+ * who picked the phone up and opened the Flume keyboard.
+ *
+ * We write an EMPTY but STRUCTURALLY VALID payload rather than deleting the file:
+ * the natives now fail OPEN on an unparseable/missing config, so a delete would
+ * leave them on stale in-memory state or a retry banner. Same schema shape, same
+ * schemaVersion + theme, every account-scoped array empty, preferences back to
+ * their absent-key defaults.
+ */
+export async function clearKeyboardConfig(): Promise<void> {
+  try {
+    await writeConfig(JSON.stringify({
+      schemaVersion: 2,
+      deviceId: '',
+      deviceName: '',
+      theme: KEYBOARD_THEME,
+      vocabulary: [],
+      replacements: [],
+      snippets: [],
+      history: [],
+      clipboardHistoryEnabled: true,   // absent-key default (see storage.ts)
+      transformEnabled: false,         // absent-key default — opt-in
+      spokenLanguage: 'en',
+    }));
+  } catch {
+    // best-effort, same posture as syncKeyboardConfig — never throw into sign-out.
   }
 }

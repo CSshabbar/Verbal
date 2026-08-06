@@ -18,7 +18,7 @@ import {
   JetBrainsMono_600SemiBold,
 } from '@expo-google-fonts/jetbrains-mono';
 
-import { RootNavigator, colors } from './flume-ui';
+import { RootNavigator, colors, startSyncLifecycle } from './flume-ui';
 
 class ErrorBoundary extends React.Component<
   { children: React.ReactNode },
@@ -76,6 +76,10 @@ export default function App() {
     configureNotificationHandler();
     registerForMeetingPush().catch(() => {});
   }, []);
+
+  // Foreground catch-up for the realtime stores (IDI-171). Separate from the
+  // AppState listener in lib/supabase.ts, which only drives auth token refresh.
+  React.useEffect(() => startSyncLifecycle(), []);
 
   if (!fontsLoaded) return null;
 

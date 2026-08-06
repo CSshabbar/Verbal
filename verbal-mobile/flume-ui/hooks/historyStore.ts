@@ -5,7 +5,14 @@
  *   - local cache is the source of truth; remote rows merge in via mergeRemoteEntries
  *   - a realtime channel (`verbal_history_${userId}`) receives inserts from OTHER
  *     devices (own inserts skipped; respects target_device_id) and refetches on update
- *   - all remote activity is gated by the Sync toggle (getSyncEnabled)
+ *   - all remote activity is gated by the Sync toggle (lib/syncStore)
+ *
+ * Lifecycle (IDI-171): the toggle is LIVE. Flipping it ON runs an immediate
+ * catch-up and joins the channel; flipping it OFF calls disconnect() — channels
+ * closed, remote IO stopped, local cache and on-screen items untouched (OFF is
+ * not sign-out; only reset() throws the data away). A dropped channel rejoins
+ * itself from the subscribe() status callback, and catchUp() is what the
+ * foreground AppState listener calls.
  *
  * Presentation: entries are mapped to `HistoryItem` (computed labels) for the UI.
  */
@@ -17,10 +24,10 @@ import {
   deleteEntry,
   getUserId,
   getDeviceId,
-  getSyncEnabled,
   mergeRemoteEntries,
   HistoryEntry,
 } from '../../lib/storage';
+import * as syncStore from '../../lib/syncStore';
 import { transcribeAudio, formatText } from '../../lib/groq';
 import { getSnippets, applySnippets } from '../../lib/dictionary';
 import * as recordings from '../../lib/recordings';
@@ -106,6 +113,10 @@ function publish(entries: HistoryEntry[]) {
 }
 
 async function fetchRemoteAndMerge(): Promise<HistoryEntry[]> {
+  // Every mergeRemoteEntries-driven fetch consults the store, not just the ones
+  // on the startup path — a fetch queued before the toggle went OFF must not
+  // land after it (IDI-171 uniform gating).
+  if (!(await syncStore.getSyncEnabled())) return getHistory();
   const userId = await getUserId();
   const { data, error } = await supabase
     .from('transcriptions')
@@ -128,12 +139,43 @@ async function fetchRemoteAndMerge(): Promise<HistoryEntry[]> {
   return mergeRemoteEntries(remote);
 }
 
+/* ── channel lifecycle ───────────────────────────────────────────────────── */
+
+let rejoinTimer: ReturnType<typeof setTimeout> | null = null;
+let rejoinAttempts = 0;
+
+function cancelRejoin() {
+  if (rejoinTimer) { clearTimeout(rejoinTimer); rejoinTimer = null; }
+}
+
+/** Close the channel WITHOUT touching cached items or the load guard.
+ *  `channel` is nulled first so the resulting 'CLOSED' status callback can tell
+ *  an intentional teardown from a dropped connection and not fight us. */
+async function closeChannel() {
+  const ch = channel;
+  channel = null;
+  cancelRejoin();
+  if (!ch) return;
+  try { await supabase.removeChannel(ch); } catch { /* ignore */ }
+}
+
+function scheduleRejoin() {
+  if (rejoinTimer) return;
+  const delay = Math.min(30_000, 1_000 * 2 ** rejoinAttempts);
+  rejoinAttempts += 1;
+  rejoinTimer = setTimeout(async () => {
+    rejoinTimer = null;
+    if (!(await syncStore.getSyncEnabled())) return;   // toggled off while waiting
+    try { await subscribeRealtime(); } catch { /* the next status error retries */ }
+  }, delay);
+}
+
 async function subscribeRealtime() {
   const userId = await getUserId();
   const myDeviceId = await getDeviceId();
-  if (channel) await supabase.removeChannel(channel);
+  await closeChannel();
 
-  channel = supabase
+  const ch = supabase
     .channel(`verbal_history_${userId}`)
     .on(
       'postgres_changes',
@@ -160,8 +202,17 @@ async function subscribeRealtime() {
       'postgres_changes',
       { event: 'UPDATE', schema: 'public', table: 'transcriptions', filter: `user_id=eq.${userId}` },
       async () => { publish(await fetchRemoteAndMerge()); },
-    )
-    .subscribe();
+    );
+  channel = ch;
+  ch.subscribe((status) => {
+    // Without this the channel died silently on a network blip and history just
+    // stopped updating until the app was killed (IDI-171).
+    if (status === 'SUBSCRIBED') { rejoinAttempts = 0; return; }
+    if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+      if (channel !== ch) return;   // superseded, or an intentional teardown
+      scheduleRejoin();
+    }
+  });
 }
 
 export function subscribe(listener: () => void) {
@@ -175,9 +226,12 @@ async function load() {
   publish(await getHistory());
   // …then, if sync is on, pull remote + open the realtime channel.
   try {
-    if (await getSyncEnabled()) {
+    if (await syncStore.getSyncEnabled()) {
       publish(await fetchRemoteAndMerge());
       await subscribeRealtime();
+    } else {
+      // Sync off — make sure no channel is left over from a previous ON period.
+      await closeChannel();
     }
   } catch (err) {
     console.error('History sync failed:', err);
@@ -185,11 +239,44 @@ async function load() {
 }
 
 let loadPromise: Promise<void> | null = null;
+let inFlight: Promise<void> | null = null;
+
+/** Coalesce concurrent loads — sign-in, the sync-toggle listener and a
+ *  foreground catch-up can all land within the same tick. */
+function runLoad(): Promise<void> {
+  if (inFlight) return inFlight;
+  inFlight = load().finally(() => { inFlight = null; });
+  loadPromise = inFlight;
+  return inFlight;
+}
+
 export function ensureLoaded() {
-  if (!started) { started = true; loadPromise = load(); }
+  if (!started) { started = true; return runLoad(); }
   return loadPromise;
 }
-export function refresh() { loadPromise = load(); return loadPromise; }
+export function refresh() { return runLoad(); }
+
+/**
+ * Foreground catch-up (AppState 'active', IDI-171): re-pull anything that
+ * arrived while the app was backgrounded and make sure the channel is joined.
+ * refresh() re-runs load(), which resubscribes — so it covers both.
+ */
+export async function catchUp() {
+  if (!(await syncStore.getSyncEnabled())) return;
+  await refresh();
+}
+
+/**
+ * Sync toggled OFF: stop all remote IO, keep everything local.
+ *
+ * Distinct from reset() on purpose — OFF is not sign-out. The user still wants
+ * to see and search the dictations already on this device, so cached items, the
+ * AsyncStorage history and the `started` guard all survive; only the channel and
+ * any pending rejoin go away.
+ */
+export async function disconnect() {
+  await closeChannel();
+}
 
 /**
  * Tear down the singleton on sign-out / account switch: drop the cached items,
@@ -201,12 +288,19 @@ export async function reset() {
   items = [];
   started = false;
   loadPromise = null;
-  if (channel) {
-    try { await supabase.removeChannel(channel); } catch { /* ignore */ }
-    channel = null;
-  }
+  inFlight = null;
+  rejoinAttempts = 0;
+  await closeChannel();
   emit();
 }
+
+// The toggle is live (IDI-171): ON runs an immediate catch-up + rejoins the
+// channel, OFF tears the channel down. Registered at module load — historyStore
+// is a singleton imported by useHistory/useAuth, so this runs exactly once.
+syncStore.onChange((enabled) => {
+  if (enabled) { refresh().catch(() => {}); }
+  else { disconnect().catch(() => {}); }
+});
 
 /** Legacy contract helper — prepend an already-built item. */
 export async function add(item: HistoryItem) {
@@ -229,7 +323,7 @@ export async function addTranscription(
   let remoteId: string | undefined;
   let audioUrl: string | undefined;
   try {
-    if (await getSyncEnabled()) {
+    if (await syncStore.getSyncEnabled()) {
       const userId = await getUserId();
       const deviceId = await getDeviceId();
       // Upload the audio first so its URL rides along on the row.

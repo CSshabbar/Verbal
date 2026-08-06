@@ -169,6 +169,7 @@ class VerbalWinApp:
         self.overlay.setup()
         self._start_hotkey()
         threading.Thread(target=self._check_update, daemon=True).start()
+        threading.Thread(target=self._presence_loop, daemon=True).start()
 
         import pystray
         from PIL import Image, ImageDraw
@@ -355,13 +356,23 @@ class VerbalWinApp:
 
     def _sign_out(self, _=None):
         try:
+            # Stop ACTIVE work first (IDI-170) — mirrors main._sign_out. The
+            # Windows build has no MeetingManager yet (meetings are a macOS
+            # feature, see WINDOWS_PARITY_PLAN.md W6), so this is a guarded
+            # no-op here and becomes live the moment `self.meetings` exists.
+            try:
+                meetings = getattr(self, "meetings", None)
+                if meetings and meetings.active:
+                    meetings.stop_async()
+            except Exception as e:
+                logger.debug(f"meeting stop on sign-out skipped: {e}")
             if self._sync:
                 try:
                     self._sync.stop()
                 except Exception:
                     pass
                 self._sync = None
-            auth.sign_out()
+            auth.sign_out()   # clears sync_user_id + deletes our devices row
             self.config = load_config()
         except Exception as e:
             logger.error(f"Sign-out failed: {e}")
@@ -589,7 +600,9 @@ class VerbalWinApp:
         def work():
             try:
                 user_id = self.config.get("sync_user_id", "")
-                if not user_id or not local_path:
+                # Capture artifact → gated on being signed in (cloud_allowed),
+                # not on the `sync_enabled` toggle (IDI-170/171).
+                if not user_id or not local_path or not auth.cloud_allowed(self.config):
                     return
                 url = recordings.upload_cloud(local_path, user_id, rec_id)
                 if url:
@@ -744,8 +757,33 @@ class VerbalWinApp:
         self.dashboard.update_recording_state(False)
 
     # ── Sync ──────────────────────────────────────────────────────────────
+    PRESENCE_INTERVAL = 30
+
+    def _presence_loop(self):
+        """App-level device heartbeat (IDI-177) — see main._presence_loop.
+        On Windows the presence upsert used to ride `SharedDashboard`'s
+        `_device_refresh_loop`, which is only started by `dashboard.show()`,
+        so a tray-only session never reported itself online at all. Fail-closed."""
+        import platform
+        while True:
+            try:
+                user = auth.current_user()
+                if user:
+                    from app.sync import register_device_presence
+                    device_id = (self._sync.device_id if self._sync
+                                 else platform.node())
+                    register_device_presence(
+                        user.get("user_id", ""), device_id,
+                        self.config.get("sync_device_name") or platform.node())
+            except Exception as e:
+                logger.debug(f"presence heartbeat skipped: {e}")
+            time.sleep(self.PRESENCE_INTERVAL)
+
     def _init_sync(self):
         if not self.config.get("sync_enabled"):
+            return
+        # IDI-170/171: never open a channel on an ex-account's user_id.
+        if not auth.cloud_allowed(self.config):
             return
         user_id = self.config.get("sync_user_id", "").strip()
         if not user_id:

@@ -333,11 +333,28 @@ def _bump_snippet_used(config, keys, save_config_fn):
         logger.debug("snippet used bump failed: %s", e)
 
 
+def _cloud_gate(config) -> bool:
+    """May the dictionary sync for the current account?
+
+    Three-part gate (IDI-170/171): an account id, the user's `sync_enabled`
+    toggle (the dictionary is "sync", unlike meetings/recordings), and a real
+    signed-in session — `sync_user_id` alone survived `sign_out()` and kept
+    pushing this device's vocabulary into the ex-account. Fail-closed."""
+    try:
+        cfg = config or {}
+        if not cfg.get("sync_user_id") or not cfg.get("sync_enabled"):
+            return False
+        from app import auth
+        return bool(auth.cloud_allowed(cfg))
+    except Exception:
+        return False
+
+
 def fetch_remote(config, save_config_fn):
     """Pull the cloud dictionary and merge into config. Writes config ONLY when
     something actually changed (avoids needless save_config churn)."""
     user_id = config.get("sync_user_id", "")
-    if not user_id:
+    if not user_id or not _cloud_gate(config):
         return get(config)
     try:
         import httpx
@@ -362,7 +379,7 @@ def fetch_remote(config, save_config_fn):
 
 def _push_remote(config, d):
     user_id = config.get("sync_user_id", "")
-    if not user_id:
+    if not user_id or not _cloud_gate(config):
         return
     try:
         import datetime as _dt
