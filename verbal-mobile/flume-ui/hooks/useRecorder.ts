@@ -12,7 +12,6 @@ import {
 import * as Haptics from 'expo-haptics';
 import { transcribeAudio } from '../../lib/groq';
 import { getSnippets, applySnippets } from '../../lib/dictionary';
-import { getGroqKey } from '../../lib/storage';
 import * as recordings from '../../lib/recordings';
 import { playCue } from '../../lib/sounds';
 
@@ -155,10 +154,10 @@ export function useRecorder() {
       let txStatus: 'ok' | 'failed' = 'ok';
       let transcribeMs = 0;
       try {
-        const apiKey = await getGroqKey();
-        if (!apiKey) throw new Error('No Groq API key configured');
+        // Auth is handled by the groq-proxy Edge Function (session JWT or anon
+        // key) — no client-side key exists or is required.
         const t0 = Date.now();
-        text = await transcribeAudio(uri, apiKey);
+        text = await transcribeAudio(uri);
         transcribeMs = Date.now() - t0;
       } catch (tErr) {
         console.warn('Transcription failed — saved for retry:', tErr);

@@ -1097,7 +1097,9 @@ function delNote(){
   const n=curNote(); if(!n) return;
   if(_noteTimer){ clearTimeout(_noteTimer); _noteTimer=null; }
   stopNoteAudio();
-  api('delete_note', n.id).then(r=>{ NOTES=(r&&r.notes)||NOTES.filter(x=>x.id!==n.id); SELN=null; SHOW_ORIG=false; renderNotes(); });
+  api('delete_note', n.id).then(r=>{
+    if(!(r&&r.ok)){ alert((r&&r.error)||"Couldn't delete the note — please try again."); return; }
+    NOTES=r.notes||NOTES.filter(x=>x.id!==n.id); SELN=null; SHOW_ORIG=false; renderNotes(); });
 }
 
 function updateDictateBtn(){

@@ -14,7 +14,6 @@
 // Fails closed (project Hard Rule #1): any post-transcription step that throws
 // returns the best text obtained so far rather than losing the dictation.
 
-import { getGroqKey } from './storage';
 import { transcribeAudio, formatText } from './groq';
 import { getSnippets, applySnippets } from './dictionary';
 
@@ -44,15 +43,15 @@ export async function runDictation(
 ): Promise<DictationResult> {
   const { cleanup = false, expandSnippets = true } = opts;
 
-  const apiKey = await getGroqKey();
   // transcribeAudio bakes in vocabulary bias + replacement rules already.
-  const raw = await transcribeAudio(audioUri, apiKey);
+  // Auth is handled by the groq-proxy (session JWT or anon key) — no client key.
+  const raw = await transcribeAudio(audioUri);
 
   let text = raw;
 
   if (cleanup) {
     try {
-      text = await formatText(text, apiKey);
+      text = await formatText(text);
     } catch {
       // fail closed — keep the un-cleaned transcript
     }

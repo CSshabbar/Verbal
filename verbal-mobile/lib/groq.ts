@@ -148,7 +148,7 @@ function extractJsonObject(s: string): any | null {
  */
 export async function formatNoteWithTitle(
   text: string,
-  _apiKey: string,
+  _apiKey?: string,
   opts: { timeoutMs?: number; detectStructure?: boolean; withTitle?: boolean } = {},
 ): Promise<NoteFormatResult> {
   const { timeoutMs = 8000, detectStructure = true, withTitle = true } = opts;
@@ -202,7 +202,7 @@ export async function formatNoteWithTitle(
 
 export async function transcribeAudio(
   audioUri: string,
-  _apiKey: string,
+  _apiKey?: string,
 ): Promise<string> {
   const formData = new FormData();
   formData.append('file', {
@@ -242,7 +242,7 @@ export async function transcribeAudio(
 
 export async function formatText(
   text: string,
-  _apiKey: string,
+  _apiKey?: string,
 ): Promise<string> {
   // Kept in FULL LOGIC PARITY with desktop's ai_cleanup.py SYSTEM_PROMPT rule 18 —
   // terser prose, same cue families / 4-part test / anti-cues / asymmetry / and-carve-out.
@@ -461,7 +461,7 @@ export async function generateMeetingNotes(meeting: {
 
 export async function formatNotes(
   text: string,
-  _apiKey: string,
+  _apiKey?: string,
 ): Promise<string> {
   const res = await fetch(PROXY_URL, {
     method: 'POST',

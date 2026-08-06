@@ -24,7 +24,6 @@ import {
 import {
   getUserId,
   getDeviceName,
-  getGroqKey,
   getSyncEnabled,
   getNotesFeatureFlags,
   DEFAULT_NOTES_FLAGS,
@@ -182,14 +181,22 @@ export function useNotes() {
       }
       const cached = await getCachedNotes();
 
-      // Back-fill: push locally-cached notes that never reached the cloud (created
-      // before the `notes` table existed, or while signed out). Without this, the
-      // user's existing mobile notes would stay invisible on other devices forever.
-      // Upsert on the note's OWN id so local id === cloud id (no duplicates).
+      // Back-fill: push locally-cached notes that NEVER reached the cloud (created
+      // before the `notes` table existed, or while signed out). Upsert on the
+      // note's OWN id so local id === cloud id (no duplicates).
+      //
+      // Scoped hard (IDI-158): only `source === 'local'` entries qualify — an
+      // entry that ever merged from (or pushed to) the cloud is 'remote', and
+      // re-uploading one whose cloud row is gone RESURRECTS a deleted note on
+      // every other device. Conflict copies (local-only artifacts) and anything
+      // tombstoned never uploads either.
       if (!error && (await getSyncEnabled())) {
         const deviceName = await getDeviceName();
         for (const e of cached) {
           if (remoteIds.has(e.id)) continue;
+          if (e.source !== 'local') continue;               // was cloud-backed once — don't resurrect
+          if (e.id.includes('::conflict::') || e.conflict_of) continue;
+          if (e.deleted_at) continue;
           try {
             await supabase.from('notes').upsert({
               id: e.id,
@@ -204,12 +211,15 @@ export function useNotes() {
               created_at: e.created_at,
               updated_at: e.updated_at,
             }, { onConflict: 'id' });
+            // Now cloud-backed: flip the marker so a later cloud delete of this
+            // note is honored instead of back-filled again.
+            await updateCachedNote(e.id, { source: 'remote' });
           } catch (pushErr) {
             console.warn('Note back-fill push failed:', pushErr);
           }
         }
       }
-      setNotes(cached.map(e => toNote(e)));
+      setNotes(cached.filter(e => !e.deleted_at).map(e => toNote(e)));
     } catch (err) {
       console.error('Failed to load notes:', err);
       const cached = await getCachedNotes();
@@ -301,33 +311,49 @@ export function useNotes() {
     })();
   }, []);
 
+  // Deletion = TOMBSTONE, not a hard DELETE (IDI-158). The row stays with
+  // deleted_at set and content cleared, so every other device's merge removes
+  // its copy and nothing (incl. our own back-fill) can resurrect it.
+  const tombstoneRemote = useCallback(async (ids: string[]) => {
+    const cloudIds = ids.filter(id => !id.includes('::conflict::')); // conflict copies are local-only
+    if (cloudIds.length === 0) return;
+    const nowIso = new Date().toISOString();
+    await supabase
+      .from('notes')
+      .update({
+        deleted_at: nowIso, updated_at: nowIso,
+        title: '', content: '', raw_content: null, audio_segments: [],
+      })
+      .in('id', cloudIds);
+  }, []);
+
   const removeNote = useCallback((id: string) => {
-    setNotes(prev => prev.filter(n => n.id !== id));
+    setNotes(prev => prev.filter(n => n.id !== id && n.conflictOf !== id));
     (async () => {
       try {
         await removeCachedNote(id);
-        await supabase.from('notes').delete().eq('id', id);
+        await tombstoneRemote([id]);
       } catch (err) {
         console.error('Failed to remove note:', err);
       }
     })();
-  }, []);
+  }, [tombstoneRemote]);
 
   // Batch delete (multi-select). One cloud round-trip via .in(), local cache
   // cleared per id. Best-effort — local removal always applies.
   const removeNotes = useCallback((ids: string[]) => {
     if (ids.length === 0) return;
     const idSet = new Set(ids);
-    setNotes(prev => prev.filter(n => !idSet.has(n.id)));
+    setNotes(prev => prev.filter(n => !idSet.has(n.id) && !idSet.has(n.conflictOf ?? '')));
     (async () => {
       try {
         for (const id of ids) await removeCachedNote(id);
-        await supabase.from('notes').delete().in('id', ids);
+        await tombstoneRemote(ids);
       } catch (err) {
         console.error('Failed to remove notes:', err);
       }
     })();
-  }, []);
+  }, [tombstoneRemote]);
 
   // Persist changes to cache + Supabase, refresh local state, return the Note.
   const commitEntryChanges = useCallback(
@@ -371,13 +397,13 @@ export function useNotes() {
       let newSegment: AudioSegment | null = null;
       if (f.audio && opts.recordingUri) newSegment = await persistAudioSegment(opts.recordingUri);
 
-      // AI cleanup (gated behaviors within one call).
+      // AI cleanup (gated behaviors within one call). Auth is the proxy's job —
+      // formatNoteWithTitle fails closed (ok:false → raw text) on any error.
       patchNoteState(id, { formatting: true });
-      const apiKey = await getGroqKey();
       const titleIsEmpty = !(existing.title || '').trim();
       const wantTitle = f.autotitle && isFirst && titleIsEmpty;
-      const result = rawText && apiKey
-        ? await formatNoteWithTitle(rawText, apiKey, {
+      const result = rawText
+        ? await formatNoteWithTitle(rawText, undefined, {
             timeoutMs: 8000,
             detectStructure: f.structure,
             withTitle: wantTitle,
@@ -425,16 +451,13 @@ export function useNotes() {
       if (!source || !source.trim()) return null;
 
       const f = await getNotesFeatureFlags().catch(() => flags);
-      const apiKey = await getGroqKey();
       const titleIsEmpty = !(existing.title || '').trim();
       patchNoteState(id, { formatting: true });
-      const result = apiKey
-        ? await formatNoteWithTitle(source, apiKey, {
-            timeoutMs: 8000,
-            detectStructure: f.structure,
-            withTitle: f.autotitle && titleIsEmpty,
-          })
-        : { ok: false, title: null, content: source };
+      const result = await formatNoteWithTitle(source, undefined, {
+        timeoutMs: 8000,
+        detectStructure: f.structure,
+        withTitle: f.autotitle && titleIsEmpty,
+      });
 
       const content = result.content || source;
       const title = f.autotitle && titleIsEmpty && result.ok && result.title

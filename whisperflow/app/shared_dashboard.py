@@ -1208,6 +1208,17 @@ class DashboardApi:
                     for r in resp.json():
                         if not isinstance(r, dict) or not r.get("id"):
                             continue
+                        # Tombstone wins unconditionally (IDI-158): a remote
+                        # deleted_at removes the local copy AND its local-only
+                        # ::conflict:: derivatives — never merged, never
+                        # resurrected by an offline edit's newer updated_at.
+                        if r.get("deleted_at"):
+                            rid = r["id"]
+                            for k in list(by_id.keys()):
+                                if (k == rid or by_id[k].get("conflict_of") == rid
+                                        or k.startswith(f"{rid}::conflict::")):
+                                    by_id.pop(k, None)
+                            continue
                         cand = dict(r)  # keep ALL remote fields, including unknowns
                         cand["title"] = r.get("title", "") or ""
                         cand["content"] = r.get("content", "") or ""
@@ -1331,20 +1342,38 @@ class DashboardApi:
         return r
 
     def delete_note(self, note_id):
-        notes = [n for n in self._local_notes() if n.get("id") != note_id]
-        self._save_local_notes(notes)
-        if self._sync_on():
+        # Cloud side FIRST (IDI-158), and it's a TOMBSTONE (deleted_at + content
+        # cleared), not a hard DELETE — other devices' merges treat the tombstone
+        # as authoritative, and nothing can back-fill the note into existence.
+        # If the cloud write fails while sync is on, the note is KEPT locally and
+        # an error returned — the UI must not pretend a delete that didn't stick
+        # (conflict copies are local-only, so they skip the cloud step).
+        if self._sync_on() and "::conflict::" not in str(note_id):
             try:
                 import httpx
+                import datetime as _dt
                 from app.sync import SUPABASE_URL
                 from app.auth import auth_header
-                httpx.delete(
+                now = _dt.datetime.now(_dt.timezone.utc).isoformat()
+                resp = httpx.patch(
                     f"{SUPABASE_URL}/rest/v1/notes?id=eq.{note_id}",
-                    headers=auth_header(self.app.config),
+                    headers={**auth_header(self.app.config, json=True),
+                             "Prefer": "return=minimal"},
+                    json={"deleted_at": now, "updated_at": now, "title": "",
+                          "content": "", "raw_content": None, "audio_segments": []},
                     timeout=10,
                 )
+                resp.raise_for_status()
             except Exception as e:
                 logger.debug(f"Note cloud delete failed: {e}")
+                return {"ok": False, "error": "Couldn't delete from the cloud — check your connection",
+                        "notes": list(self._local_notes())}
+        nid = str(note_id)
+        notes = [n for n in self._local_notes()
+                 if n.get("id") != note_id
+                 and n.get("conflict_of") != note_id
+                 and not str(n.get("id", "")).startswith(f"{nid}::conflict::")]
+        self._save_local_notes(notes)
         return _ok(notes=notes)
 
     # ── voice dictation into a note (repeatable) ──────────────────────────────

@@ -50,12 +50,18 @@ this DB — the column was still `uuid` in production until then, verified fixed
 text column lets each client supply its **own** id so the note's local id === its cloud id. That equality
 is load-bearing: mobile `updateNote` does `.update().eq('id', localId)`, and without it every edit matches
 0 rows and the pulled-back row duplicates. Mobile `createNote` upserts **with** the id (gated on
-`getSyncEnabled`), and `useNotes.load` **back-fills** any locally-cached note missing from the cloud
-(notes created before the table existed never got pushed otherwise).
+`getSyncEnabled`), and `useNotes.load` **back-fills** locally-cached notes that have **never been
+cloud-backed** — scoped in IDI-158 to `source === 'local'` entries only, excluding `::conflict::` copies
+and tombstones (the old unscoped back-fill re-uploaded notes deleted on other devices, resurrecting them).
 **v2 columns** (`supabase_notes_v2.sql`, idempotent): `raw_content` text nullable (raw Whisper transcript;
 NULL for typed/pre-existing notes — `content` holds the formatted version, "show original" reveals this);
 `audio_segments` jsonb `'[]'` (append-only list of source recordings, shape `[{id,url,created_at}]`,
-**UNION-on-merge** during sync). **RLS:** enabled, `TO public` (`whisperflow/supabase_notes_rls.sql`,
+**UNION-on-merge** during sync); `deleted_at` timestamptz nullable (**IDI-158 tombstone**, live migration
+`notes_deleted_at_tombstone` 2026-08: deletion is a soft-delete — `deleted_at` + `updated_at` set, content
+fields cleared, never a hard DELETE. Merges on both platforms treat a tombstone as **unconditionally
+authoritative**: local copy + its `::conflict::` derivatives are dropped with no LWW comparison, so an
+offline edit can never resurrect a deleted note. Desktop `delete_note` writes the cloud tombstone FIRST
+and keeps the note + returns `ok:false` if that write fails while sync is on). **RLS:** enabled, `TO public` (`whisperflow/supabase_notes_rls.sql`,
 MER-26, 2026-07) — the base file and `supabase_notes_v2.sql` wrote none (v2's guarded `DO` block only
 broadens a *pre-existing* policy if RLS was already enabled, which it wasn't, so it was a silent no-op
 until this fix landed).
@@ -81,14 +87,14 @@ without that revoke, any client could call the RPC directly via PostgREST with a
 tamper with another identity's counter; this was caught and fixed live via the security advisor during
 MER-30 verification. Opportunistic cleanup (~1% of calls) deletes rows older than 10 minutes.
 
-**`app_config` — referenced by code, does not exist in the live DB.** The provider-secret-key-table idea
-(`GROQ_API_KEY` readable by clients) was correctly dropped — that must never exist; keys live only as the
-`groq-proxy` function's own `GROQ_API_KEY`/`OLLAMA_API_KEY` secrets. But a *same-named*, different-purpose
-table (general app-wide settings / cached shared Groq key, per `whisperflow/supabase_app_config.sql` and
-mobile's `lib/remoteConfig.ts`, warmed in `RootNavigator.tsx` and read in `storage.ts`) is still actively
-queried by mobile code — and a live-schema check found **no `app_config` table in the current `public`
-schema at all**. Either the migration was never applied live, or this code path is currently dead/failing
-silently. Needs verification, not just documentation, before relying on it.
+**`app_config` — does not exist in the live DB, and no code references it anymore (resolved, IDI-160).**
+The provider-secret-key-table idea (`GROQ_API_KEY` readable by clients) was correctly dropped — that must
+never exist; keys live only as the `groq-proxy` function's own `GROQ_API_KEY`/`OLLAMA_API_KEY` secrets.
+The mobile code that still queried a same-named settings table (`lib/remoteConfig.ts`, warmed in
+`RootNavigator.tsx`, read via `storage.ts::getGroqKey`) was **removed in 2026-08**: the table had never
+been provisioned live, so `getGroqKey()` returned `''` and its call-site gates falsely failed every in-app
+dictation/retry/note-cleanup — while `lib/groq.ts` ignored the key parameter anyway (the proxy holds it).
+`whisperflow/supabase_app_config.sql` remains in the repo as an unapplied historical file only.
 
 **`push_tokens`** — `(user_id, token)` composite PK, `platform`, `device_name`, `updated_at`. RLS on.
 Backs the meeting-start push-notification feature (`verbal-mobile/lib/notifications.ts::
@@ -392,8 +398,8 @@ Pragmatic, matches code + `GOOGLE_AUTH_SETUP.md`:
   - ~~`groq_usage.kind`'s check constraint didn't allow `'chat-ollama'`~~ — **fixed** (migration
     `allow_chat_ollama_in_groq_usage_kind`, 2026-07): constraint now allows it, verified with a live
     insert+delete round-trip.
-  - `app_config` is referenced by mobile code (`lib/remoteConfig.ts`) but doesn't exist in the live
-    schema at all — see the `app_config` callout above.
+  - ~~`app_config` referenced by mobile code but absent from the live schema~~ — **resolved** (IDI-160,
+    2026-08): the referencing code was removed entirely; see the `app_config` callout above.
   - Two more undocumented-until-now tables: `push_tokens` (real, in active use) and `device_presence`
     (appears orphaned/unused — flag for cleanup, don't treat as a feature).
   - Undocumented columns that do exist and are actively used: `meetings.notes_md`, `meetings.live`,

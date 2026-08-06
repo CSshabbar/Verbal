@@ -39,6 +39,7 @@ import { DevicesSyncHost } from '../components/DevicesSyncSheet';
 import { useHistory } from '../hooks/useHistory';
 import { useDevices } from '../hooks/useDevices';
 import { consumeLastRecording } from '../hooks/useRecorder';
+import { getSyncEnabled } from '../../lib/storage';
 
 import {
   RootStackParamList,
@@ -243,10 +244,12 @@ function MenuNavigator() {
               try {
                 const { claimPairing } = await import('../../lib/pairing');
                 const info = await claimPairing(payload);
-                // user_id + sync just changed — re-subscribe the realtime channel
-                // on the new account so this device RECEIVES from the host too.
+                // user_id + sync just changed — tear down the store (items +
+                // realtime channel are keyed by the OLD account) and reload
+                // under the host account so this device RECEIVES from it too.
                 try {
                   const hist = await import('../hooks/historyStore');
+                  await hist.reset();
                   await hist.refresh();
                 } catch {}
                 Alert.alert('Paired', `This device now syncs with ${info.hostDevice || 'your account'}.`);
@@ -394,8 +397,6 @@ export const RootNavigator: React.FC = () => {
     AsyncStorage.getItem(ONBOARDED_KEY)
       .then(v => setOnboarded(v === '1'))
       .catch(() => setOnboarded(false));
-    // Warm/refresh the shared Groq key cache from app_config (rotatable server-side).
-    import('../../lib/remoteConfig').then(m => m.refreshBundledGroqKey()).catch(() => {});
   }, []);
 
   const completeOnboarding = async () => {
@@ -443,7 +444,7 @@ export const RootNavigator: React.FC = () => {
               {({ navigation }) => (
                 <RecordingScreen
                   onCancel={() => navigation.goBack()}
-                  onComplete={(_uri, durationMs) => {
+                  onComplete={async (_uri, durationMs) => {
                     const last = consumeLastRecording();
                     const failed = last?.status === 'failed';
                     const hasSpeech = !!last?.text?.trim();
@@ -461,12 +462,18 @@ export const RootNavigator: React.FC = () => {
                       addTranscription(last!.text, deviceName, durationMs, target?.id ?? null, last?.uri, 'done');
                     }
 
+                    // Only claim device delivery when it can actually happen:
+                    // the cloud push is gated on the Sync toggle AND a target.
+                    const syncOn = await getSyncEnabled().catch(() => false);
+                    const sent = !failed && hasSpeech && syncOn && !!target?.id;
+
                     navigation.replace('Confirmation', {
                       transcript,
                       deviceName,
                       durationSeconds: Math.round(durationMs / 1000),
                       wordCount,
                       transcribeMs: last?.transcribeMs ?? 0,
+                      variant: failed ? 'failed' : !hasSpeech ? 'empty' : sent ? 'sent' : 'saved',
                     });
                   }}
                 />

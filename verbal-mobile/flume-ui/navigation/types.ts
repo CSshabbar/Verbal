@@ -14,6 +14,15 @@ export type RootStackParamList = {
     durationSeconds: number;
     wordCount: number;
     transcribeMs: number;
+    /**
+     * Truthful outcome (IDI-159 — the screen previously claimed "Pasted to X"
+     * unconditionally, even for failures and with sync off):
+     *  - 'sent'   → pushed to the selected target device (sync on + target set)
+     *  - 'saved'  → saved to local history + clipboard only
+     *  - 'failed' → transcription failed; audio kept for retry
+     *  - 'empty'  → no speech detected
+     */
+    variant: 'sent' | 'saved' | 'failed' | 'empty';
   };
   /** Menu — the navigation hub, opened from the Home header ☰. */
   Menu: undefined;

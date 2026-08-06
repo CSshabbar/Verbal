@@ -14,7 +14,7 @@ import { useAuth } from '../hooks/useAuth';
 import {
   getDeviceName, setDeviceName,
   getSyncEnabled, setSyncEnabled,
-  getUserId, setUserId,
+  getUserId, setUserId, setPairedUserId, getStoredUserId, clearAccountData,
   clearHistory,
   getNotesFeatureFlags, setNotesFeatureFlag,
   DEFAULT_NOTES_FLAGS, type NotesFeatureFlags,
@@ -102,7 +102,23 @@ export const SettingsScreen: React.FC<Props> = ({ onOpenDevices, onOpenSnippets 
   };
 
   const saveUser = async () => {
-    await setUserId(userId.trim());
+    // Manual account link (IDI-156): writes the paired-account OVERRIDE, which
+    // outranks the session id in getUserId() — a bare setUserId() was dead UI
+    // (the session write-back reverted it on the next read). Same teardown +
+    // store-reset rules as QR pairing so caches never leak across accounts.
+    const id = userId.trim();
+    if (!id) return;
+    const prev = await getStoredUserId();
+    if (prev && prev !== id) {
+      try { await clearAccountData(); } catch { /* best effort */ }
+    }
+    await setPairedUserId(id);
+    await setUserId(id);
+    try {
+      const hist = await import('../hooks/historyStore');
+      await hist.reset();
+      await hist.refresh();
+    } catch { /* best effort */ }
     await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     setSavedUser(true);
     setTimeout(() => setSavedUser(false), 1600);
@@ -388,7 +404,7 @@ export const SettingsScreen: React.FC<Props> = ({ onOpenDevices, onOpenSnippets 
               />
             </View>
             <Button
-              label={savedUser ? 'Saved ✓ — reload to apply' : 'Save ID'}
+              label={savedUser ? 'Linked ✓' : 'Save ID'}
               variant={savedUser ? 'ghost' : 'primary'}
               onPress={saveUser}
             />

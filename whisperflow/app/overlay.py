@@ -40,7 +40,11 @@ PANEL_W = 720
 PANEL_H = 150
 
 _OVERLAY_ACTIONS = {"overlay_stop", "overlay_cancel", "overlay_pause",
-                    "overlay_copy", "overlay_dismiss"}
+                    "overlay_copy", "overlay_dismiss", "overlay_ready"}
+
+# Statuses that must NOT render as a success pill. Used only as a backstop —
+# main.py passes `error=True` explicitly (see update_status).
+_ERROR_HINTS = ("no speech", "failed", "error", "couldn't", "could not", "unable")
 
 
 class OverlayBar:
@@ -52,6 +56,11 @@ class OverlayBar:
         self._visible = False
         self._ready = False
         self._t0 = 0.0  # record start (for elapsed seconds)
+        # Emits made before the page's JS installs window.VerbalOverlay are
+        # BUFFERED and flushed on the `overlay_ready` handshake — otherwise a
+        # record-at-launch shows no pill at all (the eval silently no-ops).
+        self._page_ready = False
+        self._pending = []
 
     # ── device-name helpers ───────────────────────────────────────────────────
     def _this_device(self):
@@ -96,10 +105,15 @@ class OverlayBar:
         self._window.setFloatingPanel_(True)
         self._window.setBecomesKeyOnlyIfNeeded_(True)
         self._window.setHidesOnDeactivate_(False)
+        # Stage Manager opt-outs: without .auxiliary + .canJoinAllApplications the
+        # panel gets swept into the side strip and every click looks dead
+        # (same recipe as meeting_window.py).
         self._window.setCollectionBehavior_(
             NSWindowCollectionBehaviorCanJoinAllSpaces
             | NSWindowCollectionBehaviorStationary
-            | NSWindowCollectionBehaviorFullScreenAuxiliary)
+            | NSWindowCollectionBehaviorFullScreenAuxiliary
+            | (1 << 17)   # NSWindowCollectionBehaviorAuxiliary
+            | (1 << 18))  # NSWindowCollectionBehaviorCanJoinAllApplications
 
         try:
             self._build_webview()
@@ -108,9 +122,10 @@ class OverlayBar:
 
     def _build_webview(self):
         from WebKit import (
-            WKWebView, WKWebViewConfiguration, WKUserContentController, WKUserScript,
+            WKWebViewConfiguration, WKUserContentController, WKUserScript,
         )
         from app.flume_web_dashboard import _Bridge, _SHIM
+        from app.meeting_window import _webview_class   # acceptsFirstMouse (Rule #18)
 
         ucc = WKUserContentController.alloc().init()
         self._bridge = _Bridge.alloc().initWithDashboard_(self)
@@ -122,7 +137,7 @@ class OverlayBar:
         config.setUserContentController_(ucc)
 
         rect = NSMakeRect(0, 0, PANEL_W, PANEL_H)
-        self._webview = WKWebView.alloc().initWithFrame_configuration_(rect, config)
+        self._webview = _webview_class().alloc().initWithFrame_configuration_(rect, config)
         self._webview.setAutoresizingMask_(0x02 | 0x10)
         # Make the web view fully transparent so only the CSS pill shows (no dark
         # square backing behind the rounded corners).
@@ -141,9 +156,23 @@ class OverlayBar:
             self._webview.layer().setOpaque_(False)
         except Exception:
             pass
+        self._page_ready = False
         self._webview.loadHTMLString_baseURL_(overlay_html(), None)
         self._window.setContentView_(self._webview)
         self._ready = True
+        # Fail-open backstop: if the page never reports ready (load failure), stop
+        # buffering after a few seconds so the overlay degrades to its old
+        # best-effort behaviour instead of going permanently silent.
+        import threading
+
+        def _unblock():
+            if self._page_ready:
+                return
+            if self.app:
+                self.app._on_main(self.overlay_ready)
+            else:
+                self.overlay_ready()
+        threading.Timer(3.0, _unblock).start()
 
     def _order_front(self):
         if not self._window:
@@ -153,6 +182,11 @@ class OverlayBar:
 
     def _push(self, mode, data=None):
         import json
+        if not self._page_ready:
+            self._pending.append((mode, data))
+            if len(self._pending) > 20:          # bound the buffer
+                self._pending = self._pending[-20:]
+            return
         js = "if(window.VerbalOverlay)window.VerbalOverlay(%s, %s);" % (
             json.dumps(mode), json.dumps(data or {}))
         if self._webview:
@@ -160,6 +194,15 @@ class OverlayBar:
                 self._webview.evaluateJavaScript_completionHandler_(js, None)
             except Exception as e:
                 logger.debug("overlay eval failed: %s", e)
+
+    def overlay_ready(self):
+        """Page-load handshake — flush emits made while the page was loading."""
+        if self._page_ready:
+            return
+        self._page_ready = True
+        pending, self._pending = self._pending, []
+        for mode, data in pending:
+            self._push(mode, data)
 
     # ── interface used by main.py ─────────────────────────────────────────────
     def _cancel_autohide(self):
@@ -171,18 +214,35 @@ class OverlayBar:
         self._t0 = time.time()
         self._push("recording", {"device": self._this_device()})
 
-    def update_status(self, status):
+    def update_status(self, status, error=False):
+        """`error=True` renders the failure pill (no ✓, no "Copy again")."""
         if not self._window:
             return
         self._cancel_autohide()
-        if status and "Transcrib" in status:
+        if not error and status and "Transcrib" in status and "fail" not in status.lower():
             secs = int(max(0, time.time() - self._t0)) if self._t0 else 0
             self._push("transcribing", {
                 "src": self._this_device(), "dst": self._target_device(), "secs": secs})
+            return
+        self._order_front()
+        text = (status or "").strip()
+        if error or self._looks_like_error(text):
+            # Never show the success checkmark or a "Copy again" CTA here — the
+            # CTA would copy the PREVIOUS dictation's text.
+            self._push("error", {"label": self._strip_glyphs(text) or "Something went wrong",
+                                 "state": "Failed"})
         else:
-            # warnings ("No speech…") — show the message briefly on the pill
-            self._order_front()
-            self._push("done", {"label": status or "", "meta": ""})
+            self._push("done", {"label": text, "meta": ""})
+
+    @staticmethod
+    def _looks_like_error(status):
+        low = (status or "").lower()
+        return any(h in low for h in _ERROR_HINTS)
+
+    @staticmethod
+    def _strip_glyphs(status):
+        # The pill has its own "!" disc — drop any leading warning emoji.
+        return re.sub(r"^[\s⚠️❗❌✖]+", "", status or "").strip()
 
     def show_briefly(self, status, duration=2.0):
         self._order_front()
@@ -244,15 +304,47 @@ class OverlayBar:
             self.app._on_main(lambda: self.app._toggle_recording(None))
 
     def overlay_cancel(self):
-        if self.app and hasattr(self.app, "_cancel_recording"):
-            self.app._on_main(self.app._cancel_recording)
+        """Cancel — must behave EXACTLY like the ESC key.
+
+        Routing straight to `_cancel_recording` was a no-op while TRANSCRIBING:
+        it never set `_cancel_flag`, and `_reset_to_ready` cleared it, so the
+        in-flight transcription completed and still pasted into the focused app.
+        `_on_esc_pressed` is the one path that sets the flag BEFORE any reset, so
+        we delegate to it (it is also called off the main thread by the hotkey
+        listener and hops to main itself).
+        """
+        app = self.app
+        if not app:
+            self.hide()
+            return
+        esc = getattr(app, "_on_esc_pressed", None)
+        if callable(esc):
+            try:
+                esc()
+            except Exception as e:
+                logger.error("overlay cancel failed: %s", e)
+            # ESC is a no-op when neither recording nor processing (e.g. the Done
+            # pill lingering) — don't leave a dead pill on screen.
+            if not getattr(app, "_processing", False) and not getattr(app, "_is_recording", False):
+                app._on_main(self.hide)
+            return
+        if hasattr(app, "_cancel_recording"):
+            app._on_main(app._cancel_recording)
         else:
-            self.app and self.app._on_main(self.hide)
+            app._on_main(self.hide)
 
     def overlay_pause(self):
         rec = getattr(self.app, "recorder", None)
-        if rec and hasattr(rec, "toggle_pause"):
-            rec.toggle_pause()
+        if not (rec and hasattr(rec, "toggle_pause")):
+            return
+        try:
+            paused = bool(rec.toggle_pause())
+        except Exception as e:
+            logger.error("overlay pause failed: %s", e)
+            return
+        # Reflect it on the pill: flip the icon and FREEZE the elapsed timer
+        # (audio stops accruing, so a ticking clock drifts from reality).
+        self._push("paused", {"paused": paused})
 
     def overlay_copy(self):
         text = getattr(self.app, "_last_result_text", "") if self.app else ""

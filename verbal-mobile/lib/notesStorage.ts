@@ -28,6 +28,7 @@ export interface NoteEntry {
   source:        'local' | 'remote';
   conflict?:     boolean;            // true on BOTH members of a conflict pair
   conflict_of?:  string | null;      // set on the conflict copy -> canonical note id
+  deleted_at?:   string | null;      // tombstone (IDI-158) — deletion is authoritative
   // Forward-compat: unknown fields from newer clients are preserved verbatim.
   [key: string]: any;
 }
@@ -36,7 +37,7 @@ export interface NoteEntry {
 const KNOWN_FIELDS = new Set([
   'id', 'title', 'content', 'raw_content', 'audio_segments', 'folder',
   'is_pinned', 'device_name', 'created_at', 'updated_at', 'source',
-  'conflict', 'conflict_of',
+  'conflict', 'conflict_of', 'deleted_at',
 ]);
 
 export async function getCachedNotes(): Promise<NoteEntry[]> {
@@ -94,6 +95,19 @@ function isConflict(a: NoteEntry, b: NoteEntry): boolean {
 export async function mergeRemoteNote(note: NoteEntry): Promise<NoteEntry[]> {
   const notes = await getCachedNotes();
   const cand: NoteEntry = { ...note, source: 'remote' };
+
+  // Tombstone wins unconditionally (IDI-158): a remote deleted_at removes the
+  // local copy AND its local-only ::conflict:: derivatives — no LWW comparison,
+  // so an offline edit can never resurrect a note deleted elsewhere.
+  if (cand.deleted_at) {
+    const kept = notes.filter(
+      n => n.id !== cand.id && n.conflict_of !== cand.id
+        && !n.id.startsWith(`${cand.id}::conflict::`),
+    );
+    if (kept.length !== notes.length) await saveNotes(kept);
+    return kept;
+  }
+
   const idx = notes.findIndex(n => n.id === cand.id);
 
   if (idx < 0) {
@@ -170,7 +184,11 @@ export async function updateCachedNote(
 
 export async function removeCachedNote(id: string): Promise<NoteEntry[]> {
   const notes = await getCachedNotes();
-  const updated = notes.filter(n => n.id !== id);
+  // Removing a canonical note also removes its local-only ::conflict:: copies —
+  // orphaned conflict artifacts would otherwise linger (and confuse the UI) forever.
+  const updated = notes.filter(
+    n => n.id !== id && n.conflict_of !== id && !n.id.startsWith(`${id}::conflict::`),
+  );
   await saveNotes(updated);
   return updated;
 }

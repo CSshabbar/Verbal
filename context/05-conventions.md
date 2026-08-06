@@ -43,7 +43,10 @@
 
 8. **Non-activating panels:** the overlay + auto-learn widget use
    `NSWindowStyleMaskBorderless | NSNonactivatingPanelMask` at `NSScreenSaverWindowLevel` so they never
-   steal key focus from the app being dictated into. Any new floating HUD must too.
+   steal key focus from the app being dictated into. Any new floating HUD must too — **and must carry the
+   rest of the panel recipe**: the `meeting_window._webview_class()` `acceptsFirstMouse:` subclass, the
+   Stage Manager opt-outs `.auxiliary` + `.canJoinAllApplications`, and a page-ready handshake before
+   emitting into its WKWebView (Rules #18 and #25).
 
 9. **Anti-nag memory:** once a word is offered by auto-learn (Add *or* dismiss) it's recorded in
    `config['autolearn_declined']` and never re-offered. (This is why re-testing the *same* word shows
@@ -126,14 +129,12 @@
    `llama-3.3-70b` so notes never fail (`meetings.generate_meeting_notes`, `lib/groq.ts::generateMeetingNotes`).
    Set/rotate via `supabase secrets set OLLAMA_API_KEY=…` (key from ollama.com/settings/keys). The earlier
    `app_config` **provider-secret-key-table** idea is correctly **SUPERSEDED** (a client must never be able
-   to read `GROQ_API_KEY` itself) — but **`lib/remoteConfig.ts` is NOT vestigial**, contrary to what this
-   rule used to say: it's still actively called (`storage.ts::getGroqKey`'s last-resort fallback, and
-   warmed on app start in `RootNavigator.tsx`) to read a *different*, same-named `app_config` table for a
-   cached "shared bundled Groq key" — and a 2026-07 live-schema audit found **no `app_config` table exists
-   in the current DB at all**, meaning this fallback path likely silently no-ops every time (see
-   `04-data-model.md`'s `app_config` callout). Low practical impact since it's a fallback of a fallback
-   (`groq-proxy` is always tried first), but the code and this rule had drifted from each other — verify
-   before assuming this path does anything today. The iOS keyboard's `KeyboardViewController.swift` and
+   to read `GROQ_API_KEY` itself). The whole mobile client-key resolution chain
+   (`storage.ts::getGroqKey`/`setGroqKey` → `lib/remoteConfig.ts` → `app_config` table) was **removed in
+   IDI-160 (2026-08)**: the table never existed in the live schema, so the empty-key gate falsely failed
+   every in-app dictation/retry/note-cleanup while `lib/groq.ts` ignored the key anyway. The proxy is the
+   sole authority; the `_apiKey` params on `transcribeAudio`/`formatText`/`formatNoteWithTitle`/
+   `formatNotes` are now optional and ignored. The iOS keyboard's `KeyboardViewController.swift` and
    desktop still keep a local-key fallback path only for
    resilience — the proxy is always tried first. **Groq returns HTTP 413 (not 429) when a request would
    exceed the shared key's tokens-per-minute budget** — this shows up on long meetings, since the summary
@@ -569,6 +570,31 @@
     tokens); a fresh `_store_session` resets it. This is safe only because RLS is still permissive — when
     RLS tightens to `auth.uid()`, a dead session must instead force re-authentication.
 
+25. **The recording overlay's Cancel button must go through `main._on_esc_pressed`, never
+    `_cancel_recording` (IDI-165).** `_cancel_recording` only stops the *recorder*; it never sets
+    `_cancel_flag`, and `_reset_to_ready` **clears** the flag — so clicking Cancel on the *Transcribing*
+    pill let the in-flight transcription finish and still paste into the focused app. `_on_esc_pressed`
+    is the only path that sets the flag **before** any reset, so `overlay.overlay_cancel` delegates to it
+    (it is safe off the main thread — it hops to main itself). Rule: ESC and the Cancel button must stay
+    literally the same code path. The same ticket established three more overlay rules:
+    - **Failures get their own pill.** `overlay.update_status(status, error=True)` renders `mode:'error'`
+      — danger red `#E05049`, a `!` disc, **no ✓ and no "Copy again"** (that CTA re-copied the *previous*
+      dictation's text). `main.py` passes the flag explicitly at the `silent` / `failed` call sites; the
+      `_ERROR_HINTS` string sniff in `overlay.py` is only a backstop.
+    - **Pause must be reflected in the UI.** `overlay_pause` pushes `mode:'paused'` with the recorder's
+      new state; the page flips the pause↔play glyph and **freezes** the JS elapsed timer (audio stops
+      accruing, so a ticking clock drifts from the real recording length). Both glyphs live in the DOM
+      and are toggled by `display` so the JS never embeds SVG markup (keeps backslashes out of the
+      non-raw `_js()` string).
+    - **Ready handshake, like `meeting_window`/`transform_widget`.** The overlay page calls
+      `api('overlay_ready')`; emits made before that are buffered (bounded at 20) and flushed — without
+      it, record-at-launch showed **no pill at all**. A 3 s timer un-blocks the buffer if the page never
+      reports ready, so the overlay fails open.
+    The overlay panel and the auto-learn widget now also carry the full Rule-#18 panel recipe: the
+    `_webview_class()` `acceptsFirstMouse:` subclass (imported from `meeting_window`) plus the Stage
+    Manager opt-outs `.auxiliary (1<<17)` + `.canJoinAllApplications (1<<18)`. Stock `WKWebView` swallowed
+    the first click on both surfaces.
+
 ## Design system (Flume)
 
 Single source: desktop `app/theme.py` + `app/fonts_css.py`; mobile `flume-ui/theme/`. Also
@@ -631,6 +657,9 @@ Single source: desktop `app/theme.py` + `app/fonts_css.py`; mobile `flume-ui/the
   — dead; live UI is under `flume-ui/`.
 - `lib/useSync.ts` (superseded by `historyStore.ts`), `lib/useDeviceSelector.ts` (superseded by
   `flume-ui/hooks/useDevices.ts`), `lib/MarkdownText.tsx`, `lib/theme.ts` — not imported by live code.
+- **Deleted outright (2026-08, flow-audit batch):** mobile `lib/remoteConfig.ts` + `getGroqKey`/`setGroqKey`
+  (IDI-160 — see Hard Rule #15) and desktop `pairing.py::claim_pairing` (IDI-156 — desktop only ever HOSTS
+  pairing; the claiming side is mobile `lib/pairing.ts::claimPairing`). Older docs may still reference them.
   **Do not revive `lib/MarkdownText.tsx`** (it depends on stale `lib/theme.ts`); the live notes markdown/
   checklist renderer is `flume-ui/components/MarkdownNote.tsx` (Notes v2), styled off `flume-ui/theme/`.
 - all `flume-ui/hooks/*.mock.ts` — contract references, never imported at runtime.

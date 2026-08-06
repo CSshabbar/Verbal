@@ -286,9 +286,13 @@ class VerbalApp(rumps.App):
         except Exception as e:
             logger.warning(f"Accessibility check: {e}")
 
+        # dashboard.show() sets Regular activation policy itself (and reverts to
+        # Accessory when the window closes) — see flume_web_dashboard.py's
+        # _delegate_class() docstring for why this can't be a one-time,
+        # permanent switch at launch (it silently breaks the recording
+        # overlay's visibility over full-screen apps for the rest of the
+        # session otherwise).
         self.dashboard.show()
-        from AppKit import NSApplication
-        NSApplication.sharedApplication().setActivationPolicy_(0)
         self._install_edit_menu()
 
         # Reflect sign-in state + offer sign-in once on first run.
@@ -1008,7 +1012,8 @@ class VerbalApp(rumps.App):
                         os.remove(audio_path)
                     except Exception:
                         pass
-                self._on_main(lambda: self.overlay.update_status("⚠️ No speech detected. Speak louder!"))
+                self._on_main(lambda: self.overlay.update_status(
+                    "⚠️ No speech detected. Speak louder!", error=True))
                 time.sleep(1.5)
                 self._on_main(self._reset_to_ready)
                 return
@@ -1021,7 +1026,7 @@ class VerbalApp(rumps.App):
                     entry_id=rec_id, audio=audio_path or "", status="failed")
                 self._upload_recording_async(rec_id, audio_path)
                 self._on_main(lambda: self.overlay.update_status(
-                    "⚠️ Transcription failed — retry from History"))
+                    "⚠️ Transcription failed — retry from History", error=True))
                 time.sleep(2.0)
                 self._on_main(self._reset_to_ready)
                 self._on_main(self._refresh_dashboards)

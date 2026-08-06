@@ -12,7 +12,7 @@ import { Linking } from 'react-native';
 import * as WebBrowser from 'expo-web-browser';
 import * as QueryParams from 'expo-auth-session/build/QueryParams';
 import { supabase, SUPABASE_URL, SUPABASE_ANON_KEY } from '../../lib/supabase';
-import { setUserId, setSyncEnabled, getDeviceName, getDeviceId, getStoredUserId, clearAccountData } from '../../lib/storage';
+import { setUserId, setPairedUserId, setSyncEnabled, getDeviceName, getDeviceId, getStoredUserId, clearAccountData } from '../../lib/storage';
 import * as historyStore from './historyStore';
 import { notify } from '../components/ConfirmDialog';
 import { showDevicesSheet } from '../components/DevicesSyncSheet';
@@ -94,6 +94,10 @@ async function afterSignIn(session: any) {
     try { await clearAccountData(); } catch { /* ignore */ }
     try { await historyStore.reset(); } catch { /* ignore */ }
   }
+  // A real sign-in supersedes any paired-account override (IDI-156) — the
+  // session is now the identity. (An override to a DIFFERENT account was
+  // already removed by clearAccountData above.)
+  try { await setPairedUserId(null); } catch { /* ignore */ }
   await setUserId(uid);
   // Register this device, reconcile THIS device's sync flag from its cloud row,
   // then show the per-device sync sheet when there are other devices to manage.

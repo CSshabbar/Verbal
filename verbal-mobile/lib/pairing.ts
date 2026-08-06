@@ -8,7 +8,10 @@
  * Mirrors whisperflow/app/pairing.py + the `pairings` table.
  */
 import { supabase } from './supabase';
-import { setUserId, setSyncEnabled, getDeviceName } from './storage';
+import {
+  setUserId, setPairedUserId, setSyncEnabled,
+  getDeviceName, getDeviceId, getStoredUserId, clearAccountData,
+} from './storage';
 
 export type PairResult = { userId: string; hostDevice: string };
 
@@ -55,9 +58,30 @@ export async function claimPairing(payload: string): Promise<PairResult> {
     throw new Error('This code was just used by another device.');
   }
 
-  // 3) adopt the host account + enable sync
+  // 3) adopt the host account (IDI-156).
+  // Account-switch teardown FIRST — same rule as useAuth.afterSignIn: the
+  // previous account's cached history/notes/dictionary must never back-fill
+  // into the host's account. (The caller resets UI-layer stores — see the
+  // PairDevice onScan handler; lib/ must not import from flume-ui/.)
+  const prev = await getStoredUserId();
+  if (prev && prev !== row.user_id) {
+    try { await clearAccountData(); } catch { /* best effort */ }
+  }
+  // The paired override OUTRANKS the local Supabase session id in getUserId() —
+  // plain setUserId() alone is reverted by the session write-back within ms.
+  await setPairedUserId(row.user_id);
   await setUserId(row.user_id);
   await setSyncEnabled(true);
+
+  // Register this device under the host account so it shows up in Devices
+  // lists on the host's other devices. Best-effort — pairing already succeeded.
+  try {
+    const deviceId = await getDeviceId();
+    await supabase.from('devices').upsert(
+      { user_id: row.user_id, device_id: deviceId, device_name: deviceName,
+        device_type: 'ios', last_seen: new Date().toISOString() },
+      { onConflict: 'user_id,device_id' });
+  } catch { /* best effort */ }
 
   return { userId: row.user_id, hostDevice: row.host_device || '' };
 }

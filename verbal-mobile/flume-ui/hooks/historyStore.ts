@@ -18,7 +18,6 @@ import {
   getUserId,
   getDeviceId,
   getSyncEnabled,
-  getGroqKey,
   mergeRemoteEntries,
   HistoryEntry,
 } from '../../lib/storage';
@@ -272,13 +271,11 @@ export async function retryEntry(id: string): Promise<{ ok: boolean; error?: str
   if (!entry) return { ok: false, error: 'not found' };
   const path = await recordings.ensureLocal(id, entry.audio_uri, entry.audio_url);
   if (!path) return { ok: false, error: 'no audio to retry' };
-  const apiKey = await getGroqKey();
-  if (!apiKey) return { ok: false, error: 'Add a Groq API key in Settings first' };
   try {
-    const raw = await transcribeAudio(path, apiKey);
+    const raw = await transcribeAudio(path);
     if (!raw.trim()) return { ok: false, error: 'Still failing — check your connection' };
     let formatted = raw;
-    try { formatted = await formatText(raw, apiKey); } catch { /* keep raw */ }
+    try { formatted = await formatText(raw); } catch { /* keep raw */ }
     // Expand snippet triggers AFTER cleanup, before the transcript is stored.
     try {
       const snippets = await getSnippets();

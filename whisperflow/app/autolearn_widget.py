@@ -82,9 +82,10 @@ class AutoLearnWidget:
 
     def _build_webview(self):
         from WebKit import (
-            WKWebView, WKWebViewConfiguration, WKUserContentController, WKUserScript,
+            WKWebViewConfiguration, WKUserContentController, WKUserScript,
         )
         from app.flume_web_dashboard import _Bridge, _SHIM
+        from app.meeting_window import _webview_class   # acceptsFirstMouse (Rule #18)
 
         ucc = WKUserContentController.alloc().init()
         self._bridge = _Bridge.alloc().initWithDashboard_(self)
@@ -96,7 +97,7 @@ class AutoLearnWidget:
         config.setUserContentController_(ucc)
 
         rect = NSMakeRect(0, 0, PANEL_W, PANEL_H)
-        self._webview = WKWebView.alloc().initWithFrame_configuration_(rect, config)
+        self._webview = _webview_class().alloc().initWithFrame_configuration_(rect, config)
         self._webview.setAutoresizingMask_(0x02 | 0x10)
         try:
             self._webview.setValue_forKey_(False, "drawsBackground")

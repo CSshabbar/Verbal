@@ -3,8 +3,12 @@ import { supabase } from './supabase';   // no cycle: supabase.ts imports only c
 
 const KEYS = {
   USER_ID:     'verbal_user_id',
+  // Paired-account override (IDI-156): set when this device joins ANOTHER
+  // account via QR pairing (or the Settings "Account ID" field). Outranks the
+  // local Supabase session id in getUserId() — without it, the session
+  // write-back reverts the adoption milliseconds after the claim.
+  PAIRED_UID:  'verbal_paired_user_id',
   DEVICE_NAME: 'verbal_device_name',
-  GROQ_KEY:    'verbal_groq_key',
   SYNC_ON:     'verbal_sync_enabled',
   HISTORY:     'verbal_history',
   PINNED:      'verbal_pinned',
@@ -38,7 +42,17 @@ export interface HistoryEntry {
 
 // ── Identity ──────────────────────────────────────────────────────────────────
 export async function getUserId(): Promise<string> {
-  // The signed-in Supabase user id is authoritative — it scopes ALL cloud data
+  // 1) Paired-account override wins (IDI-156). When this device explicitly
+  //    joined a host account (QR pair / manual Account ID), that id scopes all
+  //    cloud data even though the local Supabase session belongs to a different
+  //    Google account. Cleared on sign-in, sign-out, and account deletion.
+  //    INTERIM mechanism: replaced by real session minting once auth.uid() RLS
+  //    (IDI-29) lands — a user_id override cannot survive JWT-scoped policies.
+  try {
+    const paired = await AsyncStorage.getItem(KEYS.PAIRED_UID);
+    if (paired) return paired;
+  } catch { /* fall through */ }
+  // 2) The signed-in Supabase user id is authoritative — it scopes ALL cloud data
   // (notes, dictionary, snippets, history). Prefer it (and cache it) so a RESTORED
   // session — where afterSignIn never ran — still reads the right account instead of
   // a stray minted id, which showed everything as 0. Falls back to the stored/local
@@ -63,6 +77,16 @@ export async function setUserId(id: string) {
   await AsyncStorage.setItem(KEYS.USER_ID, id);
 }
 
+/** The paired-account override, or null when this device isn't paired into
+ *  another account. See KEYS.PAIRED_UID / getUserId() step 1. */
+export async function getPairedUserId(): Promise<string | null> {
+  try { return await AsyncStorage.getItem(KEYS.PAIRED_UID); } catch { return null; }
+}
+export async function setPairedUserId(id: string | null): Promise<void> {
+  if (id) await AsyncStorage.setItem(KEYS.PAIRED_UID, id);
+  else await AsyncStorage.removeItem(KEYS.PAIRED_UID);
+}
+
 // The stored id WITHOUT minting a new one (unlike getUserId, which generates a
 // local fallback when absent). Null if unset — used to detect an account switch.
 export async function getStoredUserId(): Promise<string | null> {
@@ -78,6 +102,7 @@ export async function getStoredUserId(): Promise<string | null> {
 export async function clearAccountData(): Promise<void> {
   await AsyncStorage.multiRemove([
     KEYS.USER_ID,           // verbal_user_id
+    KEYS.PAIRED_UID,        // verbal_paired_user_id — pairing doesn't survive account changes
     KEYS.HISTORY,           // verbal_history
     KEYS.PINNED,            // verbal_pinned
     'verbal_notes_cache',   // lib/notesStorage
@@ -100,23 +125,11 @@ export async function getDeviceId(): Promise<string> {
 }
 
 // ── API keys ──────────────────────────────────────────────────────────────────
-// Resolution order: a user-entered key (Settings) wins; otherwise the shared key we
-// host in Supabase `app_config` (cached locally) so users never have to paste one.
-// The shared key is read-only to clients and rotatable server-side without an app
-// update. It IS readable by anyone with the app (same posture as the anon key);
-// a server proxy is the real hardening.
-export async function getGroqKey(): Promise<string> {
-  const userKey = (await AsyncStorage.getItem(KEYS.GROQ_KEY)) ?? '';
-  if (userKey.trim()) return userKey;
-  const { getCachedBundledGroqKey, refreshBundledGroqKey } = await import('./remoteConfig');
-  const cached = await getCachedBundledGroqKey();
-  return cached || (await refreshBundledGroqKey());
-}
-export async function setGroqKey(key: string) {
-  await AsyncStorage.setItem(KEYS.GROQ_KEY, key);
-  // Keep the native keyboard's config in sync with the current Groq key.
-  import('./keyboardBridge').then((m) => m.syncKeyboardConfig()).catch(() => {});
-}
+// There are none client-side. All Groq access goes through the `groq-proxy`
+// Edge Function (session JWT or anon key) — the provider key lives only in the
+// function's server-side secrets. The old getGroqKey()/setGroqKey()/app_config
+// resolution chain was removed (IDI-160): the `app_config` table never existed
+// in the live schema, so the empty-key gate falsely failed every dictation.
 
 // ── Sync ──────────────────────────────────────────────────────────────────────
 export async function getSyncEnabled(): Promise<boolean> {

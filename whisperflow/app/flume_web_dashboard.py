@@ -32,6 +32,31 @@ from app.shared_dashboard import DashboardApi
 
 logger = logging.getLogger("verbal.flumeweb")
 
+_DELEGATE_CLS = None
+
+
+def _delegate_class():
+    """windowWillClose_ hands activation policy back to Accessory (menu-bar-only,
+    no Dock icon) — see the comment on `setActivationPolicy_` in `show()` for why
+    this matters: a Regular-policy app's floating panels (the recording overlay,
+    autolearn pill, Transform preview) do NOT reliably stay visible over ANOTHER
+    app's full-screen Space, even with the right NSWindowCollectionBehavior set.
+    Without reverting this on close, the very first time a user opens the
+    dashboard (main.py calls dashboard.show() at every launch) silently
+    degrades the overlay for the rest of the session — reported as "the
+    recording pill doesn't show up over full-screen apps"."""
+    global _DELEGATE_CLS
+    if _DELEGATE_CLS is None:
+        class _FlumeDashboardDelegate(objc.lookUpClass("NSObject")):
+            def windowWillClose_(self, note):
+                try:
+                    NSApplication.sharedApplication().setActivationPolicy_(1)  # Accessory
+                except Exception as e:
+                    logger.debug("revert activation policy failed: %s", e)
+
+        _DELEGATE_CLS = _FlumeDashboardDelegate
+    return _DELEGATE_CLS
+
 # Injected before the page's own scripts: makes WKWebView look like pywebview.
 _SHIM = """
 window.__flumeCbs = {}; window.__flumeId = 0;
@@ -82,6 +107,7 @@ class FlumeWebDashboard:
         self._window = None
         self._webview = None
         self._bridge = None
+        self._delegate = None
         self._api = DashboardApi(self)
         self._ready = False
         # attributes DashboardApi reads:
@@ -93,6 +119,13 @@ class FlumeWebDashboard:
 
     # ── window ────────────────────────────────────────────────────────────────
     def show(self):
+        # Regular (0) activation policy makes this normal titled window
+        # Cmd+Tab/Dock reachable like a real app while it's open — but it must
+        # be reverted to Accessory (1) when the window closes (the delegate's
+        # windowWillClose_ does that), or every floating panel's
+        # full-screen-Space visibility silently degrades for the rest of the
+        # session. See _delegate_class()'s docstring.
+        NSApplication.sharedApplication().setActivationPolicy_(0)
         if self._window and self._window.isVisible():
             self._window.makeKeyAndOrderFront_(None)
             NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
@@ -121,6 +154,8 @@ class FlumeWebDashboard:
         self._window.setMinSize_(NSMakeSize(760, 520))
         self._window.setBackgroundColor_(
             NSColor.colorWithCalibratedRed_green_blue_alpha_(14/255, 16/255, 18/255, 1.0))
+        self._delegate = _delegate_class().alloc().init()
+        self._window.setDelegate_(self._delegate)
 
         ucc = WKUserContentController.alloc().init()
         self._bridge = _Bridge.alloc().initWithDashboard_(self)

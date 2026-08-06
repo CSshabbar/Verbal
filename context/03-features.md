@@ -21,7 +21,14 @@ Each feature: **what it does · desktop impl · mobile impl · backend · status
 - **Mobile:** `flume-ui/hooks/useRecorder.ts` — `expo-audio` capture + `lib/groq.ts::transcribeAudio`
   (Groq `whisper-large-v3-turbo` only; no Gemini/local). `stop()` **persists audio first** (so a failed
   transcription is never lost → `status:'failed'`, retryable), transcribes, stashes the full result in a
-  module-level `lastRecording` read once via `consumeLastRecording()`.
+  module-level `lastRecording` read once via `consumeLastRecording()`. **Recording modal (IDI-159):**
+  Cancel routes to `cancel()` (discard — no upload, no history entry, silent per the Cancel convention),
+  a `busy` latch shows "Transcribing…" + spinner and blocks double-taps (one pipeline run per stop), stop/
+  cancel handlers are try/catch'd so a hard failure can never strand the user in the modal
+  (`gestureEnabled:false`), and the unmount cleanup cancels via refs (hardware-back releases the mic).
+  The **Confirmation screen is truthful**: `variant: 'sent'|'saved'|'failed'|'empty'` — "Sent to <device>"
+  only when sync is on AND a target is set; otherwise "Saved to history"; failed/empty get warning/neutral
+  presentations with no success badge and pruned actions (retry-from-History for failed).
 - **Backend:** all Groq calls (transcription + cleanup) now route through the **`groq-proxy` Edge Function**
   — the Groq key is server-side only, clients hold none, and the **in-app API-key entry has been removed**
   on macOS/mobile **and Windows** (mobile Settings card + desktop dashboard field + the menu-bar "Groq/Gemini
@@ -221,6 +228,9 @@ Each feature: **what it does · desktop impl · mobile impl · backend · status
   via `feature_flag(cfg,…)` (`config`), mobile via `getNotesFeatureFlags`/`setNotesFeatureFlag`
   (AsyncStorage). First-run does **not** backfill existing notes (Decision 5); only new notes get v2
   behaviors, but search covers everything.
+- **Deletion (IDI-158, 2026-08):** cross-device deletes are **tombstones**, never hard DELETEs — see
+  `04-data-model.md` §notes for the full contract (`deleted_at` column, tombstone-wins merge, scoped
+  back-fill, desktop cloud-first delete with `ok:false` on failure, dashboard `delNote` gated on `r.ok`).
 - **Desktop:** `DashboardApi.fetch_notes/save_note/delete_note/toggle_note_pin` — local-first
   (`config['notes']`) merged with Supabase `notes` via `merge_remote_note` (union + conflict-pair, see
   `04-data-model.md`). `note_dictate_start/stop` = in-note dictation (stop persists the recording +
@@ -301,8 +311,17 @@ Each feature: **what it does · desktop impl · mobile impl · backend · status
 - QR-based, single-use token. Host (signed in) inserts a `pairings` row (`token`=`token_urlsafe(6)`,
   `expires_at`≈now+120 s), shows QR `flume://pair?t=<token>`. New device claims: SELECT unclaimed/unexpired
   row → atomic UPDATE `claimed_by` (guarded) → adopt host `user_id` → enable sync. Desktop `pairing.py`
-  (`create_pairing`/`check_pairing`/`claim_pairing`, `qr_svg`); mobile `lib/pairing.ts`
-  (`extractToken`/`claimPairing`), `PairDeviceScreen` (expo-camera), claim logic in `SettingsNavigator`.
+  (`create_pairing`/`check_pairing`, `qr_svg` — hosting only; its dead `claim_pairing` was removed,
+  IDI-156); mobile `lib/pairing.ts` (`extractToken`/`claimPairing`), `PairDeviceScreen` (expo-camera),
+  claim handler in `RootNavigator`'s `PairDevice` screen.
+- **Adoption mechanics (IDI-156, 2026-08):** the claim writes a **paired-account override**
+  (`verbal_paired_user_id`) that `storage.getUserId()` checks BEFORE the Supabase session id — previously
+  the session write-back reverted the adoption within milliseconds, making pairing a silent no-op for any
+  signed-in user. The claim also runs the same account-switch teardown as `afterSignIn` (`clearAccountData`
+  when the id changes, then the caller resets+reloads `historyStore`), registers the device under the host
+  account, and the Settings "Account ID" field goes through the identical path. The override is cleared on
+  real sign-in, sign-out, and account deletion. INTERIM: replaced by real session minting when `auth.uid()`
+  RLS (IDI-29) lands — an id override cannot survive JWT-scoped policies.
 
 ## Google auth
 

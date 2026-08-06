@@ -101,3 +101,10 @@ begin
     end if;
   end if;
 end $$;
+
+-- 6) Deletion tombstones (IDI-158). A deleted note is soft-deleted: deleted_at
+--    set + content cleared, never a hard DELETE. Clients treat deleted_at as
+--    authoritative on merge (remove local copy, incl. ::conflict:: derivatives)
+--    and never back-fill a tombstoned note. Applied to the live project as
+--    migration `notes_deleted_at_tombstone` (2026-08-06).
+alter table public.notes add column if not exists deleted_at timestamptz;
