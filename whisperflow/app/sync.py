@@ -89,9 +89,11 @@ class SyncClient:
     TOMBSTONE_LIMIT = 200
 
     def __init__(self, user_id: str, device_name: str, on_receive,
-                 on_tombstone=None, on_pushed=None):
+                 on_tombstone=None, on_pushed=None, device_id: str | None = None):
         self.user_id     = user_id
-        self.device_id   = platform.node()
+        # Stable per-install id (IDI-177) — callers pass config.get_device_id();
+        # hostname fallback kept only for legacy call sites.
+        self.device_id   = device_id or platform.node()
         self.device_name = device_name or platform.node()
         self.on_receive  = on_receive
         # IDI-172: a remote delete must prune this device's local history.
@@ -666,14 +668,20 @@ def register_device_presence(user_id: str, device_id: str, device_name: str) -> 
 def delete_device_presence(user_id: str, device_id: str = "", headers: dict | None = None) -> None:
     """Remove THIS device's `devices` row on sign-out (IDI-170) — scoped by
     user_id AND device_id so it can never touch another device (or another
-    account). `device_id` defaults to the same identity the presence upsert
-    uses (`platform.node()`, which is also `SyncClient.device_id`).
+    account). `device_id` defaults to the same stable per-install identity the
+    presence upsert and `SyncClient.device_id` use (IDI-177:
+    `config.get_device_id`; hostname only as a last resort).
 
     `headers` lets the caller pass REST headers captured BEFORE the local
     session was torn down; without a session we'd fall back to the anon key,
     which works today under the permissive RLS but won't after the
     `auth.uid()` cutover. Best-effort / fail-closed."""
-    device_id = device_id or platform.node()
+    if not device_id:
+        try:
+            from app.config import load_config, get_device_id
+            device_id = get_device_id(load_config())
+        except Exception:
+            device_id = platform.node()
     if not user_id or not device_id:
         return
     try:

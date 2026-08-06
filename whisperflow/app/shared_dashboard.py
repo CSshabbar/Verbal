@@ -78,9 +78,10 @@ def device_identity(app):
     name, never the hardcoded "Windows" the writer used to send while the mac
     listener compared against ""."""
     import platform
+    from app.config import get_device_id
     cfg = getattr(app, "config", None) or {}
     sync = getattr(app, "_sync", None)
-    device_id = (getattr(sync, "device_id", "") or platform.node() or "").strip()
+    device_id = (getattr(sync, "device_id", "") or get_device_id(cfg) or "").strip()
     name = (cfg.get("sync_device_name") or "").strip()
     if not name:
         name = (getattr(sync, "device_name", "") or platform.node() or "").strip()

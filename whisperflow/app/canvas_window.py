@@ -326,10 +326,10 @@ class CanvasWindow:
     # ── Supabase ──────────────────────────────────────────────────────────────
     def _device_identity(self):
         """(device_id, device_name) — the same stable id the `devices` rows and
-        the SyncClient use (IDI-173)."""
-        import platform
-        device_id = (platform.node() or "").strip()
-        name = (self._config.get("sync_device_name") or "").strip() or device_id or "Mac"
+        the SyncClient use (IDI-173/177: per-install uuid, not the hostname)."""
+        from app.config import get_device_id
+        device_id = (get_device_id(self._config) or "").strip()
+        name = (self._config.get("sync_device_name") or "").strip() or "Mac"
         return device_id, name
 
     def _save_to_supabase(self, text: str, clear_image: bool = False):

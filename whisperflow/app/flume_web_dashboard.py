@@ -413,9 +413,10 @@ class FlumeWebDashboard:
             self._refresh()
             return
         try:
-            import platform
             from app.sync import fetch_account_devices
-            my_id = self.app._sync.device_id if getattr(self.app, "_sync", None) else platform.node()
+            from app.config import get_device_id
+            my_id = (self.app._sync.device_id if getattr(self.app, "_sync", None)
+                     else get_device_id(self.app.config))
             # NOTE: the presence heartbeat used to live HERE, inside a loop
             # conditioned on `while self._window is not None` — so closing the
             # dashboard made this Mac go Offline to every other device within

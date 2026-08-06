@@ -790,8 +790,9 @@ class VerbalWinApp:
                 user = auth.current_user()
                 if user:
                     from app.sync import register_device_presence
+                    from app.config import get_device_id
                     device_id = (self._sync.device_id if self._sync
-                                 else platform.node())
+                                 else get_device_id(self.config))
                     register_device_presence(
                         user.get("user_id", ""), device_id,
                         self.config.get("sync_device_name") or platform.node())
@@ -811,12 +812,14 @@ class VerbalWinApp:
         try:
             from app.sync import SyncClient
             device_name = self.config.get("sync_device_name", "Windows")
+            from app.config import get_device_id
             self._sync = SyncClient(
                 user_id=user_id,
                 device_name=device_name,
                 on_receive=self._on_sync_receive,
                 on_tombstone=self._on_sync_tombstone,
                 on_pushed=self._on_sync_pushed,
+                device_id=get_device_id(self.config),
             )
             logger.info(f"Sync started for user {user_id[:8]}...")
         except Exception as e:

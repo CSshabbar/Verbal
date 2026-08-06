@@ -9,6 +9,10 @@ const KEYS = {
   // write-back reverts the adoption milliseconds after the claim.
   PAIRED_UID:  'verbal_paired_user_id',
   DEVICE_NAME: 'verbal_device_name',
+  // Stable per-INSTALL device identity (IDI-177). Minted once and never derived
+  // from anything mutable — see getDeviceId(). Deliberately NOT wiped by
+  // clearAccountData(): the install is the same device whoever signs into it.
+  DEVICE_UUID: 'verbal_device_uuid',
   // NOTE: the sync flag's key lives in lib/syncStore — the single source of
   // truth (IDI-171). getSyncEnabled/setSyncEnabled are re-exported below.
   HISTORY:     'verbal_history',
@@ -168,9 +172,25 @@ export async function setDeviceName(name: string) {
 }
 
 export async function getDeviceId(): Promise<string> {
-  const uid = await getUserId();
-  const dn  = await getDeviceName();
-  return `${dn.toLowerCase().replace(/\s+/g, '_')}_${uid.slice(-6)}`;
+  // Stable per-install UUID (IDI-177). The old id derived from
+  // deviceName + userId.slice(-6), so RENAMING the device or switching
+  // accounts orphaned its `devices` row and (post-IDI-173) changed the canvas
+  // origin id. Minted once; account- and name-independent. The one-time id
+  // change on upgrade just leaves one stale `devices` row, removable via the
+  // new remove-device UI — no correctness issue for own-write filtering.
+  try {
+    const existing = await AsyncStorage.getItem(KEYS.DEVICE_UUID);
+    if (existing) return existing;
+    const minted = `dev_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+    await AsyncStorage.setItem(KEYS.DEVICE_UUID, minted);
+    return minted;
+  } catch {
+    // Storage unavailable — fall back to the legacy derived id (stable enough
+    // within a session; never throws into a caller).
+    const uid = await getUserId();
+    const dn  = await getDeviceName();
+    return `${dn.toLowerCase().replace(/\s+/g, '_')}_${uid.slice(-6)}`;
+  }
 }
 
 // ── API keys ──────────────────────────────────────────────────────────────────

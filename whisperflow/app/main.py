@@ -337,8 +337,9 @@ class VerbalApp(rumps.App):
                 user = auth.current_user()
                 if user:
                     from app.sync import register_device_presence
+                    from app.config import get_device_id
                     device_id = (self._sync.device_id if self._sync
-                                 else platform.node())
+                                 else get_device_id(self.config))
                     register_device_presence(
                         user.get("user_id", ""), device_id,
                         self.config.get("sync_device_name") or platform.node())
@@ -362,20 +363,22 @@ class VerbalApp(rumps.App):
         try:
             from app.sync import SyncClient
             device_name = self.config.get("sync_device_name", "") or "Mac"
+            from app.config import get_device_id
             self._sync = SyncClient(
                 user_id=user_id,
                 device_name=device_name,
                 on_receive=self._on_sync_receive,
                 on_tombstone=self._on_sync_tombstone,
                 on_pushed=self._on_sync_pushed,
+                device_id=get_device_id(self.config),
             )
             logger.info(f"Sync started for user {user_id[:8]}...")
         except Exception as e:
             logger.error(f"Sync init failed: {e}")
 
     def _this_device_id(self) -> str:
-        import platform
-        return self._sync.device_id if self._sync else platform.node()
+        from app.config import get_device_id
+        return self._sync.device_id if self._sync else get_device_id(self.config)
 
     def _on_sync_receive(self, text: str, device_name: str, record: dict | None = None):
         """Called when another device pushes a transcription (IDI-172).
@@ -564,9 +567,9 @@ class VerbalApp(rumps.App):
     def _detect_and_prompt(self, auth_info):
         others = []
         try:
-            import platform
             from app.sync import fetch_devices
-            others = fetch_devices(auth_info.get("user_id", ""), platform.node()) or []
+            from app.config import get_device_id
+            others = fetch_devices(auth_info.get("user_id", ""), get_device_id(self.config)) or []
         except Exception as e:
             logger.debug(f"device detect failed: {e}")
         self._on_main(lambda: self._finish_sign_in(others))

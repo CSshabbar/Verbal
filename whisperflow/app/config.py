@@ -108,6 +108,26 @@ def ensure_dirs():
     (CONFIG_DIR / "recordings").mkdir(parents=True, exist_ok=True)
 
 
+def get_device_id(config: dict) -> str:
+    """This install's STABLE device identity (IDI-177). `platform.node()` was
+    the old id — two Macs sharing a hostname collided in the `devices` table
+    and (post-IDI-173) dropped each other's canvas updates. Minted once per
+    install, persisted in config, independent of hostname/account/rename.
+    Never raises; falls back to the hostname if config can't be saved."""
+    try:
+        did = (config.get("device_uuid") or "").strip()
+        if did:
+            return did
+        import uuid
+        did = f"dev_{uuid.uuid4().hex[:12]}"
+        config["device_uuid"] = did
+        save_config(config)
+        return did
+    except Exception:
+        import platform
+        return platform.node() or "desktop"
+
+
 def load_config() -> dict:
     ensure_dirs()
     load_dotenv(ENV_FILE)
