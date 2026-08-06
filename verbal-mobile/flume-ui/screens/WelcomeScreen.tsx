@@ -11,7 +11,7 @@ import { useAuth } from '../hooks/useAuth';
  */
 export const WelcomeScreen: React.FC = () => {
   const insets = useSafeAreaInsets();
-  const { signInWithGoogle } = useAuth();
+  const { signInWithGoogle, isLoading, sessionExpired } = useAuth();
 
   return (
     <View
@@ -32,15 +32,21 @@ export const WelcomeScreen: React.FC = () => {
           <Text variant="body" color={colors.textMuted} align="center" style={{ paddingHorizontal: 8 }}>
             Voice typing that lands in your computer's clipboard.
           </Text>
+          {sessionExpired && (
+            <Text variant="bodySm" color={colors.primary} align="center" style={{ paddingHorizontal: 8, paddingTop: 6 }}>
+              Your session expired — please sign in again.
+            </Text>
+          )}
         </View>
       </View>
 
       <View style={{ gap: 10 }}>
         <Button
-          label="Continue with Google"
+          label={isLoading ? 'Opening Google…' : 'Continue with Google'}
           variant="primaryLight"
           icon={<GoogleG size={16} />}
           onPress={signInWithGoogle}
+          disabled={isLoading}
         />
 
         <Text variant="caption" color={colors.textDisabled} align="center" style={{ paddingHorizontal: 14, paddingTop: 6 }}>

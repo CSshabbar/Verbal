@@ -5,3 +5,4 @@ export type { TypeVariant } from './typography';
 export { space, radius } from './spacing';
 export { shadowMicActive, shadowToast, shadowFab, idleMicRings } from './shadow';
 export { motion, visualizerStagger, visualizerHeights } from './motion';
+export { pressedStyle, PRESSED_OPACITY } from './press';

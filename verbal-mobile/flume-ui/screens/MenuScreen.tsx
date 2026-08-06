@@ -3,7 +3,7 @@ import { View, StyleSheet, ScrollView, Switch, Pressable, Alert } from 'react-na
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { Text, ListRow } from '../components';
-import { colors } from '../theme';
+import { colors, pressedStyle } from '../theme';
 import { useAuth } from '../hooks/useAuth';
 import { getSyncEnabled, setSyncEnabled } from '../../lib/storage';
 
@@ -49,7 +49,7 @@ export const MenuScreen: React.FC<Props> = ({
     <View style={[styles.root, { paddingTop: insets.top + 12 }]}>
       <View style={styles.topBar}>
         <Text variant="titleSm">Menu</Text>
-        <Pressable onPress={onClose} style={styles.iconCircle} accessibilityRole="button" accessibilityLabel="Close menu" hitSlop={8}>
+        <Pressable onPress={onClose} style={({ pressed }) => [styles.iconCircle, pressed && pressedStyle]} accessibilityRole="button" accessibilityLabel="Close menu" hitSlop={8}>
           <Ionicons name="close" size={18} color={colors.textSecondary} />
         </Pressable>
       </View>

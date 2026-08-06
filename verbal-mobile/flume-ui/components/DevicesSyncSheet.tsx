@@ -15,7 +15,7 @@ import React, { useEffect, useState, useCallback } from 'react';
 import { Modal, View, Pressable, StyleSheet, Switch, ActivityIndicator } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { Text } from './Text';
-import { colors, radius } from '../theme';
+import { colors, radius, pressedStyle } from '../theme';
 import {
   fetchAccountDevices, setDeviceSync, isDeviceOnline, AccountDevice,
 } from '../../lib/deviceSync';
@@ -64,6 +64,8 @@ export const DevicesSyncHost: React.FC = () => {
 
   return (
     <Modal transparent animationType="fade" visible={visible} onRequestClose={done}>
+      {/* Backdrop = tap-to-dismiss scrim, card = tap swallower. Neither gets a
+          pressed state on purpose — dimming the whole sheet would read as a bug. */}
       <Pressable style={styles.backdrop} onPress={done}>
         <Pressable style={styles.card} onPress={() => {}}>
           <Text variant="subtitle" style={styles.title}>Your devices</Text>
@@ -109,7 +111,7 @@ export const DevicesSyncHost: React.FC = () => {
             </View>
           )}
 
-          <Pressable style={styles.doneBtn} onPress={done}>
+          <Pressable style={({ pressed }) => [styles.doneBtn, pressed && pressedStyle]} onPress={done}>
             <Text variant="button" color={colors.primaryInk}>Done</Text>
           </Pressable>
         </Pressable>

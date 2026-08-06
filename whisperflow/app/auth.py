@@ -41,6 +41,11 @@ _refresh_lock = threading.Lock()
 # doomed refresh before every authed call — even when a caller passes an in-memory
 # config that still holds the stale tokens. Reset on a fresh sign-in.
 _dead_session = False
+# Set while an interactive sign-in is waiting on the browser round-trip so the
+# dashboard's "Cancel" affordance can end it (IDI-166): without this the local
+# callback server stays bound to REDIRECT_PORT for the full 180 s timeout and a
+# retry fails to bind.
+_signin_cancel = threading.Event()
 
 _DONE_PAGE = (
     "<!doctype html><html><head><meta charset='utf-8'><title>Flume</title></head>"
@@ -116,8 +121,19 @@ def _make_server():
         return http.server.HTTPServer(("127.0.0.1", REDIRECT_PORT), _CallbackHandler)
 
 
+class SignInCancelled(RuntimeError):
+    """The user cancelled the interactive sign-in (not an error to report)."""
+
+
+def cancel_sign_in():
+    """Ask an in-flight `sign_in_with_google` to give up now (IDI-166).
+    Safe to call when nothing is running."""
+    _signin_cancel.set()
+
+
 def sign_in_with_google(timeout=180):
     """Blocking. Opens the browser and returns the stored auth dict, or raises."""
+    _signin_cancel.clear()
     verifier, challenge = _pkce()
     authorize_url = (
         f"{AUTH_BASE}/authorize?provider=google"
@@ -136,12 +152,16 @@ def sign_in_with_google(timeout=180):
     try:
         start = time.time()
         while _CallbackHandler.code is None and _CallbackHandler.error is None:
+            if _signin_cancel.is_set():
+                raise SignInCancelled("Sign-in cancelled")
             if time.time() - start > timeout:
-                raise TimeoutError("Sign-in timed out")
+                raise TimeoutError("Sign-in timed out — the browser never came back.")
             time.sleep(0.2)
     finally:
         # let the browser fully receive the success page before we tear down
-        time.sleep(1.2)
+        # (skip the wait when cancelled — the point is to free the port fast)
+        if not _signin_cancel.is_set():
+            time.sleep(1.2)
         try:
             server.shutdown()
         except Exception:
@@ -195,6 +215,34 @@ def current_user():
     return auth if (auth and auth.get("user_id")) else None
 
 
+SESSION_EXPIRED_MSG = "Your session expired — sign in again, then retry."
+
+
+def session_dead(cfg: dict | None = None) -> bool:
+    """True when we still know WHO the user is (`auth.user_id` survives) but the
+    Supabase session is unrecoverable — the refresh token was rejected and the
+    tokens were dropped (see `_refresh_access_token` / Hard Rule #24).
+
+    `signed_in` alone can't express this: the app keeps working (anon key +
+    `sync_user_id` under the current permissive RLS) but anything that needs a
+    REAL JWT — account deletion above all — will fail until the user re-auths.
+    The in-process flag is mirrored into `config['auth']['session_dead']` so the
+    state survives a restart; a fresh `_store_session` writes a clean auth dict
+    and therefore clears it.
+
+    Pass the already-loaded config when you have one (get_state does) — this is
+    called on every state refresh and shouldn't re-read the config file.
+    """
+    if _dead_session:
+        return True
+    try:
+        cfg = cfg if cfg is not None else load_config()
+        auth = cfg.get("auth") or {}
+        return bool(auth.get("user_id")) and bool(auth.get("session_dead"))
+    except Exception:
+        return False
+
+
 def sign_out():
     cfg = load_config()
     cfg.pop("auth", None)
@@ -214,6 +262,12 @@ def delete_account_remote(cfg: dict | None = None) -> dict:
     cfg = cfg if cfg is not None else load_config()
     token = get_access_token(cfg)
     if not token:
+        # Distinguish "never signed in" from "session died under you" — the
+        # second is the common case (a dead refresh token drops the tokens but
+        # keeps the identity) and "Not signed in" was an unactionable lie there
+        # while the sidebar still showed the account (IDI-166).
+        if session_dead(cfg):
+            return {"ok": False, "error": SESSION_EXPIRED_MSG, "session_dead": True}
         return {"ok": False, "error": "Not signed in"}
     try:
         resp = httpx.post(
@@ -327,6 +381,10 @@ def _refresh_access_token(cfg: dict) -> str | None:
                     try:
                         for k in ("access_token", "refresh_token", "expires_at"):
                             auth2.pop(k, None)
+                        # Persist it too — the dashboard/Settings banner and
+                        # delete_account must still know the session is dead
+                        # after a restart (IDI-166). Cleared by _store_session.
+                        auth2["session_dead"] = True
                         cfg2["auth"] = auth2
                         save_config(cfg2)
                     except Exception:

@@ -100,6 +100,9 @@ class VerbalApp(rumps.App):
             logging.getLogger("verbal").warning("Flume popover unavailable (%s)", _e)
             self.popover = None
         self._popover_hook_tries = 0
+        # Last interactive sign-in failure, surfaced in the dashboard's sign-in
+        # pane via get_state (IDI-166). "" = nothing to report.
+        self._auth_error = ""
 
         history = self.config.get("history", [])
         self._total_transcriptions = len(history)
@@ -279,12 +282,11 @@ class VerbalApp(rumps.App):
         threading.Thread(target=self._check_update, daemon=True).start()
         threading.Thread(target=self._load_dictionary_once, daemon=True).start()
 
-        # Request accessibility permission on first launch
-        from app.injector import request_accessibility
-        try:
-            request_accessibility()
-        except Exception as e:
-            logger.warning(f"Accessibility check: {e}")
+        # No bare accessibility prompt at launch (IDI-166): the onboarding
+        # wizard's permission step asks for Accessibility WITH context
+        # ("Lets Flume paste text into other apps") via
+        # permissions.request('accessibility'), which is the same TCC prompt.
+        # Firing it here too meant a contextless system dialog on first run.
 
         # dashboard.show() sets Regular activation policy itself (and reverts to
         # Accessory when the window closes) — see flume_web_dashboard.py's
@@ -295,18 +297,11 @@ class VerbalApp(rumps.App):
         self.dashboard.show()
         self._install_edit_menu()
 
-        # Reflect sign-in state + offer sign-in once on first run.
+        # Reflect sign-in state in the menubar. Sign-in is REQUIRED (IDI-166),
+        # so there is no first-run "Later" alert any more — the dashboard we
+        # just showed renders the sign-in wall itself. Hotkey dictation still
+        # works signed-out; we simply stop advertising that as a path.
         self._update_auth_menu()
-        if not auth.current_user() and not self.config.get("welcomed"):
-            self.config["welcomed"] = True
-            save_config(self.config)
-            r = rumps.alert(
-                title="Welcome to Verbal",
-                message=("Sign in with Google to save your dictation, notes and canvas "
-                         "to the cloud and sync them across your devices."),
-                ok="Sign in with Google", cancel="Later")
-            if r == 1:
-                self._sign_in()
 
     def _load_dictionary_once(self):
         """Pull the custom dictionary from the cloud once at startup (best-effort)."""
@@ -396,17 +391,58 @@ class VerbalApp(rumps.App):
             self.signin_item.title = "Sign in with Google"
             self.signin_item.set_callback(self._sign_in)
 
+    def _push_auth_state(self):
+        """Re-render the dashboard (and popover) from the current auth state.
+        The sign-in pane is data-driven off `get_state`, so this is how a
+        FAILED sign-in gets back to the user — without it the pane kept the
+        button disabled forever and only a restart recovered (IDI-166)."""
+        try:
+            self.dashboard._refresh()
+        except Exception as e:
+            logger.debug("auth state push failed: %s", e)
+        try:
+            if self.popover:
+                self.popover._refresh()
+        except Exception:
+            pass
+
     def _sign_in(self, _=None):
+        # Clear any previous failure the moment a new attempt starts, and push
+        # it so the pane shows "Opening browser…" instead of the stale error.
+        self._auth_error = ""
+        self._push_auth_state()
+
         def work():
             try:
                 a = auth.sign_in_with_google()
                 self._on_main(lambda: self._after_sign_in(a))
+            except auth.SignInCancelled:
+                logger.info("Sign-in cancelled by the user")
+                self._on_main(lambda: self._sign_in_failed(""))
             except Exception as e:
                 logger.error(f"Sign-in failed: {e}")
-                self._on_main(lambda: rumps.alert("Sign-in failed", str(e)))
+                msg = str(e) or "Sign-in failed — please try again."
+                self._on_main(lambda: self._sign_in_failed(msg))
         threading.Thread(target=work, daemon=True).start()
 
+    def _sign_in_failed(self, message):
+        """Surface a failed/timed-out/cancelled sign-in IN THE DASHBOARD (an
+        alert alone left the static sign-in pane latched, IDI-166). The empty
+        message case is a user cancel — reset the pane, say nothing."""
+        self._auth_error = message or ""
+        self._push_auth_state()
+
+    def cancel_sign_in(self):
+        """Called from the dashboard's Cancel affordance."""
+        try:
+            auth.cancel_sign_in()
+        except Exception as e:
+            logger.debug("cancel_sign_in failed: %s", e)
+        self._auth_error = ""
+        self._push_auth_state()
+
     def _after_sign_in(self, auth_info):
+        self._auth_error = ""
         self.config = load_config()  # picks up sync_user_id set during sign-in
         self._update_auth_menu()
         threading.Thread(target=self._detect_and_prompt, args=(auth_info,), daemon=True).start()
@@ -803,6 +839,26 @@ class VerbalApp(rumps.App):
             logger.info("meeting auto-detect %s", "on" if on else "off")
         except Exception as e:
             logger.warning("toggle auto-detect failed: %s", e)
+
+    def sync_menu_state(self):
+        """Re-derive the menubar checkmarks from config (IDI-167).
+
+        The Recording Mode / Whisper Model submenus are stateful rumps items
+        that were only ever updated by their OWN callbacks — changing either
+        from the dashboard's Settings screen wrote the config but left the
+        menubar showing the old checkmark. Anything that mutates
+        `recording_mode` / `whisper_model` outside those callbacks must call
+        this (on the main thread — rumps menu items are AppKit).
+        """
+        cfg = self.config or {}
+        mode = cfg.get("recording_mode", MODE_TOGGLE)
+        if getattr(self, "mode_hold", None) is not None:
+            self.mode_hold.state = 1 if mode == MODE_HOLD else 0
+        if getattr(self, "mode_toggle", None) is not None:
+            self.mode_toggle.state = 1 if mode == MODE_TOGGLE else 0
+        model = cfg.get("whisper_model", "medium.en")
+        for name, item in (getattr(self, "model_items", None) or {}).items():
+            item.state = 1 if name == model else 0
 
     def _set_mode_hold(self, _):
         self._mode = MODE_HOLD

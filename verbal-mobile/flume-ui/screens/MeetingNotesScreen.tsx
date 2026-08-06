@@ -12,7 +12,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { Text } from '../components';
-import { colors, radius, fonts } from '../theme';
+import { colors, radius, fonts, pressedStyle } from '../theme';
 import { useMeetings } from '../hooks/useMeetings';
 import { generateMeetingNotes } from '../../lib/groq';
 import { updateNotesRemote } from '../../lib/meetings';
@@ -196,7 +196,7 @@ export const MeetingNotesScreen: React.FC<Props> = ({ meetingId, onBack, onOpenP
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
       <View style={styles.header}>
-        <Pressable onPress={onBack} hitSlop={12} style={styles.backBtn}>
+        <Pressable onPress={onBack} hitSlop={12} style={({ pressed }) => [styles.backBtn, pressed && pressedStyle]}>
           <Ionicons name="chevron-back" size={22} color={colors.textPrimary} />
         </Pressable>
         <View style={{ flex: 1 }}>
@@ -204,7 +204,7 @@ export const MeetingNotesScreen: React.FC<Props> = ({ meetingId, onBack, onOpenP
           <Text variant="subtitle" numberOfLines={1}>{meeting?.title ?? 'Meeting'}</Text>
         </View>
         {!!notes && (
-          <Pressable onPress={() => setEditing(e => !e)} hitSlop={12} style={styles.backBtn}>
+          <Pressable onPress={() => setEditing(e => !e)} hitSlop={12} style={({ pressed }) => [styles.backBtn, pressed && pressedStyle]}>
             <Ionicons name={editing ? 'checkmark' : 'pencil-outline'} size={20} color={colors.textPrimary} />
           </Pressable>
         )}
@@ -228,14 +228,14 @@ export const MeetingNotesScreen: React.FC<Props> = ({ meetingId, onBack, onOpenP
           showsVerticalScrollIndicator={false}
         >
           <MdView md={notes} />
-          <Pressable style={styles.playBtn} disabled={!meeting.audioUrl && !meeting.transcript.length}
+          <Pressable style={({ pressed }) => [styles.playBtn, pressed && pressedStyle]} disabled={!meeting.audioUrl && !meeting.transcript.length}
             onPress={() => onOpenPlayback(meeting.id)}>
             <Ionicons name="play" size={16} color={colors.primaryInk} />
             <Text variant="buttonSm" color={colors.primaryInk} style={{ fontFamily: fonts.semibold }}>
               {meeting.audioUrl ? 'Play with transcript' : 'View transcript'}
             </Text>
           </Pressable>
-          <Pressable style={styles.regenBtn} disabled={busy} onPress={generate}>
+          <Pressable style={({ pressed }) => [styles.regenBtn, pressed && pressedStyle]} disabled={busy} onPress={generate}>
             {busy
               ? <ActivityIndicator size="small" color={colors.textMuted} />
               : <Text variant="metaSm" color={colors.textMuted}>REGENERATE NOTES</Text>}
@@ -260,7 +260,7 @@ export const MeetingNotesScreen: React.FC<Props> = ({ meetingId, onBack, onOpenP
                   {err}
                 </Text>
               )}
-              <Pressable style={styles.genBtn} onPress={generate}
+              <Pressable style={({ pressed }) => [styles.genBtn, pressed && pressedStyle]} onPress={generate}
                 disabled={!meeting.transcript.length}>
                 <Text variant="buttonSm" color={colors.primaryInk}
                   style={{ fontFamily: fonts.semibold }}>

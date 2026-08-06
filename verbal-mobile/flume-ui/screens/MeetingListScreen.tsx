@@ -8,7 +8,7 @@ import { View, StyleSheet, Pressable, FlatList, ActivityIndicator, RefreshContro
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { Text } from '../components';
-import { colors, radius } from '../theme';
+import { colors, radius, pressedStyle } from '../theme';
 import { useMeetings, Meeting } from '../hooks/useMeetings';
 import { isLiveNow } from '../../lib/meetings';
 
@@ -70,7 +70,7 @@ export const MeetingListScreen: React.FC<Props> = ({ onBack, onOpen, onOpenLive 
   return (
     <View style={[styles.container, { paddingTop: insets.top + 8 }]}>
       <View style={styles.header}>
-        <Pressable onPress={onBack} hitSlop={12} style={styles.backBtn}>
+        <Pressable onPress={onBack} hitSlop={12} style={({ pressed }) => [styles.backBtn, pressed && pressedStyle]}>
           <Ionicons name="chevron-back" size={22} color={colors.textPrimary} />
         </Pressable>
         <View style={{ flex: 1 }}>
@@ -84,7 +84,7 @@ export const MeetingListScreen: React.FC<Props> = ({ onBack, onOpen, onOpenLive 
       {liveMeetings.length > 0 && (
         <View style={styles.liveWrap}>
           {liveMeetings.map((m) => (
-            <Pressable key={m.id} style={styles.liveCard} onPress={() => onOpenLive(m.id)}>
+            <Pressable key={m.id} style={({ pressed }) => [styles.liveCard, pressed && pressedStyle]} onPress={() => onOpenLive(m.id)}>
               <View style={styles.liveDot} />
               <View style={{ flex: 1, minWidth: 0 }}>
                 <Text variant="label" numberOfLines={1}>{m.title}</Text>
@@ -136,7 +136,7 @@ export const MeetingListScreen: React.FC<Props> = ({ onBack, onOpen, onOpenLive 
                   return (
                     <Pressable
                       key={m.id}
-                      style={[styles.row, i > 0 && styles.rowDivider]}
+                      style={({ pressed }) => [styles.row, i > 0 && styles.rowDivider, pressed && pressedStyle]}
                       onPress={() => onOpen(m.id)}
                     >
                       <View style={styles.metaCol}>

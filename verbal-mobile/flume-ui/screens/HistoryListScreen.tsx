@@ -3,7 +3,7 @@ import { View, StyleSheet, FlatList, Pressable, TextInput } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { Text, Chip, Card } from '../components';
-import { colors, radius } from '../theme';
+import { colors, radius, pressedStyle } from '../theme';
 import { useHistory, HistoryItem } from '../hooks/useHistory';
 
 type Props = {
@@ -55,7 +55,7 @@ export const HistoryListScreen: React.FC<Props> = ({ onOpen }) => {
           <Text variant="titleSm">History</Text>
         </View>
         <Pressable
-          style={styles.iconBtn}
+          style={({ pressed }) => [styles.iconBtn, pressed && pressedStyle]}
           onPress={() => { setSearching(s => !s); if (searching) setQuery(''); }}
           accessibilityRole="button"
           accessibilityLabel={searching ? 'Close search' : 'Search history'}

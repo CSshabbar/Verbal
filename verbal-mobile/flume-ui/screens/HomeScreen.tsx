@@ -4,7 +4,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { Text, LogoMark } from '../components';
-import { colors } from '../theme';
+import { colors, pressedStyle } from '../theme';
 import { useDevices } from '../hooks/useDevices';
 import { useHistory } from '../hooks/useHistory';
 import { useNotes } from '../hooks/useNotes';
@@ -46,7 +46,7 @@ export const HomeScreen: React.FC<Props> = ({ onOpenMenu }) => {
           <LogoMark size={34} />
           <Text variant="subtitle" style={{ fontSize: 15 }}>Hi, {user?.firstName ?? 'there'}</Text>
         </View>
-        <Pressable onPress={onOpenMenu} style={styles.iconCircle} accessibilityRole="button" accessibilityLabel="Open menu">
+        <Pressable onPress={onOpenMenu} style={({ pressed }) => [styles.iconCircle, pressed && pressedStyle]} accessibilityRole="button" accessibilityLabel="Open menu">
           <Ionicons name="menu" size={18} color={colors.textSecondary} />
         </Pressable>
       </View>
@@ -69,7 +69,7 @@ export const HomeScreen: React.FC<Props> = ({ onOpenMenu }) => {
         {/* Recent */}
         <View style={styles.recentHead}>
           <Text variant="subtitle" style={{ fontSize: 16 }}>Recent</Text>
-          <Pressable onPress={openHistory} hitSlop={8}>
+          <Pressable onPress={openHistory} hitSlop={8} style={({ pressed }) => pressed && pressedStyle}>
             <Text variant="buttonSm" color={colors.textMuted}>See all</Text>
           </Pressable>
         </View>
@@ -100,7 +100,7 @@ export const HomeScreen: React.FC<Props> = ({ onOpenMenu }) => {
 };
 
 const Pill: React.FC<{ label: string; active: boolean; onPress: () => void }> = ({ label, active, onPress }) => (
-  <Pressable onPress={onPress} style={[styles.pill, active ? styles.pillActive : styles.pillIdle]}>
+  <Pressable onPress={onPress} style={({ pressed }) => [styles.pill, active ? styles.pillActive : styles.pillIdle, pressed && pressedStyle]}>
     <Text variant="buttonSm" color={active ? colors.primaryInk : colors.textSecondary}>{label}</Text>
   </Pressable>
 );
@@ -108,7 +108,7 @@ const Pill: React.FC<{ label: string; active: boolean; onPress: () => void }> = 
 const FeatureCard: React.FC<{
   bg: string; ink: string; icon: keyof typeof Ionicons.glyphMap; big: string; title: string; sub: string; onPress?: () => void;
 }> = ({ bg, ink, icon, big, title, sub, onPress }) => (
-  <Pressable style={({ pressed }) => [styles.feature, { backgroundColor: bg }, pressed && { opacity: 0.85 }]} onPress={onPress} accessibilityRole="button" accessibilityLabel={title}>
+  <Pressable style={({ pressed }) => [styles.feature, { backgroundColor: bg }, pressed && pressedStyle]} onPress={onPress} accessibilityRole="button" accessibilityLabel={title}>
     <View style={styles.featureTop}>
       <View style={[styles.featureIcon, { backgroundColor: ink }]}>
         <Ionicons name={icon} size={15} color={bg} />

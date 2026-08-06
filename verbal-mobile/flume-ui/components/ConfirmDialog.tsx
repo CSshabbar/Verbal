@@ -11,7 +11,7 @@
 import React, { useEffect, useState } from 'react';
 import { Modal, View, Pressable, StyleSheet } from 'react-native';
 import { Text } from './Text';
-import { colors } from '../theme';
+import { colors, pressedStyle } from '../theme';
 
 type Opts = {
   title: string;
@@ -46,6 +46,8 @@ export const ConfirmHost: React.FC = () => {
 
   return (
     <Modal transparent animationType="fade" visible onRequestClose={() => done(false)}>
+      {/* Backdrop = tap-to-dismiss scrim, card = tap swallower. Neither gets a
+          pressed state on purpose — dimming the whole dialog would read as a bug. */}
       <Pressable style={styles.backdrop} onPress={() => done(false)}>
         <Pressable style={styles.card} onPress={() => {}}>
           <Text variant="subtitle" style={styles.title}>{title}</Text>
@@ -54,12 +56,12 @@ export const ConfirmHost: React.FC = () => {
           ) : null}
           <View style={styles.actions}>
             {showCancel ? (
-              <Pressable style={[styles.btn, styles.cancelBtn]} onPress={() => done(false)}>
+              <Pressable style={({ pressed }) => [styles.btn, styles.cancelBtn, pressed && pressedStyle]} onPress={() => done(false)}>
                 <Text variant="button" color={colors.textSecondary}>{cancelLabel || 'Cancel'}</Text>
               </Pressable>
             ) : null}
             <Pressable
-              style={[styles.btn, destructive ? styles.destructiveBtn : styles.confirmBtn]}
+              style={({ pressed }) => [styles.btn, destructive ? styles.destructiveBtn : styles.confirmBtn, pressed && pressedStyle]}
               onPress={() => done(true)}
             >
               <Text variant="button" color={destructive ? colors.primaryAccent : colors.primaryInk}>

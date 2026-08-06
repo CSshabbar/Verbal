@@ -10,6 +10,21 @@ app.fonts_css) so the WKWebView always renders the design's typefaces rather
 than the system fallback.
 """
 from app.fonts_css import web_font_css
+from app.shared_css import pressed_css
+
+# Every interactive element the dashboard renders (derived by walking the
+# `onclick=`/`data-screen=` elements). Row containers (.hrow, .ncard, .meetrow,
+# .sniprow, .lrow) and the scrubbers (.pbwave, .dropzone) are deliberately NOT
+# here: a 3% scale reads as tactile on a 100px button and as a jolt on a
+# full-width row, and the wave scrubber is a drag target, not a button.
+_PRESSED_SELECTORS = [
+    ".btn", ".chipbtn", ".roundbtn", ".playbtn", ".cbtn", ".ficon", ".navitem",
+    ".filters .filt", ".devadd", ".cvimgx", ".fmtbtn", ".dictate", ".segbtn",
+    ".toggle", ".tgtpill", ".dchip button", ".reprow button", ".sndots",
+    ".snmenu button", ".snx", ".sndel", ".siGoogle", ".siCancel",
+    ".mrActs button", ".link", ".chkbox", ".deadbar .dbbtn", ".deadside .dsbtn",
+    ".sniptable th.th-trig",
+]
 
 # Line-icon SVGs (1.6 stroke), matching the Flume design.
 _IC = {
@@ -61,9 +76,31 @@ body{background:var(--bg);font-family:'Geist',-apple-system,system-ui,sans-serif
 .siSub{font:400 14px/1.5 'Geist';color:var(--mut);margin-bottom:26px;max-width:380px}
 .siGoogle{display:flex;align-items:center;justify-content:center;gap:11px;background:#f2f2f2;color:#111;border:0;border-radius:14px;padding:16px;cursor:pointer;font:600 15px 'Geist';max-width:400px}
 .siGoogle:hover{filter:brightness(.96)}.siGoogle:disabled{opacity:.6;cursor:default}
-.siSkip{background:0;border:0;color:var(--mut);cursor:pointer;font:500 13px 'Geist';padding:16px 0;text-align:left;max-width:400px}
-.siSkip:hover{color:var(--tx)}
+.siErr{display:flex;align-items:flex-start;gap:9px;margin-top:12px;max-width:400px;
+  font:500 12.5px/1.5 'Geist';color:#f0a5a0}
+.siErr[hidden]{display:none}
+.siErr .ebang{flex:none;width:16px;height:16px;border-radius:50%;background:rgba(224,80,73,.16);
+  color:#f0a5a0;display:flex;align-items:center;justify-content:center;font:700 10px 'Geist';margin-top:1px}
+.siCancel{background:0;border:0;color:var(--mut);cursor:pointer;font:500 13px 'Geist';
+  padding:14px 0 0;text-align:left;max-width:400px}
+.siCancel[hidden]{display:none}
+.siCancel:hover{color:var(--tx)}
 .siTerms{font:400 12px/1.5 'Geist';color:var(--sub);margin-top:8px;max-width:400px}
+/* ── session-expired banner (IDI-166) — a dead refresh token keeps you
+   "signed in" but breaks every JWT-only action, so say so out loud ── */
+.deadbar{display:flex;align-items:center;gap:10px;background:rgba(224,80,73,.12);
+  border:1px solid rgba(224,80,73,.34);border-radius:10px;padding:10px 12px;margin:0 0 16px}
+.deadbar .dbtx{flex:1;min-width:0;font:500 12.5px/1.4 'Geist';color:#f0a5a0}
+.deadbar .dbbtn{flex:none;border:0;border-radius:8px;background:#f2f2f2;color:#0e1012;
+  cursor:pointer;font:600 12px 'Geist';padding:8px 12px}
+.deadbar .dbbtn:hover{filter:brightness(.94)}
+.deadside{margin:12px 0 0;padding:10px;border-radius:9px;background:rgba(224,80,73,.12);
+  border:1px solid rgba(224,80,73,.34)}
+.deadside[hidden]{display:none}
+.deadside .dstx{font:500 11.5px/1.4 'Geist';color:#f0a5a0;margin-bottom:8px}
+.deadside .dsbtn{width:100%;border:0;border-radius:7px;background:#f2f2f2;color:#0e1012;
+  cursor:pointer;font:600 11.5px 'Geist';padding:7px 8px}
+.deadside .dsbtn:hover{filter:brightness(.94)}
 /* ── get-started wizard ── */
 #getstarted{position:fixed;inset:0;z-index:50;background:var(--bg);overflow-y:auto;display:flex;justify-content:center}
 #getstarted[hidden]{display:none}
@@ -413,6 +450,14 @@ body{background:var(--bg);font-family:'Geist',-apple-system,system-ui,sans-serif
   animation:askdots 1.1s ease-in-out infinite}
 .askThink i:nth-child(2){animation-delay:.15s}.askThink i:nth-child(3){animation-delay:.3s}
 @keyframes askdots{0%,100%{opacity:.25;transform:translateY(0)}50%{opacity:1;transform:translateY(-3px)}}
+/* ── toast (IDI-167) — the only failure surface for actions that have no
+   inline status slot of their own (stop meeting, toggles, deletes) ── */
+.toast{position:fixed;left:50%;bottom:26px;transform:translate(-50%,14px);z-index:80;
+  background:var(--card);border:1px solid var(--bd2);border-radius:10px;padding:11px 16px;
+  font:500 12.5px 'Geist';color:var(--tx);box-shadow:0 12px 34px rgba(0,0,0,.45);
+  opacity:0;pointer-events:none;transition:opacity .16s ease,transform .16s ease;max-width:70vw}
+.toast.on{opacity:1;transform:translate(-50%,0)}
+.toast.err{border-color:rgba(224,80,73,.4);color:#f0a5a0}
 """
 
 
@@ -438,6 +483,10 @@ def flume_html() -> str:
       </nav>
       <div class="navhead devhead">DEVICES<button class="devadd" onclick="show('devices')" title="Pair a device">+</button></div>
       <div class="devlist" id="sideDevices"></div>
+      <div class="deadside" id="sideDead" hidden>
+        <div class="dstx">Session expired — sign in again to sync.</div>
+        <button class="dsbtn" onclick="reSignIn()">Sign in</button>
+      </div>
       <div class="sfooter">
         <div class="avatar" id="avatarInitial">V</div><span class="uname" id="userName">You</span>
         <button class="ficon push" data-screen="settings" title="Settings">{_svg('gear')}</button>
@@ -460,7 +509,9 @@ def flume_html() -> str:
       <div class="siRight">
         <h1 class="siTitle">Sign in</h1>
         <p class="siSub">Continue with Google — we'll match you across your devices.</p>
-        <button class="siGoogle" id="siGoogleBtn" onclick="signInGoogle()">{_googleg}<span>Continue with Google</span></button>
+        <button class="siGoogle" id="siGoogleBtn" onclick="signInGoogle()">{_googleg}<span id="siGoogleLbl">Continue with Google</span></button>
+        <div class="siErr" id="siErr" hidden><span class="ebang">!</span><span id="siErrTx"></span></div>
+        <button class="siCancel" id="siCancelBtn" hidden onclick="cancelSignIn()">Cancel and try again</button>
         <p class="siTerms">By continuing you agree to our Terms and Privacy.</p>
       </div>
     </div>
@@ -497,6 +548,32 @@ const words = s => (s||'').trim()? (s||'').trim().split(/\s+/).length : 0;
 function tagCls(app){ const a=(app||'').toLowerCase(); if(a.includes('pad')||a.includes('pc')||a.includes('win'))return 'ipad'; if(a.includes('local')||!app)return 'local'; return 'iphone'; }
 function titleOf(t){ const w=(t||'').trim().split(/\s+/).slice(0,5).join(' '); return w||'Untitled'; }
 
+// ── IDI-167: ONE in-flight guard for every mutating action ───────────────────
+// `target` is either the DOM element that triggered the action (pass `this`
+// from the inline handler) or a stable string key — use the key form when the
+// handler re-renders its own button away, which would otherwise strand the
+// flag on a detached node. `run` is a THUNK, not a promise: the whole point is
+// that a second click while the first is in flight never calls the api at all,
+// so the call must be created inside the guard. Always resolves (never
+// rejects) so callers can keep using plain .then chains.
+const BUSY = new Set();
+function busyGuard(target, run){
+  const key = (typeof target === 'string') ? target : null;
+  const el  = key ? null : target;
+  if(key ? BUSY.has(key) : (el && el.__busy)) return Promise.resolve({ok:false, busy:true});
+  if(key) BUSY.add(key);
+  else if(el){ el.__busy=true; try{ el.disabled=true; }catch(e){} el.style.opacity='.55'; }
+  const done = ()=>{
+    if(key) BUSY.delete(key);
+    else if(el){ el.__busy=false; try{ el.disabled=false; }catch(e){} el.style.opacity=''; }
+  };
+  let p;
+  try { p = run(); }
+  catch(e){ done(); return Promise.resolve({ok:false, error:String(e)}); }
+  if(!p || typeof p.then !== 'function'){ done(); return Promise.resolve(p); }
+  return p.then(r=>{ done(); return r; }, e=>{ done(); return {ok:false, error:String(e)}; });
+}
+
 function show(id){
   ACTIVE=id;
   document.querySelectorAll('.screen').forEach(s=>s.hidden=(s.id!=='scr-'+id));
@@ -531,6 +608,7 @@ function renderSidebar(){
   document.getElementById('sideDevices').innerHTML = devs.length
     ? devs.map(d=>`<div class="devrow${d.online?'':' off'}"><span class="ddot${d.online?' on':''}"></span>${esc(d.device_name||'Device')}</div>`).join('')
     : `<div class="devrow"><span class="ddot on"></span>This Mac</div>`;
+  renderDeadBanner();
 }
 function statusPill(){
   const rec = STATE && STATE.recording, proc = STATE && STATE.processing;
@@ -541,6 +619,28 @@ function statusPill(){
 function loadMeets(){
   api('list_meetings').then(r=>{
     if(r && r.ok){ MEETS=r; if(ACTIVE==='home') renderHome(); if(ACTIVE==='meetings') renderMeetings(); }
+  });
+}
+// Minimal failure surface (IDI-167). Several actions had NO way to report an
+// error — they just looked like they had worked. Errors linger longer than
+// confirmations because they need reading.
+let _toastTimer=null;
+function toast(msg, isErr){
+  if(!msg) return;
+  let el=document.getElementById('flumeToast');
+  if(!el){ el=document.createElement('div'); el.id='flumeToast'; document.body.appendChild(el); }
+  el.className='toast'+(isErr?' err':'')+' on';
+  el.textContent=msg;
+  if(_toastTimer) clearTimeout(_toastTimer);
+  _toastTimer=setTimeout(()=>{ el.className='toast'+(isErr?' err':''); }, isErr?5000:2200);
+}
+// Stopping a meeting used to be fire-and-forget with a blind 800ms reload: a
+// failure was invisible and a slow stop reloaded a stale list. Chain it.
+function stopMeeting(btn){
+  busyGuard(btn || 'stop_meeting', ()=>api('stop_meeting')).then(r=>{
+    if(r && r.busy) return;
+    if(r && r.ok===false){ toast((r.error)||'Could not stop the meeting.', true); }
+    loadMeets();
   });
 }
 let MCHAT=[];   // [{q, a, sources, err, pending}]
@@ -587,7 +687,7 @@ function meetingLauncherCard(){
         <div class="mctitle">${esc(MEETS.active_title||'Meeting')}</div>
         <div class="mcsub mono">${fmtDur(MEETS.active_elapsed)} · recording</div></div>
       <button class="btn primary" style="flex:none" onclick="api('open_meeting_launcher')">Return to meeting</button>
-      <button class="btn ghost" style="flex:none" onclick="api('stop_meeting');setTimeout(loadMeets,800)">Stop</button>
+      <button class="btn ghost" style="flex:none" onclick="stopMeeting(this)">Stop</button>
     </div>`;
   }
   const recent=(MEETS.meetings||[]).slice(0,3).map(m=>`
@@ -659,14 +759,17 @@ function renderHistory(){
       <textarea class="transcript histedit" id="histEdit">${esc(sel.text)}</textarea>
       <div class="pvactions"><button class="btn ghost" onclick="EDITH=false;renderHistory()">Cancel</button>
         <button class="btn primary" style="flex:1.3" onclick="saveHistEdit(${esc(JSON.stringify(sel.text))})">${SVG.copy}Save changes</button></div>`;
-  } else { prev = `
+  } else {
+    // A third action button used to sit beside Copy and Edit, calling the very
+    // same copy_text — a re-inject that never re-injected. Dropped in IDI-167:
+    // a real one would paste into the dashboard, which holds focus.
+    prev = `
       <div class="pvhead"><span class="pvmeta">${esc(sel.ts||'')}</span></div>
       <div class="pvtagrow"><span class="tag ${tagCls(sel.app)}">${esc(sel.app||'Local')}</span><span class="pvsub">${words(sel.text)} words</span></div>
       ${audioBar}
       <div class="transcript">${esc(sel.text)}</div>
-      <div class="pvactions"><button class="btn ghost" onclick="api('copy_text', ${esc(JSON.stringify(sel.text))})">${SVG.copy}Copy</button>
-        <button class="btn ghost" onclick="EDITH=true;renderHistory()">${SVG.edit}Edit</button>
-        <button class="btn primary" style="flex:1.3" onclick="api('copy_text', ${esc(JSON.stringify(sel.text))})">${SVG.send}Resend</button></div>`;
+      <div class="pvactions"><button class="btn primary" style="flex:1.3" onclick="api('copy_text', ${esc(JSON.stringify(sel.text))})">${SVG.copy}Copy</button>
+        <button class="btn ghost" onclick="EDITH=true;renderHistory()">${SVG.edit}Edit</button></div>`;
   }
   document.getElementById('historyMain').innerHTML = `
     <div class="listcol"><div class="eyebrow">${(STATE.total_transcriptions||0)} total</div><h1 class="title">History</h1>
@@ -762,7 +865,7 @@ function renderCanvas(){
     ${img}
     <textarea class="canvasArea" id="canvasArea" placeholder="Type or paste text here…" oninput="canvasDirty()">${esc(CANVAS.content||'')}</textarea>
     <div class="canvasBar">
-      <button class="chipbtn" onclick="saveCanvas()">Save &amp; Sync</button>
+      <button class="chipbtn" onclick="saveCanvas(this)">Save &amp; Sync</button>
       <button class="chipbtn" onclick="pickCanvasImage()">Add image…</button>
       <button class="chipbtn" onclick="pasteCanvasImage()">Paste image</button>
       <button class="chipbtn" onclick="clearCanvas()">Clear</button>${from}</div>
@@ -771,7 +874,17 @@ function renderCanvas(){
 function cvMsg(t){ const el=document.getElementById('cvMsg'); if(el) el.textContent=t||''; }
 function canvasText(){ return (document.getElementById('canvasArea')||{}).value||CANVAS.content||''; }
 function canvasDirty(){ const a=document.getElementById('canvasArea'); if(a) CANVAS.content=a.value; }
-function saveCanvas(){ const v=canvasText(); api('save_canvas', v, CANVAS.image_url||null).then(()=>{ CANVAS.content=v; cvMsg('Saved & synced'); }); }
+// Was: printed "Saved & synced" unconditionally, even when the write failed
+// (IDI-167). Only claim success when the backend says so.
+function saveCanvas(btn){
+  const v=canvasText();
+  cvMsg('Saving…');
+  busyGuard(btn || 'save_canvas', ()=>api('save_canvas', v, CANVAS.image_url||null)).then(r=>{
+    if(r && r.busy) return;
+    if(r && r.ok===false){ cvMsg((r.error)||'Could not save — check your connection.'); return; }
+    CANVAS.content=v; cvMsg('Saved & synced');
+  });
+}
 function loadCanvas(){ api('fetch_canvas').then(r=>{ if(r&&r.ok){ CANVAS={content:r.content||'',image_url:r.image_url||null,from:CANVAS.from}; if(ACTIVE==='canvas')renderCanvas(); } }); }
 function clearCanvas(){ api('save_canvas','',null).then(()=>{ CANVAS={content:'',image_url:null}; if(ACTIVE==='canvas')renderCanvas(); }); }
 function clearCanvasImage(){ const v=canvasText(); api('save_canvas', v, null).then(()=>{ CANVAS.image_url=null; CANVAS.content=v; if(ACTIVE==='canvas')renderCanvas(); }); }
@@ -846,7 +959,7 @@ function renderMeetings(){
         <div class="mctitle">${esc(MEETS.active_title||'Meeting')}</div>
         <div class="mcsub mono">${fmtDur(MEETS.active_elapsed)} · recording</div></div>
       <button class="btn primary" style="flex:none" onclick="api('open_meeting_launcher')">Return</button>
-      <button class="btn ghost" style="flex:none" onclick="api('stop_meeting');setTimeout(loadMeets,800)">Stop</button>
+      <button class="btn ghost" style="flex:none" onclick="stopMeeting(this)">Stop</button>
     </div>` : '';
   document.getElementById('meetingsMain').innerHTML = `
     <div class="mhead"><div><div class="eyebrow">${all.length} meetings · ${Math.round(total/60)} min captured</div><h1 class="title">Meetings</h1></div>
@@ -914,10 +1027,10 @@ function renderMeetRows(){
       <div class="mrPrev">${esc(prev)}</div>
       <div class="mrFoot">${chips}${more}<span class="mrAttrs">${attrs}</span></div>
       <div class="mrActs">
-        <button title="${m.pinned?'Unpin':'Pin'}" onclick="event.stopPropagation();pinMeeting(${esc(JSON.stringify(m.id))}, ${m.pinned?'false':'true'})">${m.pinned?'★':'☆'}</button>
+        <button title="${m.pinned?'Unpin':'Pin'}" onclick="event.stopPropagation();pinMeeting(${esc(JSON.stringify(m.id))}, ${m.pinned?'false':'true'}, this)">${m.pinned?'★':'☆'}</button>
         <button title="Open" onclick="event.stopPropagation();api('open_meeting', ${esc(JSON.stringify(m.id))})">${SVG.play}</button>
         <button class="del" title="Delete meeting"
-          onclick="event.stopPropagation();deleteMeeting(${esc(JSON.stringify(m.id))})">✕</button>
+          onclick="event.stopPropagation();deleteMeeting(${esc(JSON.stringify(m.id))}, ${esc(JSON.stringify(m.title||'Meeting'))}, this)">✕</button>
       </div>
     </div>`;
   }
@@ -940,17 +1053,23 @@ function renderMeetRows(){
   if(open) html+='</div>';
   box.innerHTML=html;
 }
-function pinMeeting(id, on){
-  api('set_meeting_pinned', id, on).then(r=>{
+function pinMeeting(id, on, btn){
+  busyGuard(btn || ('pin:'+id), ()=>api('set_meeting_pinned', id, on)).then(r=>{
+    if(r && r.busy) return;
     if(r && r.ok){
       (MEETS.meetings||[]).forEach(m=>{ if(m.id===id) m.pinned=on; });
       renderMeetRows();
-    }
+    } else if(r && r.ok===false){ toast((r.error)||'Could not update the pin.', true); }
   });
 }
-function deleteMeeting(id){
-  api('delete_meeting', id).then(r=>{
+// Deleting a meeting is irreversible (row + transcript + audio) and was ONE
+// click away. Confirm first, same shape as deleteAccount (IDI-167).
+function deleteMeeting(id, title, btn){
+  if(!confirm('Delete “'+(title||'this meeting')+'”?\n\nIts transcript, notes and recording are permanently removed. This cannot be undone.')) return;
+  busyGuard(btn || ('delmeet:'+id), ()=>api('delete_meeting', id)).then(r=>{
+    if(r && r.busy) return;
     if(r && r.ok){ MEETS.meetings=(MEETS.meetings||[]).filter(m=>m.id!==id); renderActive(); }
+    else { toast((r&&r.error)||'Could not delete the meeting.', true); }
   });
 }
 // List column only — re-rendered on every keystroke so the search input keeps focus.
@@ -1004,7 +1123,7 @@ function noteEditorHtml(n){
       </div>
       ${body}
       <div class="pvactions" style="margin-top:12px">
-        <button class="btn ghost" style="flex:none;color:#f0b39a" onclick="delNote()">Delete note</button></div>`;
+        <button class="btn ghost" style="flex:none;color:#f0b39a" onclick="delNote(this)">Delete note</button></div>`;
 }
 // Per-segment playback control at the top of a note (Feature 4). No control at all
 // when the note has no audio segments (Decision 6).
@@ -1093,11 +1212,13 @@ function updateListCard(n){
   if(t) t.textContent=n.title||'Untitled';
   if(p) p.textContent=notePreview(n)||'Empty note';
 }
-function delNote(){
+function delNote(btn){
   const n=curNote(); if(!n) return;
+  if(!confirm('Delete “'+(n.title||'Untitled')+'”?\n\nThe note and its linked recordings are permanently removed. This cannot be undone.')) return;
   if(_noteTimer){ clearTimeout(_noteTimer); _noteTimer=null; }
   stopNoteAudio();
-  api('delete_note', n.id).then(r=>{
+  busyGuard(btn || ('delnote:'+n.id), ()=>api('delete_note', n.id)).then(r=>{
+    if(r && r.busy) return;
     if(!(r&&r.ok)){ alert((r&&r.error)||"Couldn't delete the note — please try again."); return; }
     NOTES=r.notes||NOTES.filter(x=>x.id!==n.id); SELN=null; SHOW_ORIG=false; renderNotes(); });
 }
@@ -1107,11 +1228,15 @@ function updateDictateBtn(){
   b.className='dictate'+(NOTE_REC?' rec':'');
   b.innerHTML = NOTE_REC ? '<span class="pulse"></span>Stop' : SVG.mic+'Dictate';
 }
+// Key-guarded, not element-guarded: updateDictateBtn() rewrites the button's
+// contents on every state flip, so a flag parked on the node would be lost —
+// and a double-click on Dictate used to fire two start/stop calls (IDI-167).
 function toggleDictate(){
   const n=curNote();
   if(NOTE_REC){
     NOTE_REC=false; updateDictateBtn(); setSaveState('Transcribing…');
-    api('note_dictate_stop', n?n.id:null).then(r=>{
+    busyGuard('note_dictate', ()=>api('note_dictate_stop', n?n.id:null)).then(r=>{
+      if(r && r.busy) return;
       if(!(r&&r.ok)){ setSaveState('Mic error'); return; }
       if(!(r.text||'').trim() && !(r.raw_text||'').trim()){
         setSaveState('No speech');
@@ -1121,7 +1246,8 @@ function toggleDictate(){
       onDictation(r);
     });
   } else {
-    api('note_dictate_start').then(r=>{
+    busyGuard('note_dictate', ()=>api('note_dictate_start')).then(r=>{
+      if(r && r.busy) return;
       if(r&&r.ok){ NOTE_REC=true; updateDictateBtn(); setSaveState('Listening…'); }
       else setSaveState((r&&r.error==='busy')?'Busy':'Mic error');
     });
@@ -1321,8 +1447,16 @@ function renderSettings(){
   const s = (STATE&&STATE.settings)||{};
   const model = (STATE&&STATE.model)||'base';
   const u = STATE && STATE.user;
+  // A dead session keeps `user` populated, so Settings would otherwise show a
+  // perfectly healthy account while Delete account 401s (IDI-166).
+  const deadBar = (STATE && STATE.session_dead) ? `
+      <div class="deadbar">
+        <span class="dbtx">Session expired. You're still signed in locally, but syncing and account changes need a fresh sign-in.</span>
+        <button class="dbbtn" onclick="reSignIn()">Sign in again</button>
+      </div>` : '';
   const account = u ? `
     <div class="ssection"><h3>Account</h3>
+      ${deadBar}
       <div class="scard" style="flex-direction:row;align-items:center;gap:12px">
         <div class="acctav">${esc((u.name||u.email||'?').slice(0,1).toUpperCase())}</div>
         <div style="flex:1;min-width:0"><div style="font:600 13.5px 'Geist'">${esc(u.name||'Signed in')}</div>
@@ -1551,17 +1685,52 @@ function renderDictionary(){
   if(!AL_LOADED){ AL_LOADED=true; loadAutolearn(); }
 }
 function loadAutolearn(){ api('get_autolearn_enabled').then(r=>{ if(r&&r.ok){ AL={enabled:!!r.enabled}; if(ACTIVE==='dictionary'||ACTIVE==='settings') dictReRender(); } }); }
-function toggleAutolearn(){ AL.enabled=!AL.enabled; document.querySelectorAll('.alToggleBtn').forEach(b=>b.classList.toggle('on',AL.enabled)); api('set_autolearn_enabled', AL.enabled).then(r=>{ if(r&&r.ok){ AL.enabled=!!r.enabled; document.querySelectorAll('.alToggleBtn').forEach(b=>b.classList.toggle('on',AL.enabled)); } }); }
+// Optimistic flip, but REVERTED on failure (IDI-167). These used to keep the
+// new position no matter what the backend said, so a failed write looked like
+// a successful one until the next reload silently flipped it back.
+function paintAL(){ document.querySelectorAll('.alToggleBtn').forEach(b=>b.classList.toggle('on',AL.enabled)); }
+function toggleAutolearn(){
+  const was=AL.enabled;
+  AL.enabled=!was; paintAL();
+  busyGuard('autolearn', ()=>api('set_autolearn_enabled', AL.enabled)).then(r=>{
+    if(r && r.busy){ AL.enabled=was; paintAL(); return; }
+    if(r&&r.ok){ AL.enabled=!!r.enabled; paintAL(); }
+    else { AL.enabled=was; paintAL(); toast((r&&r.error)||'Could not change auto-learn.', true); }
+  });
+}
 function loadFiletag(){ api('get_filetag_settings').then(r=>{ if(r&&r.ok){ FT={enabled:!!r.enabled,seen_count:r.seen_count||0}; if(ACTIVE==='dictionary'||ACTIVE==='settings') dictReRender(); } }); }
-function toggleFiletag(){ FT.enabled=!FT.enabled; document.querySelectorAll('.ftToggleBtn').forEach(b=>b.classList.toggle('on',FT.enabled)); api('set_filetag_enabled', FT.enabled).then(r=>{ if(r&&r.ok){ FT.enabled=!!r.enabled; document.querySelectorAll('.ftToggleBtn').forEach(b=>b.classList.toggle('on',FT.enabled)); } }); }
+function paintFT(){ document.querySelectorAll('.ftToggleBtn').forEach(b=>b.classList.toggle('on',FT.enabled)); }
+function toggleFiletag(){
+  const was=FT.enabled;
+  FT.enabled=!was; paintFT();
+  busyGuard('filetag', ()=>api('set_filetag_enabled', FT.enabled)).then(r=>{
+    if(r && r.busy){ FT.enabled=was; paintFT(); return; }
+    if(r&&r.ok){ FT.enabled=!!r.enabled; paintFT(); }
+    else { FT.enabled=was; paintFT(); toast((r&&r.error)||'Could not change file tagging.', true); }
+  });
+}
 function dictReRender(){ if(ACTIVE==='dictionary') renderDictionary(); else if(ACTIVE==='settings') renderSettings(); }
 function dictSetState(t){ const el=document.getElementById('dictState'); if(el) el.textContent=t||''; }
 function loadDict(){ api('get_dictionary').then(r=>{ if(r&&r.ok){ DICT={vocabulary:r.vocabulary||[],replacements:r.replacements||[]}; dictReRender(); } }); }
-function saveDict(){ dictSetState('Saving…'); api('save_dictionary', DICT.vocabulary, DICT.replacements).then(r=>{ if(r&&r.ok){ DICT={vocabulary:r.vocabulary||DICT.vocabulary,replacements:r.replacements||DICT.replacements}; dictSetState('Saved'); } else dictSetState(''); }); }
-function addWord(){ const el=document.getElementById('dictWord'); if(!el)return; const w=el.value.trim(); if(!w)return; if(!DICT.vocabulary.some(x=>x.toLowerCase()===w.toLowerCase())) DICT.vocabulary.push(w); dictReRender(); saveDict(); setTimeout(()=>{const n=document.getElementById('dictWord'); if(n)n.focus();},0); }
-function removeWord(i){ DICT.vocabulary.splice(i,1); dictReRender(); saveDict(); }
-function addRep(){ const f=document.getElementById('repFrom'),t=document.getElementById('repTo'); if(!f||!t)return; const frm=f.value.trim(),to=t.value.trim(); if(!frm||!to)return; DICT.replacements=DICT.replacements.filter(r=>r.from.toLowerCase()!==frm.toLowerCase()); DICT.replacements.push({from:frm,to:to}); dictReRender(); saveDict(); setTimeout(()=>{const n=document.getElementById('repFrom'); if(n)n.focus();},0); }
-function removeRep(i){ DICT.replacements.splice(i,1); dictReRender(); saveDict(); }
+// The dictionary mutators all edit DICT in place and then push the WHOLE list.
+// So the guard has to sit in front of the mutation, not just the api call:
+// a second click landing mid-save would otherwise re-index a spliced array
+// (removeWord(2) twice deletes two different words) or get its write dropped
+// and silently diverge from the server (IDI-167).
+function dictBusy(){ return BUSY.has('dict'); }
+function saveDict(){
+  dictSetState('Saving…');
+  return busyGuard('dict', ()=>api('save_dictionary', DICT.vocabulary, DICT.replacements)).then(r=>{
+    if(r && r.busy) return r;
+    if(r&&r.ok){ DICT={vocabulary:r.vocabulary||DICT.vocabulary,replacements:r.replacements||DICT.replacements}; dictSetState('Saved'); }
+    else { dictSetState('Not saved'); toast((r&&r.error)||'Could not save the dictionary.', true); }
+    return r;
+  });
+}
+function addWord(){ if(dictBusy())return; const el=document.getElementById('dictWord'); if(!el)return; const w=el.value.trim(); if(!w)return; if(!DICT.vocabulary.some(x=>x.toLowerCase()===w.toLowerCase())) DICT.vocabulary.push(w); dictReRender(); saveDict(); setTimeout(()=>{const n=document.getElementById('dictWord'); if(n)n.focus();},0); }
+function removeWord(i){ if(dictBusy())return; DICT.vocabulary.splice(i,1); dictReRender(); saveDict(); }
+function addRep(){ if(dictBusy())return; const f=document.getElementById('repFrom'),t=document.getElementById('repTo'); if(!f||!t)return; const frm=f.value.trim(),to=t.value.trim(); if(!frm||!to)return; DICT.replacements=DICT.replacements.filter(r=>r.from.toLowerCase()!==frm.toLowerCase()); DICT.replacements.push({from:frm,to:to}); dictReRender(); saveDict(); setTimeout(()=>{const n=document.getElementById('repFrom'); if(n)n.focus();},0); }
+function removeRep(i){ if(dictBusy())return; DICT.replacements.splice(i,1); dictReRender(); saveDict(); }
 
 // ── Snippets ──────────────────────────────────────────────────────────────
 function loadSnips(){ api('fetch_snippets').then(r=>{ if(r&&r.ok){ SNIPS=r.snippets||[]; if(ACTIVE==='snippets') renderSnippets(); } }); }
@@ -1582,7 +1751,7 @@ function snipRowHtml(s){
   const shown=prev.length>40? esc(prev.slice(0,40))+'…' : esc(prev);
   const active=SNIP_EDIT && SNIP_EDIT.id===s.id;
   const menu = SNIP_MENU===s.id
-    ? `<div class="snmenu"><button onclick="event.stopPropagation();openSnip('${esc(s.id)}')">Edit</button><button class="del" onclick="event.stopPropagation();deleteSnip('${esc(s.id)}')">Delete</button></div>`
+    ? `<div class="snmenu"><button onclick="event.stopPropagation();openSnip('${esc(s.id)}')">Edit</button><button class="del" onclick="event.stopPropagation();deleteSnip('${esc(s.id)}', this)">Delete</button></div>`
     : '';
   return `<tr class="sniprow${active?' active':''}" onclick="openSnip('${esc(s.id)}')">
     <td class="td-trig">${esc(s.trigger||'')}</td>
@@ -1613,10 +1782,10 @@ function snipPaneHtml(){
       <input id="snipLabel" placeholder="optional" value="${esc(s.label||'')}" oninput="snipEditField('label',this.value)"/>
     </div>
     <div class="snpanefoot">
-      ${isNew?'':`<button class="sndel" onclick="deleteSnip('${esc(s.id)}')">Delete</button>`}
+      ${isNew?'':`<button class="sndel" onclick="deleteSnip('${esc(s.id)}', this)">Delete</button>`}
       <span class="grow"></span>
       <button class="btn ghost" style="flex:none" onclick="closeSnip()">Cancel</button>
-      <button class="btn primary" style="flex:none" onclick="saveSnip()">Save</button>
+      <button class="btn primary" style="flex:none" onclick="saveSnip(this)">Save</button>
     </div>
   </div>`;
 }
@@ -1667,19 +1836,32 @@ function openSnip(id){
 }
 function closeSnip(){ SNIP_EDIT=null; renderSnippets(); }
 function toggleSnipMenu(id){ SNIP_MENU = (SNIP_MENU===id? null : id); renderSnippets(); }
-function saveSnip(){
+function saveSnip(btn){
   if(!SNIP_EDIT) return;
   const t=(SNIP_EDIT.trigger||'').trim(), e=(SNIP_EDIT.expansion||'').trim(), l=(SNIP_EDIT.label||'').trim();
   if(!t||!e) return;
   const isNew=!SNIP_EDIT.id;
-  const call = isNew
+  // Guarded: a double-click on New → Save used to create TWO snippets, because
+  // add_snippet fired twice before SNIP_EDIT.id came back (IDI-167).
+  busyGuard(btn || 'save_snippet', ()=> isNew
     ? api('add_snippet', {trigger:t, expansion:e, label:l})
-    : api('update_snippet', {id:SNIP_EDIT.id, trigger:t, expansion:e, label:l});
-  call.then(r=>{ if(r&&r.ok){ SNIPS=r.snippets||SNIPS; SNIP_EDIT=null; renderSnippets(); } });
+    : api('update_snippet', {id:SNIP_EDIT.id, trigger:t, expansion:e, label:l})
+  ).then(r=>{
+    if(r && r.busy) return;
+    if(r&&r.ok){ SNIPS=r.snippets||SNIPS; SNIP_EDIT=null; renderSnippets(); }
+    else toast((r&&r.error)||'Could not save the snippet.', true);
+  });
 }
-function deleteSnip(id){
+function deleteSnip(id, btn){
   if(!id) return;
-  api('delete_snippet', id).then(r=>{ if(r&&r.ok){ SNIPS=r.snippets||SNIPS; if(SNIP_EDIT&&SNIP_EDIT.id===id) SNIP_EDIT=null; SNIP_MENU=null; renderSnippets(); } });
+  const s=(SNIPS||[]).find(x=>x.id===id);
+  const name=(s&&(s.trigger||s.label))||'this snippet';
+  if(!confirm('Delete the snippet “'+name+'”?\n\nThis cannot be undone.')) return;
+  busyGuard(btn || ('delsnip:'+id), ()=>api('delete_snippet', id)).then(r=>{
+    if(r && r.busy) return;
+    if(r&&r.ok){ SNIPS=r.snippets||SNIPS; if(SNIP_EDIT&&SNIP_EDIT.id===id) SNIP_EDIT=null; SNIP_MENU=null; renderSnippets(); }
+    else toast((r&&r.error)||'Could not delete the snippet.', true);
+  });
 }
 function saveSettings(){
   // Groq/Gemini keys are no longer entered in-app (Groq is served by the groq-proxy
@@ -1704,7 +1886,16 @@ async function deleteAccount(){
   try {
     const r = await api('delete_account');
     if(r && r.ok){ await load(); }
-    else { alert('Could not delete account: ' + ((r&&r.error)||'unknown error')); if(btn){ btn.disabled=false; btn.textContent='Delete account'; } }
+    else {
+      // A dead session is the one failure the user can actually fix, so offer
+      // the fix instead of a dead-end alert (IDI-166).
+      if(r && r.session_dead){
+        if(confirm(((r.error)||'Your session expired.') + '\n\nSign in again now?')) reSignIn();
+      } else {
+        alert('Could not delete account: ' + ((r&&r.error)||'unknown error'));
+      }
+      if(btn){ btn.disabled=false; btn.textContent='Delete account'; }
+    }
   } catch(e) {
     alert('Could not delete account: ' + e);
     if(btn){ btn.disabled=false; btn.textContent='Delete account'; }
@@ -1776,17 +1967,70 @@ function applyAuthGate(){
   let mode='app';
   if(STATE.signed_in===false) mode='signin';
   else if(STATE.onboarded===false) mode='wizard';
+  // A completed sign-in ends the attempt. Without this the flag stayed true
+  // behind the hidden pane, and a later sign-out came back to a disabled
+  // button with a Cancel next to it — the exact latch this ticket removes.
+  if(STATE.signed_in) SIGNIN_BUSY=false;
   if(si) si.hidden = mode!=='signin';
   if(gs) gs.hidden = mode!=='wizard';
   if(app) app.style.display = mode==='app' ? '' : 'none';
+  // The sign-in pane is DATA-DRIVEN (IDI-166): sign_in_google returns an
+  // optimistic ok and the real outcome lands later as a pushed state carrying
+  // `auth_error`. Rendering it here is what guarantees the user can always
+  // retry — the old static pane left the button disabled forever on a
+  // cancel/timeout and only an app restart recovered.
+  if(mode==='signin') renderSignin();
+  renderDeadBanner();
   if(mode==='wizard'){ if(!Object.keys(PERMS).length) loadPerms(); else renderWizard(); }
 }
+// True only between "user clicked" and "we heard back" — deliberately client
+// side, because an in-flight OAuth flow has no server-side state we can poll.
+let SIGNIN_BUSY=false;
+function renderSignin(){
+  const b=document.getElementById('siGoogleBtn'), lbl=document.getElementById('siGoogleLbl');
+  const err=document.getElementById('siErr'), errtx=document.getElementById('siErrTx');
+  const cancel=document.getElementById('siCancelBtn');
+  if(!b) return;
+  const msg=(STATE&&STATE.auth_error)||'';
+  if(msg) SIGNIN_BUSY=false;            // an error means the attempt is over
+  b.disabled=SIGNIN_BUSY;
+  if(lbl) lbl.textContent = SIGNIN_BUSY ? 'Waiting for your browser…'
+                          : (msg ? 'Try again with Google' : 'Continue with Google');
+  if(err) err.hidden=!msg;
+  if(errtx) errtx.textContent=msg;
+  if(cancel) cancel.hidden=!SIGNIN_BUSY;
+}
 function signInGoogle(){
-  const b=document.getElementById('siGoogleBtn');
-  if(b){ b.disabled=true; const s=b.querySelector('span'); if(s)s.textContent='Opening browser…'; }
+  if(SIGNIN_BUSY) return;
+  SIGNIN_BUSY=true;
+  if(STATE) STATE.auth_error='';
+  renderSignin();
   api('sign_in_google').then(r=>{
-    if(!r || r.ok===false){ if(b){ b.disabled=false; const s=b.querySelector('span'); if(s)s.textContent='Continue with Google'; } }
+    if(!r || r.ok===false){
+      SIGNIN_BUSY=false;
+      if(STATE) STATE.auth_error=(r&&r.error)||'Sign-in is not available on this build.';
+      renderSignin();
+    }
   });
+}
+// Abandons the pending flow server-side too, which frees the OAuth callback
+// port — without that, the retry can't bind and fails instantly.
+function cancelSignIn(){
+  SIGNIN_BUSY=false;
+  if(STATE) STATE.auth_error='';
+  renderSignin();
+  api('cancel_sign_in');
+}
+// Sidebar / Settings "Session expired" banner. `signed_in` stays true after a
+// dead refresh token (the identity survives, the tokens don't), so this is the
+// only thing that tells the user why JWT-only actions are failing (IDI-166).
+function renderDeadBanner(){
+  const el=document.getElementById('sideDead');
+  if(el) el.hidden = !(STATE && STATE.session_dead);
+}
+function reSignIn(){
+  toast('Opening your browser to sign in…');
+  api('sign_in_google');
 }
 window.__resetOnboarding=function(){ WSTEP=1; PERMS={}; load(); };
 function loadPerms(){ api('get_permissions').then(r=>{ PERMS=(r&&r.ok&&r.perms)||{}; renderWizard(); }).catch(()=>renderWizard()); }
@@ -1808,12 +2052,14 @@ function renderWizard(){
     }).join('');
     content=`<div class="gstitle">A few permissions.</div><div class="gslead">Flume needs these to paste transcriptions and record meetings on this Mac.</div>${rows}`;
   } else if(WSTEP===2){
-    const u=STATE&&STATE.user;
-    const right = u ? '<span class="permpill"><span class="pdot"></span>Active</span>'
-      : `<button class="btn primary" style="flex:none" onclick="api('sign_in_google')">Sign in</button>`;
+    // The wizard is only ever reachable when signed_in is true — applyAuthGate
+    // gives the sign-in wall priority over the onboarded check — so STATE.user
+    // is always populated here. The old `!STATE.user` "Sign in" fallback was
+    // dead code and has been removed (IDI-166).
+    const u=(STATE&&STATE.user)||{};
     content=`<div class="gstitle">Sync across your devices.</div>
-      <div class="gslead">${u?('Signed in as '+esc(u.email)+'. '):''}Your dictation, notes and canvas stay in sync everywhere you sign in.</div>
-      <div class="permrow"><div class="permicon ok">${WIZ_ICON.phone}</div><div class="perminfo"><div class="permname">This Mac</div><div class="permsub">${u?'Synced to your account':'Local only — sign in to sync across devices'}</div></div>${right}</div>`;
+      <div class="gslead">Signed in as ${esc(u.email||'your account')}. Your dictation, notes and canvas stay in sync everywhere you sign in.</div>
+      <div class="permrow"><div class="permicon ok">${WIZ_ICON.phone}</div><div class="perminfo"><div class="permname">This Mac</div><div class="permsub">Synced to your account</div></div><span class="permpill"><span class="pdot"></span>Active</span></div>`;
   } else {
     content=`<div class="gstitle">You're all set.</div>
       <div class="gslead">Hold your hotkey anywhere to dictate — it lands in your clipboard and pastes automatically. Open Flume from the menu bar any time.</div>
@@ -1824,7 +2070,9 @@ function renderWizard(){
     <div class="gsnav">${back}<span class="grow"></span><button class="btn primary" style="flex:none;min-width:160px" onclick="wizNext()">${WSTEP<3?'Continue':'Start using Flume'}</button></div>`;
 }
 
+let LOAD_STARTED=false;
 async function load(){
+  LOAD_STARTED=true;
   const r = await api('get_state');
   if(r && r.ok){ STATE=r; applyAuthGate(); renderSidebar(); }
   await new Promise(res=>{ api('fetch_notes').then(rn=>{ if(rn&&rn.ok)NOTES=rn.notes||rn.data||[]; res(); }); });
@@ -1832,8 +2080,13 @@ async function load(){
   renderActive();
 }
 document.querySelectorAll('[data-screen]').forEach(n=>n.onclick=()=>show(n.dataset.screen));
+// The macOS bridge shim now dispatches a REAL pywebviewready at document-start
+// (flume_web_dashboard._SHIM), so this is the normal path on both platforms.
 window.addEventListener('pywebviewready', load);
-setTimeout(()=>{ if(!STATE) load(); }, 400);
+// Backstop only, for a host that never fires the event. LOAD_STARTED (not
+// STATE) is the guard: get_state is async, so a slow first response used to
+// let the timer kick off a duplicate load.
+setTimeout(()=>{ if(!LOAD_STARTED) load(); }, 400);
 </script>"""
 
     # Inline the icon SVGs into a JS map the render functions reference as SVG.<name>
@@ -1844,7 +2097,11 @@ setTimeout(()=>{ if(!STATE) load(); }, 400);
     # Strip the leftover placeholder line from the JS.
     js = js.replace("const IC. = {}; // placeholder\n", "")
 
-    return f"<style>{web_font_css()}{_CSS}</style>{svg_map}{body}{js}"
+    # pressed_css goes LAST: a handful of hover rules here also set `filter`
+    # (.siGoogle, .playbtn, .dictate), and at equal specificity source order
+    # decides — so the press must be able to win while hovered.
+    return (f"<style>{web_font_css()}{_CSS}{pressed_css(_PRESSED_SELECTORS)}</style>"
+            f"{svg_map}{body}{js}")
 
 
 def _json_str(s: str) -> str:

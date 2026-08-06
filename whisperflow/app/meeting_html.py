@@ -1725,6 +1725,14 @@ loadPerms();
 api('meeting_page_ready');   // handshake: flush events emitted before load
 </script>"""
 
+    from app.shared_css import pressed_css
+    # IDI-168. `.btnP` keeps its own `:active` accent-press background (line
+    # ~138) and now also carries the canonical transform/filter — the two rules
+    # touch disjoint properties, so they compose rather than conflict.
+    pressed = pressed_css([
+        ".btnP", ".btnS", ".iconbtn", ".barBtn", ".toggle", ".aiCb", ".hnTab",
+        ".markpill", ".mmTs", ".aiDel", ".hnRegen", ".dictChip", ".ntBack",
+    ])
     return ("<!doctype html><html><head><meta charset='utf-8'><style>"
-            + web_font_css() + _CSS + "</style></head><body>"
+            + web_font_css() + _CSS + pressed + "</style></head><body>"
             + body + js + "</body></html>")

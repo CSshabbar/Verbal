@@ -330,6 +330,13 @@ Each feature: **what it does · desktop impl · mobile impl · backend · status
 
 ## Google auth
 
+- **Sign-in is REQUIRED on all platforms (IDI-166, 2026-08):** the desktop first-run "Later" path and all
+  anonymous-mode remnants are gone; the dashboard's sign-in wall is the only entry (hotkey dictation still
+  functions signed-out but is not advertised). Failure UX is state-driven: `get_state` carries
+  `auth_error` (+ new `DashboardApi.cancel_sign_in` frees the loopback port), so a canceled/timed-out
+  OAuth attempt re-enables the button with an error instead of latching forever. A **dead session**
+  (revoked/expired refresh token) is persisted (`config['auth']['session_dead']`), surfaced as a
+  "Session expired — sign in again" banner, and makes `delete_account` return actionable guidance.
 - **Desktop:** `auth.py` — Supabase Auth **PKCE loopback**: browser → `/auth/v1/authorize?provider=google
   &redirect_to=http://localhost:8765/callback`; a dual-stack (IPv6+IPv4) loopback server on **port 8765**
   captures the code, exchange at `/token?grant_type=pkce`. Stores `config['auth']`
@@ -339,7 +346,12 @@ Each feature: **what it does · desktop impl · mobile impl · backend · status
   redirectTo:'verbal://auth-callback'})` + `WebBrowser.openAuthSessionAsync`; return URL parsed by
   `createSessionFromUrl` (PKCE `?code=` → `exchangeCodeForSession`, dedup via `_handledCodes`; implicit
   `#access_token` fallback); `Linking` listener for Android reopen. Only Google is real; Apple/email are
-  stubs. Needs an EAS dev build (not Expo Go).
+  stubs. Needs an EAS dev build (not Expo Go). **Session lifecycle (IDI-166):** `AppState` drives
+  `startAutoRefresh`/`stopAutoRefresh` (RN requirement — backgrounded >1h no longer resumes expired);
+  an involuntary sign-out (session died without the user tapping Sign out) sets `sessionExpired` on
+  `useAuth`, rendered as "Your session expired — please sign in again" on Welcome; the Google button
+  shows an in-flight state; `completeOnboarding` only clears genuinely stale sessions (a real signed-in
+  user re-seeing onboarding is never silently signed out).
 - **Setup facts:** `GOOGLE_AUTH_SETUP.md` (Web OAuth client, redirect
   `https://ovpcthjingugwvpxlsna.supabase.co/auth/v1/callback`; Supabase Redirect URLs include the loopback
   and the `verbal://` deep link). Details in `04-data-model.md`.

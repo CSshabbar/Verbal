@@ -9,7 +9,7 @@ import * as Haptics from 'expo-haptics';
 import { Text, Card, ListRow, Button } from '../components';
 import { confirm } from '../components/ConfirmDialog';
 import { Dictionary, fetchRemote, saveDictionary } from '../../lib/dictionary';
-import { colors, radius, type } from '../theme';
+import { colors, radius, type, pressedStyle } from '../theme';
 import { useAuth } from '../hooks/useAuth';
 import {
   getDeviceName, setDeviceName,
@@ -220,7 +220,7 @@ export const SettingsScreen: React.FC<Props> = ({ onOpenDevices, onOpenSnippets 
 
         {/* Voice — snippets (spoken phrase → full text) */}
         <Section label="VOICE">
-          <Pressable onPress={onOpenSnippets} style={styles.snippetCard}>
+          <Pressable onPress={onOpenSnippets} style={({ pressed }) => [styles.snippetCard, pressed && pressedStyle]}>
             <View style={styles.snippetIcon}>
               <Ionicons name="flash" size={20} color={colors.primary} />
             </View>
@@ -278,7 +278,7 @@ export const SettingsScreen: React.FC<Props> = ({ onOpenDevices, onOpenSnippets 
               {dict.vocabulary.length === 0 ? (
                 <Text variant="caption" color={colors.textSubtle}>No words yet.</Text>
               ) : dict.vocabulary.map((w, i) => (
-                <Pressable key={`${w}-${i}`} onPress={() => removeWord(i)} style={styles.chip}>
+                <Pressable key={`${w}-${i}`} onPress={() => removeWord(i)} style={({ pressed }) => [styles.chip, pressed && pressedStyle]}>
                   <Text variant="caption" color={colors.primary}>{w}</Text>
                   <Ionicons name="close" size={12} color={colors.primary} />
                 </Pressable>
@@ -304,7 +304,7 @@ export const SettingsScreen: React.FC<Props> = ({ onOpenDevices, onOpenSnippets 
                 <Text variant="caption" color={colors.textMuted}>{r.from}</Text>
                 <Ionicons name="arrow-forward" size={12} color={colors.textSubtle} />
                 <Text variant="caption" style={{ flex: 1 }}>{r.to}</Text>
-                <Pressable onPress={() => removeRep(i)} hitSlop={8}>
+                <Pressable onPress={() => removeRep(i)} style={({ pressed }) => pressed && pressedStyle} hitSlop={8}>
                   <Ionicons name="close" size={14} color={colors.textMuted} />
                 </Pressable>
               </View>

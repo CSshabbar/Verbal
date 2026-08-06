@@ -5,7 +5,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { Text, Chip, ChipDot, Visualizer, IconButton } from '../components';
-import { colors } from '../theme';
+import { colors, pressedStyle } from '../theme';
 import { useRecorder } from '../hooks/useRecorder';
 import { useDevices } from '../hooks/useDevices';
 
@@ -128,7 +128,7 @@ export const RecordingScreen: React.FC<Props> = ({ onCancel, onComplete }) => {
           <Pressable
             onPress={handleStop}
             disabled={busy}
-            style={({ pressed }) => [styles.stopBtn, pressed && { opacity: 0.9 }, busy && { opacity: 0.7 }]}
+            style={({ pressed }) => [styles.stopBtn, pressed && pressedStyle, busy && { opacity: 0.7 }]}
           >
             {busy
               ? <ActivityIndicator color={colors.primaryInk} />

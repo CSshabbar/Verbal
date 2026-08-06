@@ -17,7 +17,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { Text } from '../components';
-import { colors, radius, fonts } from '../theme';
+import { colors, radius, fonts, pressedStyle } from '../theme';
 import { fetchMeeting, updateScratchpadRemote, subscribeMeetings, isLiveNow } from '../../lib/meetings';
 import type { Meeting } from '../../lib/meetings';
 import { getUserId } from '../../lib/storage';
@@ -129,7 +129,7 @@ export const MeetingLiveScreen: React.FC<Props> = ({ meetingId, onBack, onFinish
       <View style={{ paddingTop: insets.top + 8, paddingHorizontal: 20, flex: 1 }}>
         {/* header */}
         <View style={styles.header}>
-          <Pressable onPress={onBack} hitSlop={12} style={styles.backBtn}>
+          <Pressable onPress={onBack} hitSlop={12} style={({ pressed }) => [styles.backBtn, pressed && pressedStyle]}>
             <Ionicons name="chevron-down" size={22} color={colors.textPrimary} />
           </Pressable>
           <View style={{ flex: 1, minWidth: 0 }}>
@@ -167,11 +167,11 @@ export const MeetingLiveScreen: React.FC<Props> = ({ meetingId, onBack, onFinish
           <Animated.View style={[styles.segThumb, { width: segW / 2 }, {
             transform: [{ translateX: slide.interpolate({ inputRange: [0, 1], outputRange: [0, segW / 2] }) }],
           }]} />
-          <Pressable style={styles.segBtn} onPress={() => setTab('transcript')}>
+          <Pressable style={({ pressed }) => [styles.segBtn, pressed && pressedStyle]} onPress={() => setTab('transcript')}>
             <Text variant="buttonSm" color={tab === 'transcript' ? colors.primaryInk : colors.textMuted}
               style={{ fontFamily: fonts.semibold }}>Transcript</Text>
           </Pressable>
-          <Pressable style={styles.segBtn} onPress={() => setTab('notes')}>
+          <Pressable style={({ pressed }) => [styles.segBtn, pressed && pressedStyle]} onPress={() => setTab('notes')}>
             <Text variant="buttonSm" color={tab === 'notes' ? colors.primaryInk : colors.textMuted}
               style={{ fontFamily: fonts.semibold }}>Notes</Text>
           </Pressable>

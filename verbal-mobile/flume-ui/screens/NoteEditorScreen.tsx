@@ -6,7 +6,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { Text, Visualizer, MarkdownNote, AudioSegmentPlayer } from '../components';
-import { colors, radius } from '../theme';
+import { colors, radius, pressedStyle } from '../theme';
 import { useNotes, Note } from '../hooks/useNotes';
 import { useRecorder } from '../hooks/useRecorder';
 
@@ -155,13 +155,19 @@ export const NoteEditorScreen: React.FC<Props> = ({ noteId, onBack }) => {
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
       <View style={styles.topBar}>
-        <Pressable onPress={onBack} accessibilityRole="button" accessibilityLabel="Back">
+        <Pressable
+          onPress={onBack}
+          style={({ pressed }) => pressed && pressedStyle}
+          accessibilityRole="button"
+          accessibilityLabel="Back"
+        >
           <Ionicons name="chevron-back" size={24} color={colors.textSecondary} />
         </Pressable>
         <SavedIndicator busy={busy} />
         {hasMarkdown && !showOriginal ? (
           <Pressable
             onPress={() => setEditingRaw(e => !e)}
+            style={({ pressed }) => pressed && pressedStyle}
             accessibilityRole="button"
             accessibilityLabel={editingRaw ? 'Done editing' : 'Edit raw text'}
           >
@@ -259,21 +265,21 @@ export const NoteEditorScreen: React.FC<Props> = ({ noteId, onBack }) => {
           // While recording/paused: Cancel (discard) · Stop-and-save (center) · Pause/Resume.
           <>
             <View style={styles.dockSide}>
-              <Pressable onPress={cancelDictate} style={styles.sideBtn} accessibilityRole="button" accessibilityLabel="Cancel recording">
+              <Pressable onPress={cancelDictate} style={({ pressed }) => [styles.sideBtn, pressed && pressedStyle]} accessibilityRole="button" accessibilityLabel="Cancel recording">
                 <Ionicons name="close" size={22} color={colors.textSecondary} />
               </Pressable>
             </View>
             <Pressable
               onPress={finishDictate}
               disabled={busy}
-              style={[styles.micDock, busy && { opacity: 0.5 }]}
+              style={({ pressed }) => [styles.micDock, pressed && pressedStyle, busy && { opacity: 0.5 }]}
               accessibilityRole="button"
               accessibilityLabel="Stop and save"
             >
               <Ionicons name="checkmark" size={32} color={colors.primaryInk} />
             </Pressable>
             <View style={[styles.dockSide, { alignItems: 'flex-end' }]}>
-              <Pressable onPress={pauseResume} style={styles.sideBtn} accessibilityRole="button" accessibilityLabel={paused ? 'Resume recording' : 'Pause recording'}>
+              <Pressable onPress={pauseResume} style={({ pressed }) => [styles.sideBtn, pressed && pressedStyle]} accessibilityRole="button" accessibilityLabel={paused ? 'Resume recording' : 'Pause recording'}>
                 <Ionicons name={paused ? 'play' : 'pause'} size={20} color={colors.textSecondary} />
               </Pressable>
             </View>
@@ -285,14 +291,14 @@ export const NoteEditorScreen: React.FC<Props> = ({ noteId, onBack }) => {
             <Pressable
               onPress={startDictate}
               disabled={busy}
-              style={[styles.micDock, busy && { opacity: 0.5 }]}
+              style={({ pressed }) => [styles.micDock, pressed && pressedStyle, busy && { opacity: 0.5 }]}
               accessibilityRole="button"
               accessibilityLabel="Start dictation"
             >
               <Ionicons name="mic" size={30} color={colors.primaryInk} />
             </Pressable>
             <View style={[styles.dockSide, { alignItems: 'flex-end' }]}>
-              <Pressable onPress={onBack} hitSlop={8} style={{ padding: 6 }} accessibilityRole="button" accessibilityLabel="Done">
+              <Pressable onPress={onBack} hitSlop={8} style={({ pressed }) => [{ padding: 6 }, pressed && pressedStyle]} accessibilityRole="button" accessibilityLabel="Done">
                 <Text variant="button" color={colors.primary}>Done</Text>
               </Pressable>
             </View>
@@ -309,7 +315,7 @@ const Chip: React.FC<{
   <Pressable
     onPress={onPress}
     disabled={disabled}
-    style={[styles.chip, accent && styles.chipAccent, disabled && { opacity: 0.4 }]}
+    style={({ pressed }) => [styles.chip, accent && styles.chipAccent, pressed && pressedStyle, disabled && { opacity: 0.4 }]}
     accessibilityRole="button"
     accessibilityLabel={label}
     hitSlop={6}

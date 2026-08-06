@@ -4,7 +4,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { Text, Button, Card, SuccessBadge } from '../components';
-import { colors, radius } from '../theme';
+import { colors, radius, pressedStyle } from '../theme';
 
 type Variant = 'sent' | 'saved' | 'failed' | 'empty';
 
@@ -110,7 +110,7 @@ export const ConfirmationScreen: React.FC<Props> = ({
 const Action: React.FC<{ icon: any; label: string; onPress: () => void }> = ({ icon, label, onPress }) => (
   <Pressable
     onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); onPress(); }}
-    style={({ pressed }) => [styles.action, pressed && { opacity: 0.85 }]}
+    style={({ pressed }) => [styles.action, pressed && pressedStyle]}
   >
     <Ionicons name={icon} size={20} color={colors.textPrimary} />
     <Text variant="button" style={{ flex: 1 }}>{label}</Text>

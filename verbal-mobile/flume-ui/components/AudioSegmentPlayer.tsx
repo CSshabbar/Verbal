@@ -16,7 +16,7 @@ import { View, StyleSheet, Pressable } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useAudioPlayer, useAudioPlayerStatus } from 'expo-audio';
 import { Text } from './Text';
-import { colors, radius } from '../theme';
+import { colors, radius, pressedStyle } from '../theme';
 import { resolvePlaybackUrl } from '../../lib/recordings';
 
 function segTime(createdAt: string): string {
@@ -69,7 +69,7 @@ export const AudioSegmentPlayer: React.FC<AudioSegmentPlayerProps> = ({ url, cre
   return (
     <Pressable
       onPress={toggle}
-      style={styles.row}
+      style={({ pressed }) => [styles.row, pressed && pressedStyle]}
       accessibilityRole="button"
       accessibilityLabel={`${playing ? 'Pause' : 'Play'} recording ${index + 1} from ${label}`}
     >

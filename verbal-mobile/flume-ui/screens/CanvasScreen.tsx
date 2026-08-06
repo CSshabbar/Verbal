@@ -4,7 +4,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { Text, Chip, ChipDot, Card } from '../components';
-import { colors, radius } from '../theme';
+import { colors, radius, pressedStyle } from '../theme';
 import { useCanvas, CanvasItem } from '../hooks/useCanvas';
 import { useDevices } from '../hooks/useDevices';
 
@@ -24,7 +24,7 @@ export const CanvasScreen: React.FC<Props> = () => {
   return (
     <View style={[styles.root, { paddingTop: insets.top + 10 }]}>
       {toast ? (
-        <Pressable onPress={dismissToast} style={[styles.toast, { top: insets.top + 6 }]} accessibilityRole="button" accessibilityLabel={toast}>
+        <Pressable onPress={dismissToast} style={({ pressed }) => [styles.toast, { top: insets.top + 6 }, pressed && pressedStyle]} accessibilityRole="button" accessibilityLabel={toast}>
           <Ionicons name="checkmark-circle" size={16} color={colors.online} />
           <Text variant="buttonSm" style={{ flex: 1 }} numberOfLines={2}>{toast}</Text>
         </Pressable>
@@ -34,7 +34,7 @@ export const CanvasScreen: React.FC<Props> = () => {
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
           <Pressable
             onPress={() => { Haptics.selectionAsync(); refresh(); }}
-            style={({ pressed }) => [styles.refreshBtn, pressed && { opacity: 0.7 }]}
+            style={({ pressed }) => [styles.refreshBtn, pressed && pressedStyle]}
             hitSlop={8}
           >
             <Ionicons name="refresh" size={18} color={colors.textSecondary} />
@@ -70,7 +70,7 @@ const ActionBtn: React.FC<{ icon: any; label: string; onPress: () => void }> = (
 }) => (
   <Pressable
     onPress={() => { Haptics.selectionAsync(); onPress(); }}
-    style={({ pressed }) => [styles.actionBtn, pressed && { opacity: 0.8 }]}
+    style={({ pressed }) => [styles.actionBtn, pressed && pressedStyle]}
   >
     <Ionicons name={icon} size={16} color={colors.textPrimary} />
     <Text variant="buttonSm">{label}</Text>
@@ -134,10 +134,10 @@ const Item: React.FC<{
         <View style={styles.footerRow}>
           <Text variant="metaSm" color={colors.primary}>DRAFT · {item.kind.toUpperCase()}</Text>
           <View style={{ flexDirection: 'row', gap: 6 }}>
-            <Pressable onPress={() => onDiscard(item.id)} style={{ padding: 4 }}>
+            <Pressable onPress={() => onDiscard(item.id)} style={({ pressed }) => [{ padding: 4 }, pressed && pressedStyle]}>
               <Text variant="buttonSm" color={colors.textMuted}>Discard</Text>
             </Pressable>
-            <Pressable onPress={() => onSave(item.id)} style={styles.savePill}>
+            <Pressable onPress={() => onSave(item.id)} style={({ pressed }) => [styles.savePill, pressed && pressedStyle]}>
               <Text variant="buttonSm" color={colors.primaryInk}>
                 Save → {targetName.split(' ')[0]}
               </Text>

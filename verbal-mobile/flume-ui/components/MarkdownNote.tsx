@@ -21,7 +21,7 @@ import React from 'react';
 import { View, StyleSheet, Pressable } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { Text } from './Text';
-import { colors, fonts } from '../theme';
+import { colors, fonts, pressedStyle } from '../theme';
 
 type Block =
   | { kind: 'h1' | 'h2' | 'h3'; text: string }
@@ -120,7 +120,7 @@ export const MarkdownNote: React.FC<MarkdownNoteProps> = ({ content, onToggleLin
               <Pressable
                 key={i}
                 onPress={() => onToggleLine(b.line)}
-                style={styles.row}
+                style={({ pressed }) => [styles.row, pressed && pressedStyle]}
                 hitSlop={6}
                 accessibilityRole="checkbox"
                 accessibilityState={{ checked: b.checked }}

@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { View, StyleSheet, Pressable } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Text, Button, PageDots, LogoMark } from '../components';
-import { colors, radius } from '../theme';
+import { colors, radius, pressedStyle } from '../theme';
 
 type Props = { onDone: () => void; onSkip?: () => void };
 
@@ -34,7 +34,7 @@ export const OnboardingScreen: React.FC<Props> = ({ onDone, onSkip }) => {
           onPress={next}
         />
         {step === LAST && onSkip ? (
-          <Pressable onPress={onSkip} style={{ alignItems: 'center', paddingVertical: 4 }}>
+          <Pressable onPress={onSkip} style={({ pressed }) => [{ alignItems: 'center', paddingVertical: 4 }, pressed && pressedStyle]}>
             <Text variant="buttonSm" color={colors.textMuted}>Skip for now</Text>
           </Pressable>
         ) : null}

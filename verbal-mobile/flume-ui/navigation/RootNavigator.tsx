@@ -400,9 +400,18 @@ export const RootNavigator: React.FC = () => {
   }, []);
 
   const completeOnboarding = async () => {
-    // Clear any stale/mock session so the intended first-run Welcome (sign-in)
-    // step shows instead of bouncing straight to Home.
-    await signOut().catch(() => {});
+    // Clear a stale/MOCK session so the intended first-run Welcome (sign-in)
+    // step shows instead of bouncing straight to Home — but NEVER nuke a real
+    // signed-in user (IDI-166): if `flume_onboarded` is ever lost while a live
+    // session survives, finishing onboarding must not silently sign them out
+    // and wipe their local caches.
+    try {
+      const { supabase } = await import('../../lib/supabase');
+      const { data } = await supabase.auth.getSession();
+      if (!data.session?.user?.id) await signOut().catch(() => {});
+    } catch {
+      await signOut().catch(() => {});
+    }
     await AsyncStorage.setItem(ONBOARDED_KEY, '1').catch(() => {});
     setOnboarded(true);
   };

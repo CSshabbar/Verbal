@@ -3,7 +3,7 @@ import {
   Pressable, PressableProps, StyleSheet, View, ViewStyle, ActivityIndicator,
 } from 'react-native';
 import { Text } from './Text';
-import { colors, radius, space, type } from '../theme';
+import { colors, radius, space, type, PRESSED_OPACITY } from '../theme';
 
 type Variant = 'primary' | 'primaryLight' | 'ghost' | 'text';
 
@@ -63,7 +63,7 @@ export const Button: React.FC<ButtonProps> = ({
           backgroundColor: bg,
           borderWidth: isGhost ? 1 : 0,
           borderColor: colors.borderStrong,
-          opacity: pressed ? 0.85 : disabled ? 0.5 : 1,
+          opacity: pressed ? PRESSED_OPACITY : disabled ? 0.5 : 1,
           paddingVertical: isText ? 12 : 13,
           paddingHorizontal: isText ? 16 : 18,
         },

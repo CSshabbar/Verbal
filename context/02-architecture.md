@@ -65,7 +65,9 @@ separate users purely by `user_id` (the Supabase auth id after sign-in). Details
   | Meeting surface | `meeting_window.py::MeetingWindow` | `meeting_html.py::meeting_html()` | ONE morphing `NSPanel`: ambient **bar** (borderless, non-activating, top-center, 500×54) ⇄ **expanded** window (titled+hidden-titlebar, 880×620, floating level, Stage-Manager opt-out `.auxiliary`+`.canJoinAllApplications`, never activates the app — `orderFrontRegardless` + key-only-if-needed, webview subclass accepts first mouse) via `NSAnimationContext` frame animation + styleMask flip; auto-collapses to the bar on focus loss while recording; close-while-recording collapses instead |
 
 - **JS↔Python bridge** (defined once in `flume_web_dashboard.py`, reused by every surface):
-  - `_SHIM` (injected at document start) fakes `window.pywebview.api` as a Proxy — any
+  - `_SHIM` (injected at document start) fakes `window.pywebview.api` as a Proxy — and since IDI-167
+    dispatches a synthetic `pywebviewready` at `DOMContentLoaded`, so the dashboard bootstrap is
+    event-driven on both OSes (the 400ms timeout remains only as a backstop) — any
     `api('method', ...args)` posts `{id,method,args}` to the `webkit.messageHandlers.flume`
     handler and returns a Promise.
   - `_Bridge(NSObject)` receives the message, calls the controller's `_dispatch(mid, method, args)`

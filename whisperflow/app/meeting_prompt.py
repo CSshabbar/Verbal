@@ -216,6 +216,7 @@ window.VerbalMeetingDetectHide=function(){
 
 def meeting_prompt_html():
     from app.fonts_css import web_font_css
+    from app.shared_css import pressed_css
     x = ('<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" '
          'stroke-linecap="round"><line x1="6" y1="6" x2="18" y2="18"/>'
          '<line x1="18" y1="6" x2="6" y2="18"/></svg>')
@@ -233,9 +234,11 @@ def meeting_prompt_html():
       <button class="x" title="Not now" onclick="api('md_dismiss')">{x}</button>
     </div>
     """.format(mic=mic, x=x)
+    # "Take notes" and the dismiss X — the pill's only buttons (IDI-168).
+    pressed = pressed_css([".take", ".x"])
     return (
         "<!doctype html><html><head><meta charset='utf-8'>"
-        "<style>" + web_font_css() + _CSS + "</style></head><body>"
+        "<style>" + web_font_css() + _CSS + pressed + "</style></head><body>"
         + body +
         "<script>" + _JS + "</script>"
         "</body></html>"

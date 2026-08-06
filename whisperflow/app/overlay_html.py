@@ -193,9 +193,14 @@ def overlay_html():
     </div>
     """.format(bars=bars, pause=_PAUSE, play=_PLAY, x=_X)
     from app.fonts_css import web_font_css
+    from app.shared_css import pressed_css
+    # Pause / Cancel / Dismiss (.ctrl), Stop (.stop) and "Copy again" (.cta) —
+    # the overlay's only three interactive classes (IDI-168). Must come after
+    # _CSS: `.stop:hover` sets `filter`, and the press has to beat it.
+    pressed = pressed_css([".ctrl", ".stop", ".cta"])
     return (
         "<!doctype html><html><head><meta charset='utf-8'>"
-        "<style>" + web_font_css() + _CSS + "</style></head><body>"
+        "<style>" + web_font_css() + _CSS + pressed + "</style></head><body>"
         + body +
         "<script>" + _js() + "</script>"
         "</body></html>"

@@ -7,7 +7,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { Text } from '../components';
 import { confirm } from '../components/ConfirmDialog';
-import { colors, radius, fonts, shadowFab } from '../theme';
+import { colors, radius, fonts, shadowFab, pressedStyle } from '../theme';
 import { useSnippets, Snippet } from '../hooks/useSnippets';
 
 type Props = { onBack: () => void };
@@ -79,7 +79,7 @@ export const SnippetsScreen: React.FC<Props> = ({ onBack }) => {
   return (
     <View style={[styles.root, { paddingTop: insets.top + 10 }]}>
       {/* Back + title */}
-      <Pressable onPress={onBack} style={styles.backBtn} hitSlop={8}>
+      <Pressable onPress={onBack} style={({ pressed }) => [styles.backBtn, pressed && pressedStyle]} hitSlop={8}>
         <Ionicons name="chevron-back" size={20} color={colors.textSecondary} />
         <Text variant="button" color={colors.textSecondary}>Settings</Text>
       </Pressable>
@@ -114,7 +114,7 @@ export const SnippetsScreen: React.FC<Props> = ({ onBack }) => {
             <Pressable
               key={s.id}
               onPress={() => openEdit(s)}
-              style={({ pressed }) => [styles.card, pressed && { opacity: 0.85 }]}
+              style={({ pressed }) => [styles.card, pressed && pressedStyle]}
             >
               <View style={styles.cardTop}>
                 <Text variant="button" numberOfLines={1} style={{ flex: 1 }}>
@@ -138,7 +138,7 @@ export const SnippetsScreen: React.FC<Props> = ({ onBack }) => {
         style={({ pressed }) => [
           styles.fab,
           { bottom: insets.bottom + 20 },
-          pressed && { opacity: 0.9 },
+          pressed && pressedStyle,
         ]}
       >
         <Ionicons name="add" size={20} color={colors.primaryInk} />
@@ -153,16 +153,18 @@ export const SnippetsScreen: React.FC<Props> = ({ onBack }) => {
         onRequestClose={closeSheet}
       >
         <View style={styles.sheetScrim}>
+          {/* Invisible backdrop scrim — tap-to-dismiss only, so it deliberately
+              has NO pressed feedback (nothing is rendered to dim). */}
           <Pressable style={{ flex: 1 }} onPress={closeSheet} />
           <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
             <View style={[styles.sheet, { paddingBottom: insets.bottom + 18 }]}>
               {/* Sheet header */}
               <View style={styles.sheetHead}>
-                <Pressable onPress={closeSheet} hitSlop={8}>
+                <Pressable onPress={closeSheet} hitSlop={8} style={({ pressed }) => pressed && pressedStyle}>
                   <Text variant="button" color={colors.textMuted}>Cancel</Text>
                 </Pressable>
                 <Text variant="button">{draft.id ? 'Edit snippet' : 'New snippet'}</Text>
-                <Pressable onPress={save} hitSlop={8} disabled={!canSave}>
+                <Pressable onPress={save} hitSlop={8} disabled={!canSave} style={({ pressed }) => pressed && pressedStyle}>
                   <Text variant="button" color={canSave ? colors.primary : colors.textDisabled}>Save</Text>
                 </Pressable>
               </View>
@@ -213,7 +215,7 @@ export const SnippetsScreen: React.FC<Props> = ({ onBack }) => {
                 </Field>
 
                 {draft.id ? (
-                  <Pressable onPress={del} style={styles.deleteBtn} hitSlop={8}>
+                  <Pressable onPress={del} style={({ pressed }) => [styles.deleteBtn, pressed && pressedStyle]} hitSlop={8}>
                     <Ionicons name="trash-outline" size={16} color={colors.primary} />
                     <Text variant="button" color={colors.primary}>Delete snippet</Text>
                   </Pressable>
@@ -245,7 +247,7 @@ const EmptyState: React.FC<{ hasSnippets: boolean; onNew: () => void }> = ({ has
         <Text variant="body" color={colors.textMuted} align="center" style={{ marginBottom: 22 }}>
           — get your full URL every time.
         </Text>
-        <Pressable onPress={onNew} style={styles.emptyCta}>
+        <Pressable onPress={onNew} style={({ pressed }) => [styles.emptyCta, pressed && pressedStyle]}>
           <Ionicons name="add" size={18} color={colors.primary} />
           <Text variant="button" color={colors.primary}>Create your first snippet</Text>
         </Pressable>

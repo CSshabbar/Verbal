@@ -3,7 +3,7 @@ import { View, StyleSheet, Pressable, ScrollView, Switch, RefreshControl } from 
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { Text } from '../components';
-import { colors, radius } from '../theme';
+import { colors, radius, pressedStyle } from '../theme';
 import {
   fetchAccountDevices, setDeviceSync, isDeviceOnline, AccountDevice,
 } from '../../lib/deviceSync';
@@ -46,11 +46,11 @@ export const DevicesScreen: React.FC<Props> = ({ onBack, onAddDevice }) => {
   return (
     <View style={[styles.root, { paddingTop: insets.top + 10, paddingBottom: insets.bottom + 14 }]}>
       <View style={styles.topBar}>
-        <Pressable onPress={onBack} style={styles.backBtn}>
+        <Pressable onPress={onBack} style={({ pressed }) => [styles.backBtn, pressed && pressedStyle]}>
           <Ionicons name="chevron-back" size={22} color={colors.textSecondary} />
           <Text variant="titleSm" style={{ fontSize: 20 }}>Your devices</Text>
         </Pressable>
-        <Pressable onPress={onAddDevice} style={styles.addBtn}>
+        <Pressable onPress={onAddDevice} style={({ pressed }) => [styles.addBtn, pressed && pressedStyle]}>
           <Ionicons name="add" size={22} color={colors.primary} />
         </Pressable>
       </View>
@@ -97,7 +97,7 @@ export const DevicesScreen: React.FC<Props> = ({ onBack, onAddDevice }) => {
 
       <View style={{ flex: 1 }} />
 
-      <Pressable onPress={onAddDevice} style={styles.dashedCta}>
+      <Pressable onPress={onAddDevice} style={({ pressed }) => [styles.dashedCta, pressed && pressedStyle]}>
         <View style={styles.plusDisc}>
           <Ionicons name="add" size={22} color={colors.primary} />
         </View>

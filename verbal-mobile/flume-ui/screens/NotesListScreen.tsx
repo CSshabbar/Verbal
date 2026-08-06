@@ -5,7 +5,7 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { Text } from '../components';
 import { confirm } from '../components/ConfirmDialog';
-import { colors, radius } from '../theme';
+import { colors, radius, pressedStyle } from '../theme';
 import { useNotes, Note } from '../hooks/useNotes';
 import { searchNotes } from '../../lib/notesSearch';
 
@@ -102,7 +102,7 @@ export const NotesListScreen: React.FC<Props> = ({ onOpen, onCreate, onOpenMeeti
       {selectMode ? (
         <View style={styles.header}>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-            <Pressable onPress={exitSelect} style={styles.iconCircle} accessibilityRole="button" accessibilityLabel="Cancel selection">
+            <Pressable onPress={exitSelect} style={({ pressed }) => [styles.iconCircle, pressed && pressedStyle]} accessibilityRole="button" accessibilityLabel="Cancel selection">
               <Ionicons name="close" size={18} color={colors.textSecondary} />
             </Pressable>
             <Text variant="titleSm">{selected.size} selected</Text>
@@ -110,7 +110,7 @@ export const NotesListScreen: React.FC<Props> = ({ onOpen, onCreate, onOpenMeeti
           <Pressable
             onPress={deleteSelected}
             disabled={selected.size === 0}
-            style={[styles.iconCircle, { backgroundColor: colors.primarySoft }, selected.size === 0 && { opacity: 0.4 }]}
+            style={({ pressed }) => [styles.iconCircle, { backgroundColor: colors.primarySoft }, pressed && pressedStyle, selected.size === 0 && { opacity: 0.4 }]}
             accessibilityRole="button"
             accessibilityLabel={`Delete ${selected.size} selected`}
           >
@@ -129,14 +129,14 @@ export const NotesListScreen: React.FC<Props> = ({ onOpen, onCreate, onOpenMeeti
             {flags.search ? (
               <Pressable
                 onPress={() => setSearchOpen(o => !o)}
-                style={[styles.iconCircle, searchOpen && { backgroundColor: colors.primarySoft }]}
+                style={({ pressed }) => [styles.iconCircle, searchOpen && { backgroundColor: colors.primarySoft }, pressed && pressedStyle]}
                 accessibilityRole="button"
                 accessibilityLabel={searchOpen ? 'Close search' : 'Search notes'}
               >
                 <Ionicons name="search-outline" size={16} color={searchOpen ? colors.primary : colors.textSecondary} />
               </Pressable>
             ) : null}
-            <Pressable onPress={onCreate} style={[styles.iconCircle, { backgroundColor: colors.primarySoft }]} accessibilityRole="button" accessibilityLabel="New note">
+            <Pressable onPress={onCreate} style={({ pressed }) => [styles.iconCircle, { backgroundColor: colors.primarySoft }, pressed && pressedStyle]} accessibilityRole="button" accessibilityLabel="New note">
               <Ionicons name="add" size={18} color={colors.primary} />
             </Pressable>
           </View>
@@ -158,7 +158,7 @@ export const NotesListScreen: React.FC<Props> = ({ onOpen, onCreate, onOpenMeeti
             accessibilityLabel="Search notes"
           />
           {query.length > 0 ? (
-            <Pressable onPress={() => setQuery('')} hitSlop={8} accessibilityRole="button" accessibilityLabel="Clear search">
+            <Pressable onPress={() => setQuery('')} hitSlop={8} style={({ pressed }) => pressed && pressedStyle} accessibilityRole="button" accessibilityLabel="Clear search">
               <Ionicons name="close-circle" size={18} color={colors.textMuted} />
             </Pressable>
           ) : null}
@@ -175,7 +175,7 @@ export const NotesListScreen: React.FC<Props> = ({ onOpen, onCreate, onOpenMeeti
 
       {!searching && !selectMode && onOpenMeetings ? (
         <Pressable
-          style={styles.meetingsRow}
+          style={({ pressed }) => [styles.meetingsRow, pressed && pressedStyle]}
           onPress={onOpenMeetings}
           accessibilityRole="button"
           accessibilityLabel="Open meetings"
@@ -196,7 +196,7 @@ export const NotesListScreen: React.FC<Props> = ({ onOpen, onCreate, onOpenMeeti
           results.length === 0 ? (
             <View style={styles.empty}>
               <Text variant="bodySm" color={colors.textSubtle} align="center">No notes match “{query.trim()}”.</Text>
-              <Pressable onPress={() => setQuery('')} style={styles.clearBtn} accessibilityRole="button" accessibilityLabel="Clear search">
+              <Pressable onPress={() => setQuery('')} style={({ pressed }) => [styles.clearBtn, pressed && pressedStyle]} accessibilityRole="button" accessibilityLabel="Clear search">
                 <Text variant="buttonSm" color={colors.primary}>Clear search</Text>
               </Pressable>
             </View>
@@ -213,7 +213,7 @@ export const NotesListScreen: React.FC<Props> = ({ onOpen, onCreate, onOpenMeeti
               onPress={() => handlePress(featured)}
               onLongPress={() => enterSelect(featured.id)}
               delayLongPress={300}
-              style={[styles.featured, { backgroundColor: CARD_CREAM }, selectMode && selected.has(featured.id) && styles.cardSelected]}
+              style={({ pressed }) => [styles.featured, { backgroundColor: CARD_CREAM }, selectMode && selected.has(featured.id) && styles.cardSelected, pressed && pressedStyle]}
             >
               <View style={styles.featuredTop}>
                 <View style={[styles.featuredIcon, { backgroundColor: '#1a1512' }]}>
@@ -274,7 +274,7 @@ const NoteRow: React.FC<{
     onPress={() => onPress(n)}
     onLongPress={() => onLongPress(n.id)}
     delayLongPress={300}
-    style={[styles.noteCard, selectMode && selected && styles.cardSelected]}
+    style={({ pressed }) => [styles.noteCard, selectMode && selected && styles.cardSelected, pressed && pressedStyle]}
     accessibilityRole="button"
     accessibilityState={{ selected: selectMode ? selected : undefined }}
     accessibilityLabel={n.title || 'Untitled note'}
@@ -304,7 +304,7 @@ const NoteRow: React.FC<{
 );
 
 const Pill: React.FC<{ label: string; active: boolean; onPress: () => void }> = ({ label, active, onPress }) => (
-  <Pressable onPress={onPress} style={[styles.pill, active ? styles.pillActive : styles.pillIdle]} accessibilityRole="button" accessibilityState={{ selected: active }} accessibilityLabel={label}>
+  <Pressable onPress={onPress} style={({ pressed }) => [styles.pill, active ? styles.pillActive : styles.pillIdle, pressed && pressedStyle]} accessibilityRole="button" accessibilityState={{ selected: active }} accessibilityLabel={label}>
     <Text variant="buttonSm" color={active ? colors.primaryInk : colors.textSecondary}>{label}</Text>
   </Pressable>
 );

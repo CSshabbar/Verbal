@@ -90,8 +90,7 @@ border:0;border-radius:14px;padding:15px 16px;cursor:pointer;margin-bottom:12px;
 .recacts{display:flex;gap:16px;margin-top:10px}
 .recacts button{background:0;border:0;cursor:pointer;font:600 13px 'Geist';padding:0}
 .recacts .copy{color:var(--acc)}
-.recacts .paste{color:var(--mut)}
-.recacts .paste:hover,.recacts .copy:hover{opacity:.75}
+.recacts .copy:hover{opacity:.75}
 .empty{color:var(--mut);font:400 13px 'Geist';padding:14px 2px}
 /* footer */
 .footer{display:flex;align-items:center;border-top:1px solid var(--bd);padding:12px 8px;gap:4px;margin-top:6px}
@@ -125,14 +124,16 @@ function tagCls(app){app=(app||'').toLowerCase();
   return 'local';}
 function tagName(app){return app && app!=='Local' ? app : 'This Mac';}
 
+// Each row offers Copy only. A second button next to it claimed to re-paste
+// the text but called the identical doCopy — removed in IDI-167 rather than
+// left as a lie. Same for the canvas view below.
 function recItem(e){
   const t = e.text || '';
   return '<div class="rec">'
     +'<div class="rectop"><span class="recmeta">'+esc(e.ts||'')+'  ·  '+words(t)+'W</span>'
     +'<span class="tag '+tagCls(e.app)+'">'+esc(tagName(e.app))+'</span></div>'
     +'<div class="rectext">'+esc(t)+'</div>'
-    +'<div class="recacts"><button class="copy" onclick=\\'doCopy('+JSON.stringify(t)+')\\'>Copy</button>'
-    +'<button class="paste" onclick=\\'doCopy('+JSON.stringify(t)+')\\'>Paste again</button></div></div>';
+    +'<div class="recacts"><button class="copy" onclick=\\'doCopy('+JSON.stringify(t)+')\\'>Copy</button></div></div>';
 }
 
 function render(){
@@ -185,8 +186,7 @@ function renderCanvas(){
   if(c.image_url) html += '<img class="cvimg" src="'+esc(c.image_url)+'"/>';
   if(c.content){
     html += '<div class="cvtext">'+esc(c.content)+'</div>'
-      + '<div class="recacts"><button class="copy" onclick=\\'doCopy('+JSON.stringify(c.content)+')\\'>Copy</button>'
-      + '<button class="paste" onclick=\\'doCopy('+JSON.stringify(c.content)+')\\'>Paste again</button></div>';
+      + '<div class="recacts"><button class="copy" onclick=\\'doCopy('+JSON.stringify(c.content)+')\\'>Copy</button></div>';
   }
   if(!c.image_url && !c.content) html = '<div class="empty">Canvas is empty.</div>';
   $('#canvasBody').innerHTML = html;
@@ -264,9 +264,17 @@ def popover_html():
     """.format(logo=logo_inner, mic=_ICONS["mic"], grid=_ICONS["grid"],
                clock=_ICONS["clock"], expand=_ICONS["expand"], sun=_ICONS["sun"])
     from app.fonts_css import web_font_css
+    from app.shared_css import pressed_css
+    # Every interactive element in the popover: the sync toggle, both record
+    # buttons, the two quick cards, the sub-view back button, the three footer
+    # buttons and the per-item Copy (IDI-168). Appended after _CSS so it wins
+    # the source-order tie against the hover rules.
+    pressed = pressed_css([
+        ".toggle", ".record", ".qcard", ".back", ".fbtn", ".recacts button",
+    ])
     return (
         "<!doctype html><html><head><meta charset='utf-8'>"
-        "<style>" + web_font_css() + _CSS + "</style></head><body>"
+        "<style>" + web_font_css() + _CSS + pressed + "</style></head><body>"
         + body +
         "<script>" + icons_js + "</script>"
         "<script>" + _js() + "</script>"

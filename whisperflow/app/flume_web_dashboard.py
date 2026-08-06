@@ -72,6 +72,27 @@ window.__flumeResolve = function(id, jsonStr){
   var cb = window.__flumeCbs[id]; if(!cb) return; delete window.__flumeCbs[id];
   try { cb(JSON.parse(jsonStr)); } catch(e){ cb(jsonStr); }
 };
+// The page bootstraps off pywebview's `pywebviewready` event. Under WKWebView
+// nothing ever fired it, so the first paint relied entirely on a blind 400ms
+// setTimeout — slow machines flashed an empty shell, fast ones loaded twice
+// (IDI-167). This shim IS the bridge, and it exists the instant this script
+// runs, so announce it for real. Injected at document-start, hence the
+// DOMContentLoaded hop: the page's own listener isn't registered yet.
+(function(){
+  var fire = function(){
+    try { window.dispatchEvent(new Event('pywebviewready')); }
+    catch(e) {
+      var ev = document.createEvent('Event');
+      ev.initEvent('pywebviewready', false, false);
+      window.dispatchEvent(ev);
+    }
+  };
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', fire);
+  } else {
+    setTimeout(fire, 0);
+  }
+})();
 """
 
 

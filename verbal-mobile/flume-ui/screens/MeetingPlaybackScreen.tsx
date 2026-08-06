@@ -9,7 +9,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useAudioPlayer, useAudioPlayerStatus } from 'expo-audio';
 import { Text } from '../components';
-import { colors, radius } from '../theme';
+import { colors, radius, pressedStyle } from '../theme';
 import { useMeetings, MeetingUtterance } from '../hooks/useMeetings';
 import { resolvePlaybackUrl } from '../../lib/recordings';
 
@@ -69,7 +69,7 @@ export const MeetingPlaybackScreen: React.FC<Props> = ({ meetingId, onBack }) =>
   if (!meeting) {
     return (
       <View style={[styles.container, { paddingTop: insets.top + 8 }]}>
-        <Pressable onPress={onBack} hitSlop={12} style={styles.backBtn}>
+        <Pressable onPress={onBack} hitSlop={12} style={({ pressed }) => [styles.backBtn, pressed && pressedStyle]}>
           <Ionicons name="chevron-back" size={22} color={colors.textPrimary} />
         </Pressable>
       </View>
@@ -95,7 +95,7 @@ export const MeetingPlaybackScreen: React.FC<Props> = ({ meetingId, onBack }) =>
   return (
     <View style={[styles.container, { paddingTop: insets.top + 8 }]}>
       <View style={styles.header}>
-        <Pressable onPress={onBack} hitSlop={12} style={styles.backBtn}>
+        <Pressable onPress={onBack} hitSlop={12} style={({ pressed }) => [styles.backBtn, pressed && pressedStyle]}>
           <Ionicons name="chevron-back" size={22} color={colors.textPrimary} />
         </Pressable>
         <View style={{ flex: 1 }}>
@@ -119,7 +119,7 @@ export const MeetingPlaybackScreen: React.FC<Props> = ({ meetingId, onBack }) =>
           const active = index === activeIdx && playing;
           return (
             <Pressable
-              style={[styles.utt, active && styles.uttActive]}
+              style={({ pressed }) => [styles.utt, active && styles.uttActive, pressed && pressedStyle]}
               onPress={() => hasAudio && seekTo(item.t0)}
             >
               <View style={styles.uttHead}>
@@ -139,7 +139,7 @@ export const MeetingPlaybackScreen: React.FC<Props> = ({ meetingId, onBack }) =>
 
       {hasAudio && (
         <View style={[styles.playerBar, { bottom: insets.bottom + 20 }]}>
-          <Pressable style={styles.playBtn} onPress={togglePlay}>
+          <Pressable style={({ pressed }) => [styles.playBtn, pressed && pressedStyle]} onPress={togglePlay}>
             <Ionicons name={playing ? 'pause' : 'play'} size={20} color={colors.primaryInk} />
           </Pressable>
           <Text variant="metaSm" color={colors.textPrimary}>

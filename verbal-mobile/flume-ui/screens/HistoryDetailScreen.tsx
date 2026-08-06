@@ -3,7 +3,7 @@ import { View, StyleSheet, Pressable, ScrollView } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { Text, Card, Button } from '../components';
-import { colors, radius } from '../theme';
+import { colors, radius, pressedStyle } from '../theme';
 import { HistoryItem } from '../hooks/useHistory';
 import { DeviceTag } from './HistoryListScreen';
 
@@ -29,11 +29,11 @@ export const HistoryDetailScreen: React.FC<Props> = ({
   return (
     <View style={[styles.root, { paddingTop: insets.top + 10, paddingBottom: insets.bottom + 14 }]}>
       <View style={styles.topBar}>
-        <Pressable onPress={onBack} style={styles.backBtn}>
+        <Pressable onPress={onBack} style={({ pressed }) => [styles.backBtn, pressed && pressedStyle]}>
           <Ionicons name="chevron-back" size={22} color={colors.textSecondary} />
           <Text variant="buttonSm">History</Text>
         </Pressable>
-        <Pressable style={styles.overflow} onPress={onOverflow} accessibilityRole="button" accessibilityLabel="More options">
+        <Pressable style={({ pressed }) => [styles.overflow, pressed && pressedStyle]} onPress={onOverflow} accessibilityRole="button" accessibilityLabel="More options">
           <Ionicons name="ellipsis-horizontal" size={18} color={colors.textPrimary} />
         </Pressable>
       </View>
@@ -83,7 +83,7 @@ const PlaybackBar: React.FC<{ onPlay?: () => void }> = ({ onPlay }) => {
   return (
     <Card padding={12} style={{ paddingVertical: 12 }}>
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-        <Pressable style={styles.playBtn} onPress={onPlay}>
+        <Pressable style={({ pressed }) => [styles.playBtn, pressed && pressedStyle]} onPress={onPlay}>
           <Ionicons name="play" size={18} color={colors.primaryInk} />
         </Pressable>
         <View style={{ flex: 1 }}>

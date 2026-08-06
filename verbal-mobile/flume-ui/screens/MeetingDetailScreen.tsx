@@ -8,7 +8,7 @@ import { View, StyleSheet, Pressable, ScrollView, TextInput, KeyboardAvoidingVie
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { Text } from '../components';
-import { colors, radius, fonts } from '../theme';
+import { colors, radius, fonts, pressedStyle } from '../theme';
 import { useMeetings } from '../hooks/useMeetings';
 import { updateActionItemsRemote } from '../../lib/meetings';
 
@@ -61,7 +61,7 @@ export const MeetingDetailScreen: React.FC<Props> = ({ meetingId, onBack, onOpen
   if (!meeting) {
     return (
       <View style={[styles.container, { paddingTop: insets.top + 8 }]}>
-        <Pressable onPress={onBack} hitSlop={12} style={styles.backBtn}>
+        <Pressable onPress={onBack} hitSlop={12} style={({ pressed }) => [styles.backBtn, pressed && pressedStyle]}>
           <Ionicons name="chevron-back" size={22} color={colors.textPrimary} />
         </Pressable>
         <View style={styles.center}>
@@ -84,7 +84,7 @@ export const MeetingDetailScreen: React.FC<Props> = ({ meetingId, onBack, onOpen
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
       <View style={styles.header}>
-        <Pressable onPress={onBack} hitSlop={12} style={styles.backBtn}>
+        <Pressable onPress={onBack} hitSlop={12} style={({ pressed }) => [styles.backBtn, pressed && pressedStyle]}>
           <Ionicons name="chevron-back" size={22} color={colors.textPrimary} />
         </Pressable>
         <View style={{ flex: 1 }}>
@@ -129,7 +129,7 @@ export const MeetingDetailScreen: React.FC<Props> = ({ meetingId, onBack, onOpen
         </View>
 
         {/* full AI notes page */}
-        <Pressable style={styles.notesBtn} onPress={() => onOpenNotes(meeting.id)}>
+        <Pressable style={({ pressed }) => [styles.notesBtn, pressed && pressedStyle]} onPress={() => onOpenNotes(meeting.id)}>
           <Ionicons name="document-text-outline" size={16} color={colors.primaryAccent} />
           <View style={{ flex: 1 }}>
             <Text variant="label">Meeting notes</Text>
@@ -187,7 +187,7 @@ export const MeetingDetailScreen: React.FC<Props> = ({ meetingId, onBack, onOpen
             const name = it.owner ? meeting.speakers[it.owner] : null;
             const c = it.owner ? chipStyle(it.owner) : null;
             return (
-              <Pressable key={i} style={styles.aiRow} onPress={() => toggleItem(i)}>
+              <Pressable key={i} style={({ pressed }) => [styles.aiRow, pressed && pressedStyle]} onPress={() => toggleItem(i)}>
                 <View style={[styles.checkbox, it.done && styles.checkboxOn]}>
                   {it.done && <Ionicons name="checkmark" size={11} color="#0a1f0d" />}
                 </View>
@@ -236,7 +236,7 @@ export const MeetingDetailScreen: React.FC<Props> = ({ meetingId, onBack, onOpen
 
         {/* playback */}
         <Pressable
-          style={[styles.playBtn, !meeting.audioUrl && !meeting.transcript.length && { opacity: 0.4 }]}
+          style={({ pressed }) => [styles.playBtn, pressed && pressedStyle, !meeting.audioUrl && !meeting.transcript.length && { opacity: 0.4 }]}
           disabled={!meeting.audioUrl && !meeting.transcript.length}
           onPress={() => onOpenPlayback(meeting.id)}
         >

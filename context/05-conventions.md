@@ -575,9 +575,30 @@
     401'd silently — which manifested as **"can't open meeting notes"** (`get_meeting`'s cloud fetch 401'd
     → fell back to local metadata that has no `notes_md`/`transcript` → notes regeneration failed), an
     empty device list, and dead dictionary sync. A module-level `_dead_session` flag short-circuits further
-    refresh attempts within the process (some callers pass an in-memory config that still holds the stale
-    tokens); a fresh `_store_session` resets it. This is safe only because RLS is still permissive — when
-    RLS tightens to `auth.uid()`, a dead session must instead force re-authentication.
+    refresh attempts within the process, and since IDI-166 it is ALSO persisted to
+    `config['auth']['session_dead']` (local config only, no Supabase column) so the state survives restart:
+    `auth.session_dead(cfg)` is the accessor, `get_state` exposes it, and the dashboard renders a
+    "Session expired — sign in again" banner (sidebar + Settings); `delete_account` returns that actionable
+    message instead of "Not signed in". A fresh `_store_session` resets it. This is safe only because RLS
+    is still permissive — when RLS tightens to `auth.uid()`, a dead session must instead force
+    re-authentication.
+
+26. **Sign-in is REQUIRED, and auth UI renders from state — never latch a button on an optimistic ok
+    (IDI-166).** The first-run "Later"/anonymous path was removed; the dashboard's sign-in wall is the only
+    entry (hotkey dictation still works signed-out but is not advertised). The `#signin` pane renders from
+    `get_state` (`auth_error` field, cleared on retry/success) via `applyAuthGate`/`renderSignin` — the
+    OAuth flow returns an optimistic `_ok()` immediately, so any failure must be pushed back as state, and
+    `auth.cancel_sign_in()` frees the loopback port so a retry can bind.
+
+27. **Desktop pressed-state + double-fire discipline (IDI-167/168).** `app/shared_css.py::pressed_css()`
+    is the single source of the canonical pressed rule (`transform: scale(0.97)` + `filter:
+    brightness(0.92)`, 60ms ease) — every new surface must inject it AFTER its own CSS (so it beats hover
+    rules that set `filter`). Row containers, dropzones and drag targets are deliberately excluded (a 3%
+    scale on a full-width row reads as a jolt). Mutating dashboard actions go through the `busyGuard(el,
+    thunk)` helper (takes a THUNK so the second click never even creates the call). Mobile's equivalent
+    token is `flume-ui/theme/press.ts` (`PRESSED_OPACITY = 0.85`, `pressedStyle`) — all five shared
+    components and every screen Pressable consume it; invisible backdrop scrims/tap-swallowers are the
+    only exempt Pressables (commented in place).
 
 25. **The recording overlay's Cancel button must go through `main._on_esc_pressed`, never
     `_cancel_recording` (IDI-165).** `_cancel_recording` only stops the *recorder*; it never sets

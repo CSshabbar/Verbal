@@ -30,6 +30,16 @@ from app.config import (
 logger = logging.getLogger("verbal.shared_dashboard")
 
 
+def _session_dead(cfg) -> bool:
+    """`auth.session_dead` behind a fail-closed wrapper — get_state must never
+    blow up because the auth module changed shape (IDI-166)."""
+    try:
+        from app import auth as _auth
+        return bool(_auth.session_dead(cfg))
+    except Exception:
+        return False
+
+
 def _ok(**data):
     return {"ok": True, **data}
 
@@ -462,6 +472,14 @@ class DashboardApi:
             devices=self.dashboard._known_devices,
             target_device_id=self.dashboard._target_device_id,
             signed_in=bool(cfg.get("auth") and cfg.get("auth", {}).get("user_id")),
+            # IDI-166: a dead refresh token drops the tokens but keeps the
+            # identity, so `signed_in` stays true while every JWT-only action
+            # (account deletion above all) silently fails. Surface it so the
+            # sidebar/Settings can say "Session expired — sign in again".
+            session_dead=_session_dead(cfg),
+            # Last interactive sign-in failure. The sign-in pane renders from
+            # this, so a cancel/timeout can never latch the button again.
+            auth_error=getattr(self.app, "_auth_error", "") or "",
             user=({"email": cfg["auth"].get("email", ""),
                    "name": cfg["auth"].get("name", ""),
                    "avatar_url": cfg["auth"].get("avatar_url", "")}
@@ -958,10 +976,27 @@ class DashboardApi:
         return _ok()
 
     def sign_in_google(self):
+        # Deliberately optimistic: the OAuth round-trip is a browser flow that
+        # can take a minute. The REAL outcome (success, timeout, cancel, error)
+        # arrives later as a pushed `state` event carrying `auth_error` — see
+        # main._sign_in_failed / _push_auth_state (IDI-166).
         if hasattr(self.app, "_sign_in"):
             self.app._on_main(self.app._sign_in)
             return _ok()
         return {"ok": False, "error": "not supported"}
+
+    def cancel_sign_in(self):
+        """Abandon an in-flight sign-in so the pane's button is usable again
+        (and REDIRECT_PORT is freed for the retry)."""
+        if hasattr(self.app, "cancel_sign_in"):
+            self.app._on_main(self.app.cancel_sign_in)
+            return _ok()
+        try:
+            from app import auth as _auth
+            _auth.cancel_sign_in()
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+        return _ok()
 
     def sign_out_account(self):
         if hasattr(self.app, "_sign_out"):
@@ -979,7 +1014,11 @@ class DashboardApi:
         from app.auth import delete_account_remote, wipe_local_account_data
         result = delete_account_remote(self.app.config)
         if not result.get("ok"):
-            return {"ok": False, "error": result.get("error", "Deletion failed — please try again")}
+            # `session_dead` rides along so the UI can offer "Sign in again"
+            # rather than just repeating a doomed Delete (IDI-166).
+            return {"ok": False,
+                    "error": result.get("error", "Deletion failed — please try again"),
+                    "session_dead": bool(result.get("session_dead"))}
         wipe_local_account_data()
         if hasattr(self.app, "_sign_out"):
             self.app._on_main(self.app._sign_out)
@@ -1583,6 +1622,16 @@ class DashboardApi:
                 self.app.hotkey_listener.set_mode(cfg["recording_mode"])
             except Exception:
                 pass
+        # IDI-167 — the menubar's Recording Mode / Whisper Model checkmarks are
+        # stateful rumps items; writing the config here used to leave them
+        # showing the OLD choice until restart. Hop to the main thread (AppKit
+        # discipline, Hard Rule #4). hasattr-guarded so the Windows app class,
+        # which has no rumps menu at all, is untouched.
+        if hasattr(self.app, "sync_menu_state") and hasattr(self.app, "_on_main"):
+            try:
+                self.app._on_main(self.app.sync_menu_state)
+            except Exception as e:
+                logger.debug("menubar state sync skipped: %s", e)
         if hasattr(self.app, '_restart_sync'):
             self.app._restart_sync()
         elif hasattr(self.app, '_init_sync'):

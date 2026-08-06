@@ -1,5 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { AppState } from 'react-native';
 
 export const SUPABASE_URL = 'https://ovpcthjingugwvpxlsna.supabase.co';
 export const SUPABASE_ANON_KEY =
@@ -16,6 +17,16 @@ export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
     flowType: 'pkce',
   },
 });
+
+// React Native requirement (IDI-166): the auto-refresh timer is throttled or
+// suspended while the app is backgrounded, so a phone left closed >1h could
+// resume with an expired token. Drive it from AppState per the supabase-js
+// RN docs: refresh only while active.
+AppState.addEventListener('change', (state) => {
+  if (state === 'active') supabase.auth.startAutoRefresh();
+  else supabase.auth.stopAutoRefresh();
+});
+supabase.auth.startAutoRefresh();
 
 export interface Transcription {
   id: string;

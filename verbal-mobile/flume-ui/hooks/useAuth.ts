@@ -60,6 +60,14 @@ function _parseFragment(url: string): Record<string, string> {
 // deep-link listener may fire for the same URL, so remember what we've handled.
 const _handledCodes = new Set<string>();
 
+// Involuntary sign-out detection (IDI-166): when the session dies WITHOUT the
+// user tapping Sign out (revoked/expired refresh token), RootNavigator teleports
+// to Welcome with zero explanation. Track intent module-level so every hook
+// instance agrees; WelcomeScreen renders the notice.
+let _explicitSignOut = false;
+let _hadUser = false;
+let _sessionExpired = false;
+
 /** Turn a returned OAuth deep link into a Supabase session.
  *  Handles PKCE (`?code=`) and, as a fallback, implicit (`#access_token=`). */
 async function createSessionFromUrl(url: string) {
@@ -136,16 +144,28 @@ async function afterSignIn(session: any) {
 export function useAuth() {
   const [user, setUser] = useState<User | null>(null);
   const [isLoading, setLoading] = useState(true);
+  const [sessionExpired, setSessionExpired] = useState(_sessionExpired);
 
   useEffect(() => {
     let mounted = true;
     supabase.auth.getSession()
       .then(({ data: { session } }) => {
+        if (session?.user) { _hadUser = true; }
         if (mounted) { setUser(session?.user ? fromSupabaseUser(session.user) : null); setLoading(false); }
       })
       .catch(() => { if (mounted) { setUser(null); setLoading(false); } });
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_e, session) => {
-      if (mounted) setUser(session?.user ? fromSupabaseUser(session.user) : null);
+      if (session?.user) {
+        _hadUser = true; _explicitSignOut = false; _sessionExpired = false;
+      } else if (_hadUser && !_explicitSignOut) {
+        // Session died out from under a signed-in user — surface it on Welcome
+        // instead of a silent teleport.
+        _sessionExpired = true;
+      }
+      if (mounted) {
+        setUser(session?.user ? fromSupabaseUser(session.user) : null);
+        setSessionExpired(_sessionExpired);
+      }
     });
 
     // Catch the OAuth deep link when it reopens the app (Android often returns
@@ -202,6 +222,7 @@ export function useAuth() {
     // `scope: 'local'` removes the on-device session immediately (no network
     // round-trip that can hang on a flaky connection) and fires onAuthStateChange
     // in every useAuth instance → RootNavigator flips to Welcome.
+    _explicitSignOut = true;   // intentional — don't show "session expired"
     try { await supabase.auth.signOut({ scope: 'local' }); } catch { /* ignore */ }
     try { await setSyncEnabled(false); } catch { /* ignore */ }
     // Clear all account-scoped caches + tear down the history singleton so the
@@ -230,6 +251,7 @@ export function useAuth() {
     } catch (e: any) {
       return { ok: false, error: e?.message || String(e) };
     }
+    _explicitSignOut = true;   // intentional — don't show "session expired"
     try { await supabase.auth.signOut({ scope: 'local' }); } catch { /* ignore */ }
     try { await setSyncEnabled(false); } catch { /* ignore */ }
     try { await clearAccountData(); } catch { /* ignore */ }
@@ -241,6 +263,8 @@ export function useAuth() {
   return {
     user,
     isLoading,
+    /** True when the session died involuntarily (expired/revoked) — shown on Welcome. */
+    sessionExpired,
     signInWithGoogle,
     signInWithApple: notAvailable,
     signInWithEmail: notAvailable,

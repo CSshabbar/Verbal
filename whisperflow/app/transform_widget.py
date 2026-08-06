@@ -503,9 +503,14 @@ def transform_widget_html():
         <button class="x" onclick="api('tf_cancel')">{x}</button></div>
     </div>
     """.format(x=x, mic=mic, bars=bars)
+    from app.shared_css import pressed_css
+    # Run/Replace (.btnP), Undo & friends (.btnS), the spoken-prompt mic and the
+    # dismiss X (IDI-168). After _CSS so the press beats `.btnP:hover`'s filter;
+    # `.mic.on`'s pulse animates box-shadow only, so the scale composes cleanly.
+    pressed = pressed_css([".btnP", ".btnS", ".mic", ".x"])
     return (
         "<!doctype html><html><head><meta charset='utf-8'>"
-        "<style>" + web_font_css() + _CSS + "</style></head><body>"
+        "<style>" + web_font_css() + _CSS + pressed + "</style></head><body>"
         + body +
         "<script>" + _JS + "</script>"
         "</body></html>"

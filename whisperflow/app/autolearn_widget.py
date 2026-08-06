@@ -236,6 +236,7 @@ window.VerbalAutolearnHide=function(){ var c=document.getElementById('pill'); if
 
 def autolearn_widget_html():
     from app.fonts_css import web_font_css
+    from app.shared_css import pressed_css
     x = ('<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" '
          'stroke-linecap="round"><line x1="6" y1="6" x2="18" y2="18"/>'
          '<line x1="18" y1="6" x2="6" y2="18"/></svg>')
@@ -249,9 +250,12 @@ def autolearn_widget_html():
       <button class="x" title="Dismiss" onclick="api('autolearn_close')">{x}</button>
     </div>
     """.format(x=x)
+    # "Add to dictionary" and the dismiss X (IDI-168). After _CSS so the press
+    # beats `.add:hover{filter:brightness(1.25)}`.
+    pressed = pressed_css([".add", ".x"])
     return (
         "<!doctype html><html><head><meta charset='utf-8'>"
-        "<style>" + web_font_css() + _CSS + "</style></head><body>"
+        "<style>" + web_font_css() + _CSS + pressed + "</style></head><body>"
         + body +
         "<script>" + _JS + "</script>"
         "</body></html>"
