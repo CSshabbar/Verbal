@@ -80,8 +80,13 @@ function toItem(entry: HistoryEntry, durationMs?: number): HistoryItem {
   const created = new Date(entry.created_at);
   const now = new Date();
   const wordCount = wordsIn(entry.text);
-  const seconds = durationMs && durationMs > 0
-    ? Math.max(1, Math.round(durationMs / 1000))
+  // Prefer the caller's just-measured duration, then the one persisted with the
+  // entry (IDI-172 — this is what survives a refresh/restart), and only fall
+  // back to the wordCount/2.5 estimate for rows that predate it or arrived from
+  // another device (there is no cloud column for it).
+  const ms = durationMs && durationMs > 0 ? durationMs : entry.duration_ms;
+  const seconds = ms && ms > 0
+    ? Math.max(1, Math.round(ms / 1000))
     : Math.max(1, Math.round(wordCount / 2.5));
   return {
     id: entry.id,
@@ -125,9 +130,18 @@ async function fetchRemoteAndMerge(): Promise<HistoryEntry[]> {
     .order('created_at', { ascending: false })
     .limit(100);
   if (error || !data) return getHistory();
-  const remote: HistoryEntry[] = data.map((r: any) => ({
+  // NOTE: tombstoned rows are deliberately NOT filtered out server-side — they
+  // are what tells this device to prune its local copy (IDI-172). rowToEntry
+  // carries `deleted_at` through and mergeRemoteEntries does the drop + prune.
+  return mergeRemoteEntries(data.map(rowToEntry));
+}
+
+/** One shared cloud-row → HistoryEntry mapping for the fetch and the realtime
+ *  INSERT handler, so the tombstone marker can never be dropped by one of them. */
+function rowToEntry(r: any): HistoryEntry {
+  return {
     id: r.id,
-    text: r.edited_text ?? r.text,
+    text: r.edited_text ?? r.text ?? '',
     device_name: r.device_name,
     device_id: r.device_id,
     is_pinned: r.is_pinned ?? false,
@@ -135,8 +149,8 @@ async function fetchRemoteAndMerge(): Promise<HistoryEntry[]> {
     source: 'remote' as const,
     audio_url: r.audio_url ?? undefined,
     status: r.status ?? 'done',
-  }));
-  return mergeRemoteEntries(remote);
+    deleted_at: r.deleted_at ?? null,
+  };
 }
 
 /* ── channel lifecycle ───────────────────────────────────────────────────── */
@@ -182,25 +196,22 @@ async function subscribeRealtime() {
       { event: 'INSERT', schema: 'public', table: 'transcriptions', filter: `user_id=eq.${userId}` },
       async (payload: any) => {
         const r = payload.new;
-        if (r.device_id === myDeviceId) return;                       // skip own
-        if (r.target_device_id && r.target_device_id !== myDeviceId) return; // not for us
-        const entry: HistoryEntry = {
-          id: r.id,
-          text: r.edited_text ?? r.text,
-          device_name: r.device_name,
-          device_id: r.device_id,
-          is_pinned: r.is_pinned ?? false,
-          created_at: r.created_at,
-          source: 'remote',
-          audio_url: r.audio_url ?? undefined,
-          status: r.status ?? 'done',
-        };
-        publish(await mergeRemoteEntries([entry]));
+        // A tombstoned row still has to reach mergeRemoteEntries (it prunes the
+        // local copy) — the own-device / target filters below would otherwise
+        // swallow a delete made on this account's other device.
+        if (!r.deleted_at) {
+          if (r.device_id === myDeviceId) return;                       // skip own
+          if (r.target_device_id && r.target_device_id !== myDeviceId) return; // not for us
+        }
+        publish(await mergeRemoteEntries([rowToEntry(r)]));
       },
     )
     .on(
       'postgres_changes',
       { event: 'UPDATE', schema: 'public', table: 'transcriptions', filter: `user_id=eq.${userId}` },
+      // Covers deletes too: a delete is a tombstoning UPDATE (IDI-172), and the
+      // refetch feeds the tombstone into mergeRemoteEntries, which prunes the
+      // local row so it disappears from this device's list.
       async () => { publish(await fetchRemoteAndMerge()); },
     );
   channel = ch;
@@ -351,7 +362,10 @@ export async function addTranscription(
 
   const deviceId = await getDeviceId();
   const entries = await addToHistory(text, deviceTag, deviceId, remoteId,
-    { audio_uri: audioUri, audio_url: audioUrl, status });
+    // duration_ms is persisted LOCALLY (there is no cloud column) so the real
+    // duration survives a refresh instead of decaying to the wordCount estimate.
+    { audio_uri: audioUri, audio_url: audioUrl, status,
+      duration_ms: durationMs > 0 ? durationMs : undefined });
   const created = entries[0];
   // Override the just-added entry's duration label with the real duration.
   items = [toItem(created, durationMs), ...items.filter(i => i.id !== created.id)];
@@ -406,14 +420,44 @@ export async function playEntry(id: string): Promise<boolean> {
   }
 }
 
+/**
+ * Delete a dictation everywhere (IDI-172 cross-platform contract).
+ *
+ * The cloud row is TOMBSTONED, never hard-deleted: `.delete()` produced no
+ * realtime payload the other devices could act on (Supabase DELETE events carry
+ * no `new`, and the row simply vanished from the next fetch — which the old
+ * add-only merge ignored), so a delete on one device never propagated. An
+ * UPDATE that stamps `deleted_at` and blanks the payload is a normal UPDATE
+ * event every device already listens to, and it survives a device being offline
+ * because it is still there on the next fetch.
+ *
+ * Order matters: capture the entry (for its audio_url) BEFORE the row's
+ * audio_url is nulled, then clean up the cloud object and the local file.
+ * Storage cleanup is best-effort — never let it hold up the delete.
+ */
 export async function remove(id: string) {
+  const entry = (await getHistory()).find(e => e.id === id);
   items = items.filter(i => i.id !== id);
   emit();
   try {
     await deleteEntry(id);
     if (!id.startsWith('local_')) {
-      await supabase.from('transcriptions').delete().eq('id', id);
+      const { error } = await supabase
+        .from('transcriptions')
+        .update({
+          deleted_at: new Date().toISOString(),
+          text: '',
+          edited_text: null,
+          audio_url: null,
+        })
+        .eq('id', id);
+      if (error) console.error('Failed to tombstone transcription:', error);
     }
+    // Cloud object + local file. Deliberately NOT gated on the sync toggle:
+    // removing data the user asked to delete is always safe, and leaving an
+    // orphan recording behind because sync happens to be off is not.
+    if (entry?.audio_url) await recordings.removeCloud(entry.audio_url);
+    await recordings.remove(entry?.audio_uri);
   } catch (err) {
     console.error('Failed to remove transcription:', err);
   }

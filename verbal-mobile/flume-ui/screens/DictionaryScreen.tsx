@@ -3,7 +3,7 @@ import { View, StyleSheet, ScrollView, TextInput, Pressable } from 'react-native
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { Text, Card, Button } from '../components';
-import { Dictionary, fetchRemote, saveDictionary } from '../../lib/dictionary';
+import { Dictionary, fetchRemote, saveDictionaryChecked } from '../../lib/dictionary';
 import { colors, radius, pressedStyle } from '../theme';
 
 type Props = { onBack: () => void };
@@ -16,14 +16,30 @@ type Props = { onBack: () => void };
  */
 export const DictionaryScreen: React.FC<Props> = ({ onBack }) => {
   const insets = useSafeAreaInsets();
-  const [dict, setDict] = useState<Dictionary>({ vocabulary: [], replacements: [] });
+  const [dict, setDict] = useState<Dictionary>({ vocabulary: [], replacements: [], snippets: [] });
   const [newWord, setNewWord] = useState('');
   const [repFrom, setRepFrom] = useState('');
   const [repTo, setRepTo] = useState('');
+  // The initial state above is EMPTY. Editing before fetchRemote() resolves
+  // would push that emptiness over the real dictionary, so every mutation is
+  // gated on `loaded` (IDI-174). Set even when the fetch fails — it falls back
+  // to the local cache, which is still the right base to edit.
+  const [loaded, setLoaded] = useState(false);
+  const [syncError, setSyncError] = useState(false);
 
-  useEffect(() => { (async () => setDict(await fetchRemote()))(); }, []);
+  useEffect(() => {
+    (async () => {
+      try { setDict(await fetchRemote()); } finally { setLoaded(true); }
+    })();
+  }, []);
 
-  const persistDict = async (d: Dictionary) => { setDict(d); await saveDictionary(d); };
+  const persistDict = async (d: Dictionary) => {
+    if (!loaded) return;
+    setDict(d);
+    const { dict: saved, error } = await saveDictionaryChecked(d);
+    setDict(saved);            // a CAS conflict may have merged in another device's edit
+    setSyncError(!!error);
+  };
   const addWord = async () => {
     const w = newWord.trim(); if (!w) return;
     if (!dict.vocabulary.some(x => x.toLowerCase() === w.toLowerCase())) {
@@ -57,6 +73,10 @@ export const DictionaryScreen: React.FC<Props> = ({ onBack }) => {
         keyboardShouldPersistTaps="handled"
         contentContainerStyle={{ paddingTop: 16, paddingBottom: insets.bottom + 28, gap: 20 }}
       >
+        {syncError ? (
+          <Text variant="bodyXs" color={colors.primary}>Couldn't sync — will retry.</Text>
+        ) : null}
+
         <Card padding={14}>
           <Text variant="button" style={{ marginBottom: 2 }}>Vocabulary</Text>
           <Text variant="bodyXs" color={colors.textMuted} style={{ marginBottom: 10 }}>
@@ -64,7 +84,7 @@ export const DictionaryScreen: React.FC<Props> = ({ onBack }) => {
           </Text>
           <View style={styles.chipWrap}>
             {dict.vocabulary.length === 0 ? (
-              <Text variant="caption" color={colors.textSubtle}>No words yet.</Text>
+              <Text variant="caption" color={colors.textSubtle}>{loaded ? 'No words yet.' : 'Loading…'}</Text>
             ) : dict.vocabulary.map((w, i) => (
               <Pressable key={`${w}-${i}`} onPress={() => removeWord(i)} style={({ pressed }) => [styles.chip, pressed && pressedStyle]}>
                 <Text variant="caption" color={colors.primary}>{w}</Text>
@@ -78,7 +98,7 @@ export const DictionaryScreen: React.FC<Props> = ({ onBack }) => {
               placeholderTextColor={colors.textMuted} style={[styles.dictInput, { flex: 1 }]}
               autoCapitalize="none" onSubmitEditing={addWord} returnKeyType="done"
             />
-            <Button label="Add" variant="ghost" onPress={addWord} style={{ flex: 0 }} />
+            <Button label="Add" variant="ghost" onPress={addWord} disabled={!loaded} style={{ flex: 0 }} />
           </View>
         </Card>
 
@@ -108,7 +128,7 @@ export const DictionaryScreen: React.FC<Props> = ({ onBack }) => {
               value={repTo} onChangeText={setRepTo} placeholder="correct…"
               placeholderTextColor={colors.textMuted} style={[styles.dictInput, { flex: 1 }]}
             />
-            <Button label="Add" variant="ghost" onPress={addRep} style={{ flex: 0 }} />
+            <Button label="Add" variant="ghost" onPress={addRep} disabled={!loaded} style={{ flex: 0 }} />
           </View>
         </Card>
       </ScrollView>

@@ -8,7 +8,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Haptics from 'expo-haptics';
 import { Text, Card, ListRow, Button } from '../components';
 import { confirm } from '../components/ConfirmDialog';
-import { Dictionary, fetchRemote, saveDictionary } from '../../lib/dictionary';
+import { Dictionary, fetchRemote, saveDictionaryChecked } from '../../lib/dictionary';
 import { colors, radius, type, pressedStyle } from '../theme';
 import { useAuth } from '../hooks/useAuth';
 import { useSyncEnabled, setSyncEnabled } from '../hooks/useSyncEnabled';
@@ -41,7 +41,13 @@ export const SettingsScreen: React.FC<Props> = ({ onOpenDevices, onOpenSnippets 
   const [savedName, setSavedName] = useState(false);
   const [savedUser, setSavedUser] = useState(false);
 
-  const [dict, setDict] = useState<Dictionary>({ vocabulary: [], replacements: [] });
+  const [dict, setDict] = useState<Dictionary>({ vocabulary: [], replacements: [], snippets: [] });
+  // The initial state above is EMPTY, and this screen mounts long before
+  // fetchRemote() resolves. Editing in that window used to push the empty
+  // dictionary over the real one (wiping snippets in particular), so every
+  // mutation is gated on `loaded` (IDI-174).
+  const [dictLoaded, setDictLoaded] = useState(false);
+  const [dictSyncError, setDictSyncError] = useState(false);
   const [newWord, setNewWord] = useState('');
   const [repFrom, setRepFrom] = useState('');
   const [repTo, setRepTo] = useState('');
@@ -54,7 +60,7 @@ export const SettingsScreen: React.FC<Props> = ({ onOpenDevices, onOpenSnippets 
     (async () => {
       setDeviceNameState(await getDeviceName());
       setUserIdState(await getUserId());
-      setDict(await fetchRemote());
+      try { setDict(await fetchRemote()); } finally { setDictLoaded(true); }
       setNotesFlags(await getNotesFeatureFlags());
       setClipboardHistory(await getClipboardHistoryEnabled());
       setTransformOnKeyboard(await getTransformEnabled());
@@ -76,7 +82,13 @@ export const SettingsScreen: React.FC<Props> = ({ onOpenDevices, onOpenSnippets 
     await setTransformEnabled(v);
   };
 
-  const persistDict = async (d: Dictionary) => { setDict(d); await saveDictionary(d); };
+  const persistDict = async (d: Dictionary) => {
+    if (!dictLoaded) return;
+    setDict(d);
+    const { dict: saved, error } = await saveDictionaryChecked(d);
+    setDict(saved);            // a CAS conflict may have merged in another device's edit
+    setDictSyncError(!!error);
+  };
   const addWord = async () => {
     const w = newWord.trim(); if (!w) return;
     if (!dict.vocabulary.some(x => x.toLowerCase() === w.toLowerCase())) {
@@ -270,13 +282,18 @@ export const SettingsScreen: React.FC<Props> = ({ onOpenDevices, onOpenSnippets 
         {/* Custom dictionary */}
         <Section label="CUSTOM DICTIONARY">
           <Card padding={14}>
+            {dictSyncError ? (
+              <Text variant="bodyXs" color={colors.primary} style={{ marginBottom: 8 }}>
+                Couldn't sync — will retry.
+              </Text>
+            ) : null}
             <Text variant="button" style={{ marginBottom: 2 }}>Vocabulary</Text>
             <Text variant="bodyXs" color={colors.textMuted} style={{ marginBottom: 10 }}>
               Names, products, acronyms — spelled how you want them.
             </Text>
             <View style={styles.chipWrap}>
               {dict.vocabulary.length === 0 ? (
-                <Text variant="caption" color={colors.textSubtle}>No words yet.</Text>
+                <Text variant="caption" color={colors.textSubtle}>{dictLoaded ? 'No words yet.' : 'Loading…'}</Text>
               ) : dict.vocabulary.map((w, i) => (
                 <Pressable key={`${w}-${i}`} onPress={() => removeWord(i)} style={({ pressed }) => [styles.chip, pressed && pressedStyle]}>
                   <Text variant="caption" color={colors.primary}>{w}</Text>
@@ -290,7 +307,7 @@ export const SettingsScreen: React.FC<Props> = ({ onOpenDevices, onOpenSnippets 
                 placeholderTextColor={colors.textMuted} style={styles.dictInput}
                 autoCapitalize="none" onSubmitEditing={addWord} returnKeyType="done"
               />
-              <Button label="Add" variant="ghost" onPress={addWord} style={{ flex: 0 }} />
+              <Button label="Add" variant="ghost" onPress={addWord} disabled={!dictLoaded} style={{ flex: 0 }} />
             </View>
 
             <View style={{ height: 1, backgroundColor: colors.borderSubtle, marginVertical: 14 }} />
@@ -320,7 +337,7 @@ export const SettingsScreen: React.FC<Props> = ({ onOpenDevices, onOpenSnippets 
                 value={repTo} onChangeText={setRepTo} placeholder="correct…"
                 placeholderTextColor={colors.textMuted} style={[styles.dictInput, { flex: 1 }]}
               />
-              <Button label="Add" variant="ghost" onPress={addRep} style={{ flex: 0 }} />
+              <Button label="Add" variant="ghost" onPress={addRep} disabled={!dictLoaded} style={{ flex: 0 }} />
             </View>
           </Card>
         </Section>

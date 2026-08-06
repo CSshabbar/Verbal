@@ -10,7 +10,8 @@
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from './supabase';
-import { getUserId } from './storage';
+import { getCloudUserId } from './storage';
+import { getSyncEnabled } from './syncStore';
 
 const KEY = 'flume_dictionary';
 
@@ -81,14 +82,59 @@ export async function getDictionary(): Promise<Dictionary> {
   }
 }
 
-export async function saveDictionary(d: Dictionary): Promise<Dictionary> {
-  const norm = normalize(d);
+export type SaveResult = { dict: Dictionary; error?: string };
+
+/**
+ * Persist the dictionary locally, push it to the cloud, then refresh the
+ * keyboard snapshot — IN THAT ORDER, and awaited (IDI-174).
+ *
+ * The order is the whole point. This used to fire `pushRemote()` and
+ * `syncKeyboardConfig()` both un-awaited, and syncKeyboardConfig() internally
+ * calls fetchRemote(), which overwrites the local cache with whatever is in the
+ * cloud. The two raced, so roughly every other edit was silently reverted by
+ * the app's own keyboard sync reading the PRE-push row. Awaiting the push first
+ * means that fetch can only ever see the state we just wrote.
+ *
+ * Returns instead of throwing so the many fire-and-forget callers (snippet
+ * usage counters, auto-learned replacements) can't be broken by a sync failure;
+ * `saveDictionaryChecked` is the variant the editing screens use to surface it.
+ */
+export async function saveDictionaryChecked(d: Dictionary): Promise<SaveResult> {
+  // "Always carry snippets": a caller that hands us an object with no snippets
+  // key (the screens' initial `{vocabulary: [], replacements: []}` state) must
+  // not be able to erase the stored ones — normalize() would turn the missing
+  // key into [].
+  const current = Array.isArray(d?.snippets) ? null : await getDictionary();
+  const norm = normalize(current ? { ...d, snippets: current.snippets } : d);
   await AsyncStorage.setItem(KEY, JSON.stringify(norm));
-  pushRemote(norm).catch(() => {});
+
+  let error: string | undefined;
+  try {
+    await pushRemote(norm);
+  } catch (e: any) {
+    error = e?.message || 'Sync failed';
+  }
   // Refresh the native keyboard's config snapshot (dynamic import avoids a
   // circular dependency: keyboardBridge imports getDictionary from here).
-  import('./keyboardBridge').then((m) => m.syncKeyboardConfig()).catch(() => {});
-  return norm;
+  // AFTER the push, so its internal fetchRemote() sees the pushed state — and
+  // NOT AT ALL when the push failed, because that same fetchRemote() would
+  // overwrite the local cache with the cloud row and throw the user's unsynced
+  // edit away. Keeping it local is what makes "will retry" true: the next save
+  // carries it up.
+  if (!error) {
+    try {
+      await import('./keyboardBridge').then((m) => m.syncKeyboardConfig());
+    } catch { /* best effort — the keyboard snapshot is peripheral */ }
+  }
+
+  // pushRemote may have MERGED with a concurrent remote edit and rewritten the
+  // cache; return what's actually stored.
+  return { dict: await getDictionary(), error };
+}
+
+/** Non-throwing convenience wrapper — the shape every existing caller expects. */
+export async function saveDictionary(d: Dictionary): Promise<Dictionary> {
+  return (await saveDictionaryChecked(d)).dict;
 }
 
 export async function addReplacement(from: string, to: string): Promise<Dictionary> {
@@ -100,29 +146,190 @@ export async function addReplacement(from: string, to: string): Promise<Dictiona
   return saveDictionary(d);
 }
 
-export async function fetchRemote(): Promise<Dictionary> {
-  try {
-    const userId = await getUserId();
-    const { data } = await supabase
-      .from('dictionary').select('vocabulary,replacements,snippets')
-      .eq('user_id', userId).maybeSingle();
-    if (data) {
-      const norm = normalize(data);
-      await AsyncStorage.setItem(KEY, JSON.stringify(norm));
-      return norm;
-    }
-  } catch { /* offline / not signed in */ }
-  return getDictionary();
+/* ── cloud sync: compare-and-set on `updated_at` ─────────────────────────────
+ *
+ * One row per user holds vocabulary + replacements + snippets together, and
+ * every writer sent the WHOLE row with a blind upsert. Two devices editing
+ * different parts (phone adds a snippet, desktop adds a vocabulary word) meant
+ * last-write-wins over the entire dictionary — the earlier edit vanished.
+ *
+ * So writes are conditional: `.eq('updated_at', <the value we last read>)`.
+ * If it matches nobody else has written since our fetch, and the update
+ * applies. If it matches nothing (0 rows returned), someone did — we refetch,
+ * MERGE the two versions field by field, and retry ONCE. A second failure is
+ * reported to the caller rather than swallowed.
+ */
+
+/** `updated_at` of the row as of our last successful read/write — the CAS
+ *  witness. null = we have never seen a row (⇒ upsert instead of update). */
+let lastUpdatedAt: string | null = null;
+
+/** Set once the first fetch attempt has SETTLED (success, empty, or failure).
+ *  Until then a push has no CAS witness and, worse, the editing screens may
+ *  still be holding their empty initial state — pushing it would wipe the
+ *  cloud row. See ensureFetched(). */
+let firstFetchSettled = false;
+let inFlightFetch: Promise<Dictionary> | null = null;
+
+/** Reset on account change (clearAccountData wipes the local row too). */
+export function resetSyncState(): void {
+  lastUpdatedAt = null;
+  firstFetchSettled = false;
+  inFlightFetch = null;
 }
 
-async function pushRemote(d: Dictionary) {
+type RemoteRow = { dict: Dictionary; updatedAt: string | null; found: boolean };
+
+async function readRow(userId: string): Promise<RemoteRow | null> {
+  const { data, error } = await supabase
+    .from('dictionary').select('vocabulary,replacements,snippets,updated_at')
+    .eq('user_id', userId).maybeSingle();
+  if (error) return null;                                   // network/RLS — unknown state
+  if (!data) return { dict: normalize({}), updatedAt: null, found: false };
+  return { dict: normalize(data), updatedAt: (data as any).updated_at ?? null, found: true };
+}
+
+/**
+ * Pull the cloud dictionary into the local cache. Gated on the Sync toggle and
+ * on having a REAL account id (a locally-minted `user_<ts>` id would read and
+ * write junk rows nobody can ever see — IDI-174). Always returns something
+ * usable: the local cache when offline, signed out, or sync is off.
+ */
+export async function fetchRemote(): Promise<Dictionary> {
+  if (inFlightFetch) return inFlightFetch;
+  inFlightFetch = (async () => {
+    try {
+      if (!(await getSyncEnabled())) return await getDictionary();
+      const userId = await getCloudUserId();
+      if (!userId) return await getDictionary();
+      const row = await readRow(userId);
+      if (!row) return await getDictionary();               // fetch failed — keep local
+      lastUpdatedAt = row.updatedAt;
+      if (row.found) {
+        await AsyncStorage.setItem(KEY, JSON.stringify(row.dict));
+        return row.dict;
+      }
+      return await getDictionary();
+    } catch {
+      return await getDictionary();                         // offline / not signed in
+    } finally {
+      // Settled either way: a push must not queue forever just because the
+      // device is offline.
+      firstFetchSettled = true;
+      inFlightFetch = null;
+    }
+  })();
+  return inFlightFetch;
+}
+
+/** A push before the first fetch has no CAS witness, so make sure one has
+ *  happened. Cheap: at most one network round-trip per app run. */
+async function ensureFetched(): Promise<void> {
+  if (firstFetchSettled) return;
+  await fetchRemote();
+}
+
+/** Write the row conditionally. Returns false on a CAS miss (someone else wrote
+ *  first) AND on a transport error — the caller's retry path handles both. */
+async function casWrite(userId: string, d: Dictionary, witness: string | null): Promise<boolean> {
+  const stamp = new Date().toISOString();
+  // ALL THREE columns on every write. Sending a subset is what let a screen
+  // that had only loaded vocabulary blank the snippets.
+  const row = {
+    user_id: userId,
+    vocabulary: d.vocabulary,
+    replacements: d.replacements,
+    snippets: d.snippets ?? [],
+    updated_at: stamp,
+  };
   try {
-    const userId = await getUserId();
-    await supabase.from('dictionary').upsert(
-      { user_id: userId, vocabulary: d.vocabulary, replacements: d.replacements,
-        snippets: d.snippets ?? [], updated_at: new Date().toISOString() },
-      { onConflict: 'user_id' });
-  } catch { /* best effort */ }
+    if (witness == null) {
+      // No row known to exist yet → create it (or adopt an existing one).
+      const { error } = await supabase.from('dictionary').upsert(row, { onConflict: 'user_id' });
+      if (error) return false;
+    } else {
+      const { data, error } = await supabase
+        .from('dictionary').update(row)
+        .eq('user_id', userId).eq('updated_at', witness)
+        .select('updated_at');
+      // `.select()` is what makes the miss detectable: a conditional UPDATE that
+      // matched nothing is not an error, it just returns zero rows.
+      if (error || !data || data.length === 0) return false;
+    }
+  } catch {
+    return false;
+  }
+  lastUpdatedAt = stamp;
+  return true;
+}
+
+/**
+ * Push the dictionary to the cloud with compare-and-set + one merge-and-retry.
+ * THROWS when both attempts fail, so the caller can tell the user.
+ */
+export async function pushRemote(d: Dictionary): Promise<void> {
+  await ensureFetched();
+  if (!(await getSyncEnabled())) return;                    // toggle OFF ⇒ local-only
+  const userId = await getCloudUserId();
+  if (!userId) return;                                      // signed out ⇒ local-only
+
+  if (await casWrite(userId, d, lastUpdatedAt)) return;
+
+  // Conflict (or a failed write): refetch, merge, retry ONCE.
+  const row = await readRow(userId);
+  if (!row) throw new Error("Couldn't sync — will retry");
+  lastUpdatedAt = row.updatedAt;
+  const merged = row.found ? mergeDictionaries(row.dict, d) : d;
+  if (row.found) await AsyncStorage.setItem(KEY, JSON.stringify(merged));
+  if (await casWrite(userId, merged, row.updatedAt)) return;
+  throw new Error("Couldn't sync — will retry");
+}
+
+/**
+ * Merge two versions of the dictionary — PURE, and exported so it can be tested
+ * without a network. `local` is the NEWER side (the edit being written);
+ * `remote` is what another device put there in the meantime.
+ *
+ *   vocabulary   — union, case-insensitive (remote's spelling of a duplicate wins,
+ *                  since it is already what the cloud shows)
+ *   snippets     — union by trigger (case-insensitive); on a collision the newer
+ *                  `updatedAt` wins, which is real data we have
+ *   replacements — keyed by `from` (case-insensitive), newer wins. There is no
+ *                  per-rule timestamp, so "newer" = the local edit in flight.
+ *
+ * Union semantics mean a deletion made on one device while the other was
+ * editing can come back. That's deliberate: resurrecting a word is recoverable,
+ * losing a device's whole edit is not.
+ */
+export function mergeDictionaries(remote: Dictionary, local: Dictionary): Dictionary {
+  const r = normalize(remote);
+  const l = normalize(local);
+
+  const vocabulary: string[] = [];
+  const seenWord = new Set<string>();
+  for (const w of [...r.vocabulary, ...l.vocabulary]) {
+    const k = w.toLowerCase();
+    if (seenWord.has(k)) continue;
+    seenWord.add(k);
+    vocabulary.push(w);
+  }
+
+  const reps = new Map<string, Replacement>();
+  for (const rep of r.replacements) reps.set(rep.from.toLowerCase(), rep);
+  for (const rep of l.replacements) reps.set(rep.from.toLowerCase(), rep);   // local wins
+
+  const snips = new Map<string, Snippet>();
+  for (const s of [...(r.snippets ?? []), ...(l.snippets ?? [])]) {
+    const k = s.trigger.toLowerCase();
+    const prev = snips.get(k);
+    if (!prev || Date.parse(s.updatedAt) >= Date.parse(prev.updatedAt)) snips.set(k, s);
+  }
+
+  return {
+    vocabulary,
+    replacements: [...reps.values()],
+    snippets: [...snips.values()],
+  };
 }
 
 export function buildPrompt(d: Dictionary): string | undefined {

@@ -594,6 +594,12 @@ class VerbalWinApp:
         except Exception:
             pass
 
+    def _history_entry(self, entry_id):
+        for e in self.config.get("history", []):
+            if isinstance(e, dict) and e.get("id") == entry_id:
+                return e
+        return None
+
     def _upload_recording_async(self, rec_id, local_path):
         """Upload the WAV to the cloud + attach its URL to the history entry.
         Fail-closed peripheral — never blocks or breaks the pipeline."""
@@ -607,6 +613,14 @@ class VerbalWinApp:
                 url = recordings.upload_cloud(local_path, user_id, rec_id)
                 if url:
                     self.config = update_history_entry(self.config, rec_id, audio_url=url)
+                    # IDI-172: patch the already-pushed row so other devices get
+                    # the audio too.
+                    try:
+                        entry = self._history_entry(rec_id) or {}
+                        if self._sync and entry.get("sync_id"):
+                            self._sync.update_pushed_audio_url(entry["sync_id"], url)
+                    except Exception as e:
+                        logger.debug(f"audio_url sync patch skipped: {e}")
                     self._on_main(self._refresh_dashboards)
             except Exception as e:
                 logger.debug(f"recording upload failed: {e}")
@@ -718,8 +732,14 @@ class VerbalWinApp:
                 if target not in (None, "__none__"):
                     # "__all__" = broadcast (None), else = specific device_id
                     push_target = None if target == "__all__" else target
+                    # Full push shape (IDI-172) — audio_url normally lands later
+                    # via _upload_recording_async's patch.
+                    entry = self._history_entry(rec_id) or {}
                     threading.Thread(
-                        target=self._sync.push, args=(result, push_target), daemon=True
+                        target=self._sync.push,
+                        args=(result, push_target, entry.get("audio_url") or "",
+                              "done", rec_id),
+                        daemon=True,
                     ).start()
 
             # Upload the audio to the cloud + attach its URL (async, fail-closed).
@@ -795,6 +815,8 @@ class VerbalWinApp:
                 user_id=user_id,
                 device_name=device_name,
                 on_receive=self._on_sync_receive,
+                on_tombstone=self._on_sync_tombstone,
+                on_pushed=self._on_sync_pushed,
             )
             logger.info(f"Sync started for user {user_id[:8]}...")
         except Exception as e:
@@ -809,17 +831,80 @@ class VerbalWinApp:
             self._sync = None
         self._init_sync()
 
-    def _on_sync_receive(self, text: str, device_name: str):
+    def _this_device_id(self) -> str:
+        import platform
+        return self._sync.device_id if self._sync else platform.node()
+
+    def _on_sync_receive(self, text: str, device_name: str, record: dict | None = None):
+        """Mirrors main._on_sync_receive (IDI-172): ALWAYS append to local
+        history + clipboard; auto-paste ONLY when this device was the explicit
+        target. A broadcast must not type into whatever window has focus."""
+        record = record or {}
         logger.info(f"Sync received from {device_name}: '{text[:40]}'")
         try:
-            from app.win_injector import inject_text
-            success = inject_text(text)
+            import pyperclip
+            pyperclip.copy(text)
         except Exception as e:
-            logger.error(f"Sync paste failed: {e}")
-            success = False
-        action = "pasted" if success else "copied"
-        brief = f"From {device_name} | {len(text.split())}w - {action}"
-        self.overlay.show_briefly(brief, duration=2.5)
+            logger.debug(f"clipboard copy failed: {e}")
+
+        try:
+            entry_id = recordings.new_id()
+            self.config = add_to_history(
+                self.config, text, device_name or "Synced",
+                entry_id=entry_id,
+                audio_url=record.get("audio_url") or "",
+                status=record.get("status") or "done")
+            fields = {"device_name": device_name or "",
+                      "created_at": record.get("created_at") or "",
+                      "source": "sync"}
+            if record.get("id"):
+                fields["sync_id"] = record["id"]
+            self.config = update_history_entry(self.config, entry_id, **fields)
+            self._total_transcriptions += 1
+            self._total_words += len(text.split())
+            self._refresh_dashboards()
+        except Exception as e:
+            logger.error(f"Sync receive: could not save to history: {e}")
+
+        target = record.get("target_device_id")
+        if target and target == self._this_device_id():
+            try:
+                from app.win_injector import inject_text
+                success = inject_text(text)
+            except Exception as e:
+                logger.error(f"Sync paste failed: {e}")
+                success = False
+            action = "pasted" if success else "copied"
+            brief = f"From {device_name} | {len(text.split())}w - {action}"
+        else:
+            brief = f"From {device_name} | {len(text.split())}w - in History"
+        try:
+            self.overlay.show_briefly(brief, duration=2.5)
+        except Exception:
+            pass
+
+    def _on_sync_tombstone(self, record: dict):
+        """Another device deleted a history row — drop our copy (IDI-172)."""
+        try:
+            from app.sync import prune_local_history
+            rid = (record or {}).get("id")
+            if not rid:
+                return
+            history = self.config.get("history", [])
+            pruned = prune_local_history(history, [rid])
+            if len(pruned) != len(history):
+                self.config["history"] = pruned
+                save_config(self.config)
+                self._total_transcriptions = len(pruned)
+                self._refresh_dashboards()
+        except Exception as e:
+            logger.debug(f"tombstone prune failed: {e}")
+
+    def _on_sync_pushed(self, entry_id: str, row_id: str):
+        try:
+            self.config = update_history_entry(self.config, entry_id, sync_id=row_id)
+        except Exception as e:
+            logger.debug(f"sync_id record failed: {e}")
 
     # ── Update check ──────────────────────────────────────────────────────
     def _check_update(self):

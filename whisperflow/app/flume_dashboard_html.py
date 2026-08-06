@@ -23,6 +23,7 @@ _PRESSED_SELECTORS = [
     ".toggle", ".tgtpill", ".dchip button", ".reprow button", ".sndots",
     ".snmenu button", ".snx", ".sndel", ".siGoogle", ".siCancel",
     ".mrActs button", ".link", ".chkbox", ".deadbar .dbbtn", ".deadside .dsbtn",
+    ".devrm",
     ".sniptable th.th-trig",
 ]
 
@@ -44,6 +45,9 @@ _IC = {
     "book":   '<path d="M4 5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2z"/><path d="M4 19h15"/><path d="M9 7h6"/>',
     "bolt":   '<path d="M13 2 4 14h7l-1 8 9-12h-7z"/>',
     "phone":  '<rect x="6" y="2.5" width="12" height="19" rx="2.4"/><path d="M11 18.5h2"/>',
+    # IDI-177: desktops/laptops used to render with the phone glyph.
+    "laptop": '<rect x="3.5" y="4.5" width="17" height="11" rx="1.8"/><path d="M2 18.5h20"/>',
+    "trash":  '<path d="M4 7h16"/><path d="M9.5 7V5.2A1.2 1.2 0 0 1 10.7 4h2.6a1.2 1.2 0 0 1 1.2 1.2V7"/><path d="M6.5 7l.9 12.1A1.6 1.6 0 0 0 9 20.6h6a1.6 1.6 0 0 0 1.6-1.5L17.5 7"/>',
     "meet":   '<circle cx="9" cy="8" r="3.2"/><path d="M3.5 19c.7-3 2.9-4.5 5.5-4.5s4.8 1.5 5.5 4.5"/><circle cx="17" cy="9" r="2.6"/><path d="M15.8 14.7c2.2.3 3.9 1.6 4.7 4.3"/>',
     "dots":   '<circle cx="5" cy="12" r=".9"/><circle cx="12" cy="12" r=".9"/><circle cx="19" cy="12" r=".9"/>',
 }
@@ -279,6 +283,9 @@ body{background:var(--bg);font-family:'Geist',-apple-system,system-ui,sans-serif
 .statpill{display:flex;align-items:center;gap:7px;padding:7px 13px;border-radius:999px;font:600 10.5px 'Geist'}
 .statpill.on{background:rgba(74,209,90,.10);border:1px solid rgba(74,209,90,.32);color:#8ee69a}
 .statpill.offl{background:rgba(240,240,240,.05);border:1px solid var(--bd);color:var(--mut)}.statpill .pdot{width:6px;height:6px;border-radius:50%;background:currentColor}
+.devrm{width:32px;height:32px;border-radius:9px;border:1px solid var(--bd);background:transparent;color:var(--mut);cursor:pointer;display:flex;align-items:center;justify-content:center;flex:none}
+.devrm svg{width:15px;height:15px}
+.devrm:hover{color:#f0b39a;border-color:var(--acc-bd);background:var(--acc-soft)}
 .ssection{margin-top:26px}.ssection h3{font:600 12.5px 'Geist';margin-bottom:4px}.ssub{font:400 11px 'Geist';color:var(--mut);margin-bottom:14px}
 .dlabel2{font:600 10px 'JetBrains Mono';letter-spacing:.1em;color:var(--sub);margin-bottom:9px}
 .dictchips{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px}
@@ -876,7 +883,7 @@ function renderCanvas(){
       <button class="chipbtn" onclick="saveCanvas(this)">Save &amp; Sync</button>
       <button class="chipbtn" onclick="pickCanvasImage()">Add image…</button>
       <button class="chipbtn" onclick="pasteCanvasImage()">Paste image</button>
-      <button class="chipbtn" onclick="clearCanvas()">Clear</button>${from}</div>
+      <button class="chipbtn" onclick="clearCanvas(this)">Clear</button>${from}</div>
     <div class="cvmsg" id="cvMsg"></div>`;
 }
 function cvMsg(t){ const el=document.getElementById('cvMsg'); if(el) el.textContent=t||''; }
@@ -884,17 +891,29 @@ function canvasText(){ return (document.getElementById('canvasArea')||{}).value|
 function canvasDirty(){ const a=document.getElementById('canvasArea'); if(a) CANVAS.content=a.value; }
 // Was: printed "Saved & synced" unconditionally, even when the write failed
 // (IDI-167). Only claim success when the backend says so.
+// IDI-173: a text save sends ONLY the text. It used to resend image_url on
+// every keystroke-save, so two devices editing text/image raced each other into
+// clearing the other's column.
 function saveCanvas(btn){
   const v=canvasText();
   cvMsg('Saving…');
-  busyGuard(btn || 'save_canvas', ()=>api('save_canvas', v, CANVAS.image_url||null)).then(r=>{
+  busyGuard(btn || 'save_canvas', ()=>api('save_canvas', v)).then(r=>{
     if(r && r.busy) return;
     if(r && r.ok===false){ cvMsg((r.error)||'Could not save — check your connection.'); return; }
     CANVAS.content=v; cvMsg('Saved & synced');
   });
 }
 function loadCanvas(){ api('fetch_canvas').then(r=>{ if(r&&r.ok){ CANVAS={content:r.content||'',image_url:r.image_url||null,from:CANVAS.from}; if(ACTIVE==='canvas')renderCanvas(); } }); }
-function clearCanvas(){ api('save_canvas','',null).then(()=>{ CANVAS={content:'',image_url:null}; if(ACTIVE==='canvas')renderCanvas(); }); }
+// An explicit clear — a real write of {content:'', image_url:null} that other
+// devices APPLY (they used to falsy-drop the empty content and stay stale).
+function clearCanvas(btn){
+  busyGuard(btn || 'clear_canvas', ()=>api('clear_canvas')).then(r=>{
+    if(r && r.busy) return;
+    if(r && r.ok===false){ cvMsg((r.error)||'Could not clear the canvas.'); return; }
+    CANVAS={content:'',image_url:null}; if(ACTIVE==='canvas')renderCanvas();
+  });
+}
+// Image-only removal: keeps the text, nulls the image explicitly.
 function clearCanvasImage(){ const v=canvasText(); api('save_canvas', v, null).then(()=>{ CANVAS.image_url=null; CANVAS.content=v; if(ACTIVE==='canvas')renderCanvas(); }); }
 function pickCanvasImage(){ cvMsg('Choose an image…'); api('canvas_add_image_file', canvasText()).then(applyCanvasImage); }
 function pasteCanvasImage(){ cvMsg('Pasting image…'); api('canvas_paste_image', canvasText()).then(applyCanvasImage); }
@@ -1373,13 +1392,26 @@ function pairAreaHTML(){
     +'<button class="btn ghost" style="width:120px" onclick="stopPairing()">Cancel</button></div>';
 }
 
+// Every device rendered as a PHONE regardless of what it is (IDI-177) — a Mac
+// in the list looked like an iPhone. Type comes from `device_type`, which the
+// presence upsert already sets to the platform.
+function deviceIcon(t){
+  const k=String(t||'').toLowerCase();
+  if(k==='ios'||k==='android'||k==='iphone'||k==='ipad') return SVG.phone;
+  if(k==='mac'||k==='darwin'||k==='win'||k==='windows'||k==='linux') return SVG.laptop;
+  return SVG.laptop;
+}
 function renderDevices(){
   const devs = (STATE&&STATE.devices)||[];
+  // The list EXCLUDES this device (fetch_account_devices filters it out), so
+  // every row here is removable — this device leaves the list by signing out.
   const cards = devs.map(d=>`
-    <div class="dcard"><div class="dtile">${SVG.phone}</div>
+    <div class="dcard"><div class="dtile">${deviceIcon(d.device_type)}</div>
       <div class="dinfo"><div class="dname">${esc(d.device_name||'Device')}</div>
       <div class="dmeta">${esc(d.device_type||'')}</div></div>
-      <span class="statpill ${d.online?'on':'offl'}"><span class="pdot"></span>${d.online?'Online':'Offline'}</span></div>`).join('')
+      <span class="statpill ${d.online?'on':'offl'}"><span class="pdot"></span>${d.online?'Online':'Offline'}</span>
+      <button class="devrm" title="Remove from list"
+        onclick='removeDevice(${JSON.stringify(d.device_id||"")}, this)'>${SVG.trash}</button></div>`).join('')
     || '<div class="empty">No paired devices yet. Tap “Pair a device”.</div>';
   const pairErr = (!PAIR.active && PAIR.error)
     ? `<div class="pairsub" style="color:#f0b39a">${esc(PAIR.error)}</div>` : '';
@@ -1401,6 +1433,21 @@ function renderDevices(){
 
 function setTarget(id){
   api('set_target_device', id).then(()=>{ if(STATE) STATE.target_device_id=id; renderDevices(); });
+}
+
+// IDI-177. Honest label: this deletes the `devices` row, it does not sign the
+// other device out or revoke anything — it will reappear on its next heartbeat
+// unless it has actually signed out.
+function removeDevice(id, btn){
+  if(!id) return;
+  if(!confirm('Remove from list? The device keeps working until it signs out.')) return;
+  busyGuard(btn || ('rmdev:'+id), ()=>api('remove_device', id)).then(r=>{
+    if(r && r.busy) return;
+    if(r && r.ok===false){ toast((r.error)||'Could not remove that device.', true); return; }
+    if(STATE) STATE.devices=(STATE.devices||[]).filter(d=>d.device_id!==id);
+    renderDevices();
+    load();
+  });
 }
 
 function clearPairTimers(){
@@ -1496,6 +1543,12 @@ function renderSettings(){
         <div class="field"><label>ACCOUNT ID</label><input id="userId" value="${esc(s.sync_user_id||'')}"/></div>
         <div class="field"><label>DEVICE NAME</label><input id="devName" value="${esc(s.sync_device_name||'This Mac')}"/></div>
         <button class="btn primary" style="flex:none;width:130px" onclick="saveSettings()">Save sync</button>
+      </div></div>
+    <div class="ssection"><h3>History</h3><p class="ssub">Your dictations are kept on this device and, when sync is on, in your account.</p>
+      <div class="scard" style="flex-direction:row;align-items:center;gap:12px">
+        <div style="flex:1;min-width:0"><div style="font:600 13.5px 'Geist'">Clear history</div>
+          <div style="font:400 12px 'Geist';color:var(--mut)">Removes every transcription from this device. You'll then be asked whether to clear your other devices too.</div></div>
+        <button id="clearHistBtn" class="btn ghost" style="flex:none;color:#f0b39a" onclick="clearHistory(this)">Clear history</button>
       </div></div>
     <div class="ssection"><h3>Custom dictionary</h3><p class="ssub">Teach names &amp; terms so they transcribe correctly, and auto-fix mishearings.</p>
       <div class="scard" style="flex-direction:row;align-items:center;gap:12px">
@@ -1730,7 +1783,12 @@ function saveDict(){
   dictSetState('Saving…');
   return busyGuard('dict', ()=>api('save_dictionary', DICT.vocabulary, DICT.replacements)).then(r=>{
     if(r && r.busy) return r;
-    if(r&&r.ok){ DICT={vocabulary:r.vocabulary||DICT.vocabulary,replacements:r.replacements||DICT.replacements}; dictSetState('Saved'); }
+    // IDI-174: a save can succeed LOCALLY and still lose the cloud
+    // compare-and-swap. `sync_error` is that case — say so rather than
+    // printing "Saved" over a dictionary that never left this machine.
+    if(r&&r.ok){ DICT={vocabulary:r.vocabulary||DICT.vocabulary,replacements:r.replacements||DICT.replacements};
+      if(r.sync_error){ dictSetState('Saved on this device'); toast(r.sync_error, true); }
+      else dictSetState('Saved'); }
     else { dictSetState('Not saved'); toast((r&&r.error)||'Could not save the dictionary.', true); }
     return r;
   });
@@ -1856,7 +1914,8 @@ function saveSnip(btn){
     : api('update_snippet', {id:SNIP_EDIT.id, trigger:t, expansion:e, label:l})
   ).then(r=>{
     if(r && r.busy) return;
-    if(r&&r.ok){ SNIPS=r.snippets||SNIPS; SNIP_EDIT=null; renderSnippets(); }
+    if(r&&r.ok){ SNIPS=r.snippets||SNIPS; SNIP_EDIT=null; renderSnippets();
+      if(r.sync_error) toast(r.sync_error, true); }
     else toast((r&&r.error)||'Could not save the snippet.', true);
   });
 }
@@ -1882,6 +1941,27 @@ function saveSettings(){
     sync_user_id:document.getElementById('userId').value,
     sync_device_name:document.getElementById('devName').value,
   }).then(load);
+}
+// IDI-172: `clear_history` existed in the API but nothing ever called it. The
+// two steps are deliberately SEPARATE questions — "clear my history" on this
+// machine is a very different act from erasing it off the user's phone, and
+// only the second one is unrecoverable for the other devices.
+function clearHistory(btn){
+  if(!confirm('Clear history on this device? Your transcriptions here will be removed.')) return;
+  busyGuard(btn || 'clear_history', ()=>api('clear_history')).then(r=>{
+    if(r && r.busy) return;
+    if(r && r.ok===false){ toast((r.error)||'Could not clear history.', true); return; }
+    STATE = r; renderActive(); renderSidebar();
+    toast('History cleared on this device.');
+    const signedIn = !!(r && r.signed_in);
+    if(!signedIn) return;
+    if(!confirm('Also clear from your other devices? This deletes these transcriptions from your account, on every device. It cannot be undone.')) return;
+    busyGuard('clear_history_cloud', ()=>api('clear_history_everywhere')).then(c=>{
+      if(c && c.busy) return;
+      if(c && c.ok===false){ toast((c.error)||'Could not clear your other devices.', true); return; }
+      toast('Cleared from your other devices.');
+    });
+  });
 }
 // MER-32: two-step confirm (this is destructive and irreversible — server-side
 // deletes every DB row + storage object + the auth user itself, then the local

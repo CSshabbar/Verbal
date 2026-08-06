@@ -235,7 +235,7 @@ fresh_signed_in("user-EEE")
 sync.httpx.post = lambda *a, **k: FakeResp(201)
 sync.httpx.get = lambda *a, **k: FakeResp(200, [])
 received = []
-client = sync.SyncClient("user-EEE", "Mac", lambda t, d: received.append((t, d)))
+client = sync.SyncClient("user-EEE", "Mac", lambda t, d, r=None: received.append((t, d)))
 time.sleep(9.0)   # long enough for the old code's in-on_close 5s re-listen
 check("connected at least twice (the retry loop DOES reconnect)",
       len(FakeWSApp.runs) >= 2, str(len(FakeWSApp.runs)))
@@ -256,9 +256,13 @@ c = sync.SyncClient.__new__(sync.SyncClient)
 c.user_id = "user-FFF"
 c.device_id = "this-mac"
 c.device_name = "Mac"
-c.on_receive = lambda t, d: got.append((t, d))
+# IDI-172: the receive callback now also gets the full record (audio_url,
+# target_device_id, created_at) so the caller can build a real history entry.
+c.on_receive = lambda t, d, r=None: got.append((t, d))
+c.on_tombstone = None
 c._stop = threading.Event()
 c._last_seen_at = "2026-08-06T00:00:00+00:00"
+c._last_tombstone_at = "2026-08-06T00:00:00+00:00"
 c._seen_ids, c._seen_order = set(), []
 
 rows = [

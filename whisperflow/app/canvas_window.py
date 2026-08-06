@@ -324,23 +324,38 @@ class CanvasWindow:
             self._header.setStats_chars_(words, chars)
 
     # ── Supabase ──────────────────────────────────────────────────────────────
-    def _save_to_supabase(self, text: str):
+    def _device_identity(self):
+        """(device_id, device_name) — the same stable id the `devices` rows and
+        the SyncClient use (IDI-173)."""
+        import platform
+        device_id = (platform.node() or "").strip()
+        name = (self._config.get("sync_device_name") or "").strip() or device_id or "Mac"
+        return device_id, name
+
+    def _save_to_supabase(self, text: str, clear_image: bool = False):
+        """Text write. `image_url` is OMITTED (IDI-173) — a text edit must never
+        null the shared image; only an explicit clear says so."""
         try:
+            import datetime as _dt
             import httpx
             from app.sync import SUPABASE_URL
             from app.auth import auth_header
-            user_id     = self._config.get("sync_user_id", "")
-            device_name = self._config.get("sync_device_name", "Mac")
+            user_id = self._config.get("sync_user_id", "")
+            device_id, device_name = self._device_identity()
             if not user_id or not _canvas_cloud_gate(self._config):
                 return
+            payload = {"user_id": user_id, "content": text,
+                       "device_id": device_id, "device_name": device_name,
+                       "updated_at": _dt.datetime.now(_dt.timezone.utc).isoformat()}
+            if clear_image:
+                payload["image_url"] = None
             httpx.post(
                 f"{SUPABASE_URL}/rest/v1/canvas?on_conflict=user_id",
                 headers={
                     **auth_header(self._config, json=True),
                     "Prefer":        "return=minimal,resolution=merge-duplicates",
                 },
-                json={"user_id": user_id, "content": text, "device_name": device_name,
-                      "updated_at": __import__('datetime').datetime.utcnow().isoformat()},
+                json=payload,
                 timeout=5,
             )
             if self._header:
@@ -370,9 +385,10 @@ class CanvasWindow:
             )
             if resp.status_code == 200:
                 data = resp.json()
-                if data and data[0].get("content"):
-                    content = data[0]["content"]
-                    self._set_text_remote(content)
+                if data:
+                    # Empty content is a legitimate state (someone cleared the
+                    # canvas), not "nothing to load" — apply it either way.
+                    self._set_text_remote(data[0].get("content") or "")
         except Exception as e:
             logger.error(f"Canvas fetch error: {e}")
 
@@ -395,7 +411,10 @@ class CanvasWindow:
 
     def applyRemoteText_(self, timer):
         text = timer.userInfo()
-        if self._text_view and text:
+        # `and text` used to falsy-drop an incoming CLEAR (IDI-173): another
+        # device wiped the canvas and this window kept showing the old text
+        # forever. Only a genuinely absent payload is ignored now.
+        if self._text_view and text is not None:
             self._is_remote = True
             self._text_view.setString_(text)
             self._text_view.setTextColor_(CARD_TEXT)
@@ -406,16 +425,16 @@ class CanvasWindow:
     def _start_sync(self):
         """Listen for canvas changes from other devices via WebSocket."""
         user_id = self._config.get("sync_user_id", "")
-        device_name = self._config.get("sync_device_name", "Mac")
+        device_id, device_name = self._device_identity()
         if not user_id or not _canvas_cloud_gate(self._config):
             return
         threading.Thread(
             target=self._listen_canvas,
-            args=(user_id, device_name),
+            args=(user_id, device_id, device_name),
             daemon=True
         ).start()
 
-    def _listen_canvas(self, user_id: str, device_name: str):
+    def _listen_canvas(self, user_id: str, device_id: str, device_name: str):
         import json, websocket, time
         from app.sync import WS_URL, SUPABASE_KEY
         from app.auth import get_access_token
@@ -444,10 +463,14 @@ class CanvasWindow:
                 event = msg.get("event", "")
                 if event == "postgres_changes":
                     record = msg.get("payload", {}).get("data", {}).get("record", {})
-                    if record.get("device_name") == device_name:
+                    # IDI-173: own-echo filtering by stable device_id, with the
+                    # display-name compare kept only for pre-column rows.
+                    from app.shared_dashboard import canvas_is_own_event
+                    if canvas_is_own_event(record, device_id, device_name):
                         return   # own update
                     content = record.get("content", "")
                     if content is not None:
+                        # includes "" — an explicit clear must clear.
                         self._set_text_remote(content)
             except Exception as e:
                 logger.error(f"Canvas WS message error: {e}")
@@ -493,10 +516,13 @@ class CanvasWindow:
             logger.error(f"Canvas paste error: {e}")
 
     def _clear(self):
+        """Explicit clear (IDI-173): writes BOTH `content: ''` and
+        `image_url: null` so every other device applies the empty state."""
         if self._text_view:
             self._text_view.setString_("")
             self._update_stats("")
-            threading.Thread(target=self._save_to_supabase, args=("",), daemon=True).start()
+            threading.Thread(target=self._save_to_supabase, args=("", True),
+                             daemon=True).start()
 
     def close(self):
         if self._window:

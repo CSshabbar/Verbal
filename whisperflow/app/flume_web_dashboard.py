@@ -131,6 +131,7 @@ class FlumeWebDashboard:
         self._delegate = None
         self._api = DashboardApi(self)
         self._ready = False
+        self._canvas_stop = threading.Event()
         # attributes DashboardApi reads:
         self._known_devices = []
         try:
@@ -207,22 +208,29 @@ class FlumeWebDashboard:
     # ── realtime canvas (WS) ─────────────────────────────────────────────────────
     def _canvas_listen_loop(self):
         import time
-        while self._window is not None:
+        # Stop-checked every iteration: `_canvas_stop` (explicit shutdown) OR
+        # the window going away.
+        while self._window is not None and not self._canvas_stop.is_set():
             try:
                 self._canvas_listen_once()
             except Exception as e:
                 logger.debug("canvas listener failed: %s", e)
-            time.sleep(5)
+            self._canvas_stop.wait(5)
+
+    def stop_canvas_listener(self):
+        self._canvas_stop.set()
 
     def _canvas_listen_once(self):
         import time
+        from app.shared_dashboard import canvas_is_own_event, device_identity
         cfg = self.app.config
         user_id = cfg.get("sync_user_id", "")
-        device_name = cfg.get("sync_device_name", "") or ""
+        my_device_id, my_device_name = device_identity(self.app)
         # Canvas is "sync" (IDI-171): the user toggle gates it, and being
         # SIGNED IN gates it again — `sync_user_id` alone used to survive
         # sign-out and kept a realtime channel open on the ex-account.
-        if not user_id or not cfg.get("sync_enabled") or not _cloud_allowed(cfg):
+        if (not user_id or not cfg.get("sync_enabled") or not _cloud_allowed(cfg)
+                or self._canvas_stop.is_set()):
             time.sleep(5)
             return
         import websocket
@@ -244,8 +252,14 @@ class FlumeWebDashboard:
                 if msg.get("event") != "postgres_changes":
                     return
                 rec = msg.get("payload", {}).get("data", {}).get("record", {})
-                if rec.get("device_name") == device_name:
-                    return  # ignore our own writes
+                # IDI-173: own-write filtering is by stable device_id (two Macs
+                # both called "MacBook Pro" used to swallow each other's
+                # updates); the name compare survives only as the fallback for
+                # rows written before the column existed.
+                if canvas_is_own_event(rec, my_device_id, my_device_name):
+                    return
+                # NOTE: empty content is APPLIED, not dropped — an explicit
+                # clear from another device has to actually clear this one.
                 self._emit("canvasRemote", {
                     "content": rec.get("content", "") or "",
                     "image_url": rec.get("image_url"),

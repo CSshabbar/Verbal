@@ -132,6 +132,33 @@ export async function remove(uri?: string) {
 }
 
 /**
+ * Delete the CLOUD copy of a recording (IDI-172). `stored` is whatever the row
+ * carried in `audio_url` — a bare object path (post-MER-27) or a legacy public
+ * URL — so it goes through extractObjectPath() like every other consumer.
+ *
+ * Best-effort by design: tombstoning the transcription is the operation that
+ * matters, and a bucket that briefly keeps an orphan object is far better than
+ * a delete that fails because storage was unreachable. Returns whether the
+ * object was actually removed, for logging.
+ */
+export async function removeCloud(stored?: string | null, bucket = BUCKET): Promise<boolean> {
+  if (!stored) return false;
+  try {
+    const path = extractObjectPath(stored, bucket);
+    if (!path) return false;
+    const { error } = await supabase.storage.from(bucket).remove([path]);
+    if (error) {
+      console.warn('recordings.removeCloud failed:', error);
+      return false;
+    }
+    return true;
+  } catch (e) {
+    console.warn('recordings.removeCloud error:', e);
+    return false;
+  }
+}
+
+/**
  * Delete every locally-persisted recording (IDI-170).
  *
  * `delete-account` erases the cloud copies, and clearAccountData() erases the

@@ -366,18 +366,89 @@ class VerbalApp(rumps.App):
                 user_id=user_id,
                 device_name=device_name,
                 on_receive=self._on_sync_receive,
+                on_tombstone=self._on_sync_tombstone,
+                on_pushed=self._on_sync_pushed,
             )
             logger.info(f"Sync started for user {user_id[:8]}...")
         except Exception as e:
             logger.error(f"Sync init failed: {e}")
 
-    def _on_sync_receive(self, text: str, device_name: str):
-        """Called when another device pushes a transcription."""
+    def _this_device_id(self) -> str:
+        import platform
+        return self._sync.device_id if self._sync else platform.node()
+
+    def _on_sync_receive(self, text: str, device_name: str, record: dict | None = None):
+        """Called when another device pushes a transcription (IDI-172).
+
+        Used to be paste-and-forget: the text went to the clipboard, was typed
+        into whatever app happened to be focused, and then vanished — a phone
+        dictation never appeared in the Mac's History at all, and a BROADCAST
+        (no target) hijacked the keyboard of every signed-in device at once.
+
+        Now: it always lands in local history (so it's readable/copyable later)
+        and only AUTO-PASTES when this device was explicitly targeted. A
+        broadcast (`target_device_id` null / "__all__") is history + clipboard
+        only."""
+        record = record or {}
         import pyperclip
         pyperclip.copy(text)
         logger.info(f"Sync received from {device_name}: '{text[:40]}'")
+
+        entry_id = ""
+        try:
+            entry_id = recordings.new_id()
+            self.config = add_to_history(
+                self.config, text, device_name or "Synced",
+                entry_id=entry_id,
+                audio_url=record.get("audio_url") or "",
+                status=record.get("status") or "done")
+            fields = {"device_name": device_name or "",
+                      "created_at": record.get("created_at") or "",
+                      "source": "sync"}
+            if record.get("id"):
+                # the cloud row id — how a later tombstone finds this entry
+                fields["sync_id"] = record["id"]
+            self.config = update_history_entry(self.config, entry_id, **fields)
+            self._total_transcriptions += 1
+            self._total_words += len(text.split())
+            self._on_main(self._refresh_dashboards)
+        except Exception as e:
+            logger.error(f"Sync receive: could not save to history: {e}")
+
+        target = record.get("target_device_id")
+        targeted = bool(target) and target == self._this_device_id()
         brief = f"📱 {device_name} · {len(text.split())}w"
-        self._on_main(lambda: self._paste_synced(text, brief))
+        if targeted:
+            self._on_main(lambda: self._paste_synced(text, brief))
+        else:
+            # Broadcast: never steal the keyboard. Say where it went.
+            self._on_main(lambda: self.overlay.show_briefly(
+                brief + " · in History", duration=2.5))
+
+    def _on_sync_tombstone(self, record: dict):
+        """A history row was deleted on another device — drop our copy."""
+        try:
+            from app.sync import prune_local_history
+            rid = (record or {}).get("id")
+            if not rid:
+                return
+            history = self.config.get("history", [])
+            pruned = prune_local_history(history, [rid])
+            if len(pruned) != len(history):
+                self.config["history"] = pruned
+                save_config(self.config)
+                self._total_transcriptions = len(pruned)
+                self._on_main(self._refresh_dashboards)
+        except Exception as e:
+            logger.debug(f"tombstone prune failed: {e}")
+
+    def _on_sync_pushed(self, entry_id: str, row_id: str):
+        """Remember which cloud row a local dictation became, so a remote
+        tombstone can prune it and the audio upload can patch it."""
+        try:
+            self.config = update_history_entry(self.config, entry_id, sync_id=row_id)
+        except Exception as e:
+            logger.debug(f"sync_id record failed: {e}")
 
     def _paste_synced(self, text: str, brief: str):
         """Paste synced text into the currently focused app."""
@@ -1080,6 +1151,12 @@ class VerbalApp(rumps.App):
                 time.sleep(1.5 * (i + 1))
         return text, status
 
+    def _history_entry(self, entry_id):
+        for e in self.config.get("history", []):
+            if isinstance(e, dict) and e.get("id") == entry_id:
+                return e
+        return None
+
     def _upload_recording_async(self, rec_id, local_path):
         """Upload the WAV to the cloud and attach its URL to the history entry."""
         def work():
@@ -1093,6 +1170,15 @@ class VerbalApp(rumps.App):
                 url = recordings.upload_cloud(local_path, user_id, rec_id)
                 if url:
                     self.config = update_history_entry(self.config, rec_id, audio_url=url)
+                    # IDI-172: the row was pushed before the upload finished, so
+                    # backfill its audio_url now — otherwise the receiving device
+                    # can see the text but never play the audio.
+                    try:
+                        entry = self._history_entry(rec_id) or {}
+                        if self._sync and entry.get("sync_id"):
+                            self._sync.update_pushed_audio_url(entry["sync_id"], url)
+                    except Exception as e:
+                        logger.debug(f"audio_url sync patch skipped: {e}")
                     self._on_main(self._refresh_dashboards)
             except Exception as e:
                 logger.debug(f"recording upload failed: {e}")
@@ -1225,8 +1311,15 @@ class VerbalApp(rumps.App):
                 if target not in (None, "__none__"):
                     # "__all__" = broadcast (None), else = specific device_id
                     push_target = None if target == "__all__" else target
+                    # IDI-172: push the full shape. audio_url is normally still
+                    # empty here (the WAV upload starts below and takes seconds)
+                    # — `_upload_recording_async` patches the row once it lands.
+                    entry = self._history_entry(rec_id) or {}
                     threading.Thread(
-                        target=self._sync.push, args=(result, push_target), daemon=True
+                        target=self._sync.push,
+                        args=(result, push_target, entry.get("audio_url") or "",
+                              "done", rec_id),
+                        daemon=True,
                     ).start()
 
             # Upload the audio to the cloud + attach its URL (async)

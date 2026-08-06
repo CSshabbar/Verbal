@@ -154,7 +154,7 @@ def save(config, vocabulary, replacements, save_config_fn):
                    "snippets": get(config)["snippets"]})
     config["dictionary"] = d
     save_config_fn(config)
-    _push_remote(config, d)
+    _push_remote(config, d, save_config_fn)
     return d
 
 
@@ -176,7 +176,7 @@ def add_replacement(config, frm, to, save_config_fn, auto=False):
     d["replacements"].append(rule)
     config["dictionary"] = d
     save_config_fn(config)
-    _push_remote(config, d)
+    _push_remote(config, d, save_config_fn)
     return d
 
 
@@ -209,7 +209,7 @@ def add_snippet(config, trigger, expansion, label, save_config_fn):
     })
     config["dictionary"] = d
     save_config_fn(config)
-    _push_remote(config, d)
+    _push_remote(config, d, save_config_fn)
     return d
 
 
@@ -235,7 +235,7 @@ def update_snippet(config, id, save_config_fn, **fields):
             break
     config["dictionary"] = d
     save_config_fn(config)
-    _push_remote(config, d)
+    _push_remote(config, d, save_config_fn)
     return d
 
 
@@ -245,7 +245,7 @@ def remove_snippet(config, id, save_config_fn):
     d["snippets"] = [s for s in d["snippets"] if s["id"] != id]
     config["dictionary"] = d
     save_config_fn(config)
-    _push_remote(config, d)
+    _push_remote(config, d, save_config_fn)
     return d
 
 
@@ -328,9 +328,92 @@ def _bump_snippet_used(config, keys, save_config_fn):
         if changed:
             config["dictionary"] = d
             save_config_fn(config)
-            _push_remote(config, d)
+            _push_remote(config, d, save_config_fn)
     except Exception as e:
         logger.debug("snippet used bump failed: %s", e)
+
+
+# ── CAS merge helpers (IDI-174) ────────────────────────────────────────────────
+# The dictionary is ONE row per user shared by every device, and the old push was
+# a blind full-row upsert: last writer won and silently erased whatever the other
+# device had added in between (add a word on the phone, add a word on the Mac,
+# one of them is simply gone). Writes are compare-and-swap now — filtered on the
+# `updated_at` we read — and a lost race is MERGED rather than overwritten.
+#
+# These three are PURE (no config, no network) so the merge rules are
+# fixture-testable on their own.
+
+def merge_vocabulary(local, remote):
+    """Case-insensitive UNION. Remote order first (it is the row that won the
+    race), then whatever this device adds. First spelling of a term wins."""
+    out, seen = [], set()
+    for w in list(remote or []) + list(local or []):
+        w = str(w or "").strip()
+        k = w.lower()
+        if w and k not in seen:
+            seen.add(k)
+            out.append(w)
+    return out
+
+
+def merge_replacements(local, remote):
+    """Keyed by `from` (case-insensitive); the NEWER write wins — i.e. this
+    device's pending rule beats the one already in the row, because it is the
+    edit the user just made. Remote-only rules are preserved."""
+    by_key, order = {}, []
+    for r in list(remote or []) + list(local or []):
+        if not isinstance(r, dict):
+            continue
+        frm = str(r.get("from", "")).strip()
+        if not frm or not str(r.get("to", "")).strip():
+            continue
+        k = frm.lower()
+        if k not in by_key:
+            order.append(k)
+        by_key[k] = r          # later (= local) overwrites earlier (= remote)
+    return [by_key[k] for k in order]
+
+
+def merge_snippets(local, remote):
+    """Union by trigger (case-insensitive); on a collision the snippet with the
+    newer `updated_at` wins, ties going to the local (pending) edit."""
+    by_key, order = {}, []
+    for s in list(remote or []) + list(local or []):
+        if not isinstance(s, dict):
+            continue
+        trigger = str(s.get("trigger", "")).strip()
+        if not trigger:
+            continue
+        k = trigger.lower()
+        if k not in by_key:
+            by_key[k] = s
+            order.append(k)
+            continue
+        cur = by_key[k]
+        # >= so a tie (or two blank timestamps) resolves to the later entry,
+        # which is always the local one given the concatenation order above.
+        if str(s.get("updated_at") or "") >= str(cur.get("updated_at") or ""):
+            by_key[k] = s
+    return [by_key[k] for k in order]
+
+
+def merge_dictionary(local, remote):
+    """Merge a pending local dictionary with the row that beat it to the write."""
+    local, remote = normalize(local), normalize(remote)
+    return {
+        "vocabulary":   merge_vocabulary(local["vocabulary"], remote["vocabulary"]),
+        "replacements": merge_replacements(local["replacements"], remote["replacements"]),
+        "snippets":     merge_snippets(local["snippets"], remote["snippets"]),
+    }
+
+
+# Last cloud-write outcome, so a caller (the dashboard) can TELL the user the
+# save didn't reach the account instead of silently pretending it did.
+_LAST_PUSH = {"ok": True, "error": ""}
+
+
+def last_sync_error() -> str:
+    return "" if _LAST_PUSH.get("ok") else (_LAST_PUSH.get("error") or "")
 
 
 def _cloud_gate(config) -> bool:
@@ -377,24 +460,123 @@ def fetch_remote(config, save_config_fn):
     return get(config)
 
 
-def _push_remote(config, d):
+_DICT_SELECT = "updated_at,vocabulary,replacements,snippets"
+
+
+def _read_row(config, user_id):
+    """Current cloud row (or None). Raises on transport errors."""
+    import httpx
+    from app.sync import SUPABASE_URL
+    from app.auth import auth_header
+    resp = httpx.get(
+        f"{SUPABASE_URL}/rest/v1/dictionary",
+        headers=auth_header(config),
+        params={"user_id": f"eq.{user_id}", "select": _DICT_SELECT, "limit": "1"},
+        timeout=8,
+    )
+    if resp.status_code != 200:
+        raise RuntimeError(f"dictionary read failed ({resp.status_code})")
+    rows = resp.json() or []
+    return rows[0] if rows else None
+
+
+def _cas_patch(config, user_id, d, prev_updated_at):
+    """One compare-and-swap attempt. Writes ALL columns, but ONLY if the row's
+    `updated_at` is still the one we read. Returns True when a row was actually
+    written (0 rows back = we lost the race)."""
+    import datetime as _dt
+    import httpx
+    from app.auth import auth_header
+    from app.sync import SUPABASE_URL
+    resp = httpx.patch(
+        f"{SUPABASE_URL}/rest/v1/dictionary",
+        headers={**auth_header(config, json=True),
+                 # representation, not minimal — 0 rows returned is the ONLY
+                 # way to detect that the filter matched nothing (PostgREST
+                 # answers 204 either way otherwise).
+                 "Prefer": "return=representation"},
+        params={"user_id": f"eq.{user_id}", "updated_at": f"eq.{prev_updated_at}"},
+        json={"vocabulary": d["vocabulary"],
+              "replacements": d["replacements"],
+              "snippets": d.get("snippets", []),
+              "updated_at": _dt.datetime.now(_dt.timezone.utc).isoformat()},
+        timeout=10,
+    )
+    if resp.status_code not in (200, 201):
+        raise RuntimeError(f"dictionary write failed ({resp.status_code})")
+    body = resp.json() or []
+    return bool(body)
+
+
+def _insert_row(config, user_id, d):
+    """First-ever write for this account: there is no row to compare against."""
+    import datetime as _dt
+    import httpx
+    from app.auth import auth_header
+    from app.sync import SUPABASE_URL
+    resp = httpx.post(
+        f"{SUPABASE_URL}/rest/v1/dictionary?on_conflict=user_id",
+        headers={**auth_header(config, json=True),
+                 "Prefer": "resolution=merge-duplicates,return=minimal"},
+        json={"user_id": user_id, "vocabulary": d["vocabulary"],
+              "replacements": d["replacements"],
+              "snippets": d.get("snippets", []),
+              "updated_at": _dt.datetime.now(_dt.timezone.utc).isoformat()},
+        timeout=10,
+    )
+    if resp.status_code not in (200, 201, 204):
+        raise RuntimeError(f"dictionary insert failed ({resp.status_code})")
+    return True
+
+
+def _push_remote(config, d, save_config_fn=None):
+    """Compare-and-swap push (IDI-174).
+
+    read updated_at → PATCH filtered on it → on 0 rows, refetch + MERGE + ONE
+    retry. Both attempts failing is REPORTED (see `last_sync_error`), never
+    swallowed: a dictionary that silently didn't save is worse than one that
+    says so, because the user keeps re-teaching the same word."""
+    global _LAST_PUSH
     user_id = config.get("sync_user_id", "")
     if not user_id or not _cloud_gate(config):
-        return
+        _LAST_PUSH = {"ok": True, "error": ""}      # not a failure: sync is off
+        return _LAST_PUSH
     try:
-        import datetime as _dt
-        import httpx
-        from app.sync import SUPABASE_URL
-        from app.auth import auth_header
-        httpx.post(
-            f"{SUPABASE_URL}/rest/v1/dictionary?on_conflict=user_id",
-            headers={**auth_header(config, json=True),
-                     "Prefer": "resolution=merge-duplicates,return=minimal"},
-            json={"user_id": user_id, "vocabulary": d["vocabulary"],
-                  "replacements": d["replacements"],
-                  "snippets": d.get("snippets", []),
-                  "updated_at": _dt.datetime.now(_dt.timezone.utc).isoformat()},
-            timeout=10,
-        )
+        row = _read_row(config, user_id)
+        if row is None:
+            _insert_row(config, user_id, d)
+            _LAST_PUSH = {"ok": True, "error": ""}
+            return _LAST_PUSH
+
+        if _cas_patch(config, user_id, d, row.get("updated_at")):
+            _LAST_PUSH = {"ok": True, "error": ""}
+            return _LAST_PUSH
+
+        # Lost the race — another device wrote between our read and our write.
+        logger.info("dictionary CAS conflict — merging and retrying once")
+        fresh = _read_row(config, user_id)
+        if fresh is None:                            # row vanished (account reset)
+            _insert_row(config, user_id, d)
+            _LAST_PUSH = {"ok": True, "error": ""}
+            return _LAST_PUSH
+        merged = merge_dictionary(d, fresh)
+        if _cas_patch(config, user_id, merged, fresh.get("updated_at")):
+            # Keep the local copy consistent with what we just published.
+            config["dictionary"] = merged
+            if save_config_fn is not None:
+                try:
+                    save_config_fn(config)
+                except Exception as e:
+                    logger.debug("merged dictionary save failed: %s", e)
+            _LAST_PUSH = {"ok": True, "error": ""}
+            return _LAST_PUSH
+
+        _LAST_PUSH = {"ok": False, "merged": merged,
+                      "error": "Your dictionary is being edited on another "
+                               "device — saved here, not synced. Try again."}
+        logger.warning("dictionary CAS failed twice — not synced")
+        return _LAST_PUSH
     except Exception as e:
         logger.debug("dictionary push failed: %s", e)
+        _LAST_PUSH = {"ok": False, "error": f"Could not sync the dictionary: {e}"}
+        return _LAST_PUSH

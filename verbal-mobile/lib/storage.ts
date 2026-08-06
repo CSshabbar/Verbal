@@ -39,6 +39,18 @@ export interface HistoryEntry {
   audio_uri?:  string;              // local file (backup + retry cache)
   audio_url?:  string;              // cloud URL (primary, cross-device)
   status?:     'done' | 'failed';   // 'failed' = retryable
+  // Real recording length, LOCAL CACHE ONLY (IDI-172). There is no
+  // `duration_ms` column on `transcriptions`, so this never round-trips through
+  // the cloud — but it survives an app restart, which is what stops the History
+  // row's duration label from degrading to the wordCount/2.5 estimate after the
+  // first refresh.
+  duration_ms?: number;
+  // Tombstone marker (IDI-172 cross-platform contract). Only ever set on rows
+  // coming FROM the cloud: a delete is an UPDATE that stamps `deleted_at` and
+  // blanks the payload, never a hard DELETE. Entries carrying it are dropped by
+  // mergeRemoteEntries (and their ids pruned from the local cache), so it is
+  // never persisted.
+  deleted_at?: string | null;
 }
 
 // ── Identity ──────────────────────────────────────────────────────────────────
@@ -76,6 +88,31 @@ export async function getUserId(): Promise<string> {
 }
 export async function setUserId(id: string) {
   await AsyncStorage.setItem(KEYS.USER_ID, id);
+}
+
+/**
+ * The id that may legitimately scope CLOUD data, or null when there isn't one
+ * (IDI-174). Same first two steps as getUserId() — paired-account override,
+ * then the Supabase session id — but WITHOUT the `user_<timestamp>` minting
+ * fallback: a locally-minted id is a device-scoped placeholder, and writing
+ * cloud rows under it just litters shared tables with orphan data no account
+ * can ever read back.
+ *
+ * Callers use it as a gate: null ⇒ stay local-only, skip the read/write.
+ * getUserId() keeps the minting fallback because other callers still depend on
+ * it (removed in IDI-179).
+ */
+export async function getCloudUserId(): Promise<string | null> {
+  try {
+    const paired = await AsyncStorage.getItem(KEYS.PAIRED_UID);
+    if (paired) return paired;
+  } catch { /* fall through */ }
+  try {
+    const { data } = await supabase.auth.getSession();
+    return data.session?.user?.id ?? null;
+  } catch {
+    return null;
+  }
 }
 
 /** The paired-account override, or null when this device isn't paired into
@@ -117,6 +154,10 @@ export async function clearAccountData(): Promise<void> {
     'flume_dictionary',     // lib/dictionary (vocabulary + snippets)
     'flume_target_device',  // flume-ui/hooks/useDevices target selection
   ]);
+  // The dictionary's CAS witness (`updated_at` of the row we last read) belongs
+  // to the OLD account — keeping it would make the next push compare against a
+  // foreign row. Dynamic import: lib/dictionary imports this module.
+  import('./dictionary').then((m) => m.resetSyncState()).catch(() => {});
 }
 
 export async function getDeviceName(): Promise<string> {
@@ -212,7 +253,7 @@ export async function addToHistory(
   deviceName: string,
   deviceId: string,
   id?: string,
-  extra?: Partial<Pick<HistoryEntry, 'audio_uri' | 'audio_url' | 'status'>>,
+  extra?: Partial<Pick<HistoryEntry, 'audio_uri' | 'audio_url' | 'status' | 'duration_ms'>>,
 ): Promise<HistoryEntry[]> {
   const h = await getHistory();
   const entry: HistoryEntry = {
@@ -233,14 +274,26 @@ export async function addToHistory(
   return updated;
 }
 
+/**
+ * Merge cloud rows into the local cache. Tombstone-aware (IDI-172): rows with
+ * `deleted_at` set are never adopted, AND any local copy of them is PRUNED — a
+ * delete performed on the desktop arrives as a tombstoned UPDATE, and without
+ * the prune the row would live on in this device's cache forever (the old code
+ * only ever added rows, so a delete could not propagate at all).
+ */
 export async function mergeRemoteEntries(remote: HistoryEntry[]): Promise<HistoryEntry[]> {
   const local = await getHistory();
-  const localIds = new Set(local.map(e => e.id));
+  const tombstoned = new Set(remote.filter(e => e.deleted_at).map(e => e.id));
+  const kept = tombstoned.size ? local.filter(e => !tombstoned.has(e.id)) : local;
+  const pruned = kept.length !== local.length;
+
+  const keptIds = new Set(kept.map(e => e.id));
   const newEntries = remote
-    .filter(e => !localIds.has(e.id))
-    .map(e => ({ ...e, source: 'remote' as const }));
-  if (newEntries.length === 0) return local;
-  const merged = [...newEntries, ...local]
+    .filter(e => !e.deleted_at && !keptIds.has(e.id))
+    .map(({ deleted_at, ...e }) => ({ ...e, source: 'remote' as const }));
+
+  if (newEntries.length === 0 && !pruned) return local;
+  const merged = [...newEntries, ...kept]
     .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
     .slice(0, 100);
   await AsyncStorage.setItem(KEYS.HISTORY, JSON.stringify(merged));

@@ -28,3 +28,8 @@ create policy "Users access own canvas" on public.canvas
 -- In the supabase_realtime publication (already enabled live); if reproducing
 -- this table from scratch, also run:
 --   alter publication supabase_realtime add table public.canvas;
+
+-- IDI-173 (2026-08, live migration `canvas_device_id_origin`): origin filtering
+-- by stable device_id instead of display name (same-name devices used to drop
+-- each other's updates). Old-client rows without it fall back to name-compare.
+alter table public.canvas add column if not exists device_id text;

@@ -61,6 +61,48 @@ ACCOUNT_DELETED_MSG = "Your account has been deleted."
 SYNC_OFF_MSG = "Sync is off — turn it on in Settings."
 
 
+# Sentinel for "this write does not touch that column" (IDI-173). A canvas
+# text-only save must NOT null the shared image, and an image-only save must NOT
+# blank the shared text — the writer used to send BOTH columns on every call, so
+# whichever surface the user didn't touch got wiped on the other devices.
+KEEP = "__keep__"
+
+
+def device_identity(app):
+    """(device_id, device_name) for THIS device.
+
+    `device_id` is the SAME stable id the `devices` table rows and the
+    SyncClient use (`platform.node()`), which is what canvas origin filtering is
+    keyed on now (IDI-173) — two devices sharing a display name used to drop
+    each other's canvas updates. `device_name` defaults to the machine's real
+    name, never the hardcoded "Windows" the writer used to send while the mac
+    listener compared against ""."""
+    import platform
+    cfg = getattr(app, "config", None) or {}
+    sync = getattr(app, "_sync", None)
+    device_id = (getattr(sync, "device_id", "") or platform.node() or "").strip()
+    name = (cfg.get("sync_device_name") or "").strip()
+    if not name:
+        name = (getattr(sync, "device_name", "") or platform.node() or "").strip()
+    return device_id, name
+
+
+def canvas_is_own_event(record, my_device_id, my_device_name) -> bool:
+    """Origin filter for a canvas realtime event (IDI-173). Pure — every
+    listener (mac dashboard, Windows dashboard, native canvas window) uses it so
+    the rule cannot drift.
+
+    device_id wins whenever the event HAS one; the display-name compare is only
+    a fallback for rows written by clients that predate the column."""
+    if not isinstance(record, dict):
+        return False
+    rec_id = (record.get("device_id") or "").strip()
+    if rec_id:
+        return bool(my_device_id) and rec_id == my_device_id
+    rec_name = (record.get("device_name") or "").strip()
+    return bool(rec_name) and bool(my_device_name) and rec_name == my_device_name
+
+
 def _ok(**data):
     return {"ok": True, **data}
 
@@ -194,6 +236,7 @@ class SharedDashboard:
         self._known_devices = []
         self._last_canvas_loaded = False
         self._canvas_listener_started = False
+        self._canvas_stop = threading.Event()
 
     def show(self):
         try:
@@ -304,14 +347,22 @@ class SharedDashboard:
                 self._target_device_id = "__all__"
         self._emit("devices", {"devices": devices, "target_device_id": self._target_device_id})
 
+    def stop_canvas_listener(self):
+        """Signal the canvas listener thread to exit (IDI-173)."""
+        self._canvas_stop.set()
+
     def _canvas_listen_loop(self):
-        """Keep canvas synced while the dashboard is open."""
-        while True:
+        """Keep canvas synced while the dashboard is open.
+
+        Stop-checked EVERY iteration (was `while True`): the thread is started
+        once and latched by `_canvas_listener_started`, so without this it
+        outlived sign-out and every window close for the life of the process."""
+        while not self._canvas_stop.is_set():
             try:
                 self._canvas_listen_once()
             except Exception as e:
                 logger.debug(f"Canvas listener failed: {e}")
-            time.sleep(5)
+            self._canvas_stop.wait(5)
 
     def _notify_native(self, text):
         """Best-effort Windows toast (fail closed). Gives visible confirmation that
@@ -361,10 +412,10 @@ class SharedDashboard:
         from app.auth import get_access_token
 
         user_id = self.app.config.get("sync_user_id", "")
-        device_name = self.app.config.get("sync_device_name", "Windows")
+        my_device_id, my_device_name = device_identity(self.app)
         # Canvas is "sync" (IDI-171): the user toggle gates it, and being
         # signed in gates it again.
-        if not user_id or not self._cloud_sync_on():
+        if not user_id or not self._cloud_sync_on() or self._canvas_stop.is_set():
             time.sleep(5)
             return
 
@@ -403,7 +454,9 @@ class SharedDashboard:
                 if msg.get("event") != "postgres_changes":
                     return
                 record = msg.get("payload", {}).get("data", {}).get("record", {})
-                if record.get("device_name") == device_name:
+                # IDI-173: skip our OWN echo by stable device_id; fall back to
+                # the display-name compare only for pre-device_id rows.
+                if canvas_is_own_event(record, my_device_id, my_device_name):
                     return
                 content = record.get("content", "") or ""
                 image_url = record.get("image_url")
@@ -416,6 +469,11 @@ class SharedDashboard:
                     # active (the WebView still renders the preview on the Canvas tab).
                     pyperclip.copy(image_url)
                     self._notify_native(f"Received image from {from_name} — link copied")
+                else:
+                    # An explicit clear (content '' + image null) is a real
+                    # event, not a no-op — say so and let the emit below APPLY
+                    # the empty state.
+                    self._notify_native(f"{from_name} cleared the canvas")
                 self._emit(
                     "canvasRemote",
                     {
@@ -493,7 +551,8 @@ class DashboardApi:
                 "gemini_api_keys": cfg.get("gemini_api_keys", []),
                 "sync_enabled": cfg.get("sync_enabled", False),
                 "sync_user_id": cfg.get("sync_user_id", ""),
-                "sync_device_name": cfg.get("sync_device_name", "Windows"),
+                "sync_device_name": (cfg.get("sync_device_name")
+                                     or __import__("platform").node() or ""),
                 "hotkey_hold": cfg.get("hotkey_hold", "alt_r"),
                 "hotkey_toggle": cfg.get("hotkey_toggle", "alt_r"),
                 # Notes v2 feature flags (default true) so Settings can toggle each.
@@ -1195,7 +1254,13 @@ class DashboardApi:
     def save_dictionary(self, vocabulary, replacements):
         from app import dictionary
         d = dictionary.save(self.app.config, vocabulary or [], replacements or [], save_config)
-        return _ok(vocabulary=d["vocabulary"], replacements=d["replacements"])
+        # IDI-174: the cloud write is compare-and-swap now, and a lost race that
+        # can't be merged in one retry is REPORTED — the local save still stands,
+        # but the user needs to know it didn't reach their other devices.
+        # (`d` may have been replaced by the merge, so re-read it.)
+        d = dictionary.get(self.app.config)
+        return _ok(vocabulary=d["vocabulary"], replacements=d["replacements"],
+                   sync_error=dictionary.last_sync_error())
 
     # ── snippets (spoken trigger → longer text expansion) ──────────────────────
     def fetch_snippets(self):
@@ -1211,7 +1276,8 @@ class DashboardApi:
         s = snippet or {}
         dictionary.add_snippet(self.app.config, s.get("trigger", ""),
                                s.get("expansion", ""), s.get("label", ""), save_config)
-        return _ok(snippets=dictionary.get_snippets(self.app.config))
+        return _ok(snippets=dictionary.get_snippets(self.app.config),
+                   sync_error=dictionary.last_sync_error())
 
     def update_snippet(self, snippet):
         from app import dictionary
@@ -1224,12 +1290,14 @@ class DashboardApi:
             if s.get(k) is not None:
                 fields[k] = s.get(k)
         dictionary.update_snippet(self.app.config, sid, save_config, **fields)
-        return _ok(snippets=dictionary.get_snippets(self.app.config))
+        return _ok(snippets=dictionary.get_snippets(self.app.config),
+                   sync_error=dictionary.last_sync_error())
 
     def delete_snippet(self, snippet_id):
         from app import dictionary
         dictionary.remove_snippet(self.app.config, snippet_id, save_config)
-        return _ok(snippets=dictionary.get_snippets(self.app.config))
+        return _ok(snippets=dictionary.get_snippets(self.app.config),
+                   sync_error=dictionary.last_sync_error())
 
     # ── auto-learn from corrections ─────────────────────────────────────────────
     def get_autolearn_enabled(self):
@@ -1264,10 +1332,72 @@ class DashboardApi:
         return _ok(enabled=cfg["filetag_enabled"])
 
     def clear_history(self):
+        """Step 1 of the two-step clear (IDI-172): wipe THIS device only.
+
+        Was dead code — nothing in any UI called it. It is now the Settings →
+        "Clear history" button, which then offers step 2
+        (`clear_history_everywhere`) separately, because "clear my history"
+        meaning "delete it off my phone too" has to be an explicit second yes."""
         self.app.config["history"] = []
         self.app.config["pinned"] = []
         save_config(self.app.config)
+        try:
+            self.app._total_transcriptions = 0
+            self.app._total_words = 0
+        except Exception:
+            pass
         return self.get_state()
+
+    def clear_history_everywhere(self):
+        """Step 2: TOMBSTONE every cloud transcription of this account.
+
+        Never a hard DELETE (IDI-172) — a hard delete is invisible to the other
+        devices, so their copies survive and the next backfill re-seeds this
+        one. Each device drops its copy when it sees the `deleted_at`."""
+        cfg = self.app.config
+        user_id = cfg.get("sync_user_id", "")
+        if not user_id or not _cloud_allowed(cfg):
+            return _err("Sign in to clear your other devices.")
+        try:
+            from app.sync import tombstone_all_transcriptions
+            res = tombstone_all_transcriptions(user_id)
+            if not res.get("ok"):
+                return _err(res.get("error") or "Could not clear your other devices.")
+            return _ok(count=res.get("count", 0))
+        except Exception as e:
+            logger.error("clear_history_everywhere failed: %s", e)
+            return _err(str(e))
+
+    def remove_device(self, device_id):
+        """Drop another device's row from the account's device list (IDI-177).
+
+        Scoped by user_id AND device_id so it can never touch a different
+        account — and deliberately NOT offered for THIS device (signing out is
+        what removes this one). It is a LIST removal, not a revocation: the
+        other device keeps working and will re-register on its next heartbeat,
+        which is exactly what the confirm text says."""
+        device_id = (device_id or "").strip()
+        cfg = self.app.config
+        user_id = cfg.get("sync_user_id", "")
+        if not device_id:
+            return _err("No device selected")
+        if not user_id or not _cloud_allowed(cfg):
+            return _err("Sign in to manage your devices.")
+        my_id, _name = device_identity(self.app)
+        if device_id == my_id:
+            return _err("This device can't remove itself — sign out instead.")
+        try:
+            from app.auth import auth_header
+            from app.sync import delete_device_presence
+            delete_device_presence(user_id, device_id, auth_header(cfg))
+        except Exception as e:
+            logger.debug("remove_device failed: %s", e)
+            return _err(str(e))
+        try:
+            self.dashboard._load_devices()
+        except Exception:
+            pass
+        return _ok(device_id=device_id)
 
     # ── Notes API ───────────────────────────────────────────────────────
     # ── notes: local-first, cloud-synced when enabled ─────────────────────────
@@ -1674,7 +1804,13 @@ class DashboardApi:
         cfg["recording_mode"] = settings.get("recording_mode", cfg.get("recording_mode", "toggle"))
         cfg["sync_enabled"] = bool(settings.get("sync_enabled"))
         cfg["sync_user_id"] = settings.get("sync_user_id", "").strip()
-        cfg["sync_device_name"] = settings.get("sync_device_name", "").strip() or "Windows"
+        # Blank name → the MACHINE's name, not the literal "Windows" (IDI-173):
+        # this string is the canvas/history origin label every other device
+        # shows, and a Mac announcing itself as "Windows" is both wrong and the
+        # exact mismatch the origin filtering had to work around.
+        import platform as _plat
+        cfg["sync_device_name"] = (settings.get("sync_device_name", "").strip()
+                                   or _plat.node() or "This device")
         # Notes v2 feature flags — only overwrite when present so a partial settings
         # payload never clobbers a flag back to its default.
         for flag in NOTES_FEATURE_FLAGS:
@@ -1889,7 +2025,11 @@ class DashboardApi:
             # push to other devices if sync is on
             if getattr(self.app, "_sync", None):
                 try:
-                    self.app._sync.push(result, None)
+                    # Full push shape (IDI-172): a retried entry already HAS its
+                    # uploaded audio, so the receiving device gets it too.
+                    self.app._sync.push(result, None,
+                                        (entry.get("audio_url") or ""), "done",
+                                        entry_id)
                 except Exception:
                     pass
             return self.get_state()
@@ -1924,7 +2064,15 @@ class DashboardApi:
             logger.error(f"Canvas fetch failed: {e}")
             return _err(str(e))
 
-    def save_canvas(self, content, image_url=None):
+    def save_canvas(self, content=KEEP, image_url=KEEP):
+        """Write the shared canvas (IDI-173).
+
+        Both columns are OPTIONAL and omitted unless this call actually means to
+        change them — `KEEP` (the default, and what a missing JS argument
+        resolves to) leaves the column untouched. `image_url=None` is an
+        explicit "remove the image"; `content=""` is an explicit "clear the
+        text". Every write carries this device's `device_id` AND `device_name`
+        so receivers can skip their own echo by stable id."""
         try:
             import httpx
 
@@ -1936,29 +2084,42 @@ class DashboardApi:
                 return _err("Sign in to use Canvas")
             if not self._sync_on():
                 return _err(SYNC_OFF_MSG)
+            device_id, device_name = device_identity(self.app)
+            payload = {
+                "user_id": user_id,
+                "device_id": device_id,
+                "device_name": device_name,
+                "updated_at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+            }
+            if content is not KEEP and content != KEEP:
+                payload["content"] = content or ""
+            if image_url is not KEEP and image_url != KEEP:
+                payload["image_url"] = image_url
+            if "content" not in payload and "image_url" not in payload:
+                return _err("Nothing to save")
             resp = httpx.post(
                 f"{SUPABASE_URL}/rest/v1/canvas?on_conflict=user_id",
                 headers={
                     **auth_header(self.app.config, json=True),
                     "Prefer": "return=minimal,resolution=merge-duplicates",
                 },
-                json={
-                    "user_id": user_id,
-                    "content": content or "",
-                    "image_url": image_url,
-                    "device_name": self.app.config.get("sync_device_name", "Windows"),
-                    "updated_at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
-                },
+                json=payload,
                 timeout=10,
             )
             if resp.status_code not in (200, 201):
                 return _err(f"Canvas save failed: {resp.status_code}")
-            if content:
-                pyperclip.copy(content)
+            if payload.get("content"):
+                pyperclip.copy(payload["content"])
             return _ok()
         except Exception as e:
             logger.error(f"Canvas save failed: {e}")
             return _err(str(e))
+
+    def clear_canvas(self):
+        """Explicit clear (IDI-173): an actual write of `{content: '',
+        image_url: null}`, not a no-op. Receivers APPLY the empty content —
+        which is why the write has to say both columns out loud."""
+        return self.save_canvas("", None)
 
     def save_canvas_image_data(self, data_uri, content=""):
         """Accept an image as a base64 data-URI (from a file picker or paste in

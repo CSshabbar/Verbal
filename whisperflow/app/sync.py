@@ -30,16 +30,76 @@ def _utc_now_iso() -> str:
     return datetime.datetime.now(datetime.timezone.utc).isoformat()
 
 
+# ── IDI-172: history deletes are TOMBSTONES, never hard DELETEs ───────────────
+# A hard DELETE is invisible to every other device (Realtime `old_record` has
+# no columns under the default REPLICA IDENTITY, and a REST re-fetch just sees
+# the row missing), so a phone-side delete used to be resurrected by the next
+# desktop backfill. The contract (shared with the mobile client) is:
+#   delete  = UPDATE {deleted_at: now, text: '', edited_text: null,
+#                     audio_url: null}, scoped to the user's own row(s)
+#   receive = drop any row carrying `deleted_at` AND prune the matching local id
+# The storage object behind `audio_url` is removed best-effort at tombstone time
+# (the row can no longer point at it, so nothing else ever will).
+TOMBSTONE_SELECT = "id,text,device_id,device_name,target_device_id,created_at,audio_url,status,deleted_at"
+
+
+def is_tombstone(record) -> bool:
+    """True when this transcription row is soft-deleted. Pure (fixture-tested)."""
+    return bool(isinstance(record, dict) and record.get("deleted_at"))
+
+
+def drop_tombstones(rows):
+    """Split a fetched batch into (live rows, tombstoned ids). Pure — every
+    merge/receive path runs through this so the rule can't drift."""
+    live, dead = [], []
+    for r in rows or []:
+        if not isinstance(r, dict):
+            continue
+        if is_tombstone(r):
+            if r.get("id"):
+                dead.append(r["id"])
+        else:
+            live.append(r)
+    return live, dead
+
+
+def prune_local_history(history, sync_ids):
+    """Remove local history entries whose cloud row id was tombstoned. Matches
+    on `sync_id` (the cloud row id we record on push/receive) and falls back to
+    the entry's own `id` for rows that were written with the cloud id directly.
+    Pure — returns a new list."""
+    dead = {i for i in (sync_ids or []) if i}
+    if not dead:
+        return list(history or [])
+    out = []
+    for e in history or []:
+        if isinstance(e, dict) and (e.get("sync_id") in dead or e.get("id") in dead):
+            continue
+        out.append(e)
+    return out
+
+
 class SyncClient:
     # Backfill is bounded: a reconnect must never dump an unbounded backlog of
     # old dictations into whatever app happens to be focused.
     BACKFILL_LIMIT = 50
+    # Tombstones missed while offline are pulled separately (a tombstone is an
+    # UPDATE — it never moves `created_at`, so the content backfill's
+    # `created_at > last_seen` filter can never see it).
+    TOMBSTONE_LIMIT = 200
 
-    def __init__(self, user_id: str, device_name: str, on_receive):
+    def __init__(self, user_id: str, device_name: str, on_receive,
+                 on_tombstone=None, on_pushed=None):
         self.user_id     = user_id
         self.device_id   = platform.node()
         self.device_name = device_name or platform.node()
         self.on_receive  = on_receive
+        # IDI-172: a remote delete must prune this device's local history.
+        self.on_tombstone = on_tombstone
+        # Called with (entry_id, row_id) after a successful push so the caller
+        # can remember which cloud row a local history entry became (needed to
+        # attach the audio URL later and to honour a remote tombstone).
+        self.on_pushed   = on_pushed
         self._ws         = None
         self._connected  = False
         self._ref        = 0
@@ -52,6 +112,8 @@ class SyncClient:
         # NOW so the first connect can't replay history; every later
         # (re)connect backfills only the gap it actually missed.
         self._last_seen_at = _utc_now_iso()
+        # Separate watermark for tombstones (see TOMBSTONE_LIMIT).
+        self._last_tombstone_at = self._last_seen_at
         self._seen_ids   = set()
         self._seen_order = []
         self._thread     = threading.Thread(target=self._run, daemon=True)
@@ -90,12 +152,23 @@ class SyncClient:
         self._ref += 1
         return str(self._ref)
 
-    def push(self, text: str, target_device_id: str | None = None):
-        """Insert transcription via REST. If target_device_id set, only that device receives it."""
-        logger.info(f"Sync push request: target={target_device_id}")
-        threading.Thread(target=self._push_rest, args=(text, target_device_id), daemon=True).start()
+    def push(self, text: str, target_device_id: str | None = None,
+             audio_url: str = "", status: str = "", entry_id: str = ""):
+        """Insert transcription via REST. If target_device_id set, only that device receives it.
 
-    def _push_rest(self, text: str, target_device_id: str | None = None):
+        IDI-172: `audio_url` / `status` are part of the push shape now — the row
+        was previously text-only, so a receiving device could never play the
+        dictation's audio or tell a failed-and-retryable row from a good one
+        even though both columns already existed."""
+        logger.info(f"Sync push request: target={target_device_id}")
+        threading.Thread(
+            target=self._push_rest,
+            args=(text, target_device_id, audio_url, status, entry_id),
+            daemon=True,
+        ).start()
+
+    def _push_rest(self, text: str, target_device_id: str | None = None,
+                   audio_url: str = "", status: str = "", entry_id: str = ""):
         from app.auth import auth_header
         try:
             payload = {
@@ -110,19 +183,69 @@ class SyncClient:
                 logger.debug(f"Targeting specific device: {target_device_id}")
             else:
                 logger.debug("Broadcasting to all devices")
+            # Only send what we actually have — never overwrite a column with
+            # an empty value just because this call didn't know it.
+            if audio_url:
+                payload["audio_url"] = audio_url
+            if status:
+                payload["status"] = status
 
             resp = httpx.post(
                 f"{REST_URL}/transcriptions",
-                headers={**auth_header(json=True), "Prefer": "return=minimal"},
+                # return=representation so we learn the row id: the local
+                # history entry records it (`sync_id`) and can then be pruned
+                # by a remote tombstone and updated with the audio URL once the
+                # WAV upload finishes.
+                headers={**auth_header(json=True), "Prefer": "return=representation"},
                 json=payload,
                 timeout=5,
             )
             if resp.status_code in (200, 201):
                 logger.info(f"Sync pushed: '{text[:50]}'" + (f" → {target_device_id[:12]}" if target_device_id else ""))
-            else:
-                logger.warning(f"Sync push failed {resp.status_code}: {resp.text[:200]}")
+                row_id = ""
+                try:
+                    body = resp.json()
+                    row = body[0] if isinstance(body, list) and body else body
+                    row_id = (row or {}).get("id", "") if isinstance(row, dict) else ""
+                except Exception:
+                    row_id = ""
+                if row_id:
+                    # our own insert — never deliver it back to ourselves
+                    self._mark_seen(row_id)
+                    if entry_id and self.on_pushed:
+                        try:
+                            self.on_pushed(entry_id, row_id)
+                        except Exception as e:
+                            logger.debug(f"on_pushed failed: {e}")
+                return row_id
+            logger.warning(f"Sync push failed {resp.status_code}: {resp.text[:200]}")
         except Exception as e:
             logger.error(f"Sync push error: {e}")
+        return ""
+
+    def update_pushed_audio_url(self, row_id: str, audio_url: str) -> bool:
+        """Attach the recording's object path to an already-pushed row.
+
+        The WAV upload finishes AFTER the text is pushed (the push must not wait
+        on a 30 s upload), so the row goes out without `audio_url` and is
+        patched here — user- AND row-scoped. Best-effort."""
+        if not row_id or not audio_url:
+            return False
+        from app.auth import auth_header, cloud_allowed
+        try:
+            if not cloud_allowed():
+                return False
+            resp = httpx.patch(
+                f"{REST_URL}/transcriptions",
+                headers={**auth_header(json=True), "Prefer": "return=minimal"},
+                params={"id": f"eq.{row_id}", "user_id": f"eq.{self.user_id}"},
+                json={"audio_url": audio_url},
+                timeout=8,
+            )
+            return resp.status_code in (200, 204)
+        except Exception as e:
+            logger.debug(f"audio_url patch failed: {e}")
+            return False
 
     def _run(self):
         """THE reconnect loop — the only one (IDI-171).
@@ -146,6 +269,15 @@ class SyncClient:
             self._stop.wait(delay)
 
     # ── missed-while-disconnected backfill (IDI-171) ──────────────────────────
+    def _mark_seen(self, rid):
+        """Add an id to the bounded recent-id set (shared by receive + push)."""
+        if not rid or rid in self._seen_ids:
+            return
+        self._seen_ids.add(rid)
+        self._seen_order.append(rid)
+        if len(self._seen_order) > 200:
+            self._seen_ids.discard(self._seen_order.pop(0))
+
     def _remember(self, record) -> bool:
         """Track the newest created_at + a bounded recent-id set. Returns False
         when this row has already been handled (realtime/backfill overlap)."""
@@ -153,18 +285,34 @@ class SyncClient:
         if rid:
             if rid in self._seen_ids:
                 return False
-            self._seen_ids.add(rid)
-            self._seen_order.append(rid)
-            if len(self._seen_order) > 200:
-                self._seen_ids.discard(self._seen_order.pop(0))
+            self._mark_seen(rid)
         created = record.get("created_at") or ""
         if created and created > self._last_seen_at:
             self._last_seen_at = created
         return True
 
     def _deliver(self, record):
-        """The single receive path — shared by realtime INSERTs and backfill,
-        so the own-device / targeted-device filters can't drift apart."""
+        """The single receive path — shared by realtime INSERTs/UPDATEs and
+        backfill, so the tombstone / own-device / targeted-device filters can't
+        drift apart."""
+        if not isinstance(record, dict) or not record:
+            return
+        # IDI-172: a tombstone is NOT content. It is handled BEFORE the dedup
+        # (the row's id was almost certainly already delivered as content, and
+        # the own-device skip must not apply either: the tombstone carries the
+        # ORIGINATING device's device_id, so the device that wrote the row is
+        # exactly the one that must prune it when another device deletes it).
+        if is_tombstone(record):
+            deleted = str(record.get("deleted_at") or "")
+            if deleted > self._last_tombstone_at:
+                self._last_tombstone_at = deleted
+            rid = record.get("id")
+            if rid and self.on_tombstone:
+                try:
+                    self.on_tombstone(record)
+                except Exception as e:
+                    logger.debug(f"on_tombstone failed: {e}")
+            return
         if not self._remember(record):
             return
         if record.get("device_id") == self.device_id:
@@ -175,12 +323,21 @@ class SyncClient:
         text = record.get("text", "")
         if text and self.on_receive:
             logger.info(f"Sync received from '{record.get('device_name','Unknown')}': '{text[:60]}'")
-            self.on_receive(text, record.get("device_name", "Unknown"))
+            self.on_receive(text, record.get("device_name", "Unknown"), record)
 
     def _backfill(self):
-        """After a (re)connect, replay any transcriptions inserted while we
-        were asleep/disconnected. Bounded (BACKFILL_LIMIT), user-scoped, and
-        routed through `_deliver` so the targeted-filter still applies."""
+        """Catch up on everything missed while disconnected: new rows AND
+        deletions. The two are separate queries (see `_backfill_tombstones`)
+        and the deletion sweep runs even when the content fetch fails —
+        otherwise a single bad response leaves a deleted row on this device
+        until the next reconnect."""
+        self._backfill_content()
+        self._backfill_tombstones()
+
+    def _backfill_content(self):
+        """Replay any transcriptions inserted while we were asleep/
+        disconnected. Bounded (BACKFILL_LIMIT), user-scoped, and routed through
+        `_deliver` so the tombstone/targeted filters still apply."""
         from app.auth import auth_header, cloud_allowed
         try:
             if self._stop.is_set() or not cloud_allowed():
@@ -191,7 +348,11 @@ class SyncClient:
                 params={
                     "user_id":    f"eq.{self.user_id}",
                     "created_at": f"gt.{self._last_seen_at}",
-                    "select":     "id,text,device_id,device_name,target_device_id,created_at",
+                    # IDI-172: `deleted_at` in the select so a row deleted while
+                    # we were away is dropped instead of replayed as content,
+                    # and audio_url/status so a received row is a full history
+                    # entry rather than bare text.
+                    "select":     TOMBSTONE_SELECT,
                     "order":      "created_at.asc",
                     "limit":      str(self.BACKFILL_LIMIT),
                 },
@@ -201,15 +362,49 @@ class SyncClient:
                 logger.debug(f"Sync backfill skipped ({resp.status_code})")
                 return
             rows = resp.json() or []
+            live, dead = drop_tombstones(rows)
             if rows:
-                logger.info(f"Sync backfill: {len(rows)} missed row(s)")
+                logger.info(f"Sync backfill: {len(live)} missed row(s), {len(dead)} deleted")
             for r in rows:
+                if self._stop.is_set():
+                    return
+                if isinstance(r, dict):
+                    self._deliver(r)     # tombstones prune, live rows deliver
+        except Exception as e:
+            logger.debug(f"Sync backfill error: {e}")
+
+    def _backfill_tombstones(self):
+        """Pull deletions we missed while offline (IDI-172).
+
+        A tombstone is an UPDATE, so it never moves `created_at` — the content
+        backfill above (`created_at > last_seen`) is structurally blind to the
+        deletion of any row older than the watermark. This query is keyed on
+        `deleted_at` instead. Bounded, user-scoped, best-effort."""
+        from app.auth import auth_header, cloud_allowed
+        try:
+            if self._stop.is_set() or not cloud_allowed() or not self.on_tombstone:
+                return
+            resp = httpx.get(
+                f"{REST_URL}/transcriptions",
+                headers=auth_header(),
+                params={
+                    "user_id":    f"eq.{self.user_id}",
+                    "deleted_at": f"gt.{self._last_tombstone_at}",
+                    "select":     "id,deleted_at",
+                    "order":      "deleted_at.asc",
+                    "limit":      str(self.TOMBSTONE_LIMIT),
+                },
+                timeout=8,
+            )
+            if resp.status_code != 200:
+                return
+            for r in resp.json() or []:
                 if self._stop.is_set():
                     return
                 if isinstance(r, dict):
                     self._deliver(r)
         except Exception as e:
-            logger.debug(f"Sync backfill error: {e}")
+            logger.debug(f"Tombstone backfill error: {e}")
 
     def _listen(self):
         import websocket
@@ -235,7 +430,12 @@ class SyncClient:
                     "config": {
                         "postgres_changes": [
                             {
-                                "event":  "INSERT",
+                                # "*" not "INSERT" (IDI-172): a delete is a
+                                # tombstone UPDATE, so an INSERT-only
+                                # subscription never hears about it live.
+                                # `_deliver` dedups UPDATEs of rows it already
+                                # handled, so edits don't re-paste.
+                                "event":  "*",
                                 "schema": "public",
                                 "table":  "transcriptions",
                                 "filter": f"user_id=eq.{self.user_id}",
@@ -350,6 +550,84 @@ class SyncClient:
                 pass
         self._ws = None
         self._connected = False
+
+
+def _delete_recording_object(audio_url: str) -> None:
+    """Best-effort removal of the private `recordings` object behind a
+    tombstoned row. Once `audio_url` is nulled nothing can reach the object
+    again, so leaving it would be an unreachable, un-deletable blob. Never
+    raises — a failed storage delete must not fail the tombstone."""
+    if not audio_url:
+        return
+    try:
+        from app.recordings import BUCKET, STORAGE_URL, extract_object_path
+        path = extract_object_path(audio_url, BUCKET)
+        if not path:
+            return
+        httpx.delete(
+            f"{STORAGE_URL}/object/{BUCKET}/{path}",
+            headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"},
+            timeout=8,
+        )
+    except Exception as e:
+        logger.debug(f"recording object delete skipped: {e}")
+
+
+def tombstone_all_transcriptions(user_id: str, limit: int = 1000) -> dict:
+    """Soft-delete EVERY still-live transcription of this user (IDI-172).
+
+    Backs the dashboard's "Also clear from your other devices?" step. A single
+    bounded, user-scoped PATCH — never a DELETE — so each device's receive path
+    prunes its own copy instead of silently disagreeing forever. Audio objects
+    are removed first (best-effort), because nulling `audio_url` makes them
+    unreachable. Returns {"ok": bool, "count": int, "error": str}."""
+    from app.auth import auth_header, cloud_allowed
+    if not user_id:
+        return {"ok": False, "count": 0, "error": "Not signed in"}
+    if not cloud_allowed():
+        return {"ok": False, "count": 0, "error": "Sign in to clear your other devices."}
+    try:
+        headers = auth_header(json=True)
+        # 1. audio objects (bounded — we only ever clear what we can list)
+        try:
+            listing = httpx.get(
+                f"{REST_URL}/transcriptions",
+                headers=auth_header(),
+                params={"user_id": f"eq.{user_id}", "deleted_at": "is.null",
+                        "audio_url": "not.is.null",
+                        "select": "id,audio_url", "limit": str(limit)},
+                timeout=10,
+            )
+            if listing.status_code == 200:
+                for row in listing.json() or []:
+                    if isinstance(row, dict):
+                        _delete_recording_object(row.get("audio_url") or "")
+        except Exception as e:
+            logger.debug(f"tombstone audio sweep skipped: {e}")
+
+        # 2. the tombstone itself
+        resp = httpx.patch(
+            f"{REST_URL}/transcriptions",
+            headers={**headers, "Prefer": "return=representation"},
+            params={"user_id": f"eq.{user_id}", "deleted_at": "is.null"},
+            json={"deleted_at": _utc_now_iso(), "text": "",
+                  "edited_text": None, "audio_url": None},
+            timeout=15,
+        )
+        if resp.status_code not in (200, 204):
+            return {"ok": False, "count": 0,
+                    "error": f"Could not clear the cloud copy ({resp.status_code})"}
+        count = 0
+        try:
+            body = resp.json()
+            count = len(body) if isinstance(body, list) else 0
+        except Exception:
+            count = 0
+        logger.info("Tombstoned %d cloud transcription(s)", count)
+        return {"ok": True, "count": count, "error": ""}
+    except Exception as e:
+        logger.error(f"tombstone_all_transcriptions failed: {e}")
+        return {"ok": False, "count": 0, "error": str(e)}
 
 
 def register_device_presence(user_id: str, device_id: str, device_name: str) -> None:
