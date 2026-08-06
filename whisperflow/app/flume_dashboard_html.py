@@ -483,7 +483,7 @@ def flume_html() -> str:
 function api(name){ const a=[].slice.call(arguments,1);
   return (window.pywebview && window.pywebview.api && window.pywebview.api[name]) ? window.pywebview.api[name].apply(null,a) : Promise.resolve({ok:false}); }
 let STATE=null, NOTES=[], CANVAS={content:'',image_url:null}, ACTIVE='home', SELH=0, SELN=null, EDITH=false;
-let PAIR={active:false, token:null, svg:'', ttl:0, claimedBy:null, pollTimer:null, tickTimer:null};
+let PAIR={active:false, starting:false, error:null, token:null, svg:'', ttl:0, claimedBy:null, pollTimer:null, tickTimer:null};
 let DICT={vocabulary:[],replacements:[]}, DICT_LOADED=false;
 let SNIPS=[], SNIPS_LOADED=false, SNIP_EDIT=null, SNIP_SEARCH='', SNIP_MENU=null, SNIP_SORT=1;
 let FT={enabled:false,seen_count:0}, FT_LOADED=false;
@@ -1247,8 +1247,10 @@ function renderDevices(){
       <div class="dmeta">${esc(d.device_type||'')}</div></div>
       <span class="statpill ${d.online?'on':'offl'}"><span class="pdot"></span>${d.online?'Online':'Offline'}</span></div>`).join('')
     || '<div class="empty">No paired devices yet. Tap “Pair a device”.</div>';
+  const pairErr = (!PAIR.active && PAIR.error)
+    ? `<div class="pairsub" style="color:#f0b39a">${esc(PAIR.error)}</div>` : '';
   const pairBtn = PAIR.active ? '' :
-    `<button class="btn primary" style="width:150px" onclick="startPairing()">${SVG.plus}Pair a device</button>`;
+    `${pairErr}<button class="btn primary" style="width:150px" onclick="startPairing()">${SVG.plus}Pair a device</button>`;
   const target = (STATE&&STATE.target_device_id)||'__all__';
   const opts = [{id:'__all__',name:'All devices'}].concat(
     devs.map(d=>({id:d.device_id,name:d.device_name||'Device'})));
@@ -1272,11 +1274,20 @@ function clearPairTimers(){
   if(PAIR.tickTimer){ clearInterval(PAIR.tickTimer); PAIR.tickTimer=null; }
 }
 function startPairing(){
-  if(PAIR.pollTimer) return;
-  PAIR.active=true; PAIR.claimedBy=null; PAIR.svg='';
+  // Latch BEFORE the async call — the old pollTimer check was set only after
+  // the RPC resolved, so a double-click created two rows and orphaned a
+  // claimable token (IDI-157).
+  if(PAIR.starting || PAIR.pollTimer) return;
+  PAIR.starting=true;
+  PAIR.active=true; PAIR.claimedBy=null; PAIR.svg=''; PAIR.error=null;
   if(ACTIVE!=='devices'){ show('devices'); } else { renderDevices(); }
   api('start_pairing').then(r=>{
-    if(!r || !r.ok){ PAIR.svg=''; PAIR.active=false; renderDevices(); return; }
+    PAIR.starting=false;
+    if(!r || !r.ok){
+      PAIR.svg=''; PAIR.active=false;
+      PAIR.error=(r&&r.error)||'Could not start pairing — check your connection.';
+      renderDevices(); return;
+    }
     PAIR.token=r.token; PAIR.svg=r.svg; PAIR.ttl=r.expires_in||120;
     renderDevices();
     PAIR.tickTimer=setInterval(()=>{
@@ -1294,7 +1305,10 @@ function startPairing(){
 }
 function stopPairing(){
   clearPairTimers();
-  PAIR={active:false, token:null, svg:'', ttl:0, claimedBy:null, pollTimer:null, tickTimer:null};
+  // Revoke the token SERVER-side too — a QR photographed before Cancel stayed
+  // claimable for the rest of its TTL when this was local-only (IDI-157).
+  if(PAIR.token && !PAIR.claimedBy) api('cancel_pairing', PAIR.token);
+  PAIR={active:false, starting:false, error:null, token:null, svg:'', ttl:0, claimedBy:null, pollTimer:null, tickTimer:null};
   if(ACTIVE==='devices') renderDevices();
 }
 

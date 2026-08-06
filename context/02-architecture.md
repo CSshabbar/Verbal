@@ -155,11 +155,12 @@ bounded `config['meetings']` (`MEETINGS_CAP`). The HUD appears when the meeting 
   Expo app; **Android native project** committed at `android/` (Gradle, `gradlew`); EAS profiles for both
   in `eas.json`.
 - **Shared dictation pipeline contract:** `lib/dictationPipeline.ts` wraps transcribe → AI-cleanup →
-  dictionary-replacement → snippet-expansion as ONE function so every entry point (in-app recorder, the
-  iOS keyboard extension's main-app handoff, any future RN-hosted path) runs identical logic instead of
-  each reimplementing it. iOS's keyboard extension can't run JS at all, so it hands off to the main app,
-  which calls this. Android's IME (Kotlin, native) can't call this TS either — `FlumeInputMethodService.kt`
-  mirrors the same sequence natively, with this file as the reference contract that mirror must match.
+  dictionary-replacement → snippet-expansion as ONE function so every RN-hosted entry point runs identical
+  logic instead of reimplementing it. Neither keyboard can run this TS (extensions/IMEs are separate native
+  sandboxes) — there is NO main-app handoff (the old claim of one was never true, IDI-161): **both** native
+  keyboards (`KeyboardViewController.swift`, `FlumeInputMethodService.kt`) mirror the sequence natively
+  (vocab-bias prompt → transcribe via groq-proxy → replacements → snippets; no LLM cleanup pass), with
+  this file as the reference contract both mirrors must match.
 - **Custom keyboards are separate native targets, not RN screens:** the iOS keyboard extension
   (`targets/keyboard/KeyboardViewController.swift`) and Android IME (`plugins/keyboard/
   FlumeInputMethodService.kt`) are full from-scratch keyboards (QWERTY layers, suggestions, dictation,

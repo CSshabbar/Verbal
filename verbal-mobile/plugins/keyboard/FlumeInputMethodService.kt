@@ -199,6 +199,19 @@ class FlumeInputMethodService : InputMethodService() {
     private var busy = false
     private val main = Handler(Looper.getMainLooper())
 
+    // ── input-session identity (IDI-163) ────────────────────────────────────────────
+    // A dictation is asynchronous: the user can switch field or app (or the host can
+    // move focus into a PASSWORD field) while the audio is still being transcribed.
+    // Every new input session bumps `inputSession`; a recording captures the value at
+    // record-start and the result is only committed when the SAME session is still
+    // current, the field is still non-secure (re-checked live, not the mic-tap cache)
+    // and the result isn't stale. Anything else is dropped with a visible message —
+    // never typed into a field the user didn't dictate into.
+    private var inputSession = 0L
+    private var recordingSession = -1L
+    private var recordingStartedAtMs = 0L
+    private val DICTATION_MAX_AGE_MS = 90_000L
+
     // Fast-typing correctness (see 05-conventions "keyboard hot path"): the letter
     // key views are updated IN PLACE on shift/caps changes instead of rebuilding the
     // whole keyboard, and suggestions run debounced off the commit path — a rebuild
@@ -460,10 +473,39 @@ class FlumeInputMethodService : InputMethodService() {
         return r
     }
 
+    // IDI-163: the earliest per-field callback — bump the session id here so a
+    // dictation that is still in flight can never land in the newly-focused field.
+    // Deliberately unconditional (including `restarting == true`): a missed bump means
+    // text typed into the wrong field, which is strictly worse than a dropped result
+    // that the user can see and redo.
+    override fun onStartInput(info: EditorInfo?, restarting: Boolean) {
+        super.onStartInput(info, restarting)
+        bumpInputSession()
+        secure = isSecureField(info)
+    }
+
+    private fun bumpInputSession() {
+        inputSession++
+        // A soft-Undo captured against the previous field must never fire into this
+        // one — it would delete N characters of unrelated text (IDI-164).
+        clearPendingUndo()
+    }
+
+    private fun clearPendingUndo() {
+        undoRunnable?.let { main.removeCallbacks(it) }
+        undoRunnable = null
+        if (pendingUndo != null) { pendingUndo = null; refreshQuickPasteChip() }
+    }
+
     override fun onStartInputView(info: EditorInfo?, restarting: Boolean) {
         super.onStartInputView(info, restarting)
+        bumpInputSession()
         secure = isSecureField(info)
-        if (recording) abortRecording()
+        if (recording) abortRecording(immediate = true)
+        // A transform compose/preview left over from the previous field would swallow
+        // every keystroke into `transformInstruction` and could replace text in the
+        // WRONG field — always start a new input session with transform IDLE (IDI-164).
+        resetTransformState()
         layer = Layer.LETTERS; shifted = false; capsLock = false
         showKeyboard()
         updateSuggestions()
@@ -473,8 +515,23 @@ class FlumeInputMethodService : InputMethodService() {
         checkClipboardForNewContent()
     }
 
+    // The keyboard is going away (app switch, IME hidden, field closed). Without this
+    // a MediaRecorder started for a dictation stays alive holding the microphone for
+    // the rest of the process's life, and ampPoll/timerTick keep reposting forever.
+    override fun onFinishInputView(finishingInput: Boolean) {
+        super.onFinishInputView(finishingInput)
+        hideKeyPreview()
+        if (recording || recorder != null) abortRecording(immediate = true)
+        main.removeCallbacks(ampPoll); main.removeCallbacks(timerTick)
+    }
+
     override fun onDestroy() {
         hideKeyPreview()
+        // Same leak as onFinishInputView, for the process-teardown path.
+        main.removeCallbacks(ampPoll); main.removeCallbacks(timerTick)
+        undoRunnable?.let { main.removeCallbacks(it) }
+        main.removeCallbacks(suggRunnable)
+        stopAndReleaseRecorder()
         try { soundPool.release() } catch (e: Exception) {}
         try {
             val cm = getSystemService(CLIPBOARD_SERVICE) as? ClipboardManager
@@ -531,7 +588,7 @@ class FlumeInputMethodService : InputMethodService() {
             text = IC_TRANSFORM; typeface = icFont; setTextColor(keyText); textSize = 18f; gravity = Gravity.CENTER
             background = rounded(highlightBg, 999)
             layoutParams = LinearLayout.LayoutParams(dp(38), dp(38)).apply { rightMargin = dp(8) }
-            visibility = if (readConfig()?.optBoolean("transformEnabled", false) == true) View.VISIBLE else View.GONE
+            visibility = if (transformAvailable()) View.VISIBLE else View.GONE
             setOnClickListener { onTransformTap() }
         }
         bar.addView(transformButton)
@@ -671,12 +728,35 @@ class FlumeInputMethodService : InputMethodService() {
         recordControls?.animate()?.alpha(0f)?.setDuration(200)?.withEndAction { recordControls?.visibility = View.GONE }
         // Mic can be repurposed to "speak a transform instruction" — if a transform flow
         // is still active (compose/busy), restore ITS bar state, not the normal one.
+        // The MIC comes back either way: if the dictation produced nothing usable the
+        // user must be able to speak the instruction again (it stayed hidden before).
         if (transformState != TransformState.IDLE) {
             transformCancelButton?.apply { visibility = View.VISIBLE; alpha = 1f }
+            micWrap?.apply { visibility = View.VISIBLE; animate().alpha(1f).setDuration(250).start() }
         } else {
             iconGroup?.apply { visibility = View.VISIBLE; animate().alpha(1f).setDuration(250).start() }
             micWrap?.apply { visibility = View.VISIBLE; animate().alpha(1f).setDuration(250).start() }
         }
+    }
+
+    // Animation-free variant used when the keyboard is being torn down / restarted
+    // (onFinishInputView, onStartInputView): a running ViewPropertyAnimator whose
+    // withEndAction never fires on a detached view would leave the bar stuck showing
+    // the recording controls the next time the keyboard is shown.
+    private fun resetRecordingUIImmediate() {
+        main.removeCallbacks(ampPoll); main.removeCallbacks(timerTick)
+        paused = false
+        recordControls?.apply { animate().cancel(); alpha = 1f; translationX = 0f; visibility = View.GONE }
+        pauseBtn?.apply { text = IC_PAUSE; alpha = 1f }
+        timerLabel?.text = "0:00"
+        waveform?.reset()
+        micWrap?.apply { animate().cancel(); alpha = 1f; visibility = View.VISIBLE }
+        if (transformState != TransformState.IDLE) {
+            transformCancelButton?.apply { visibility = View.VISIBLE; alpha = 1f }
+        } else {
+            iconGroup?.apply { animate().cancel(); alpha = 1f; visibility = View.VISIBLE }
+        }
+        setMicState(false)
     }
 
     private fun togglePause() {
@@ -1488,6 +1568,10 @@ class FlumeInputMethodService : InputMethodService() {
     // ── mic / recording (unchanged: dictation via groq-proxy) ──────────────────────
     private fun onMicTap() {
         if (secure || busy) return
+        // In COMPOSE the mic speaks the transform INSTRUCTION (handled in stopAndTranscribe).
+        // In BUSY/PREVIEW there is nowhere for a transcript to go except the host field —
+        // which would destroy the very selection we're about to replace. Inert instead.
+        if (transformState == TransformState.BUSY || transformState == TransformState.PREVIEW) return
         if (activeOverlay != null) showKeyboard()
         if (!recording) startRecording() else stopAndTranscribe()
     }
@@ -1504,6 +1588,9 @@ class FlumeInputMethodService : InputMethodService() {
             r.setOutputFile(f.absolutePath)
             r.prepare(); r.start()
             recorder = r; audioFile = f; recording = true
+            // IDI-163: remember WHICH field this dictation belongs to and when it began.
+            recordingSession = inputSession
+            recordingStartedAtMs = System.currentTimeMillis()
             setMicState(true)
             enterRecordingUI()
             playSound("flume_start")
@@ -1513,12 +1600,19 @@ class FlumeInputMethodService : InputMethodService() {
         }
     }
 
-    private fun abortRecording() {
+    private fun abortRecording(immediate: Boolean = false) {
+        stopAndReleaseRecorder()
+        setMicState(false)
+        if (immediate) resetRecordingUIImmediate() else exitRecordingUI()
+    }
+
+    /** Single place that tears the recorder down — safe to call when idle. */
+    private fun stopAndReleaseRecorder() {
         recording = false
         try { recorder?.stop() } catch (e: Exception) {}
         releaseRecorder()
         audioFile?.let { try { it.delete() } catch (e: Exception) {} }
-        audioFile = null; setMicState(false); exitRecordingUI()
+        audioFile = null
     }
 
     private fun stopAndTranscribe() {
@@ -1532,14 +1626,54 @@ class FlumeInputMethodService : InputMethodService() {
             f?.let { try { it.delete() } catch (e: Exception) {} }; return
         }
         busy = true
+        // Snapshot the field identity NOW; `inputSession` may move while we're on the wire.
+        val session = recordingSession
+        val startedAt = recordingStartedAtMs
+        val composing = transformState == TransformState.COMPOSE
         Thread {
             val text = try { transcribe(f) } catch (e: Exception) { null }
             try { f.delete() } catch (e: Exception) {}
             main.post {
                 busy = false
-                if (!text.isNullOrBlank()) { currentInputConnection?.commitText(text + " ", 1); updateSuggestions(); playSound("flume_done") }
+                val t = text
+                if (t.isNullOrBlank()) return@post
+                if (!canCommitDictation(session, startedAt)) return@post
+                // Mic is repurposed while composing a transform instruction (same button,
+                // mode-dependent meaning) — route the transcript into the instruction
+                // buffer instead of the host app, which would destroy the selection we
+                // are about to transform. Mirrors iOS KeyboardViewController.swift:1799.
+                if (composing && transformState == TransformState.COMPOSE) {
+                    transformInstruction = t.trim()
+                    refreshTransformComposeUI()
+                    playSound("flume_done")
+                    sendTransform()
+                    return@post
+                }
+                currentInputConnection?.commitText(t + " ", 1); updateSuggestions(); playSound("flume_done")
             }
         }.start()
+    }
+
+    /**
+     * IDI-163 field-identity guard. A transcript may only be inserted when it is going
+     * back into the exact field it was dictated into, that field is still not a password
+     * field (checked LIVE — `secure` was only sampled at mic-tap time), and the result
+     * isn't so old that the user has moved on. Otherwise: drop, and say so.
+     */
+    private fun canCommitDictation(session: Long, startedAtMs: Long): Boolean {
+        if (session != inputSession) {
+            flashStatus("Dictation discarded — the text field changed")
+            return false
+        }
+        if (System.currentTimeMillis() - startedAtMs > DICTATION_MAX_AGE_MS) {
+            flashStatus("Dictation discarded — took too long")
+            return false
+        }
+        if (isSecureField(currentInputEditorInfo)) {
+            flashStatus("Dictation discarded — secure field")
+            return false
+        }
+        return true
     }
 
     private fun releaseRecorder() { try { recorder?.release() } catch (e: Exception) {}; recorder = null }
@@ -1555,7 +1689,16 @@ class FlumeInputMethodService : InputMethodService() {
         if (!cfg.exists()) { cfgCache = null; cfgMtime = -1L; null }
         else {
             val m = cfg.lastModified()
-            if (m != cfgMtime) { cfgMtime = m; cfgCache = try { JSONObject(cfg.readText()) } catch (e: Exception) { null } }
+            if (m != cfgMtime || cfgCache == null) {
+                val parsed = try { JSONObject(cfg.readText()) } catch (e: Exception) { null }
+                // NEVER cache a FAILED parse against its mtime. Doing so poisoned the
+                // cache: a half-written / truncated snapshot made every later call
+                // return null until the app happened to rewrite the file, which in turn
+                // silently threw away transcripts (IDI-162). A failed parse resets the
+                // mtime so the very next call retries the read.
+                if (parsed != null) { cfgCache = parsed; cfgMtime = m }
+                else { cfgCache = null; cfgMtime = -1L }
+            }
             cfgCache
         }
     } catch (e: Exception) { null }
@@ -1610,6 +1753,10 @@ class FlumeInputMethodService : InputMethodService() {
     // session (onStartInputView) in case the service was relaunched since the last change.
     private fun checkClipboardForNewContent() {
         try {
+            // Inert while a password field is focused (same posture as the mic): whatever
+            // is on the clipboard right then is very likely a credential the user is
+            // pasting out of a password manager — never persist it (IDI-164).
+            if (secure) return
             if (!((readConfig()?.optBoolean("clipboardHistoryEnabled", true)) ?: true)) return
             val cm = getSystemService(CLIPBOARD_SERVICE) as? ClipboardManager ?: return
             val clip = cm.primaryClip ?: return
@@ -1673,15 +1820,30 @@ class FlumeInputMethodService : InputMethodService() {
     }
 
     // ── transform (select text elsewhere → instruction → LLM rewrite → replace) ─────────
+    /** Opt-in via config AND never on a secure field (same posture as the mic). */
+    private fun transformAvailable(): Boolean =
+        readConfig()?.optBoolean("transformEnabled", false) == true && !secure
+
     private fun onTransformTap() {
+        // Inert on secure fields — checked BEFORE any getSelectedText() so a password
+        // field's contents are never even read, let alone sent to the LLM (IDI-164).
+        if (secure || isSecureField(currentInputEditorInfo)) {
+            flashTransformMessage("Not available in secure fields")
+            return
+        }
         if (readConfig()?.optBoolean("transformEnabled", false) != true || transformState != TransformState.IDLE) return
         val selected = currentInputConnection?.getSelectedText(0)?.toString()?.trim() ?: ""
         if (selected.isEmpty()) {
             flashTransformMessage("Select some text first")
             return
         }
-        transformOriginalText = if (selected.length > TRANSFORM_SELECTION_CHAR_CAP)
-            selected.take(TRANSFORM_SELECTION_CHAR_CAP) else selected
+        // REFUSE oversized selections. Truncating to the cap and then replacing the WHOLE
+        // selection with the transformed prefix silently destroyed the tail (IDI-164).
+        if (selected.length > TRANSFORM_SELECTION_CHAR_CAP) {
+            flashTransformMessage("Selection too long — max $TRANSFORM_SELECTION_CHAR_CAP characters")
+            return
+        }
+        transformOriginalText = selected
         transformInstruction = ""
         enterCompose()
     }
@@ -1692,7 +1854,26 @@ class FlumeInputMethodService : InputMethodService() {
             text = msg; setTextColor(mutedText); textSize = 13f; gravity = Gravity.CENTER
             layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
         })
-        main.postDelayed({ if (transformState == TransformState.IDLE) updateSuggestions() }, 1500)
+        restoreStripSoon(1500)
+    }
+
+    /** Transient message in the suggestion strip (mic/permission/guard failures). */
+    private fun flashStatus(msg: String) {
+        setStatus(msg)
+        restoreStripSoon(2000)
+    }
+
+    // The suggestion strip is shared by suggestions, the compose UI and transient
+    // messages — put back whichever one the CURRENT state owns, not just suggestions
+    // (restoring suggestions while composing wiped the instruction preview).
+    private fun restoreStripSoon(delayMs: Long) {
+        main.postDelayed({
+            when (transformState) {
+                TransformState.COMPOSE -> refreshTransformComposeUI()
+                TransformState.IDLE -> updateSuggestions()
+                else -> { }
+            }
+        }, delayMs)
     }
 
     private fun enterCompose() {
@@ -1705,10 +1886,32 @@ class FlumeInputMethodService : InputMethodService() {
 
     private fun exitCompose() {
         transformState = TransformState.IDLE
-        iconGroup?.visibility = View.VISIBLE
-        transformButton?.visibility = if (readConfig()?.optBoolean("transformEnabled", false) == true) View.VISIBLE else View.GONE
+        transformInstruction = ""; transformOriginalText = ""; transformRewrite = ""
+        iconGroup?.apply { visibility = View.VISIBLE; alpha = 1f }
+        micWrap?.apply { visibility = View.VISIBLE; alpha = 1f }
+        transformButton?.visibility = if (transformAvailable()) View.VISIBLE else View.GONE
         transformCancelButton?.visibility = View.GONE
         showKeyboard()
+        updateSuggestions()
+    }
+
+    /**
+     * Hard reset used when the input session changes (new field / app switch). Without
+     * it a compose left over from the previous field kept eating every keystroke into
+     * `transformInstruction`, and a stale PREVIEW could Replace into the wrong field.
+     * The caller is responsible for rebuilding the key area (onStartInputView calls
+     * showKeyboard() straight after).
+     */
+    private fun resetTransformState() {
+        val wasActive = transformState != TransformState.IDLE
+        transformState = TransformState.IDLE
+        transformInstruction = ""; transformOriginalText = ""; transformRewrite = ""
+        if (wasActive) {
+            iconGroup?.apply { animate().cancel(); visibility = View.VISIBLE; alpha = 1f }
+            micWrap?.apply { animate().cancel(); visibility = View.VISIBLE; alpha = 1f }
+        }
+        transformCancelButton?.visibility = View.GONE
+        transformButton?.visibility = if (transformAvailable()) View.VISIBLE else View.GONE
     }
 
     // Suggestion-strip band is repurposed while composing: the growing instruction
@@ -1763,17 +1966,37 @@ class FlumeInputMethodService : InputMethodService() {
             val raw = try { proxyChat(system, user) } catch (e: Exception) { null }
             main.post {
                 if (transformState != TransformState.BUSY) return@post   // cancelled meanwhile
-                if (raw.isNullOrEmpty()) {
-                    transformState = TransformState.COMPOSE
-                    refreshTransformComposeUI()
-                    flashTransformMessage("Couldn't transform — try again")
-                } else {
-                    transformRewrite = stripTransformWrapping(raw, transformOriginalText)
-                    transformState = TransformState.PREVIEW
-                    refreshTransformPreviewUI()
+                try {
+                    if (raw.isNullOrEmpty()) {
+                        failTransform("Couldn't transform — try again")
+                    } else {
+                        transformRewrite = stripTransformWrapping(raw, transformOriginalText)
+                        transformState = TransformState.PREVIEW
+                        refreshTransformPreviewUI()
+                    }
+                } catch (e: Exception) {
+                    failTransform("Couldn't transform — try again")
                 }
             }
         }.start()
+    }
+
+    /**
+     * EVERY transform failure path must land here. BUSY replaced the whole key area
+     * with a spinner (refreshTransformBusyUI), so a failure branch that only touched
+     * the suggestion strip left the user with a bricked keyboard — no keys at all and
+     * no way back (IDI-164). This rebuilds the real keyboard and returns to COMPOSE so
+     * the instruction can be edited and retried.
+     */
+    private fun failTransform(msg: String) {
+        transformState = TransformState.COMPOSE
+        iconGroup?.visibility = View.GONE
+        transformButton?.visibility = View.GONE
+        transformCancelButton?.apply { visibility = View.VISIBLE; alpha = 1f }
+        micWrap?.apply { visibility = View.VISIBLE; alpha = 1f }
+        showKeyboard()                 // ← the spinner is replaced by the real keys again
+        refreshTransformComposeUI()
+        flashTransformMessage(msg)
     }
 
     private fun refreshTransformBusyUI() {
@@ -1826,12 +2049,23 @@ class FlumeInputMethodService : InputMethodService() {
 
     private fun applyTransformReplace() {
         if (transformState != TransformState.PREVIEW) return
+        // Replace works by commitText() overwriting the CURRENT selection. Between the
+        // capture and now the user (or the host app) may have moved, shrunk or dropped
+        // that selection — committing then clobbers text that was never transformed.
+        // Re-read it and refuse unless it is still byte-for-byte what we sent (IDI-164).
+        val current = currentInputConnection?.getSelectedText(0)?.toString()?.trim() ?: ""
+        if (current.isEmpty() || current != transformOriginalText) {
+            flashTransformMessage("Selection changed — not replaced")
+            return
+        }
         currentInputConnection?.commitText(transformRewrite, 1)
         val original = transformOriginalText
         val rewriteLen = transformRewrite.length
         transformState = TransformState.IDLE
-        iconGroup?.visibility = View.VISIBLE
-        transformButton?.visibility = if (readConfig()?.optBoolean("transformEnabled", false) == true) View.VISIBLE else View.GONE
+        transformInstruction = ""; transformOriginalText = ""; transformRewrite = ""
+        iconGroup?.apply { visibility = View.VISIBLE; alpha = 1f }
+        micWrap?.apply { visibility = View.VISIBLE; alpha = 1f }
+        transformButton?.visibility = if (transformAvailable()) View.VISIBLE else View.GONE
         transformCancelButton?.visibility = View.GONE
         showKeyboard()
         pendingUndo = Pair(rewriteLen, original)
@@ -1897,25 +2131,42 @@ class FlumeInputMethodService : InputMethodService() {
     }
 
     private fun transcribe(f: File): String? {
-        val cfg = readConfig() ?: return null
-        var text = proxyTranscribe(f, buildPrompt(cfg), cfg) ?: return null
-        text = applyReplacements(text, cfg.optJSONArray("replacements"))
-        text = applySnippets(text, cfg.optJSONArray("snippets"))
+        // FAIL OPEN (Hard Rule #1): a missing, unreadable or corrupt config must never
+        // cost the user their dictation. Without it we simply transcribe unbiased and
+        // skip vocabulary/replacements/snippets rather than dropping the transcript.
+        val cfg = readConfig()
+        var text = proxyTranscribe(f, if (cfg != null) buildPrompt(cfg) else null, cfg) ?: return null
+        if (cfg != null) {
+            text = applyReplacements(text, cfg.optJSONArray("replacements"))
+            text = applySnippets(text, cfg.optJSONArray("snippets"))
+        }
         return text.trim()
     }
+
+    // Whisper bias prompt. Hard Rule #6: Groq rejects (400) any prompt over 896 chars,
+    // so the glossary is capped at 200 terms AND 896 characters, trimmed at a comma
+    // boundary. Blank terms are skipped so the glossary can never contain "" entries.
+    private val PROMPT_TERM_CAP = 200
+    private val PROMPT_CHAR_CAP = 896
 
     private fun buildPrompt(cfg: JSONObject): String? {
         val vocab = cfg.optJSONArray("vocabulary") ?: return null
         if (vocab.length() == 0) return null
         val sb = StringBuilder("Glossary: ")
+        var n = 0
         for (i in 0 until vocab.length()) {
-            if (i > 0) sb.append(", ")
-            sb.append(vocab.optJSONObject(i)?.optString("word") ?: "")
+            if (n >= PROMPT_TERM_CAP) break
+            val o = vocab.optJSONObject(i)
+            val w = (if (o != null) o.optString("word", "") else vocab.optString(i, "")).trim()
+            if (w.isEmpty()) continue
+            val piece = if (n == 0) w else ", $w"
+            if (sb.length + piece.length > PROMPT_CHAR_CAP) break
+            sb.append(piece); n++
         }
-        return sb.toString()
+        return if (n == 0) null else sb.toString()
     }
 
-    private fun proxyTranscribe(f: File, prompt: String?, cfg: JSONObject): String? {
+    private fun proxyTranscribe(f: File, prompt: String?, cfg: JSONObject?): String? {
         val supabaseUrl = "https://ovpcthjingugwvpxlsna.supabase.co"
         val anon = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im92cGN0aGppbmd1Z3d2cHhsc25hIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzgyNjQzMDYsImV4cCI6MjA5Mzg0MDMwNn0.XwTBo8L-aEUmmSl6dJXNqA2QXzGFOpIVB5W9eDI8j28"
         val boundary = "----FlumeBoundary" + System.currentTimeMillis()
@@ -1925,7 +2176,7 @@ class FlumeInputMethodService : InputMethodService() {
             conn.connectTimeout = 15000; conn.readTimeout = 45000
             conn.setRequestProperty("Authorization", "Bearer " + anon)
             conn.setRequestProperty("apikey", anon)
-            conn.setRequestProperty("x-flume-device", cfg.optString("deviceId", "android-keyboard"))
+            conn.setRequestProperty("x-flume-device", cfg?.optString("deviceId", "android-keyboard") ?: "android-keyboard")
             conn.setRequestProperty("Content-Type", "multipart/form-data; boundary=" + boundary)
             val out = DataOutputStream(conn.outputStream)
             fun field(name: String, value: String) {
@@ -1935,7 +2186,11 @@ class FlumeInputMethodService : InputMethodService() {
                 out.write(("Content-Disposition: form-data; name=\"$name\"\r\n\r\n").toByteArray(Charsets.UTF_8))
                 out.write((value + "\r\n").toByteArray(Charsets.UTF_8))
             }
-            field("model", "whisper-large-v3-turbo"); field("language", "en"); field("temperature", "0")
+            field("model", "whisper-large-v3-turbo"); field("temperature", "0")
+            // Spoken-language hint from the shared config (written by
+            // lib/keyboardBridge.ts, default 'en'); 'auto' → omit so Whisper detects.
+            val lang = cfg?.optString("spokenLanguage", "en")?.trim().takeUnless { it.isNullOrEmpty() } ?: "en"
+            if (lang != "auto") field("language", lang)
             if (!prompt.isNullOrEmpty()) field("prompt", prompt)
             out.writeBytes("--" + boundary + "\r\n")
             out.writeBytes("Content-Disposition: form-data; name=\"file\"; filename=\"audio.m4a\"\r\n")
@@ -1961,20 +2216,47 @@ class FlumeInputMethodService : InputMethodService() {
         return t
     }
 
+    /**
+     * Snippet expansion — the exact contract of `lib/dictionary.ts::applySnippets`
+     * (which itself mirrors desktop):
+     *   - case-INSENSITIVE whole-phrase match on word boundaries (multi-word aware)
+     *   - LONGEST trigger first, so "my email address" wins over "my email"
+     *   - SINGLE left-to-right pass: one alternation regex, so an inserted expansion is
+     *     never re-scanned and snippets cannot cascade into each other
+     *   - snippets with an EMPTY expansion are skipped (the old per-snippet loop
+     *     replaced their trigger with "", i.e. silently deleted the user's words)
+     *   - fail closed: any error returns `text` unchanged, never throws
+     */
     private fun applySnippets(text: String, arr: JSONArray?): String {
-        if (arr == null) return text
-        val triggers = ArrayList<Pair<String, String>>()
-        for (i in 0 until arr.length()) {
-            val s = arr.optJSONObject(i) ?: continue
-            val trg = s.optString("trigger", ""); val exp = s.optString("expansion", "")
-            if (trg.isNotEmpty()) triggers.add(Pair(trg, exp))
+        if (arr == null || text.isEmpty()) return text
+        return try {
+            val valid = ArrayList<Pair<String, String>>()
+            for (i in 0 until arr.length()) {
+                val s = arr.optJSONObject(i) ?: continue
+                val trg = s.optString("trigger", "").trim()
+                val exp = s.optString("expansion", "")
+                if (trg.isEmpty() || exp.isEmpty()) continue
+                valid.add(Pair(trg, exp))
+            }
+            if (valid.isEmpty()) return text
+            // Stable sort → among equal-length triggers the earliest one still wins.
+            valid.sortByDescending { it.first.length }
+            val byTrigger = HashMap<String, String>()
+            val parts = ArrayList<String>()
+            for ((trg, exp) in valid) {
+                val key = trg.lowercase()
+                if (byTrigger.containsKey(key)) continue   // first (longest / earliest) wins
+                byTrigger[key] = exp
+                parts.add("\\b" + Regex.escape(trg) + "\\b")
+            }
+            if (parts.isEmpty()) return text
+            val re = Regex("(" + parts.joinToString("|") + ")", RegexOption.IGNORE_CASE)
+            // The lambda overload of replace() inserts the returned string LITERALLY —
+            // no $1 group-reference interpretation, and no re-scan of what it inserted.
+            re.replace(text) { m -> byTrigger[m.value.lowercase()] ?: m.value }
+        } catch (e: Exception) {
+            text
         }
-        triggers.sortByDescending { it.first.length }
-        var t = text
-        for (p in triggers) {
-            t = Regex("\\b" + Regex.escape(p.first) + "\\b", RegexOption.IGNORE_CASE).replace(t, Regex.escapeReplacement(p.second))
-        }
-        return t
     }
 
     private fun isSecureField(info: EditorInfo?): Boolean {

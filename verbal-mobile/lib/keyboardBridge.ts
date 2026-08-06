@@ -11,6 +11,7 @@
 import { Platform } from 'react-native';
 import * as FileSystem from 'expo-file-system/legacy';
 import { getHistory, getDeviceId, getDeviceName, getClipboardHistoryEnabled, getTransformEnabled } from './storage';
+import { getSpokenLanguage } from './groq';
 import { fetchRemote, getDictionary } from './dictionary';
 import { KEYBOARD_THEME } from './keyboardTokens';
 import { writeToGroup } from '../modules/flume-shared-store';
@@ -35,8 +36,9 @@ export async function syncKeyboardConfig(): Promise<void> {
     } catch {
       dict = await getDictionary();
     }
-    const [history, deviceId, deviceName, clipboardHistoryEnabled, transformEnabled] = await Promise.all([
+    const [history, deviceId, deviceName, clipboardHistoryEnabled, transformEnabled, spokenLanguage] = await Promise.all([
       getHistory(), getDeviceId(), getDeviceName(), getClipboardHistoryEnabled(), getTransformEnabled(),
+      getSpokenLanguage(),
     ]);
     const payload = JSON.stringify({
       // v2: theme tokens + richer overlay shapes (see FLUME_KEYBOARD_V2_DESIGN.md).
@@ -63,6 +65,10 @@ export async function syncKeyboardConfig(): Promise<void> {
       // Gates the Transform button (select text elsewhere → instruction → LLM rewrite →
       // replace) — an opt-in, LLM-driven feature, default OFF to match desktop's posture.
       transformEnabled,
+      // Whisper language hint for keyboard dictation. Both natives read this
+      // (IDI-161/162); 'auto' → the natives omit the param. Until IDI-180 adds
+      // a picker, getSpokenLanguage() returns its 'en' default.
+      spokenLanguage,
     });
     if (Platform.OS === 'ios') {
       // Write into the App Group container the keyboard extension reads from.

@@ -35,8 +35,14 @@ to signed-in devices.
 
 **`pairings`** — `supabase_pairings.sql`. Short-lived single-use device-pairing tokens.
 `id` uuid PK · `token` text unique · `user_id` text · `host_device` text · `created_at` · `expires_at`
-(~2 min TTL) · `claimed_by` text (null until claimed) · `claimed_at`. Index on `(token)`. RLS on;
-anon insert/select/update all `true` (safe because tokens are random, short-lived, single-use).
+(~2 min TTL) · `claimed_by` text (null until claimed) · `claimed_at`. Index on `(token)`. RLS on.
+**Locked down in IDI-157** (migration `pairings_rpc_lockdown`, 2026-08): INSERT (host creating a token) is
+the ONLY direct REST access — the old `for select using(true)` let the anon key enumerate every user_id
+that ever paired. Status/claim/cancel now go through token-gated SECURITY DEFINER RPCs
+(`pairing_status`/`claim_pairing`/`cancel_pairing`): expiry enforced server-side (client clock skew
+irrelevant), claim is one guarded UPDATE (no select-then-patch race), Cancel revokes the row server-side,
+and the claim RPC sweeps rows >10 min past expiry so the table never re-accumulates. Verified live with
+anon-key curl: select returns `[]`, double-claim rejected, status never exposes `user_id`.
 
 **`notes`** — `notes_migration.sql` (base) + `supabase_notes_v2.sql` (self-contained: **creates the table if
 missing** — it was never provisioned in the live DB, so Notes was local-only until 2026-07 — then adds v2 cols).
@@ -296,7 +302,9 @@ and `verbal://auth-callback` (mobile). Consent screen in "Testing" mode. No sepa
 - **Recordings:** audio → `recordings` bucket under `<user_id>/`; `audio_url` on the row/entry. Failed
   transcriptions `status:'failed'`, retryable from saved audio.
 - **Pairing:** host inserts `pairings` row (`token_urlsafe(6)`, +120 s), QR `flume://pair?t=<token>`; new
-  device SELECTs unclaimed/unexpired → atomic UPDATE `claimed_by` (guarded) → adopts `user_id` → enables sync.
+  device calls the `claim_pairing` RPC (atomic guarded claim, server-side expiry — IDI-157) → adopts
+  `user_id` via the paired override (IDI-156) → enables sync. Host polls `pairing_status`, cancel revokes
+  via `cancel_pairing`.
 
 ## Security posture (as implemented)
 
@@ -361,9 +369,10 @@ Pragmatic, matches code + `GOOGLE_AUTH_SETUP.md`:
        (old builds only ever send the anon key) — a real outage, not a soft degrade, until users update.
        This must be sequenced behind an actual release + adoption window, which is outside what a single
        backend change can control.
-  - `pairings` itself is **deliberately unchanged** (kept on its existing random/short-lived/single-use
-    token model, per the ticket) — the claiming device isn't signed in as the host yet, so `auth.uid()`
-    can't apply to its own rows either.
+  - `pairings` keeps its random/short-lived/single-use token model (the claiming device isn't signed in
+    as the host yet, so `auth.uid()` can't apply to its own rows) — but is no longer wide-open: since
+    IDI-157 the table is INSERT-only over REST and everything else is token-gated RPC (see the `pairings`
+    entry above), which closed the user_id-enumeration hole without needing the JWT migration.
 - `recordings` and `meeting-audio` are **private** (MER-27, 2026-07) — signed URLs only, see Storage
   buckets above. `canvas-images` and `releases` remain public (lower-sensitivity / app binaries).
   `app_versions` inserts are service_role-gated.

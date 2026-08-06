@@ -255,8 +255,18 @@ class KeyboardViewController: UIInputViewController, AVAudioRecorderDelegate, UI
     private var transformOriginalText = ""
     private var transformInstruction = ""
     private var transformRewrite = ""
+    // `length` is counted in UTF-16 code units — deleteBackward() removes one UTF-16
+    // unit per call, so a grapheme count under-deletes on emoji/combining marks (IDI-164).
     private var pendingUndo: (length: Int, original: String)?
     private var undoWorkItem: DispatchWorkItem?
+    // IDI-164: monotonic request token (mirrors the Android IME). A chat response whose
+    // seq no longer matches `transformSeq` belongs to a cancelled/restarted request and
+    // is dropped; `transformTask` lets us actually cancel the socket on cancel/restart.
+    private var transformSeq = 0
+    private var transformTask: URLSessionDataTask?
+    // Input session (see inputSessionId) the current transform was started against —
+    // a field switch mid-flow invalidates the captured selection.
+    private var transformSessionId = 0
     private let transformSelectionCharCap = 8000   // smaller than desktop's 12000 — mobile
                                                     // selections are shorter; same shared-key TPM caution
     private let transformPresets: [(String, String)] = [
@@ -298,9 +308,66 @@ class KeyboardViewController: UIInputViewController, AVAudioRecorderDelegate, UI
     private var recorder: AVAudioRecorder?
     private var audioURL: URL?
     private var isRecording = false
+    // IDI-161 re-entrancy latches (mirror the Android IME's `busy`). `isArming` covers the
+    // async permission → AVAudioRecorder window — `isRecording` only flips INSIDE that
+    // callback, so a double-tap used to build two AVAudioRecorders on the same URL.
+    // `isTranscribing` covers the in-flight upload so a second dictation can't start
+    // (and race the insert guard) while one is still resolving.
+    private var isArming = false
+    private var isTranscribing = false
     private var soundPlayers: [String: AVAudioPlayer] = [:]
+    // IDI-161: bounded network. 15s per-request idle timeout + a 45s hard resource cap
+    // (matches the Android IME's connectTimeout=15s / readTimeout=45s) so a hung proxy
+    // can never leave the keyboard permanently "busy".
+    private lazy var netSession: URLSession = {
+        let c = URLSessionConfiguration.default
+        c.timeoutIntervalForRequest = 15
+        c.timeoutIntervalForResource = 45
+        c.waitsForConnectivity = false
+        return URLSession(configuration: c)
+    }()
+    // Groq rejects a Whisper bias prompt over 896 chars (project Hard Rule #6); trim to
+    // 850 at a comma boundary exactly like whisperflow/app/transcriber.py.
+    private let groqPromptCharCap = 850
+    private let groqPromptTermCap = 200            // mirrors dictionary.ts::buildPrompt
     private let supabaseURL = "https://ovpcthjingugwvpxlsna.supabase.co"
     private let supabaseAnon = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im92cGN0aGppbmd1Z3d2cHhsc25hIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzgyNjQzMDYsImV4cCI6MjA5Mzg0MDMwNn0.XwTBo8L-aEUmmSl6dJXNqA2QXzGFOpIVB5W9eDI8j28"
+
+    // MARK: input-session identity (IDI-163)
+    // An async transcript must only ever land in the SAME field it was dictated into —
+    // otherwise a network round-trip that resolves after the user tapped into the next
+    // field (worst case a password field) types the transcript there.
+    //
+    // The signal is `UITextDocumentProxy.documentIdentifier`: a UUID the system mints per
+    // text-entry session. It is STABLE across ordinary keystrokes/autocorrect inside one
+    // field (so same-field dictation is never false-dropped) and changes when focus moves
+    // to another field — exactly the granularity we need. The secure flag rides along so a
+    // host that mutates a field into a secure one in place still invalidates the session.
+    private var inputSessionId = 0
+    private var lastDocSignature: String?
+
+    private func currentDocSignature() -> String {
+        // `isSecureTextEntry` is an @objc-optional UITextInputTraits member; `== true`
+        // reads correctly whether it imports as Bool or Bool?.
+        "\(textDocumentProxy.documentIdentifier.uuidString)|\(textDocumentProxy.isSecureTextEntry == true)"
+    }
+
+    /// Bump the session counter when the focused document changed. Cheap enough to call
+    /// from textWillChange/textDidChange (a UUID compare, no document-context queries).
+    private func syncInputSession() {
+        let sig = currentDocSignature()
+        guard sig != lastDocSignature else { return }
+        let first = lastDocSignature == nil
+        lastDocSignature = sig
+        inputSessionId &+= 1
+        if first { return }
+        // A new field invalidates every host-mutating thing scoped to the old one.
+        clearPendingUndo()
+        if transformState != .idle { abortTransform(reason: nil) }
+    }
+
+    /// True when this proxy is a password / secure field — never dictate or transform into one.
+    private func isSecureField() -> Bool { textDocumentProxy.isSecureTextEntry == true }
 
     // MARK: lifecycle
     override func viewDidLoad() {
@@ -315,6 +382,7 @@ class KeyboardViewController: UIInputViewController, AVAudioRecorderDelegate, UI
     // since extensions don't run in the background to observe it happen live.
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
+        syncInputSession()          // reappearing usually means a new field / new app
         checkClipboardForNewContent()
         if transformState == .idle {
             transformButton?.isHidden = !((readConfig()?["transformEnabled"] as? Bool) ?? false)
@@ -332,9 +400,17 @@ class KeyboardViewController: UIInputViewController, AVAudioRecorderDelegate, UI
     private func uiFontReg(_ size: CGFloat) -> UIFont { UIFont(name: "Geist-Regular", size: size) ?? .systemFont(ofSize: size) }
     private func monoFont(_ size: CGFloat) -> UIFont { UIFont(name: "JetBrainsMono-Medium", size: size) ?? .monospacedSystemFont(ofSize: size, weight: .medium) }
 
+    // Fires just BEFORE the host's text changes — the earliest hook that already sees the
+    // new document when focus moves between fields (IDI-163).
+    override func textWillChange(_ textInput: UITextInput?) {
+        super.textWillChange(textInput)
+        syncInputSession()
+    }
+
     // Fires on input-start and after each text change (incl. our own inserts) → sentence-start auto-cap.
     override func textDidChange(_ textInput: UITextInput?) {
         super.textDidChange(textInput)
+        syncInputSession()
         maybeAutoCap()
     }
 
@@ -354,6 +430,8 @@ class KeyboardViewController: UIInputViewController, AVAudioRecorderDelegate, UI
         // A theme change mid-transform would desync the freshly-rebuilt bar/content from
         // transformState — simplest safe behavior is to cancel back to idle rather than
         // try to replay busy/preview against a stale network callback.
+        transformSeq &+= 1                    // invalidate any in-flight rewrite (IDI-164)
+        transformTask?.cancel(); transformTask = nil
         transformState = .idle
         transformInstruction = ""
         refreshQuickPasteChip()   // buildFlumeBar() just recreated the chip hidden — restore its state
@@ -907,6 +985,11 @@ class KeyboardViewController: UIInputViewController, AVAudioRecorderDelegate, UI
         case .began:
             spacePanStart = 0; spacePanSteps = 0; spaceSwiped = false
         case .changed:
+            // A transform flow owns the host document (the selection must survive untouched
+            // until Replace) — moving the caret mid-compose/busy/preview would silently
+            // collapse it. Swallow the drag; a lift still feeds a space to the instruction
+            // buffer via onSpace() (IDI-164).
+            guard transformState == .idle else { return }
             let dx = g.translation(in: g.view).x
             let steps = Int(dx / 12)
             if steps != spacePanSteps {
@@ -944,6 +1027,9 @@ class KeyboardViewController: UIInputViewController, AVAudioRecorderDelegate, UI
             learnWord(currentWordPrefix())
             if let tw = lastTwoWords() { learnBigram(tw.0, tw.1) }
         }
+        // Once the user types, the soft-undo's "delete N chars back" no longer addresses the
+        // rewrite it was created for — retire it rather than eat the new text (IDI-164).
+        clearPendingUndo()
         textDocumentProxy.insertText(s); updateSuggestions()
     }
     // Space key: double-space → ". " (Gboard). If the text before the cursor ends with a single
@@ -954,6 +1040,7 @@ class KeyboardViewController: UIInputViewController, AVAudioRecorderDelegate, UI
         if before.hasSuffix(" ") && before.count >= 2 {
             let prev = before[before.index(before.endIndex, offsetBy: -2)]
             if prev.isLetter || prev.isNumber {
+                clearPendingUndo()
                 textDocumentProxy.deleteBackward()
                 textDocumentProxy.insertText(". ")
                 updateSuggestions()
@@ -994,6 +1081,7 @@ class KeyboardViewController: UIInputViewController, AVAudioRecorderDelegate, UI
             refreshTransformComposeUI()
             return
         }
+        clearPendingUndo()   // manual editing invalidates the soft-undo span (IDI-164)
         textDocumentProxy.deleteBackward(); updateSuggestions()
     }
 
@@ -1126,6 +1214,7 @@ class KeyboardViewController: UIInputViewController, AVAudioRecorderDelegate, UI
         return b
     }
     private func replaceCurrentWordWithEmoji(_ emoji: String) {
+        clearPendingUndo()
         let prefix = currentWordPrefix()
         for _ in 0..<prefix.count { textDocumentProxy.deleteBackward() }
         textDocumentProxy.insertText(emoji + " ")
@@ -1171,6 +1260,7 @@ class KeyboardViewController: UIInputViewController, AVAudioRecorderDelegate, UI
         return parts.last ?? ""
     }
     private func replaceCurrentWord(_ word: String) {
+        clearPendingUndo()
         let prefix = currentWordPrefix()
         for _ in 0..<prefix.count { textDocumentProxy.deleteBackward() }
         textDocumentProxy.insertText(word + " ")
@@ -1353,7 +1443,19 @@ class KeyboardViewController: UIInputViewController, AVAudioRecorderDelegate, UI
     }
 
     private func commitEmoji(_ e: String) {
-        textDocumentProxy.insertText(e)
+        // Gated on transformState exactly like commit()/onSpace()/onBackspace(): while a
+        // transform is in flight the host document must not be mutated, or the captured
+        // selection is destroyed before Replace can use it (IDI-164).
+        switch transformState {
+        case .compose:
+            transformInstruction += e
+            refreshTransformComposeUI()
+        case .busy, .preview:
+            return
+        case .idle:
+            clearPendingUndo()
+            textDocumentProxy.insertText(e)
+        }
         emojiRecents.removeAll { $0 == e }; emojiRecents.insert(e, at: 0)
         if emojiRecents.count > 24 { emojiRecents = Array(emojiRecents.prefix(24)) }
     }
@@ -1447,9 +1549,19 @@ class KeyboardViewController: UIInputViewController, AVAudioRecorderDelegate, UI
         }
     }
 
+    /// Retire the soft-undo affordance (typing, a field switch, or an expiry all invalidate
+    /// the "delete N units back" span it encodes) — IDI-164.
+    private func clearPendingUndo() {
+        guard pendingUndo != nil else { return }
+        undoWorkItem?.cancel(); undoWorkItem = nil
+        pendingUndo = nil
+        refreshQuickPasteChip()
+    }
+
     private func tapQuickPasteChip() {
         if let undo = pendingUndo {
             undoWorkItem?.cancel()
+            // `undo.length` is UTF-16 code units — one deleteBackward() per unit.
             for _ in 0..<undo.length { textDocumentProxy.deleteBackward() }
             textDocumentProxy.insertText(undo.original)
             pendingUndo = nil
@@ -1465,25 +1577,47 @@ class KeyboardViewController: UIInputViewController, AVAudioRecorderDelegate, UI
     // MARK: transform (select text elsewhere → instruction → LLM rewrite → replace)
     private func onTransformTap() {
         guard ((readConfig()?["transformEnabled"] as? Bool) ?? false), transformState == .idle else { return }
+        guard !isSecureField() else { flashStatus("Can't transform here"); return }
         let selected = (textDocumentProxy.selectedText ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         guard !selected.isEmpty else {
-            flashTransformMessage("Select some text first")
+            flashStatus("Select some text first")
             return
         }
-        transformOriginalText = selected.count > transformSelectionCharCap
-            ? String(selected.prefix(transformSelectionCharCap)) : selected
+        // REFUSE, never truncate (IDI-164): Replace overwrites the WHOLE selection, so
+        // transforming only the first 8000 chars would silently destroy the tail.
+        guard selected.count <= transformSelectionCharCap else {
+            flashStatus("Selection too long (max \(transformSelectionCharCap))")
+            return
+        }
+        transformOriginalText = selected
         transformInstruction = ""
+        transformSessionId = inputSessionId
+        transformSeq &+= 1                       // any older in-flight rewrite is now stale
+        transformTask?.cancel(); transformTask = nil
         enterCompose()
     }
 
-    private func flashTransformMessage(_ msg: String) {
-        suggestionStrip.arrangedSubviews.forEach { $0.removeFromSuperview() }
+    // Transient status band (IDI-161/164). The suggestion strip is the one always-visible,
+    // always-present surface in this keyboard, so every user-facing error/notice reuses it.
+    // Restoring is STATE-AWARE — the old version only restored when transformState == .idle,
+    // which is why a failure during compose left the strip permanently blank.
+    private var statusFlashSeq = 0
+    private func flashStatus(_ msg: String) {
+        guard let strip = suggestionStrip else { return }
+        suggestWork?.cancel()                                  // don't let a queued suggestion pass overwrite us
+        strip.arrangedSubviews.forEach { $0.removeFromSuperview() }
         let lbl = UILabel(); lbl.text = msg; lbl.textColor = pal.mutedText; lbl.font = uiFont(13)
         lbl.textAlignment = .center
-        suggestionStrip.addArrangedSubview(lbl)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
-            guard let self = self, self.transformState == .idle else { return }
-            self.updateSuggestions()
+        strip.addArrangedSubview(lbl)
+        statusFlashSeq &+= 1
+        let seq = statusFlashSeq
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) { [weak self] in
+            guard let self = self, seq == self.statusFlashSeq else { return }   // superseded by a newer flash
+            switch self.transformState {
+            case .idle:              self.updateSuggestions()
+            case .compose:           self.refreshTransformComposeUI()
+            case .busy, .preview:    break                       // those states own the strip themselves
+            }
         }
     }
 
@@ -1497,14 +1631,41 @@ class KeyboardViewController: UIInputViewController, AVAudioRecorderDelegate, UI
         refreshTransformComposeUI()
     }
 
-    private func exitCompose() {
+    private func exitCompose() { abortTransform(reason: nil) }
+
+    /// Single exit door for the transform flow: invalidate the request token, cancel the
+    /// socket, and put the bar + content back to a fully usable keyboard (IDI-164).
+    private func abortTransform(reason: String?) {
+        transformSeq &+= 1
+        transformTask?.cancel(); transformTask = nil
         transformState = .idle
+        transformInstruction = ""
         UIView.animate(withDuration: 0.2) {
             self.iconGroup?.isHidden = false
+            self.flexSpacer?.isHidden = false
             self.transformButton?.isHidden = !((self.readConfig()?["transformEnabled"] as? Bool) ?? false)
             self.transformCancelButton?.isHidden = true
         }
         showKeyboard()
+        if let reason = reason { flashStatus(reason) }
+    }
+
+    /// A transform attempt failed but the captured selection is still valid — go back to
+    /// compose. MUST rebuild the CONTENT too: refreshTransformBusyUI()/PreviewUI() replaced
+    /// the key rows with a spinner/preview, so restoring only the strip left a dead keyboard.
+    private func failTransform(_ msg: String) {
+        transformSeq &+= 1
+        transformTask?.cancel(); transformTask = nil
+        transformState = .compose
+        activeOverlay = nil; refreshBar()
+        setContent(buildKeyboard())                    // spinner/preview → real keys again
+        UIView.animate(withDuration: 0.2) {
+            self.iconGroup?.isHidden = true
+            self.transformButton?.isHidden = true
+            self.transformCancelButton?.isHidden = false
+        }
+        refreshTransformComposeUI()
+        flashStatus(msg)                               // restores the compose row when it expires
     }
 
     // Suggestion-strip band is repurposed while composing: the growing instruction
@@ -1569,12 +1730,18 @@ class KeyboardViewController: UIInputViewController, AVAudioRecorderDelegate, UI
         let system = isImprovise ? Self.improviseSystemPrompt : Self.transformSystemPrompt
         let user = isImprovise ? transformOriginalText
             : "INSTRUCTION: \(instruction)\n\nTEXT:\n\(transformOriginalText)"
-        chatViaProxy(system: system, user: user) { [weak self] result in
-            guard let self = self, self.transformState == .busy else { return }   // cancelled meanwhile
+        // Monotonic token: a restart (Return / another preset) or a cancel bumps `transformSeq`,
+        // so the earlier response — even if it lands later — is dropped instead of overwriting
+        // the newer one's preview (IDI-164).
+        transformSeq &+= 1
+        let seq = transformSeq
+        transformTask?.cancel()
+        transformTask = chatViaProxy(system: system, user: user) { [weak self] result in
+            guard let self = self else { return }
+            guard seq == self.transformSeq, self.transformState == .busy else { return }  // stale/cancelled
+            self.transformTask = nil
             guard let raw = result, !raw.isEmpty else {
-                self.transformState = .compose
-                self.refreshTransformComposeUI()
-                self.flashTransformMessage("Couldn't transform — try again")
+                self.failTransform("Couldn't transform — try again")
                 return
             }
             self.transformRewrite = Self.stripTransformWrapping(raw, original: self.transformOriginalText)
@@ -1624,12 +1791,27 @@ class KeyboardViewController: UIInputViewController, AVAudioRecorderDelegate, UI
 
     private func applyTransformReplace() {
         guard transformState == .preview else { return }
+        // REVALIDATE before mutating the host (IDI-164). insertText() overwrites whatever is
+        // selected RIGHT NOW — if the user re-selected, deselected or switched field while the
+        // rewrite was in flight, replacing would destroy text the model never saw.
+        guard inputSessionId == transformSessionId, !isSecureField() else {
+            flashStatus("Selection changed")
+            return
+        }
+        let live = (textDocumentProxy.selectedText ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard live == transformOriginalText else {
+            flashStatus("Selection changed")
+            return
+        }
         textDocumentProxy.insertText(transformRewrite)
         let original = transformOriginalText
-        let rewriteLen = transformRewrite.count
+        // UTF-16 code units — deleteBackward() removes one unit per call, so a grapheme
+        // count under-deletes for emoji / combining marks and leaves debris behind.
+        let rewriteLen = transformRewrite.utf16.count
         transformState = .idle
         UIView.animate(withDuration: 0.2) {
             self.iconGroup?.isHidden = false
+            self.flexSpacer?.isHidden = false
             self.transformButton?.isHidden = !((self.readConfig()?["transformEnabled"] as? Bool) ?? false)
             self.transformCancelButton?.isHidden = true
         }
@@ -1667,20 +1849,29 @@ class KeyboardViewController: UIInputViewController, AVAudioRecorderDelegate, UI
 
     // JSON chat-completions call — sibling of transcribe(data:) below (same endpoint/auth,
     // same async URLSession + main-queue-callback convention), just a different body shape.
-    private func chatViaProxy(system: String, user: String, completion: @escaping (String?) -> Void) {
-        guard let url = URL(string: "\(supabaseURL)/functions/v1/groq-proxy") else { completion(nil); return }
+    @discardableResult
+    private func chatViaProxy(system: String, user: String, completion: @escaping (String?) -> Void) -> URLSessionDataTask? {
+        guard let url = URL(string: "\(supabaseURL)/functions/v1/groq-proxy") else { completion(nil); return nil }
         var req = URLRequest(url: url); req.httpMethod = "POST"
+        // A non-streaming chat completion sends nothing until the model is done, so the
+        // per-request (idle) timeout has to cover the whole generation — 45s, matching the
+        // Android IME's readTimeout. `timeoutIntervalForResource` on netSession still caps it.
+        req.timeoutInterval = 45
         req.setValue("Bearer \(supabaseAnon)", forHTTPHeaderField: "Authorization")
         req.setValue(supabaseAnon, forHTTPHeaderField: "apikey")
+        req.setValue(proxyDeviceId(), forHTTPHeaderField: "x-flume-device")   // proxy rate-limit identity
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         let payload: [String: Any] = [
             "model": "llama-3.3-70b-versatile",
             "messages": [["role": "system", "content": system], ["role": "user", "content": user]],
             "temperature": 0, "max_tokens": 2048,
         ]
-        guard let body = try? JSONSerialization.data(withJSONObject: payload) else { completion(nil); return }
+        guard let body = try? JSONSerialization.data(withJSONObject: payload) else { completion(nil); return nil }
         req.httpBody = body
-        URLSession.shared.dataTask(with: req) { data, _, _ in
+        let task = netSession.dataTask(with: req) { data, response, _ in
+            if let code = (response as? HTTPURLResponse)?.statusCode, !(200...299).contains(code) {
+                DispatchQueue.main.async { completion(nil) }; return
+            }
             guard let data = data,
                   let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let choices = obj["choices"] as? [[String: Any]],
@@ -1689,18 +1880,42 @@ class KeyboardViewController: UIInputViewController, AVAudioRecorderDelegate, UI
                   !content.isEmpty
             else { DispatchQueue.main.async { completion(nil) }; return }
             DispatchQueue.main.async { completion(content) }
-        }.resume()
+        }
+        task.resume()
+        return task
+    }
+
+    /// The proxy's per-device rate-limit identity (`x-flume-device`), written into the shared
+    /// config by lib/keyboardBridge.ts. Without it every iOS keyboard shares one bucket.
+    private func proxyDeviceId() -> String {
+        let id = (readConfig()?["deviceId"] as? String) ?? ""
+        return id.isEmpty ? "ios-keyboard" : id
     }
 
     // MARK: dictation (record → groq-proxy). In-extension mic is a device-only
     // unknown (spec risk #1); the button is present and works where the OS allows it.
+    // Input session captured at record-START; the transcript may only land in that field (IDI-163).
+    private var dictationSessionId = 0
+
     @objc private func onMicTap() {
+        // Re-entrancy (IDI-161, mirrors the Android IME's `busy`): a tap during the async
+        // permission/recorder-setup window or during an in-flight upload is a no-op.
+        // Without this a double-tap built two AVAudioRecorders on the same URL, because
+        // `isRecording` only flips inside requestMic's callback.
+        if isArming || isTranscribing { return }
         if isRecording { stopAndTranscribe() } else { startRecording() }
     }
 
     private func startRecording() {
+        // Both the microphone and ANY network call from a keyboard extension require Full
+        // Access. Without it the dictation used to fail invisibly (the check existed only on
+        // the clipboard path) — IDI-161.
+        guard hasFullAccess else { flashMic("Allow Full Access to dictate"); return }
+        guard !isSecureField() else { flashMic("Can't dictate here"); return }
+        isArming = true
         requestMic { [weak self] ok in
-            guard let self = self, ok else { self?.flashMic("mic blocked"); return }
+            guard let self = self else { return }
+            guard ok else { self.isArming = false; self.flashMic("Mic access needed"); return }
             do {
                 let session = AVAudioSession.sharedInstance()
                 try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker])
@@ -1712,12 +1927,24 @@ class KeyboardViewController: UIInputViewController, AVAudioRecorderDelegate, UI
                     AVNumberOfChannelsKey: 1, AVEncoderAudioQualityKey: AVAudioQuality.medium.rawValue]
                 let rec = try AVAudioRecorder(url: url, settings: settings)
                 rec.isMeteringEnabled = true
-                guard rec.record() else { return }
+                guard rec.record() else {
+                    self.isArming = false
+                    try? FileManager.default.removeItem(at: url)
+                    self.flashMic("Couldn't start recording")
+                    return
+                }
                 self.recorder = rec; self.audioURL = url; self.isRecording = true
+                self.dictationSessionId = self.inputSessionId
+                self.isArming = false
                 self.micSymbol("stop.fill")
                 self.enterRecordingUI()
                 self.playSound("flume_start")
-            } catch { self.flashMic("record failed") }
+            } catch {
+                self.isArming = false
+                self.recorder = nil
+                self.audioURL = nil
+                self.flashMic("Couldn't start recording")
+            }
         }
     }
 
@@ -1730,6 +1957,8 @@ class KeyboardViewController: UIInputViewController, AVAudioRecorderDelegate, UI
     }
 
     private func stopAndTranscribe() {
+        guard isRecording, !isTranscribing else { return }   // re-entrancy latch (IDI-161)
+        isRecording = false
         stopMeter()
         recorder?.stop(); recorder = nil
         try? AVAudioSession.sharedInstance().setActive(false)
@@ -1737,12 +1966,37 @@ class KeyboardViewController: UIInputViewController, AVAudioRecorderDelegate, UI
         try? AVAudioSession.sharedInstance().setCategory(.playback, options: [.mixWithOthers])
         try? AVAudioSession.sharedInstance().setActive(true)
         playSound("flume_stop")
-        isRecording = false; micSymbol("mic.fill"); exitRecordingUI()
-        guard let url = audioURL, let data = try? Data(contentsOf: url), !data.isEmpty else { return }
+        micSymbol("mic.fill"); exitRecordingUI()
+        // Consume the recording exactly ONCE: clear `audioURL` and delete the file as soon as
+        // the bytes are in memory. It used to linger in /tmp forever and a second stop could
+        // re-read the same clip.
+        guard let url = audioURL else { flashMic("No speech detected"); return }
+        audioURL = nil
+        let data = try? Data(contentsOf: url)
+        try? FileManager.default.removeItem(at: url)
+        guard let data = data, !data.isEmpty else { flashMic("No speech detected"); return }
+        isTranscribing = true
         transcribe(data: data)
     }
 
-    private func flashMic(_ msg: String) { /* transient — status surface added later */ }
+    /// Visible, transient dictation feedback: a message on the suggestion strip plus a mic
+    /// tint pulse. This was an empty stub, which is why every failure above was silent (IDI-161).
+    private func flashMic(_ msg: String) {
+        flashStatus(msg)
+        guard let mic = micButton else { return }
+        mic.backgroundColor = accent
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [weak self] in
+            guard let self = self, !self.isRecording else { return }
+            self.micButton?.backgroundColor = self.pal.micBg
+        }
+    }
+
+    // Stop/done SFX need the session back on .playback (recording left it on .playAndRecord).
+    private func playDoneCue() {
+        try? AVAudioSession.sharedInstance().setCategory(.playback, options: [.mixWithOthers])
+        try? AVAudioSession.sharedInstance().setActive(true)
+        playSound("flume_done")
+    }
 
     // Recording SFX (mirrors the desktop start/stop/done sounds). Load once + cache.
     // FAIL CLOSED — a sound error must never break the record→transcribe→inject path.
@@ -1763,12 +2017,26 @@ class KeyboardViewController: UIInputViewController, AVAudioRecorderDelegate, UI
         } catch { /* ignore */ }
     }
 
+    // Full dictation pipeline, mirroring lib/dictationPipeline.ts and the Android IME's
+    // transcribe(): vocabulary-biased + language-hinted + deterministic transcription,
+    // then dictionary replacements, then snippet expansion. Every post-transcription step
+    // fails CLOSED — a bad rule yields the best text obtained so far, never a lost dictation.
     private func transcribe(data: Data) {
-        guard let url = URL(string: "\(supabaseURL)/functions/v1/groq-proxy") else { return }
+        // Snapshot on the MAIN thread: readConfig() mutates a cache and must not run on the
+        // URLSession queue, and the insert guards below have to compare against the field /
+        // instant the dictation STARTED in, not whatever is focused when the reply lands.
+        let cfg = readConfig()
+        let sessionAtStart = dictationSessionId
+        let issuedAt = Date()
+        guard let url = URL(string: "\(supabaseURL)/functions/v1/groq-proxy") else {
+            isTranscribing = false; flashMic("Transcription failed"); return
+        }
         let boundary = "Boundary-\(UUID().uuidString)"
         var req = URLRequest(url: url); req.httpMethod = "POST"
+        req.timeoutInterval = 15                       // + netSession's 45s resource cap
         req.setValue("Bearer \(supabaseAnon)", forHTTPHeaderField: "Authorization")
         req.setValue(supabaseAnon, forHTTPHeaderField: "apikey")
+        req.setValue(proxyDeviceId(), forHTTPHeaderField: "x-flume-device")   // proxy rate-limit identity
         req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
         var body = Data()
         func field(_ n: String, _ v: String) {
@@ -1777,34 +2045,165 @@ class KeyboardViewController: UIInputViewController, AVAudioRecorderDelegate, UI
             body.append("\(v)\r\n".data(using: .utf8)!)
         }
         field("model", "whisper-large-v3-turbo"); field("response_format", "json")
+        field("temperature", "0")                      // deterministic, like every other front door
+        // Only send `language` when the user actually picked one — an unset/blank hint must be
+        // OMITTED so Whisper keeps auto-detecting rather than being forced to a wrong language.
+        if let lang = (cfg?["spokenLanguage"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !lang.isEmpty {
+            field("language", lang)
+        }
+        if let prompt = buildBiasPrompt(cfg) { field("prompt", prompt) }
         body.append("--\(boundary)\r\n".data(using: .utf8)!)
         body.append("Content-Disposition: form-data; name=\"file\"; filename=\"audio.m4a\"\r\n".data(using: .utf8)!)
         body.append("Content-Type: audio/m4a\r\n\r\n".data(using: .utf8)!)
         body.append(data); body.append("\r\n".data(using: .utf8)!)
         body.append("--\(boundary)--\r\n".data(using: .utf8)!)
         req.httpBody = body
-        URLSession.shared.dataTask(with: req) { [weak self] data, _, _ in
-            guard let self = self, let data = data,
-                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let text = (obj["text"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty
-            else { return }
+        netSession.dataTask(with: req) { [weak self] data, response, error in
+            // The URLResponse used to be discarded, so a 4xx/5xx from the proxy (incl. the
+            // 429 rate limit) read as "nothing happened" — IDI-161.
+            let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+            let ok = error == nil && (200...299).contains(code)
+            var raw: String? = nil
+            if ok, let data = data,
+               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                raw = (obj["text"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            // Dictionary post-processing runs off the main thread on captured, immutable input.
+            var finalText: String? = nil
+            if let t = raw, !t.isEmpty {
+                var out = KeyboardViewController.applyReplacements(t, cfg?["replacements"] as? [[String: Any]])
+                out = KeyboardViewController.applySnippets(out, cfg?["snippets"] as? [[String: Any]])
+                out = out.trimmingCharacters(in: .whitespacesAndNewlines)
+                finalText = out.isEmpty ? nil : out
+            }
             DispatchQueue.main.async {
-                // Switch to playback so the done SFX is audible after the async transcription.
-                try? AVAudioSession.sharedInstance().setCategory(.playback, options: [.mixWithOthers])
-                try? AVAudioSession.sharedInstance().setActive(true)
-                self.playSound("flume_done")
-                // Mic is repurposed while composing a transform instruction (same button,
-                // mode-dependent meaning) — route the transcription into the instruction
-                // buffer and auto-send instead of typing it into the host app.
-                if self.transformState == .compose {
-                    self.transformInstruction = text
-                    self.refreshTransformComposeUI()
-                    self.sendTransform()
-                } else {
-                    self.textDocumentProxy.insertText(text + " ")
-                }
+                guard let self = self else { return }
+                self.isTranscribing = false
+                guard ok else { self.flashMic("Transcription failed"); return }
+                guard let text = finalText else { self.flashMic("No speech detected"); return }
+                self.deliverTranscript(text, sessionAtStart: sessionAtStart, issuedAt: issuedAt)
             }
         }.resume()
+    }
+
+    /// The ONE path that writes an async transcript into the host document (IDI-163).
+    /// Guarantees: a transcript never lands in a field other than the one it was dictated
+    /// into, and never in a secure field.
+    private func deliverTranscript(_ text: String, sessionAtStart: Int, issuedAt: Date) {
+        // Mic is repurposed while composing a transform instruction (same button,
+        // mode-dependent meaning) — that route never touches the host document, so the
+        // field guard below does not apply to it.
+        if transformState == .compose {
+            playDoneCue()
+            transformInstruction = text
+            refreshTransformComposeUI()
+            sendTransform()
+            return
+        }
+        guard transformState == .idle else { return }        // busy/preview own the document
+        // (a) same input session as at record-start,
+        guard inputSessionId == sessionAtStart else { flashMic("Can't dictate here"); return }
+        // (b) re-checked at INSERT time — a host can turn the focused field secure in place,
+        guard !isSecureField() else { flashMic("Can't dictate here"); return }
+        // (c) and a result this stale is never wanted (the session caps at 45s, so this is
+        //     the belt to that braces).
+        guard Date().timeIntervalSince(issuedAt) <= 90 else { flashMic("Dictation expired"); return }
+        playDoneCue()
+        clearPendingUndo()
+        textDocumentProxy.insertText(text + " ")
+        updateSuggestions()
+    }
+
+    /// Whisper vocabulary bias — mirrors dictionary.ts::buildPrompt ("Glossary: a, b, c.").
+    /// Capped at 200 terms AND 850 chars trimmed at a comma boundary: Groq 400s any Whisper
+    /// prompt over 896 chars (project Hard Rule #6), same as whisperflow/app/transcriber.py.
+    private func buildBiasPrompt(_ cfg: [String: Any]?) -> String? {
+        guard let vocab = cfg?["vocabulary"] as? [[String: Any]], !vocab.isEmpty else { return nil }
+        var terms: [String] = []
+        for v in vocab {
+            let w = (v["word"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            if w.isEmpty { continue }                  // skip empty / malformed entries
+            terms.append(w)
+            if terms.count >= groqPromptTermCap { break }
+        }
+        if terms.isEmpty { return nil }
+        var prompt = "Glossary: " + terms.joined(separator: ", ") + "."
+        if prompt.count > groqPromptCharCap {
+            let head = String(prompt.prefix(groqPromptCharCap))
+            if let comma = head.range(of: ",", options: .backwards) {
+                prompt = String(head[head.startIndex..<comma.lowerBound]) + "."
+            } else {
+                prompt = head
+            }
+        }
+        return prompt
+    }
+
+    /// Word-boundary, case-INSENSITIVE, applied IN ARRAY ORDER — mirrors
+    /// dictionary.ts::applyReplacements. Pure (no instance state) so it can run off-main.
+    /// Fail-closed: an uncompilable rule degrades to a literal replace.
+    private static func applyReplacements(_ text: String, _ rules: [[String: Any]]?) -> String {
+        guard let rules = rules, !rules.isEmpty, !text.isEmpty else { return text }
+        var out = text
+        for r in rules {
+            let from = (r["from"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            let to = (r["to"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            if from.isEmpty || to.isEmpty { continue }
+            let pattern = "\\b" + NSRegularExpression.escapedPattern(for: from) + "\\b"
+            if let re = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) {
+                out = re.stringByReplacingMatches(
+                    in: out, options: [], range: NSRange(location: 0, length: (out as NSString).length),
+                    withTemplate: NSRegularExpression.escapedTemplate(for: to))
+            } else {
+                out = out.replacingOccurrences(of: from, with: to)
+            }
+        }
+        return out
+    }
+
+    /// Snippet expansion — mirrors dictionary.ts::applySnippets exactly:
+    ///   • case-insensitive whole-phrase match on word boundaries (multi-word aware)
+    ///   • LONGEST trigger first (so "my email address" beats "my email")
+    ///   • SINGLE left-to-right pass — an inserted expansion is never rescanned (no cascade)
+    ///   • snippets with an empty trigger or empty expansion are skipped
+    /// Pure + fail-closed: any problem returns the input unchanged.
+    private static func applySnippets(_ text: String, _ snippets: [[String: Any]]?) -> String {
+        guard let snippets = snippets, !snippets.isEmpty, !text.isEmpty else { return text }
+        func trig(_ s: [String: Any]) -> String {
+            (s["trigger"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        var byTrigger: [String: String] = [:]
+        var ordered: [String] = []
+        for s in snippets.sorted(by: { trig($0).count > trig($1).count }) {
+            let t = trig(s)
+            let exp = s["expansion"] as? String ?? ""
+            if t.isEmpty || exp.isEmpty { continue }
+            let key = t.lowercased()
+            if byTrigger[key] != nil { continue }      // first (longest) wins
+            byTrigger[key] = exp
+            ordered.append(t)
+        }
+        if ordered.isEmpty { return text }
+        let alternation = ordered
+            .map { "\\b" + NSRegularExpression.escapedPattern(for: $0) + "\\b" }
+            .joined(separator: "|")
+        guard let re = try? NSRegularExpression(pattern: "(" + alternation + ")", options: [.caseInsensitive]) else {
+            return text
+        }
+        let ns = text as NSString
+        var out = ""
+        var cursor = 0
+        re.enumerateMatches(in: text, options: [], range: NSRange(location: 0, length: ns.length)) { m, _, _ in
+            guard let m = m, m.range.location >= cursor else { return }
+            guard let exp = byTrigger[ns.substring(with: m.range).lowercased()] else { return }
+            out += ns.substring(with: NSRange(location: cursor, length: m.range.location - cursor))
+            out += exp
+            cursor = m.range.location + m.range.length
+        }
+        if cursor == 0 { return text }                 // nothing matched
+        out += ns.substring(from: cursor)
+        return out
     }
 }
 

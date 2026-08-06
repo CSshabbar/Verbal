@@ -134,17 +134,26 @@
    IDI-160 (2026-08)**: the table never existed in the live schema, so the empty-key gate falsely failed
    every in-app dictation/retry/note-cleanup while `lib/groq.ts` ignored the key anyway. The proxy is the
    sole authority; the `_apiKey` params on `transcribeAudio`/`formatText`/`formatNoteWithTitle`/
-   `formatNotes` are now optional and ignored. The iOS keyboard's `KeyboardViewController.swift` and
-   desktop still keep a local-key fallback path only for
-   resilience — the proxy is always tried first. **Groq returns HTTP 413 (not 429) when a request would
+   `formatNotes` are now optional and ignored. Only DESKTOP keeps a local-key fallback path for
+   resilience (proxy always tried first) — the iOS keyboard has none (an earlier claim here that it did
+   was wrong; it holds only the anon key + proxy, and since IDI-161 sends `x-flume-device` like Android). **Groq returns HTTP 413 (not 429) when a request would
    exceed the shared key's tokens-per-minute budget** — this shows up on long meetings, since the summary
    prompt can carry up to `TRANSCRIPT_CHAR_BUDGET` (24,000) chars. `groq_proxy.chat_via_proxy` raises
    `ProxyPayloadTooLarge` on 413 instead of swallowing it; `meetings.generate_meeting_summary` catches it
    and retries with a halved transcript budget (up to 3 attempts total) rather than repeating the identical
    oversized request.
 16. **Keyboard data bridge is App-Group–gated on iOS.** The app hands the keyboard its config
-    (`flume_kbd_config.json`: theme, vocabulary, snippets, recent history) via a JSON snapshot written by
-    `lib/keyboardBridge.ts::syncKeyboardConfig()`. On **Android** the IME reads `context.filesDir`, which is
+    (`flume_kbd_config.json`: theme, vocabulary, replacements, snippets, recent history, deviceId,
+    `spokenLanguage`, feature toggles) via a JSON snapshot written by
+    `lib/keyboardBridge.ts::syncKeyboardConfig()`. Since IDI-161/162 BOTH natives consume `replacements`,
+    `deviceId` (→ `x-flume-device`) and `spokenLanguage` ('auto' → omit the Whisper param); two keys remain
+    write-only (`theme`, `schemaVersion` — natives hardcode/never validate, tracked in IDI-179/180).
+    **Two hard-won rules from the flow-audit batch:** (a) never cache a FAILED config parse against the
+    file's mtime — Android did, and one malformed write silently killed dictation until the next mtime
+    change; a null config must FAIL OPEN (raw transcript committed, stages skipped). (b) Anything a
+    keyboard commits **asynchronously** into the host must pass the **field-identity guard** (IDI-163):
+    input-session counter captured at start + fresh secure-field re-check at insert time + ≤90s age —
+    otherwise a slow transcription lands in whatever field (incl. passwords) the user focused meanwhile. On **Android** the IME reads `context.filesDir`, which is
     the same dir as Expo's `documentDirectory` — a plain `writeAsStringAsync` works. On **iOS the keyboard
     extension is a separate sandbox** and can *only* read the shared **App Group** container
     (`group.com.verbal.app`), never the app's `documentDirectory`. `expo-file-system` can't target group

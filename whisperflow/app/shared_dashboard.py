@@ -1639,18 +1639,28 @@ class DashboardApi:
             if not host:
                 import platform
                 host = platform.node()
-            token, expires_at, ttl = pairing.create_pairing(uid, host)
+            token, expires_at, ttl = pairing.create_pairing(uid, host, cfg=self.app.config)
             svg = pairing.qr_svg("flume://pair?t=" + token)
             return _ok(token=token, svg=svg, user_id=uid, host=host, expires_in=ttl)
         except Exception as e:
             logger.error("start_pairing failed: %s", e)
             return {"ok": False, "error": str(e)}
 
+    def cancel_pairing(self, token):
+        """Host: revoke an unclaimed token server-side (Cancel / TTL expiry) —
+        a QR photographed before Cancel must not stay claimable (IDI-157)."""
+        try:
+            from app import pairing
+            pairing.cancel_pairing(token, cfg=self.app.config)
+        except Exception as e:
+            logger.debug("cancel_pairing api failed: %s", e)
+        return _ok()
+
     def check_pairing(self, token):
         """Host: poll whether the token has been claimed by another device."""
         try:
             from app import pairing
-            row = pairing.check_pairing(token)
+            row = pairing.check_pairing(token, cfg=self.app.config)
             claimed = bool(row and row.get("claimed_by"))
             if claimed:
                 # a new device joined — refresh the device list

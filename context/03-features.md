@@ -127,7 +127,9 @@ Each feature: **what it does · desktop impl · mobile impl · backend · status
 - **Mobile:** `lib/dictionary.ts` — direct mirror (`applySnippets`, `getSnippets`, `addSnippet`,
   `updateSnippet`, `removeSnippet`, `Snippet` type), same longest-first/single-pass algorithm and `used`
   bump; `flume-ui/screens/SnippetsScreen.tsx` + `flume-ui/hooks/useSnippets.ts` (mock contract
-  `useSnippets.mock.ts`).
+  `useSnippets.mock.ts`). Both NATIVE keyboards now also carry true longest-first/single-pass/no-cascade
+  mirrors with blank-expansion skipping (iOS added in IDI-161; Android's cascading version fixed in
+  IDI-162) — `lib/dictionary.ts` stays the reference all three must match.
 - **Backend:** `dictionary.snippets` jsonb column (default `'[]'`), `supabase_snippets.sql` (idempotent
   `ADD COLUMN IF NOT EXISTS`). Snippet shape `{id, trigger, expansion, label, used, created_at, updated_at}`.
   Same sync path as the rest of the dictionary (one row/user, last-write-wins). `_push_remote` preserves
@@ -309,11 +311,14 @@ Each feature: **what it does · desktop impl · mobile impl · backend · status
 ## Device pairing
 
 - QR-based, single-use token. Host (signed in) inserts a `pairings` row (`token`=`token_urlsafe(6)`,
-  `expires_at`≈now+120 s), shows QR `flume://pair?t=<token>`. New device claims: SELECT unclaimed/unexpired
-  row → atomic UPDATE `claimed_by` (guarded) → adopt host `user_id` → enable sync. Desktop `pairing.py`
-  (`create_pairing`/`check_pairing`, `qr_svg` — hosting only; its dead `claim_pairing` was removed,
-  IDI-156); mobile `lib/pairing.ts` (`extractToken`/`claimPairing`), `PairDeviceScreen` (expo-camera),
-  claim handler in `RootNavigator`'s `PairDevice` screen.
+  `expires_at`≈now+120 s), shows QR `flume://pair?t=<token>`. New device claims via the **`claim_pairing`
+  RPC** (IDI-157: atomic guarded claim, server-side expiry — direct table reads/updates are gone) → adopt
+  host `user_id` → enable sync. Host polls the `pairing_status` RPC; Cancel (and TTL expiry) revokes the
+  token server-side via `cancel_pairing`, and the dashboard's "Pair a device" button is latched against
+  double-clicks and shows an error when starting fails. Desktop `pairing.py` (`create_pairing`/
+  `check_pairing`/`cancel_pairing`, `qr_svg` — hosting only; its dead claim fn was removed, IDI-156; all
+  calls go through `auth_header`); mobile `lib/pairing.ts` (`extractToken`/`claimPairing`),
+  `PairDeviceScreen` (expo-camera), claim handler in `RootNavigator`'s `PairDevice` screen.
 - **Adoption mechanics (IDI-156, 2026-08):** the claim writes a **paired-account override**
   (`verbal_paired_user_id`) that `storage.getUserId()` checks BEFORE the Supabase session id — previously
   the session write-back reverted the adoption within milliseconds, making pairing a silent no-op for any
@@ -667,9 +672,15 @@ inventing new UI:
 - **Emoji picker**: a full bundled library (~1900 emoji, 9 groups + Recents) with keyword search
   (`flume_emoji_kw.txt`) mapping typed words to relevant emoji.
 - **Dictation via mic**: records and transcribes through the same `groq-proxy` pipeline as the in-app
-  recorder; on iOS (which can't run JS in an extension) this hands off to `lib/dictationPipeline.ts` in
-  the main app — see `02-architecture.md`'s "Shared dictation pipeline contract" note. Android's IME
-  mirrors the same transcribe → cleanup → replacements → snippets sequence natively in Kotlin.
+  recorder. **Both** keyboards do the full sequence natively in-extension/IME (vocab-bias prompt ≤200
+  terms/≤896 chars → transcribe → replacements → single-pass snippet expansion) — iOS gained the missing
+  three stages in IDI-161 (there was never a real main-app handoff), Android's snippet cascade was fixed
+  to the single-pass contract in IDI-162. Both send `x-flume-device`, read `spokenLanguage` from the
+  shared config ('auto' → omit), surface every failure visibly (mic/full-access/HTTP/timeout — iOS's
+  `flashMic` was an empty stub), and carry an async **field-identity guard** (IDI-163): a transcript is
+  dropped with a message unless the input session still matches record-start, a FRESH secure-field check
+  passes at insert time, and the result is <90s old — a dictation can never land in a password field or
+  a different field than it was spoken into.
 
 All of the above predates and is extended by the clipboard-history and Transform features below, which
 reuse the identical bar-icon → overlay → tap-to-insert (or bar-icon → live-action) shape. Deep
@@ -764,12 +775,18 @@ Fully fail-closed — both down → `None` → "Couldn't transform, try again" (
   `IMPROVISE_SYSTEM_PROMPT` and de-wrapping logic as desktop, called directly from the extension via
   a new JSON chat-completions call (`chatViaProxy`/`proxyChat`) — a sibling of the multipart
   transcription call each file already makes, same `groq-proxy` endpoint (it already routes JSON→chat
-  vs multipart→transcription), no backend changes needed. Selection sent to the LLM is capped at 8000
-  chars (smaller than desktop's 12000 — mobile selections are shorter, and the shared Groq key has a
-  real tokens-per-minute ceiling, see the 413-handling note in `05-conventions.md`). **No OS-level undo
-  exists on mobile** (no "send ⌘Z to the host app" equivalent) — Undo is a soft implementation: delete
-  exactly as many characters as the rewrite inserted, then re-insert the original captured text; correct
-  only if nothing else was typed/moved since Replace, shown as a ~6s bar chip (shared with the clipboard
+  vs multipart→transcription), no backend changes needed. Selections over 8000 chars are **refused with a
+  visible message** on both keyboards (IDI-164 — previously silently truncated, which made Replace destroy
+  the untransformed tail; desktop still caps at 12000 with its own handling). **Replace re-validates the
+  selection** (IDI-164): the host's current selection is re-read and must still equal the captured
+  original, else "Selection changed" and no insert — a collapsed selection can no longer end up with
+  original+rewrite both in the document. A failed transform now fully rebuilds the keyboard UI on both
+  platforms (it used to strand a spinner), and iOS carries a `transformSeq` request token + task
+  cancellation like Android. **No OS-level undo exists on mobile** (no "send ⌘Z to the host app"
+  equivalent) — Undo is a soft implementation: delete exactly as many UTF-16 code units as the rewrite
+  inserted, then re-insert the original captured text; shown as a ~6s bar chip (shared with the clipboard
   quick-paste chip — whichever ephemeral affordance is most recent wins; the two never show at once).
+  Since IDI-164 `pendingUndo` is cleared on any input-session/field change and on host-mutating typing,
+  so Undo can never delete characters in a different field.
   Mode A (trailing "…so Flume, …" trigger) is not implemented on mobile.
 - **Fixtures:** `whisperflow/transform_fixtures.py` (16 gate cases + output unwrapping, offline).

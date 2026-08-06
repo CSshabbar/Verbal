@@ -29,34 +29,22 @@ export async function claimPairing(payload: string): Promise<PairResult> {
   const token = extractToken(payload);
   if (!token) throw new Error('That’s not a Flume pairing code.');
 
-  const nowIso = new Date().toISOString();
-
-  // 1) find a valid, unclaimed, unexpired row
-  const { data: rows, error } = await supabase
-    .from('pairings')
-    .select('id,user_id,host_device')
-    .eq('token', token)
-    .is('claimed_by', null)
-    .gt('expires_at', nowIso)
-    .limit(1);
+  // 1+2) atomic single-use claim via the `claim_pairing` RPC (IDI-157): the
+  // server validates expiry on ITS clock and stamps claimed_by in one guarded
+  // UPDATE — the table itself is no longer readable/writable over REST, so
+  // there is no select-then-patch race and no user_id enumeration surface.
+  const deviceName = await getDeviceName();
+  const { data, error } = await supabase.rpc('claim_pairing', {
+    p_token: token,
+    p_device_name: deviceName,
+  });
   if (error) throw new Error(error.message);
-  if (!rows || rows.length === 0) {
+  const rows = (Array.isArray(data) ? data : data ? [data] : []) as
+    { user_id: string; host_device: string | null }[];
+  if (rows.length === 0 || !rows[0]?.user_id) {
     throw new Error('This code is invalid, already used, or expired.');
   }
-  const row = rows[0] as { id: string; user_id: string; host_device: string | null };
-
-  // 2) claim it (single-use: only rows still unclaimed match)
-  const deviceName = await getDeviceName();
-  const { data: upd, error: uErr } = await supabase
-    .from('pairings')
-    .update({ claimed_by: deviceName, claimed_at: nowIso })
-    .eq('id', row.id)
-    .is('claimed_by', null)
-    .select('id');
-  if (uErr) throw new Error(uErr.message);
-  if (!upd || upd.length === 0) {
-    throw new Error('This code was just used by another device.');
-  }
+  const row = rows[0];
 
   // 3) adopt the host account (IDI-156).
   // Account-switch teardown FIRST — same rule as useAuth.afterSignIn: the
