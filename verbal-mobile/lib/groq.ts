@@ -404,13 +404,21 @@ const LANG_NAMES: Record<string, string> = {
   zh: 'Chinese', ja: 'Japanese',
 };
 
-/** Generate full AI meeting notes on-device (same prompt as desktop). */
+/** Hard cap for one notes generation, shared across the Ollama→Groq fallback
+ *  (IDI-175 §5). Without it a hung proxy left the "Writing the notes…" spinner
+ *  up forever, with no way back except killing the app. */
+const MEETING_NOTES_TIMEOUT_MS = 30_000;
+
+/** Generate full AI meeting notes on-device (same prompt as desktop).
+ *  Returns null on timeout/failure so the caller can show an error state. */
 export async function generateMeetingNotes(meeting: {
   transcript: { speaker: string; t0: number; text: string }[];
   speakers: Record<string, string>;
   scratchpad: string;
   markedMoments: { t: number; label: string; note?: string }[];
 }): Promise<string | null> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), MEETING_NOTES_TIMEOUT_MS);
   try {
     if (!meeting.transcript.length) return null;
     const langCode = await getSpokenLanguage();
@@ -438,6 +446,8 @@ export async function generateMeetingNotes(meeting: {
     ];
     // One notes call. Try Ollama Cloud (gpt-oss:120b — strong at structured markdown +
     // tables); fall back to Groq llama-3.3 so notes never fail to generate.
+    // BOTH attempts share the one 30 s deadline above — the fallback gets
+    // whatever budget the first attempt didn't spend, and the total is bounded.
     const call = async (model: string, provider?: string): Promise<string | null> => {
       const res = await fetch(PROXY_URL, {
         method: 'POST',
@@ -446,6 +456,7 @@ export async function generateMeetingNotes(meeting: {
           model, messages, temperature: 0, max_tokens: 4000,
           ...(provider ? { provider } : {}),
         }),
+        signal: controller.signal,
       });
       if (!res.ok) return null;
       const data = await res.json();
@@ -455,7 +466,10 @@ export async function generateMeetingNotes(meeting: {
     };
     return (await call(NOTES_MODEL, 'ollama')) || (await call('llama-3.3-70b-versatile'));
   } catch {
+    // Aborted (30 s timeout) or network error — the caller shows the failure.
     return null;
+  } finally {
+    clearTimeout(timer);
   }
 }
 

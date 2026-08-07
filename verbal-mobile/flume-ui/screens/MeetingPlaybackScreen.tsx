@@ -32,16 +32,28 @@ export const MeetingPlaybackScreen: React.FC<Props> = ({ meetingId, onBack }) =>
   // meeting-audio is private (MER-27) — resolve a signed URL before playing.
   // Long TTL: a meeting can run long, and the URL must stay valid for the whole
   // playback+scrub session, not just the first byte.
+  //
+  // The resolution used to be one-shot with no `.catch`: a rejection left
+  // `signedUrl` null forever (a dead play button and no explanation), and a
+  // session outliving the 3600 s TTL had no way to get a fresh URL. Now a
+  // failure is a visible state with a Retry that RE-RESOLVES (IDI-175 §5).
   const [signedUrl, setSignedUrl] = useState<string | null>(null);
+  const [urlError, setUrlError] = useState(false);
+  const [resolveNonce, setResolveNonce] = useState(0);
   useEffect(() => {
     setSignedUrl(null);
+    setUrlError(false);
     if (!meeting?.audioUrl) return;
     let cancelled = false;
-    resolvePlaybackUrl(meeting.audioUrl, 'meeting-audio', 3600).then((url) => {
-      if (!cancelled) setSignedUrl(url);
-    });
+    resolvePlaybackUrl(meeting.audioUrl, 'meeting-audio', 3600)
+      .then((url) => {
+        if (cancelled) return;
+        if (url) setSignedUrl(url);
+        else setUrlError(true);
+      })
+      .catch(() => { if (!cancelled) setUrlError(true); });
     return () => { cancelled = true; };
-  }, [meeting?.audioUrl]);
+  }, [meeting?.audioUrl, resolveNonce]);
 
   const player = useAudioPlayer(signedUrl ? { uri: signedUrl } : null);
   const status = useAudioPlayerStatus(player);
@@ -137,9 +149,31 @@ export const MeetingPlaybackScreen: React.FC<Props> = ({ meetingId, onBack }) =>
         }}
       />
 
-      {hasAudio && (
+      {hasAudio && urlError && (
         <View style={[styles.playerBar, { bottom: insets.bottom + 20 }]}>
-          <Pressable style={({ pressed }) => [styles.playBtn, pressed && pressedStyle]} onPress={togglePlay}>
+          <Ionicons name="alert-circle-outline" size={18} color={colors.primaryAccent} />
+          <Text variant="metaSm" color={colors.textMuted} style={{ flex: 1 }}>
+            Couldn't load the audio — the transcript is above.
+          </Text>
+          <Pressable
+            onPress={() => setResolveNonce((n) => n + 1)}
+            hitSlop={8}
+            style={({ pressed }) => pressed && pressedStyle}
+            accessibilityRole="button"
+            accessibilityLabel="Retry loading audio"
+          >
+            <Text variant="metaSm" color={colors.textPrimary}>RETRY</Text>
+          </Pressable>
+        </View>
+      )}
+
+      {hasAudio && !urlError && (
+        <View style={[styles.playerBar, { bottom: insets.bottom + 20 }]}>
+          <Pressable
+            style={({ pressed }) => [styles.playBtn, pressed && pressedStyle, !signedUrl && { opacity: 0.5 }]}
+            disabled={!signedUrl}
+            onPress={togglePlay}
+          >
             <Ionicons name={playing ? 'pause' : 'play'} size={20} color={colors.primaryInk} />
           </Pressable>
           <Text variant="metaSm" color={colors.textPrimary}>

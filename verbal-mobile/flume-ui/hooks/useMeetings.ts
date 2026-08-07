@@ -1,71 +1,50 @@
 /**
- * useMeetings — real hook; exact same exported shape as useMeetings.mock.ts
- * (the design contract). Read-only except updateScratchpad, which syncs the
- * edit back to the desktop (last-write-wins).
+ * useMeetings — thin wrapper over the shared `meetingsStore` (IDI-175 §1).
+ *
+ * Same exported shape as useMeetings.mock.ts (the design contract), plus the
+ * three things the screens now need to be honest about sync:
+ *   error      — the last refresh failed; the list below is stale, not empty
+ *   unsaved    — per meeting: a write is queued/failed and will be retried
+ *   conflicts  — per meeting: another device wrote first, offer a Reload
+ *
+ * Every instance reads the SAME store, so four mounted screens share one fetch
+ * and one realtime channel.
  */
-import { useState, useCallback, useEffect, useRef } from 'react';
-import {
-  fetchMeetings, updateScratchpadRemote, updateNotesRemote, subscribeMeetings,
-} from '../../lib/meetings';
-import { getUserId, getSyncEnabled } from '../../lib/storage';
-import type { Meeting } from './useMeetings.mock';
+import { useCallback, useEffect, useSyncExternalStore } from 'react';
+import * as store from './meetingsStore';
+import type { Meeting } from '../../lib/meetings';
 
 export type {
   Meeting, MeetingUtterance, MeetingActionItem, MeetingMoment,
   MeetingHybridNote, MeetingStatus,
-} from './useMeetings.mock';
+} from '../../lib/meetings';
 
 export function useMeetings() {
-  const [meetings, setMeetings] = useState<Meeting[]>([]);
-  const [loading, setLoading] = useState(true);
-  const scratchTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
-  const notesTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  const snap = useSyncExternalStore(store.subscribe, store.getSnapshot);
 
-  const refresh = useCallback(async () => {
-    try {
-      setMeetings(await fetchMeetings());
-    } catch {
-      /* keep previous list */
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    let dispose: (() => void) | null = null;
-    let mounted = true;
-    (async () => {
-      await refresh();
-      try {
-        if (await getSyncEnabled()) {
-          const uid = await getUserId();
-          if (mounted) dispose = subscribeMeetings(uid, refresh);
-        }
-      } catch { /* realtime is best-effort */ }
-    })();
-    return () => { mounted = false; if (dispose) dispose(); };
-  }, [refresh]);
+  useEffect(() => { store.ensureLoaded(); }, []);
 
   const getMeeting = useCallback(
-    (id: string) => meetings.find(m => m.id === id) ?? null,
-    [meetings],
+    (id: string): Meeting | null => snap.meetings.find((m) => m.id === id) ?? null,
+    [snap.meetings],
   );
 
-  /** Optimistic local update + debounced remote write (600 ms). */
-  const updateScratchpad = useCallback((id: string, text: string) => {
-    setMeetings(prev => prev.map(m => (m.id === id ? { ...m, scratchpad: text } : m)));
-    const timers = scratchTimers.current;
-    if (timers[id]) clearTimeout(timers[id]);
-    timers[id] = setTimeout(() => { updateScratchpadRemote(id, text); }, 600);
-  }, []);
-
-  /** Manual notes_md edits — same optimistic + debounced-write shape as updateScratchpad. */
-  const updateNotes = useCallback((id: string, text: string) => {
-    setMeetings(prev => prev.map(m => (m.id === id ? { ...m, notesMd: text } : m)));
-    const timers = notesTimers.current;
-    if (timers[id]) clearTimeout(timers[id]);
-    timers[id] = setTimeout(() => { updateNotesRemote(id, text); }, 600);
-  }, []);
-
-  return { meetings, loading, getMeeting, refresh, updateScratchpad, updateNotes };
+  return {
+    meetings: snap.meetings,
+    loading: snap.loading,
+    error: snap.error,
+    unsaved: snap.unsaved,
+    conflicts: snap.conflicts,
+    getMeeting,
+    refresh: store.refresh,
+    updateScratchpad: store.updateScratchpad,
+    updateNotes: store.updateNotes,
+    updateActionItems: store.updateActionItems,
+    /** Flush debounced edits right now (call on blur/back/unmount). */
+    flushNow: store.flushNow,
+    /** Discard the local edit and adopt the other device's version. */
+    reloadMeeting: store.reloadMeeting,
+    clearConflict: store.clearConflict,
+    setNotesNow: store.setNotesNow,
+  };
 }

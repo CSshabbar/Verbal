@@ -1,7 +1,7 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   View, StyleSheet, Pressable, TextInput, ScrollView, ActivityIndicator,
-  KeyboardAvoidingView, Platform,
+  KeyboardAvoidingView, Platform, AppState,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -9,6 +9,12 @@ import { Text, Visualizer, MarkdownNote, AudioSegmentPlayer } from '../component
 import { colors, radius, pressedStyle } from '../theme';
 import { useNotes, Note } from '../hooks/useNotes';
 import { useRecorder } from '../hooks/useRecorder';
+import * as recordings from '../../lib/recordings';
+
+/** Autosave debounce. The editor used to call updateNote on EVERY keystroke —
+ *  one AsyncStorage write and one Supabase update per character, landing out of
+ *  order (IDI-176 §7). */
+const SAVE_DEBOUNCE_MS = 500;
 
 type Props = {
   noteId: string | null; // null = create new
@@ -29,13 +35,16 @@ const MARKDOWN_RE = /(^|\n)\s*(#{1,3}\s|[-*]\s\[[ xX]\]|[-*]\s)/;
  */
 export const NoteEditorScreen: React.FC<Props> = ({ noteId, onBack }) => {
   const insets = useSafeAreaInsets();
-  const { getNote, updateNote, createNote, saveDictation, reformatNote, flags } = useNotes();
+  const {
+    notes, getNote, updateNote, createNote, saveDictation, reformatNote, resolveConflict, flags,
+  } = useNotes();
   const [note, setNote] = useState<Note | null>(() => (noteId ? getNote(noteId) : null));
   const [title, setTitle] = useState(note?.title ?? '');
   const [body, setBody] = useState(note?.body ?? '');
   const [busy, setBusy] = useState(false);         // AI cleanup call in flight
   const [showOriginal, setShowOriginal] = useState(false);
   const [editingRaw, setEditingRaw] = useState(false);
+  const [message, setMessage] = useState('');      // dictation / conflict feedback
 
   // Adopt an existing note from the store once it loads (avoids creating a
   // duplicate when the notes list hasn't hydrated yet); create only for a genuine
@@ -51,13 +60,92 @@ export const NoteEditorScreen: React.FC<Props> = ({ noteId, onBack }) => {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [note, noteId, getNote]);
 
-  // Auto-save typed edits. Typed edits NEVER trigger AI cleanup (Design
-  // Decision 2) — that only happens via the dictation path / explicit Reformat.
+  /* ── debounced autosave (IDI-176 §7) ──────────────────────────────────────
+   * Typed edits NEVER trigger AI cleanup (Design Decision 2) — that only
+   * happens via the dictation path / explicit Reformat. */
+  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const queued = useRef<{ id: string; title: string; body: string } | null>(null);
+
+  const flushSave = useCallback(() => {
+    if (saveTimer.current) { clearTimeout(saveTimer.current); saveTimer.current = null; }
+    const q = queued.current;
+    queued.current = null;
+    if (q) updateNote(q.id, { title: q.title, body: q.body });
+  }, [updateNote]);
+
   useEffect(() => {
     if (!note) return;
-    updateNote(note.id, { title, body });
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [title, body]);
+    // Nothing changed (mount, or a re-render after a dictation save) — don't
+    // schedule a write of the values we just read.
+    if (title === note.title && body === note.body) return;
+    queued.current = { id: note.id, title, body };
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(flushSave, SAVE_DEBOUNCE_MS);
+  }, [title, body, note, flushSave]);
+
+  // The debounce window must never eat the last keystrokes: flush on unmount…
+  useEffect(() => () => { flushSave(); }, [flushSave]);
+  // …and when the app leaves the foreground.
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (s) => { if (s !== 'active') flushSave(); });
+    return () => sub.remove();
+  }, [flushSave]);
+
+  const handleBack = useCallback(() => { flushSave(); onBack(); }, [flushSave, onBack]);
+
+  const discardQueuedSave = useCallback(() => {
+    if (saveTimer.current) { clearTimeout(saveTimer.current); saveTimer.current = null; }
+    queued.current = null;
+  }, []);
+
+  /* ── conflict pair (IDI-176 §9) ───────────────────────────────────────────
+   * `mergeRemoteNote` keeps BOTH versions when two devices edited the same note
+   * inside the 60 s window: the newer keeps the canonical id, the older is
+   * stored locally as `<id>::conflict::<updated_at>`. Until now nothing rendered
+   * either flag, so the pair just sat there.
+   *
+   * "View other copy" SWAPS the editor onto the other member rather than
+   * navigating — this screen has no navigator handle (RootNavigator owns
+   * routing), and swapping keeps the whole flow inside the one screen.
+   */
+  const otherCopy = useMemo(() => {
+    if (!note?.conflict) return null;
+    return note.conflictOf
+      ? notes.find((n) => n.id === note.conflictOf) ?? null
+      : notes.find((n) => n.conflictOf === note.id) ?? null;
+  }, [note, notes]);
+
+  const adopt = useCallback((n: Note) => {
+    setNote(n); setTitle(n.title); setBody(n.body);
+    setShowOriginal(false); setEditingRaw(false);
+  }, []);
+
+  const viewOtherCopy = useCallback(() => {
+    if (!otherCopy) return;
+    flushSave();
+    discardQueuedSave();
+    adopt(otherCopy);
+  }, [otherCopy, flushSave, discardQueuedSave, adopt]);
+
+  const keepThisVersion = useCallback(async () => {
+    if (!note) return;
+    // The queued autosave may target the copy's id, which is about to be
+    // deleted — drop it; the content is re-applied below instead.
+    discardQueuedSave();
+    const canonicalId = note.conflictOf ?? note.id;
+    const keep = note.conflictOf ? 'copy' : 'canonical';
+    const resolved = await resolveConflict(canonicalId, keep).catch(() => null);
+    if (!resolved) { setMessage("Couldn't resolve — try again."); return; }
+    if (title !== resolved.title || body !== resolved.body) {
+      // Whatever is on screen IS "this version" — carry any unsaved keystrokes
+      // onto the surviving note.
+      updateNote(canonicalId, { title, body });
+      setNote({ ...resolved, title, body });
+    } else {
+      adopt(resolved);
+    }
+    setMessage('Kept this version.');
+  }, [note, title, body, resolveConflict, updateNote, discardQueuedSave, adopt]);
 
   const { start, stop, pause, resume, cancel, status, durationMs, partialText } = useRecorder();
   const recording = status !== 'idle';   // recording OR paused
@@ -79,12 +167,25 @@ export const NoteEditorScreen: React.FC<Props> = ({ noteId, onBack }) => {
   // cleanup once for this segment, unions the recording into audio_segments).
   const finishDictate = useCallback(async () => {
     let result;
+    setMessage('');
     try {
       result = await stop();
     } catch {
+      setMessage("Couldn't finish the recording — nothing was added.");
       return; // recorder already surfaced the error; keep existing content
     }
-    if (!result?.text) return;
+    // This used to be a bare `if (!result?.text) return;` — the user got no
+    // feedback at all, and the audio the recorder had already persisted was
+    // orphaned on disk with nothing referencing it (IDI-176 §10). Audio is
+    // linked ONLY on a successful transcript, so a failure cleans up after
+    // itself.
+    if (!result?.text) {
+      if (result?.uri) recordings.remove(result.uri).catch(() => {});
+      setMessage(result?.status === 'failed'
+        ? "Dictation failed — check your connection and try again."
+        : "Didn't catch that — nothing was added.");
+      return;
+    }
 
     // Make sure a note row exists to attach the dictation to.
     let target = note;
@@ -156,7 +257,7 @@ export const NoteEditorScreen: React.FC<Props> = ({ noteId, onBack }) => {
     >
       <View style={styles.topBar}>
         <Pressable
-          onPress={onBack}
+          onPress={handleBack}
           style={({ pressed }) => pressed && pressedStyle}
           accessibilityRole="button"
           accessibilityLabel="Back"
@@ -187,6 +288,34 @@ export const NoteEditorScreen: React.FC<Props> = ({ noteId, onBack }) => {
         multiline={false}
         accessibilityLabel="Note title"
       />
+
+      {/* Conflict pair — both versions were kept; the user picks one. */}
+      {note?.conflict ? (
+        <View style={styles.conflictBox}>
+          <View style={styles.conflictHead}>
+            <Ionicons name="git-compare-outline" size={14} color={colors.primary} />
+            <Text variant="buttonSm" color={colors.primary} style={{ flex: 1, fontSize: 13 }}>
+              Edited on two devices
+            </Text>
+          </View>
+          <Text variant="caption" color={colors.textMuted} style={{ marginBottom: 8 }}>
+            {note.conflictOf
+              ? 'You are viewing the other copy.'
+              : 'Both versions were kept so nothing is lost.'}
+          </Text>
+          <View style={styles.conflictActions}>
+            <Chip icon="checkmark" label="Keep this version" onPress={keepThisVersion} disabled={busy} accent />
+            {otherCopy ? (
+              <Chip
+                icon="swap-horizontal"
+                label={note.conflictOf ? 'View original' : 'View other copy'}
+                onPress={viewOtherCopy}
+                disabled={busy}
+              />
+            ) : null}
+          </View>
+        </View>
+      ) : null}
 
       {/* Notes-v2 affordances: reformat / retry, show original. */}
       {(canReformat || note?.rawContent) ? (
@@ -258,6 +387,12 @@ export const NoteEditorScreen: React.FC<Props> = ({ noteId, onBack }) => {
           <ActivityIndicator size="small" color={colors.primary} />
           <Text variant="bodyXs" color={colors.primaryAccent} style={{ flex: 1 }}>Formatting…</Text>
         </View>
+      ) : message ? (
+        <Pressable onPress={() => setMessage('')} style={styles.dictStrip} accessibilityRole="button" accessibilityLabel="Dismiss message">
+          <Ionicons name="information-circle-outline" size={16} color={colors.primaryAccent} />
+          <Text variant="bodyXs" color={colors.primaryAccent} style={{ flex: 1 }}>{message}</Text>
+          <Ionicons name="close" size={14} color={colors.textMuted} />
+        </Pressable>
       ) : null}
 
       <View style={styles.dock}>
@@ -298,7 +433,7 @@ export const NoteEditorScreen: React.FC<Props> = ({ noteId, onBack }) => {
               <Ionicons name="mic" size={30} color={colors.primaryInk} />
             </Pressable>
             <View style={[styles.dockSide, { alignItems: 'flex-end' }]}>
-              <Pressable onPress={onBack} hitSlop={8} style={({ pressed }) => [{ padding: 6 }, pressed && pressedStyle]} accessibilityRole="button" accessibilityLabel="Done">
+              <Pressable onPress={handleBack} hitSlop={8} style={({ pressed }) => [{ padding: 6 }, pressed && pressedStyle]} accessibilityRole="button" accessibilityLabel="Done">
                 <Text variant="button" color={colors.primary}>Done</Text>
               </Pressable>
             </View>
@@ -349,6 +484,12 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   affordances: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 10 },
+  conflictBox: {
+    backgroundColor: colors.primarySoft, borderWidth: 1, borderColor: colors.primaryBorder,
+    borderRadius: radius.md, padding: 12, marginBottom: 12,
+  },
+  conflictHead: { flexDirection: 'row', alignItems: 'center', gap: 7, marginBottom: 4 },
+  conflictActions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   chip: {
     flexDirection: 'row', alignItems: 'center', gap: 6,
     paddingVertical: 6, paddingHorizontal: 11, borderRadius: 999,

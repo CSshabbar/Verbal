@@ -20,6 +20,8 @@
 import { AppState, AppStateStatus } from 'react-native';
 import * as historyStore from './historyStore';
 import * as canvasStore from './useCanvas';
+import * as meetingsStore from './meetingsStore';
+import * as notesStore from './notesStore';
 import * as syncStore from '../../lib/syncStore';
 
 /** One catch-up pass. Never throws; each store is independently best-effort. */
@@ -28,6 +30,10 @@ export async function catchUpNow(): Promise<void> {
   await Promise.allSettled([
     historyStore.catchUp(),
     canvasStore.catchUp(),
+    // IDI-175 / IDI-176: meetings also RETRIES any write that failed while we
+    // were backgrounded; notes re-pulls + rejoins its channel.
+    meetingsStore.catchUp(),
+    notesStore.catchUp(),
   ]);
 }
 

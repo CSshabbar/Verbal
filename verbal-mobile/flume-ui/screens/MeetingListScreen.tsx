@@ -42,7 +42,7 @@ function speakerDot(sid: string, i: number): string {
 
 export const MeetingListScreen: React.FC<Props> = ({ onBack, onOpen, onOpenLive }) => {
   const insets = useSafeAreaInsets();
-  const { meetings, loading, refresh } = useMeetings();
+  const { meetings, loading, error, refresh } = useMeetings();
   const liveMeetings = useMemo(() => meetings.filter(isLiveNow), [meetings]);
   const [refreshing, setRefreshing] = React.useState(false);
 
@@ -98,8 +98,34 @@ export const MeetingListScreen: React.FC<Props> = ({ onBack, onOpen, onOpenLive 
         </View>
       )}
 
+      {/* IDI-175 §2: a failed refresh is NOT an empty list. The banner sits over
+          whatever was last loaded; only a failure with nothing cached at all
+          replaces the empty state below. */}
+      {!!error && meetings.length > 0 && (
+        <Pressable onPress={onRefresh} style={({ pressed }) => [styles.errBanner, pressed && pressedStyle]}>
+          <Ionicons name="cloud-offline-outline" size={15} color={colors.primaryAccent} />
+          <Text variant="metaSm" color={colors.primaryAccent} style={{ flex: 1 }}>
+            {error.toUpperCase()}
+          </Text>
+          <Text variant="metaSm" color={colors.textMuted}>RETRY</Text>
+        </Pressable>
+      )}
+
       {loading ? (
         <View style={styles.center}><ActivityIndicator color={colors.primary} /></View>
+      ) : meetings.length === 0 && error ? (
+        <View style={styles.center}>
+          <View style={styles.emptyDisc}>
+            <Ionicons name="cloud-offline-outline" size={26} color={colors.primary} />
+          </View>
+          <Text variant="label" style={{ marginTop: 14 }}>Couldn't load meetings</Text>
+          <Text variant="bodyXs" color={colors.textMuted} style={styles.emptyBody}>
+            {error}
+          </Text>
+          <Pressable onPress={onRefresh} style={({ pressed }) => [styles.retryBtn, pressed && pressedStyle]}>
+            <Text variant="buttonSm" color={colors.primary}>Try again</Text>
+          </Pressable>
+        </View>
       ) : meetings.length === 0 ? (
         <View style={styles.center}>
           <View style={styles.emptyDisc}>
@@ -191,6 +217,15 @@ const styles = StyleSheet.create({
     alignItems: 'center', justifyContent: 'center',
   },
   emptyBody: { textAlign: 'center', marginTop: 8, lineHeight: 20 },
+  errBanner: {
+    flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 10,
+    backgroundColor: 'rgba(200,90,62,0.10)', borderRadius: radius.sm,
+    borderWidth: 1, borderColor: 'rgba(200,90,62,0.3)', paddingHorizontal: 12, paddingVertical: 9,
+  },
+  retryBtn: {
+    marginTop: 16, paddingVertical: 9, paddingHorizontal: 18, borderRadius: radius.pill,
+    borderWidth: 1, borderColor: colors.borderStrong,
+  },
   liveWrap: { gap: 8, marginBottom: 14 },
   liveCard: {
     flexDirection: 'row', alignItems: 'center', gap: 12,

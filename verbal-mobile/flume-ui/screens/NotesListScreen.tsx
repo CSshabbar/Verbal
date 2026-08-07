@@ -1,6 +1,7 @@
 import React, { useState, useMemo, useEffect, useCallback } from 'react';
-import { View, StyleSheet, ScrollView, Pressable, TextInput, AccessibilityInfo } from 'react-native';
+import { View, StyleSheet, ScrollView, Pressable, TextInput, AccessibilityInfo, RefreshControl } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { Text } from '../components';
@@ -26,10 +27,22 @@ const CARD_CREAM_INK = '#2a1f18';
  */
 export const NotesListScreen: React.FC<Props> = ({ onOpen, onCreate, onOpenMeetings }) => {
   const insets = useSafeAreaInsets();
-  const { notes, flags, removeNotes } = useNotes();
+  const { notes, flags, reloadFlags, reload, removeNotes } = useNotes();
   const [filter, setFilter] = useState<'all' | 'voice' | 'typed'>('all');
   const [searchOpen, setSearchOpen] = useState(false);
   const [query, setQuery] = useState('');
+  const [refreshing, setRefreshing] = useState(false);
+
+  // Settings toggles (search / audio / autotitle / structure) apply as soon as
+  // the user comes back to this screen — they used to need an app relaunch.
+  useFocusEffect(
+    useCallback(() => { reloadFlags().catch(() => {}); }, [reloadFlags]),
+  );
+
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    try { await reload(); } finally { setRefreshing(false); }
+  }, [reload]);
 
   // Multi-select: long-press a note to enter select mode, tap to toggle.
   const [selectMode, setSelectMode] = useState(false);
@@ -191,7 +204,14 @@ export const NotesListScreen: React.FC<Props> = ({ onOpen, onCreate, onOpenMeeti
         </Pressable>
       ) : null}
 
-      <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled" contentContainerStyle={{ paddingBottom: insets.bottom + 90 }}>
+      <ScrollView
+        showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
+        contentContainerStyle={{ paddingBottom: insets.bottom + 90 }}
+        refreshControl={
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.textMuted} />
+        }
+      >
         {searching ? (
           results.length === 0 ? (
             <View style={styles.empty}>
@@ -233,7 +253,15 @@ export const NotesListScreen: React.FC<Props> = ({ onOpen, onCreate, onOpenMeeti
                 {featured.preview || 'No content yet'}
               </Text>
               <View style={styles.featuredFoot}>
-                <Text style={{ fontSize: 10.5, fontFamily: 'Geist_500Medium', color: CARD_CREAM_INK, opacity: 0.6 }}>{featured.dateLabel}</Text>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                  <Text style={{ fontSize: 10.5, fontFamily: 'Geist_500Medium', color: CARD_CREAM_INK, opacity: 0.6 }}>{featured.dateLabel}</Text>
+                  {featured.conflict ? (
+                    <View style={styles.conflictTagOnCream}>
+                      <Ionicons name="git-compare-outline" size={11} color={CARD_CREAM_INK} />
+                      <Text style={{ fontSize: 10.5, fontFamily: 'Geist_600SemiBold', color: CARD_CREAM_INK }}>Conflict</Text>
+                    </View>
+                  ) : null}
+                </View>
                 <View style={styles.featuredChevron}>
                   <Ionicons name="chevron-forward" size={11} color={CARD_CREAM_INK} />
                 </View>
@@ -292,15 +320,27 @@ const NoteRow: React.FC<{
     <Text variant="button" style={{ fontSize: 14, marginBottom: 5 }} numberOfLines={1}>
       {n.title || 'Untitled note'}
     </Text>
-    <Text variant="bodyXs" color={colors.textMuted} numberOfLines={2} style={n.isVoice ? { marginBottom: 12 } : undefined}>
+    <Text variant="bodyXs" color={colors.textMuted} numberOfLines={2} style={(n.isVoice || n.conflict) ? { marginBottom: 12 } : undefined}>
       {n.preview}
     </Text>
-    {n.isVoice ? (
-      <View style={styles.voiceTag}>
-        <Text style={{ fontSize: 10.5, fontFamily: 'Geist_600SemiBold', color: colors.tagMacInk }}>Voice</Text>
-      </View>
-    ) : null}
+    <View style={styles.tagRow}>
+      {n.isVoice ? (
+        <View style={styles.voiceTag}>
+          <Text style={{ fontSize: 10.5, fontFamily: 'Geist_600SemiBold', color: colors.tagMacInk }}>Voice</Text>
+        </View>
+      ) : null}
+      {/* IDI-176 §9: the note is one half of an unresolved conflict pair. Opening
+          it shows the "Edited on two devices" banner. */}
+      {n.conflict ? <ConflictBadge /> : null}
+    </View>
   </Pressable>
+);
+
+const ConflictBadge: React.FC = () => (
+  <View style={styles.conflictTag} accessibilityLabel="Edited on two devices">
+    <Ionicons name="git-compare-outline" size={11} color={colors.primary} />
+    <Text style={{ fontSize: 10.5, fontFamily: 'Geist_600SemiBold', color: colors.primary }}>Conflict</Text>
+  </View>
 );
 
 const Pill: React.FC<{ label: string; active: boolean; onPress: () => void }> = ({ label, active, onPress }) => (
@@ -348,6 +388,17 @@ const styles = StyleSheet.create({
   noteCardHead: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 8 },
   noteIcon: { width: 26, height: 26, borderRadius: 8, backgroundColor: colors.surface2, alignItems: 'center', justifyContent: 'center' },
   voiceTag: { alignSelf: 'flex-start', paddingHorizontal: 10, paddingVertical: 5, borderRadius: 7, backgroundColor: colors.tagMac },
+  tagRow: { flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' },
+  conflictTag: {
+    flexDirection: 'row', alignItems: 'center', gap: 5, alignSelf: 'flex-start',
+    paddingHorizontal: 9, paddingVertical: 5, borderRadius: 7,
+    backgroundColor: colors.primarySoft, borderWidth: 1, borderColor: colors.primaryBorder,
+  },
+  conflictTagOnCream: {
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    paddingHorizontal: 8, paddingVertical: 3, borderRadius: 999,
+    backgroundColor: 'rgba(42,31,24,0.1)',
+  },
 });
 
 export default NotesListScreen;

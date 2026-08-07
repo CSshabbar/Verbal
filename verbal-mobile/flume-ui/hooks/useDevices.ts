@@ -1,19 +1,31 @@
 /**
- * useDevices — registers THIS device and lists the user's other online devices,
- * using the same working scheme as the original app (lib/useDeviceSelector):
- *   - upsert self into `devices` (user_id, device_id, device_name, device_type, last_seen)
- *   - heartbeat every 60s
- *   - "online" = last_seen within 5 min; self is excluded from the list
+ * useDevices — the account's other online devices + the "target" a new dictation
+ * is sent to.
  *
- * Exposes the Flume UI contract:
- *   { devices, target, setTarget, pair, unpair, makeDefault }
- * `target` is the device new recordings are sent to (persisted locally).
+ * SINGLETON STORE (IDI-177). This used to be a plain hook, and five screens call
+ * it (RootNavigator ×2, HomeScreen, RecordingScreen, CanvasScreen) — so there
+ * were five independent copies of the state: five registerSelf upserts, five 60s
+ * poll loops, and five `targetIdRef`s each seeded once from AsyncStorage. Picking
+ * a target on Home mutated Home's copy only; RootNavigator's copy — the one that
+ * actually stamps `target_device_id` on the outgoing transcription — never heard
+ * about it and kept routing to whatever it had picked at mount. The routing bug
+ * was structural, not a race.
+ *
+ * Now there is ONE module-level store (same shape as historyStore): one poll
+ * loop, one registration site, one `target`, published to React through
+ * useSyncExternalStore. `useDevices()` keeps its previous return shape, so every
+ * caller works unchanged — but they now share a single snapshot, and a
+ * setTarget() on Home is visible to RootNavigator on the same tick.
+ *
+ * Lifecycle: start() is idempotent and runs on the first mount; restart() is for
+ * an account change (useAuth.afterSignIn); reset() is sign-out teardown — it
+ * stops the poll so a signed-out app makes no device queries at all.
  */
-import { useState, useCallback, useEffect, useRef } from 'react';
-import { Platform } from 'react-native';
+import { useEffect, useSyncExternalStore } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from '../../lib/supabase';
-import { getUserId, getDeviceName, getDeviceId } from '../../lib/storage';
+import { getCloudUserId, getDeviceId } from '../../lib/storage';
+import { registerThisDevice, removeDevice as removeDeviceRow } from '../../lib/deviceSync';
 
 export type DevicePlatform = 'macos' | 'windows' | 'linux';
 export type DeviceStatus = 'online' | 'offline';
@@ -28,125 +40,205 @@ export type Device = {
 };
 
 const TARGET_KEY = 'flume_target_device';
-const MY_TYPE = Platform.OS === 'ios' ? 'iphone' : 'android';
 const PRESENCE_MS = 5 * 60 * 1000;
+const POLL_MS = 60_000;
 
 function toPlatform(deviceType?: string): DevicePlatform {
   const v = String(deviceType ?? '').toLowerCase();
   if (v.includes('win')) return 'windows';
   if (v.includes('linux')) return 'linux';
-  return 'macos'; // mac / iphone / android / unknown → mac glyph
+  return 'macos'; // mac / ios / android / unknown → mac glyph
 }
 
+/* ── store internals ─────────────────────────────────────────────────────── */
+
+type Snapshot = { devices: Device[]; target: Device | null };
+
+let snapshot: Snapshot = { devices: [], target: null };
+let targetId: string | null = null;
+/** True once the user has explicitly chosen "All" (target = null). Without it,
+ *  the next poll's "fall back to the first device" rule would silently undo the
+ *  choice 60s later — invisible with five short-lived copies, obvious with one. */
+let targetCleared = false;
+let targetHydrated = false;
+let started = false;
+let poll: ReturnType<typeof setInterval> | null = null;
+let bootstrap: Promise<void> | null = null;
+const listeners = new Set<() => void>();
+
+function emit() { listeners.forEach(l => l()); }
+
+function sameDevices(a: Device[], b: Device[]) {
+  return a.length === b.length && a.every((d, i) =>
+    d.id === b[i].id && d.name === b[i].name &&
+    d.isDefault === b[i].isDefault && d.status === b[i].status && d.platform === b[i].platform);
+}
+
+/** Publish a new snapshot, skipping the no-op case. With one shared store the
+ *  60s poll would otherwise re-render every subscriber every minute even when
+ *  nothing about the device list changed. */
+function publish(devices: Device[], target: Device | null) {
+  if (sameDevices(snapshot.devices, devices)
+      && (snapshot.target?.id ?? null) === (target?.id ?? null)) return;
+  snapshot = { devices, target };
+  emit();
+}
+
+export function subscribe(listener: () => void) {
+  listeners.add(listener);
+  return () => { listeners.delete(listener); };
+}
+export function getSnapshot(): Snapshot { return snapshot; }
+
+async function hydrateTarget() {
+  if (targetHydrated) return;
+  targetHydrated = true;
+  try { targetId = await AsyncStorage.getItem(TARGET_KEY); } catch { targetId = null; }
+}
+
+function persistTarget(id: string | null) {
+  if (id) AsyncStorage.setItem(TARGET_KEY, id).catch(() => {});
+  else AsyncStorage.removeItem(TARGET_KEY).catch(() => {});
+}
+
+/** Other devices seen in the last 5 minutes. Self is excluded — you never send
+ *  a dictation to the phone you're dictating on. */
+async function loadDevices() {
+  try {
+    const userId = await getCloudUserId();
+    const myId = await getDeviceId();
+    if (!userId) { publish([], null); return; }   // signed out: nothing to list
+    const cutoff = new Date(Date.now() - PRESENCE_MS).toISOString();
+    const { data } = await supabase
+      .from('devices')
+      .select('device_id, device_name, device_type, last_seen')
+      .eq('user_id', userId)
+      .neq('device_id', myId)
+      .gte('last_seen', cutoff)
+      // Stable order: keeps the snapshot comparison meaningful and makes the
+      // "no target chosen yet" fallback the most-recently-active device.
+      .order('last_seen', { ascending: false });
+
+    const list: Device[] = (data ?? []).map((r: any) => ({
+      id: r.device_id,
+      name: r.device_name || 'Device',
+      platform: toPlatform(r.device_type),
+      status: 'online',
+      isDefault: r.device_id === targetId,
+      lastSeen: r.last_seen ?? undefined,
+    }));
+
+    // Keep the target valid; fall back to the first device unless the user
+    // deliberately chose "All".
+    const stillThere = list.find(d => d.id === targetId) ?? null;
+    const next = stillThere ?? (targetCleared ? null : list[0] ?? null);
+    targetId = next?.id ?? null;
+    publish(list.map(d => ({ ...d, isDefault: d.id === targetId })), next);
+  } catch (err) {
+    console.error('Failed to load devices:', err);
+  }
+}
+
+/** One heartbeat tick: refresh this device's row, then re-read the others. */
+async function tick() {
+  await registerThisDevice();
+  await loadDevices();
+}
+
+/** Start the singleton. Idempotent — the 2nd…5th mount is a no-op, so there is
+ *  exactly one registration and one poll interval for the whole app. Resolves
+ *  when the first register+load has landed. */
+export function start(): Promise<void> {
+  if (started) return bootstrap ?? Promise.resolve();
+  started = true;
+  poll = setInterval(() => { tick().catch(() => {}); }, POLL_MS);
+  bootstrap = (async () => { await hydrateTarget(); await tick(); })().catch(() => {});
+  return bootstrap;
+}
+
+/** Stop the poll and drop the list, keeping the target selection. Internal. */
+function stop() {
+  if (poll) { clearInterval(poll); poll = null; }
+  started = false;
+  bootstrap = null;
+}
+
+/** Account change (sign-in / pairing): re-register under the new account and
+ *  reload from scratch. Awaited by useAuth so the row exists before it reads
+ *  this device's `sync_enabled` back. */
+export async function restart(): Promise<void> {
+  stop();
+  publish([], null);
+  await start();
+}
+
+/**
+ * Sign-out / account-deletion teardown (called from useAuth). Stops the poll —
+ * a signed-out app must not keep querying `devices` every 60s — and throws away
+ * the list and the target so the next account can't inherit them.
+ * (`flume_target_device` itself is removed by storage.clearAccountData.)
+ */
+export function reset(): void {
+  stop();
+  targetId = null;
+  targetCleared = false;
+  targetHydrated = false;
+  publish([], null);
+}
+
+export function refresh(): Promise<void> {
+  return tick().catch(() => {});
+}
+
+/* ── mutations ───────────────────────────────────────────────────────────── */
+
+export function setTarget(d: Device | null): void {
+  targetId = d?.id ?? null;
+  targetCleared = d === null;
+  persistTarget(targetId);
+  publish(snapshot.devices.map(x => ({ ...x, isDefault: x.id === targetId })), d);
+}
+
+export function makeDefault(id: string): void {
+  const chosen = snapshot.devices.find(d => d.id === id) ?? null;
+  if (chosen) setTarget(chosen);
+}
+
+/** Devices self-register via their own app; kept for the local/manual add path. */
+export function pair(d: Device): void {
+  if (snapshot.devices.some(x => x.id === d.id)) return;
+  publish([...snapshot.devices, d], snapshot.target);
+}
+
+/**
+ * Remove another device from the account list (IDI-177).
+ *
+ * Optimistic locally, then the user_id-scoped delete in lib/deviceSync. The
+ * device itself keeps working — it re-appears on its next heartbeat if it is
+ * still signed in, which is why the confirm copy says so.
+ */
+export async function removeDevice(id: string): Promise<boolean> {
+  const remaining = snapshot.devices.filter(d => d.id !== id);
+  const nextTarget = snapshot.target?.id === id ? null : snapshot.target;
+  if (snapshot.target?.id === id) { targetId = null; persistTarget(null); }
+  publish(remaining, nextTarget);
+  return removeDeviceRow(id);
+}
+
+/* ── React face ──────────────────────────────────────────────────────────── */
+
 export function useDevices() {
-  const [devices, setDevices] = useState<Device[]>([]);
-  const [target, setTargetState] = useState<Device | null>(null);
-  const heartbeatRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const targetIdRef = useRef<string | null>(null);
-
-  const loadDevices = useCallback(async () => {
-    try {
-      const userId = await getUserId();
-      const myId = await getDeviceId();
-      const cutoff = new Date(Date.now() - PRESENCE_MS).toISOString();
-      const { data } = await supabase
-        .from('devices')
-        .select('device_id, device_name, device_type, last_seen')
-        .eq('user_id', userId)
-        .neq('device_id', myId)
-        .gte('last_seen', cutoff);
-
-      const list: Device[] = (data ?? []).map((r: any) => ({
-        id: r.device_id,
-        name: r.device_name || 'Device',
-        platform: toPlatform(r.device_type),
-        status: 'online',
-        isDefault: r.device_id === targetIdRef.current,
-      }));
-      setDevices(list);
-
-      // Keep the target valid; fall back to the first available device.
-      setTargetState(prev => {
-        const stillThere = list.find(d => d.id === targetIdRef.current);
-        const next = stillThere ?? list[0] ?? null;
-        targetIdRef.current = next?.id ?? null;
-        return next;
-      });
-    } catch (err) {
-      console.error('Failed to load devices:', err);
-    }
-  }, []);
-
-  const registerSelf = useCallback(async () => {
-    try {
-      const userId = await getUserId();
-      const deviceId = await getDeviceId();
-      const deviceName = await getDeviceName();
-      await supabase.from('devices').upsert(
-        {
-          user_id: userId,
-          device_id: deviceId,
-          device_name: deviceName,
-          device_type: MY_TYPE,
-          last_seen: new Date().toISOString(),
-        },
-        { onConflict: 'user_id,device_id' },
-      );
-    } catch (err) {
-      console.error('Failed to register device:', err);
-    }
-  }, []);
-
-  useEffect(() => {
-    (async () => {
-      targetIdRef.current = await AsyncStorage.getItem(TARGET_KEY);
-      await registerSelf();
-      await loadDevices();
-      heartbeatRef.current = setInterval(() => {
-        registerSelf();
-        loadDevices();
-      }, 60_000);
-    })();
-    return () => {
-      if (heartbeatRef.current) clearInterval(heartbeatRef.current);
-    };
-  }, [registerSelf, loadDevices]);
-
-  const setTarget = useCallback((d: Device | null) => {
-    targetIdRef.current = d?.id ?? null;
-    setTargetState(d);
-    setDevices(prev => prev.map(x => ({ ...x, isDefault: x.id === d?.id })));
-    if (d) AsyncStorage.setItem(TARGET_KEY, d.id).catch(() => {});
-    else AsyncStorage.removeItem(TARGET_KEY).catch(() => {});
-  }, []);
-
-  const makeDefault = useCallback((id: string) => {
-    setDevices(prev => {
-      const next = prev.map(d => ({ ...d, isDefault: d.id === id }));
-      const chosen = next.find(d => d.id === id) ?? null;
-      if (chosen) {
-        targetIdRef.current = chosen.id;
-        setTargetState(chosen);
-        AsyncStorage.setItem(TARGET_KEY, chosen.id).catch(() => {});
-      }
-      return next;
-    });
-  }, []);
-
-  const pair = useCallback((d: Device) => {
-    // Devices self-register via the desktop app; expose add for manual/local use.
-    setDevices(prev => (prev.some(x => x.id === d.id) ? prev : [...prev, d]));
-  }, []);
-
-  const unpair = useCallback(async (id: string) => {
-    setDevices(prev => prev.filter(d => d.id !== id));
-    setTargetState(prev => (prev?.id === id ? null : prev));
-    try {
-      await supabase.from('devices').delete().eq('device_id', id);
-    } catch (err) {
-      console.error('Failed to unpair device:', err);
-    }
-  }, []);
-
-  return { devices, target, setTarget, pair, unpair, makeDefault };
+  const snap = useSyncExternalStore(subscribe, getSnapshot);
+  useEffect(() => { start(); }, []);
+  return {
+    devices: snap.devices,
+    target: snap.target,
+    setTarget,
+    pair,
+    /** Deprecated alias kept for the useDevices.mock.ts contract. */
+    unpair: removeDevice,
+    removeDevice,
+    makeDefault,
+    refresh,
+  };
 }

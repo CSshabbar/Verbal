@@ -144,6 +144,14 @@ bounded `config['meetings']` (`MEETINGS_CAP`). The HUD appears when the meeting 
   meeting's full AI notes are open** (`NoteEditor`, `MeetingNotes`) so the screen owns the view.
   Modals: `Recording`, `Confirmation`, `Menu`. Sub-stacks: Notes (→NoteEditor), History (→HistoryDetail),
   Menu (→Settings/Snippets/Dictionary/Devices→PairDevice).
+- **Singleton data stores (flow-audit B4/B5, 2026-08):** history, canvas, meetings, notes and devices
+  each live in ONE module-level store (`flume-ui/hooks/historyStore.ts` is the pattern: module state +
+  `subscribe`/`getSnapshot` consumed via `useSyncExternalStore`, `reset()` called from `useAuth`'s
+  teardown, `catchUp()` driven by `flume-ui/hooks/syncLifecycle.ts` on AppState foreground, one realtime
+  channel with rejoin/backoff, own-echo suppression). The sync flag's single source is `lib/syncStore.ts`
+  (live toggle — see `05-conventions.md` #28). Cloud identity for writes is `storage.getCloudUserId()`
+  (paired override ?? session, never a minted guest id); device identity is the per-install
+  `verbal_device_uuid`.
 - **Layered architecture:** presentational **screens** (`flume-ui/screens/*.tsx`) receive callbacks as
   props → read data via **hooks** (`flume-ui/hooks/*.ts`) → hooks call **`lib/*.ts`** (Supabase, Groq,
   AsyncStorage). Theme tokens in `flume-ui/theme/` (colors/typography/spacing/shadow/motion).

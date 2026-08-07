@@ -15,7 +15,6 @@ import { Text } from '../components';
 import { colors, radius, fonts, pressedStyle } from '../theme';
 import { useMeetings } from '../hooks/useMeetings';
 import { generateMeetingNotes } from '../../lib/groq';
-import { updateNotesRemote } from '../../lib/meetings';
 
 type Props = {
   meetingId: string;
@@ -159,36 +158,79 @@ function MdView({ md }: { md: string }) {
 
 export const MeetingNotesScreen: React.FC<Props> = ({ meetingId, onBack, onOpenPlayback }) => {
   const insets = useSafeAreaInsets();
-  const { getMeeting, refresh, updateNotes } = useMeetings();
+  const {
+    getMeeting, updateNotes, setNotesNow, flushNow, reloadMeeting, unsaved, conflicts,
+  } = useMeetings();
   const meeting = getMeeting(meetingId);
   const [notes, setNotes] = useState<string | null>(meeting?.notesMd ?? null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [editing, setEditing] = useState(false);
 
+  const isUnsaved = !!unsaved[meetingId];
+  const isConflicted = !!conflicts[meetingId];
+
   const onNotesChange = (text: string) => {
     setNotes(text);
     if (meeting) updateNotes(meeting.id, text);
   };
 
+  /**
+   * Adopt the row's notes whenever they change and we hold no unconfirmed local
+   * edit (IDI-175 §4). The old guard was `if (meeting?.notesMd && !notes)`, so a
+   * desktop regeneration was NEVER shown once notes had loaded — and the next
+   * keystroke wrote our stale copy back over it. While the user is typing, the
+   * store overlays their text onto the row, so this sees its own value and does
+   * nothing; the moment the edit is confirmed written, remote changes flow in.
+   */
   useEffect(() => {
-    if (meeting?.notesMd && !notes) setNotes(meeting.notesMd);
+    if (meeting?.notesMd && meeting.notesMd !== notes) setNotes(meeting.notesMd);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [meeting?.notesMd]);
+
+  // A debounced edit must survive leaving the screen.
+  useEffect(() => () => { flushNow().catch(() => {}); }, [flushNow]);
 
   const generate = async () => {
     if (!meeting || busy) return;
     setBusy(true);
     setErr('');
-    const md = await generateMeetingNotes(meeting);
+    // Hard-capped at 30 s inside generateMeetingNotes — the spinner always ends,
+    // and Back stays available in the header throughout.
+    const md = await generateMeetingNotes(meeting).catch(() => null);
     setBusy(false);
     if (md) {
       setNotes(md);
-      updateNotesRemote(meeting.id, md).then(() => refresh());
+      setNotesNow(meeting.id, md).catch(() => {});
     } else {
       setErr("Couldn't generate notes — check your connection and try again.");
     }
   };
+
+  const doReload = async () => {
+    const m = await reloadMeeting(meetingId).catch(() => null);
+    setNotes(m?.notesMd ?? null);
+    setEditing(false);
+  };
+
+  const banner = isConflicted ? (
+    <View style={styles.banner}>
+      <Ionicons name="git-compare-outline" size={15} color={colors.primaryAccent} />
+      <Text variant="metaSm" color={colors.primaryAccent} style={{ flex: 1 }}>
+        NOTES CHANGED ON ANOTHER DEVICE
+      </Text>
+      <Pressable onPress={doReload} hitSlop={8} style={({ pressed }) => pressed && pressedStyle}>
+        <Text variant="metaSm" color={colors.textPrimary}>RELOAD</Text>
+      </Pressable>
+    </View>
+  ) : isUnsaved ? (
+    <View style={styles.banner}>
+      <Ionicons name="cloud-offline-outline" size={15} color={colors.textMuted} />
+      <Text variant="metaSm" color={colors.textMuted} style={{ flex: 1 }}>
+        COULDN'T SAVE — WILL RETRY
+      </Text>
+    </View>
+  ) : null;
 
   return (
     <KeyboardAvoidingView
@@ -210,6 +252,8 @@ export const MeetingNotesScreen: React.FC<Props> = ({ meetingId, onBack, onOpenP
         )}
       </View>
 
+      {banner}
+
       {!meeting ? (
         <View style={styles.center}>
           <Text variant="bodyXs" color={colors.textMuted}>Meeting not found.</Text>
@@ -228,6 +272,13 @@ export const MeetingNotesScreen: React.FC<Props> = ({ meetingId, onBack, onOpenP
           showsVerticalScrollIndicator={false}
         >
           <MdView md={notes} />
+          {/* A failed REGENERATE used to be silent — `err` was only rendered in
+              the no-notes branch below. */}
+          {!!err && (
+            <Text variant="bodyXs" color={colors.primaryAccent} style={{ marginTop: 16, textAlign: 'center' }}>
+              {err}
+            </Text>
+          )}
           <Pressable style={({ pressed }) => [styles.playBtn, pressed && pressedStyle]} disabled={!meeting.audioUrl && !meeting.transcript.length}
             onPress={() => onOpenPlayback(meeting.id)}>
             <Ionicons name="play" size={16} color={colors.primaryInk} />
@@ -288,6 +339,12 @@ const styles = StyleSheet.create({
     alignItems: 'center', justifyContent: 'center',
   },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 24 },
+  banner: {
+    flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 12,
+    backgroundColor: colors.surface2, borderRadius: radius.sm,
+    borderWidth: 1, borderColor: colors.borderSubtle,
+    paddingHorizontal: 12, paddingVertical: 9,
+  },
   emptyBody: { textAlign: 'center', lineHeight: 20 },
   genBtn: {
     marginTop: 16, backgroundColor: colors.inkLight, borderRadius: radius.md,

@@ -5,9 +5,11 @@ import { Ionicons } from '@expo/vector-icons';
 import { Text } from '../components';
 import { colors, radius, pressedStyle } from '../theme';
 import {
-  fetchAccountDevices, setDeviceSync, isDeviceOnline, AccountDevice,
+  fetchAccountDevices, setThisDeviceSync, isDeviceOnline, AccountDevice,
 } from '../../lib/deviceSync';
 import { useSyncEnabled } from '../hooks/useSyncEnabled';
+import { useDevices } from '../hooks/useDevices';
+import { confirm } from '../components/ConfirmDialog';
 
 type Props = {
   onBack: () => void;
@@ -22,8 +24,13 @@ function iconFor(type: string | null): keyof typeof Ionicons.glyphMap {
 }
 
 /**
- * Screen 3i — Your devices. Every device on the account with a PER-DEVICE sync
- * switch (cloud `devices.sync_enabled`; this device also drives local sync).
+ * Screen 3i — Your devices. Every device on the account.
+ *
+ * The sync switch renders on THIS DEVICE'S ROW ONLY (IDI-177). It used to render
+ * on every row and write `devices.sync_enabled` on the target — but nothing
+ * reads another device's flag, so those switches were remote control wired to
+ * nothing. Other rows now show status plus a Remove action; each device owns its
+ * own sync.
  */
 export const DevicesScreen: React.FC<Props> = ({ onBack, onAddDevice }) => {
   const insets = useSafeAreaInsets();
@@ -31,11 +38,13 @@ export const DevicesScreen: React.FC<Props> = ({ onBack, onAddDevice }) => {
   const [refreshing, setRefreshing] = useState(false);
   // THIS device's row is driven by the local sync store, not by the cloud
   // `devices.sync_enabled` snapshot (IDI-171). The cloud column is still written
-  // (setDeviceSync mirrors both ways), but the store is what actually gates
+  // (setThisDeviceSync mirrors both), but the store is what actually gates
   // realtime here — so this switch can never disagree with the Menu / Settings
   // toggles, and a stale row read can't show "on" while sync is off.
   const localSync = useSyncEnabled();
-  const valueFor = (d: AccountDevice) => (d.isSelf ? localSync : d.syncEnabled);
+  // Shared device singleton — removing a device here also drops it from the
+  // send-to list every other screen reads (IDI-177).
+  const { removeDevice } = useDevices();
 
   const load = useCallback(async () => {
     setDevices(await fetchAccountDevices());
@@ -44,9 +53,21 @@ export const DevicesScreen: React.FC<Props> = ({ onBack, onAddDevice }) => {
 
   const onRefresh = async () => { setRefreshing(true); await load(); setRefreshing(false); };
 
-  const toggle = async (d: AccountDevice, value: boolean) => {
-    setDevices((r) => (r ? r.map((x) => (x.deviceId === d.deviceId ? { ...x, syncEnabled: value } : x)) : r));
-    await setDeviceSync(d.deviceId, value);
+  const toggleSelf = async (value: boolean) => {
+    setDevices((r) => (r ? r.map((x) => (x.isSelf ? { ...x, syncEnabled: value } : x)) : r));
+    await setThisDeviceSync(value);
+  };
+
+  const onRemove = async (d: AccountDevice) => {
+    const ok = await confirm({
+      title: `Remove ${d.name}?`,
+      message: 'Remove from list? The device keeps working until it signs out.',
+      confirmLabel: 'Remove',
+      destructive: true,
+    });
+    if (!ok) return;
+    setDevices((r) => (r ? r.filter((x) => x.deviceId !== d.deviceId) : r));
+    await removeDevice(d.deviceId);
   };
 
   const list = devices || [];
@@ -64,7 +85,7 @@ export const DevicesScreen: React.FC<Props> = ({ onBack, onAddDevice }) => {
       </View>
 
       <Text variant="meta" color={colors.textSubtle} style={{ marginBottom: 8 }}>
-        {list.length} DEVICE{list.length === 1 ? '' : 'S'} · SYNC PER DEVICE
+        {list.length} DEVICE{list.length === 1 ? '' : 'S'} · SYNC SET PER DEVICE
       </Text>
 
       <ScrollView
@@ -89,16 +110,29 @@ export const DevicesScreen: React.FC<Props> = ({ onBack, onAddDevice }) => {
               <View style={styles.statusRow}>
                 <View style={[styles.dot, { backgroundColor: isDeviceOnline(d) ? colors.online : colors.offline }]} />
                 <Text variant="metaSm" color={colors.textSubtle}>
-                  {isDeviceOnline(d) ? 'Online' : 'Offline'} · sync {valueFor(d) ? 'on' : 'off'}
+                  {isDeviceOnline(d) ? 'Online' : 'Offline'}
+                  {d.isSelf ? ` · sync ${localSync ? 'on' : 'off'}` : ''}
                 </Text>
               </View>
             </View>
-            <Switch
-              value={valueFor(d)}
-              onValueChange={(v) => toggle(d, v)}
-              trackColor={{ true: colors.primary, false: colors.surface3 }}
-              thumbColor="#fff"
-            />
+            {d.isSelf ? (
+              <Switch
+                value={localSync}
+                onValueChange={toggleSelf}
+                trackColor={{ true: colors.primary, false: colors.surface3 }}
+                thumbColor="#fff"
+              />
+            ) : (
+              <Pressable
+                onPress={() => onRemove(d)}
+                hitSlop={8}
+                accessibilityRole="button"
+                accessibilityLabel={`Remove ${d.name}`}
+                style={({ pressed }) => [styles.removeBtn, pressed && pressedStyle]}
+              >
+                <Ionicons name="close" size={16} color={colors.textMuted} />
+              </Pressable>
+            )}
           </View>
         ))}
       </ScrollView>
@@ -142,6 +176,7 @@ const styles = StyleSheet.create({
     borderColor: colors.borderSubtle, padding: 12,
   },
   rowIcon: { width: 34, height: 34, borderRadius: 10, backgroundColor: colors.surface2, alignItems: 'center', justifyContent: 'center' },
+  removeBtn: { width: 30, height: 30, borderRadius: 15, backgroundColor: colors.surface2, alignItems: 'center', justifyContent: 'center' },
   nameRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   thisTag: { backgroundColor: colors.primarySoft, borderRadius: 6, paddingHorizontal: 6, paddingVertical: 2 },
   statusRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 3 },

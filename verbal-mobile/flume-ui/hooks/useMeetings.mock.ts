@@ -5,39 +5,18 @@
  *
  * This mock is the design contract — useMeetings.ts must export the exact
  * same shape.
+ *
+ * The TYPES themselves now live in `lib/meetings.ts` (IDI-175 §6): lib/ needs
+ * them and lib/ may never import flume-ui/, so the definition moved down and
+ * this file re-exports it. The contract is unchanged — only its home is.
  */
 import { useState, useCallback } from 'react';
 
-export type MeetingUtterance = { speaker: string; t0: number; t1: number; text: string };
-export type MeetingActionItem = { owner: string | null; task: string; done: boolean; due?: string | null; edited?: boolean };
-export type MeetingMoment = { t: number; label: string; note?: string };
-export type MeetingHybridNote = { user_line: string; ai_addition: string };
-export type MeetingStatus = 'processing' | 'ready' | 'failed';
-
-export type Meeting = {
-  id: string;
-  title: string;
-  startedAt: string;              // ISO
-  durationSeconds: number;
-  audioUrl: string | null;
-  audioExpired: boolean;           // MER-31: reaped by retention policy — notes/transcript survive, audio doesn't
-  transcript: MeetingUtterance[];
-  speakers: Record<string, string>;   // speaker id → display name ('self' = You)
-  scratchpad: string;
-  summary: string;
-  decisions: string[];
-  actionItems: MeetingActionItem[];
-  markedMoments: MeetingMoment[];
-  hybridNotes: MeetingHybridNote[];
-  deviceName: string | null;
-  status: MeetingStatus;
-  notesMd: string | null;             // full AI meeting notes (markdown; lazy on desktop)
-  pinned: boolean;
-  recognized: Record<string, { name: string; meetings: number }>;  // voiceprint hits
-  live: boolean;                  // currently being captured on another device
-  updatedAt: string;
-  dateLabel: string;              // "Today · 9:24 AM" | "Yesterday" | "Mon · 2:08 PM"
-};
+export type {
+  Meeting, MeetingUtterance, MeetingActionItem, MeetingMoment,
+  MeetingHybridNote, MeetingStatus,
+} from '../../lib/meetings';
+import type { Meeting } from '../../lib/meetings';
 
 const MOCK: Meeting[] = [
   {
@@ -121,5 +100,26 @@ export function useMeetings() {
     setMeetings(prev => prev.map(m => (m.id === id ? { ...m, notesMd: text } : m)));
   }, []);
 
-  return { meetings, loading, getMeeting, refresh, updateScratchpad, updateNotes };
+  /** Action-item checkboxes — mock is local-only. */
+  const updateActionItems = useCallback((id: string, items: Meeting['actionItems']) => {
+    setMeetings(prev => prev.map(m => (m.id === id ? { ...m, actionItems: items } : m)));
+  }, []);
+
+  const noop = useCallback(async () => {}, []);
+
+  // Sync-state contract (IDI-175): the real store surfaces a failed refresh,
+  // queued/failed writes and cross-device conflicts. The mock is always happy.
+  return {
+    meetings, loading, error: null as string | null,
+    unsaved: {} as Record<string, boolean>,
+    conflicts: {} as Record<string, boolean>,
+    getMeeting, refresh, updateScratchpad, updateNotes, updateActionItems,
+    flushNow: noop,
+    reloadMeeting: useCallback(async (id: string) => meetings.find(m => m.id === id) ?? null, [meetings]),
+    clearConflict: useCallback((_id: string) => {}, []),
+    setNotesNow: useCallback(async (id: string, md: string) => {
+      setMeetings(prev => prev.map(m => (m.id === id ? { ...m, notesMd: md } : m)));
+      return true;
+    }, []),
+  };
 }

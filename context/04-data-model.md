@@ -180,24 +180,39 @@ reproduce exactly what the live DB already had — **not** a behavior change; se
 `id` uuid PK · `user_id` text · `device_id` text · `device_name` text default `''` · `text` text ·
 `created_at` timestamptz default `now()` · `is_pinned` bool default `false` · `edited_text` text nullable
 (read as `edited_text ?? text`) · `target_device_id` text nullable (Canvas-style targeting) ·
-`audio_url` text nullable (private `recordings` bucket object path, see MER-27) · `status` text default
-`'done'` (`'done'`\|`'failed'`, retryable). Indexes `(user_id, created_at desc)` and
-`(user_id, is_pinned, created_at desc)`. In the realtime publication.
+`audio_url` text nullable (private `recordings` bucket object path, see MER-27; since IDI-172 the DESKTOP
+also writes it, via a row-scoped patch after the async WAV upload) · `status` text default
+`'done'` (`'done'`\|`'failed'`, retryable) · `deleted_at` timestamptz nullable (**IDI-172 tombstone**,
+live migration `transcriptions_deleted_at_tombstone` 2026-08: delete = UPDATE with `text` cleared /
+`edited_text`+`audio_url` nulled, storage object removed — never a hard DELETE; merges drop + prune
+tombstoned ids; reconnect backfill sweeps tombstones separately since an UPDATE never moves `created_at`).
+Indexes `(user_id, created_at desc)` and `(user_id, is_pinned, created_at desc)`. In the realtime
+publication (desktop subscribes to `*`, not just INSERT). Local-cache-only field with NO DB column:
+`duration_ms` (mobile persists the real recording duration; never pushed).
 
-**`devices`** — device registry/presence. `id` uuid PK · `user_id` text · `device_id` text ·
-`device_name` text · `device_type` text default `'mac'` (`mac`/`win`/`ios`) · `last_seen` timestamptz
-default `now()` · **`sync_enabled`** bool default `true` (read/written by mobile `lib/deviceSync.ts` to
-gate per-device sync). Unique index `(user_id, device_id)` (the upsert conflict target). "Online" =
-`last_seen` within 5 min. In the realtime publication. The desktop device LIST reads
+**`devices`** — device registry/presence. `id` uuid PK · `user_id` text · `device_id` text (since IDI-177
+a STABLE per-install uuid — desktop `config.get_device_id()`, mobile `verbal_device_uuid` — never derived
+from hostname/name/account; one stale old-format row per upgraded device is expected and removable) ·
+`device_name` text · `device_type` text default `'mac'` (`mac`/`win`/`ios`/`android` — mobile now sends
+`Platform.OS`, the old `'iphone'` literal is gone) · `last_seen` timestamptz default `now()` ·
+**`sync_enabled`** bool default `true` (SELF-only since IDI-177: each device mirrors its own toggle here;
+nothing reads it as remote control). Unique index `(user_id, device_id)` (the upsert conflict target).
+"Online" = `last_seen` within 5 min. In the realtime publication. The desktop device LIST reads
 `sync.fetch_account_devices` (ALL rows for the `user_id`, each tagged `online`), not `fetch_devices` (last
-5 min only) — and desktop hosts call `sync.register_device_presence` off their 30 s refresh loop so a
-signed-in device heartbeats presence even when the content-sync `SyncClient` isn't running (Jul 2026 fix
-for "phone and Mac can't see each other").
+5 min only). Presence heartbeats are APP-LEVEL 30 s daemons (`main._presence_loop`/`win_main`), gated on
+being signed in — not on any window being open (IDI-177); mobile's is the device store's single 60 s
+poll/upsert loop. **Lifecycle:** sign-out DELETEs this device's row (IDI-170); both platforms offer
+"Remove from list" for other devices (user_id+device_id-scoped, honestly labeled — removal doesn't revoke
+anything until IDI-29's per-device credentials).
 
 **`canvas`** — one shared row/user. `id` uuid PK (`gen_random_uuid()` default) · `user_id` text ·
-`content` text default `''` · `device_name` text default `''` · `updated_at` timestamptz default `now()` ·
-`image_url` text nullable. Unique index on `user_id` (the actual upsert conflict target — `id` is
-informational, doesn't change upsert behavior). In the realtime publication.
+`content` text default `''` · `device_name` text default `''` · `device_id` text nullable (**IDI-173**,
+live migration `canvas_device_id_origin` 2026-08: origin filtering is by stable device id — name compare
+only for rows written by old clients) · `updated_at` timestamptz default `now()` · `image_url` text
+nullable. Unique index on `user_id` (the actual upsert conflict target — `id` is informational). In the
+realtime publication. **Write contract (IDI-173):** every write stamps `device_id`+`device_name` and OMITS
+columns it isn't changing (text edits never null the image); a clear is an explicit
+`{content:'', image_url:null}` write that receivers apply — empty content is never falsy-dropped.
 
 ## Storage buckets
 
@@ -274,17 +289,29 @@ and `verbal://auth-callback` (mobile). Consent screen in "Testing" mode. No sepa
 ## Sync model
 
 **Everything keyed by the Supabase auth `user_id`.** After sign-in both platforms adopt `user.id`
-(`sync_user_id` desktop / `setUserId` mobile). Device id: desktop `platform.node()`; mobile
-`<deviceName>_<userId last6>`.
+(`sync_user_id` desktop / `setUserId` mobile). Device id: STABLE per-install uuid on both (IDI-177 —
+desktop `config.get_device_id()`, mobile `verbal_device_uuid`). **The sync toggle (one source per
+platform: `lib/syncStore.ts` mobile / `sync_enabled` desktop) is LIVE and gates
+history/notes/canvas/dictionary; meetings edits + recording uploads gate on being signed in only**
+(`auth.cloud_allowed` / `getCloudUserId()`). Mobile stores are singletons with
+`reset()`/`catchUp()`/channel-rejoin (see `05-conventions.md` #28); AppState foreground runs a catch-up;
+desktop's `SyncClient` has a single reconnect loop with a bounded backfill (content since last-seen + a
+separate tombstone sweep).
 
-- **Transcriptions (history / shared clipboard):** push = INSERT into `transcriptions`. ⚠️ **Desktop push
-  omits `audio_url`/`status`** (those live in local history) — **mobile push includes**
-  `audio_url`+`status`+`target_device_id`. Receive: desktop Phoenix WS `postgres_changes` INSERT filtered
-  `user_id=eq.<uid>`; mobile `channel('verbal_history_<uid>')` INSERT+UPDATE. Both **skip own inserts**
-  (device_id) and honor **`target_device_id`** (broadcast when null, else targeted). Mobile local cache is
-  source of truth; remote merges in (dedup by row id).
-- **Dictionary:** REST pull/push, one row/user; `fetch_remote` writes config only on change; `_push_remote`
-  upsert `on_conflict=user_id`, `resolution=merge-duplicates`. Last-write-wins on `updated_at`.
+- **Transcriptions (history / shared clipboard):** push = INSERT into `transcriptions`; BOTH platforms
+  include `audio_url`+`status`+`target_device_id` since IDI-172 (desktop patches `audio_url` row-scoped
+  after the async upload; local↔cloud linkage via a local `sync_id`). Receive: desktop Phoenix WS
+  `postgres_changes` `*` filtered `user_id=eq.<uid>` — received rows are APPENDED TO LOCAL HISTORY +
+  clipboard, and auto-pasted ONLY when `target_device_id` equals this device (IDI-172; broadcasts no
+  longer paste); mobile `channel('verbal_history_<uid>')` INSERT+UPDATE. Both skip own inserts
+  (device_id), honor `target_device_id`, and treat `deleted_at` tombstones as authoritative (drop +
+  prune). Desktop Settings has "Clear history" with an optional everywhere-tombstone sweep.
+- **Dictionary:** REST pull/push, one row/user — **CAS on `updated_at`** since IDI-174 (write filtered on
+  the last-witnessed value; 0 rows → refetch → pure merge — vocab case-insensitive union, snippets by
+  trigger, replacements by `from` — → one retry; double failure surfaces "Couldn't sync — will retry").
+  Mobile pushes are blocked until the first fetch resolves (edit-before-load used to wipe the row) and
+  require a real identity (`getCloudUserId()` — no junk `user_<ts>` rows). Meetings notes/scratchpad
+  writes use the same CAS pattern (freeze + Reload on conflict instead of merge).
 - **Notes:** desktop REST (`on_conflict=id`) + mobile SDK CRUD; both merge with a local cache.
   **v2 merge contract** (desktop `merge_remote_note` in `shared_dashboard.py`; mobile `mergeRemoteNote` in
   `lib/notesStorage.ts` — kept identical): (a) `audio_segments` **UNION** on every merge (de-dup by

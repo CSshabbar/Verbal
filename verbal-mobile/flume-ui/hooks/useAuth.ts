@@ -12,12 +12,15 @@ import { Linking } from 'react-native';
 import * as WebBrowser from 'expo-web-browser';
 import * as QueryParams from 'expo-auth-session/build/QueryParams';
 import { supabase, SUPABASE_URL, SUPABASE_ANON_KEY } from '../../lib/supabase';
-import { setUserId, setPairedUserId, getDeviceName, getDeviceId, getStoredUserId, clearAccountData } from '../../lib/storage';
+import { setUserId, setPairedUserId, getDeviceId, getStoredUserId, clearAccountData } from '../../lib/storage';
 import { setSyncEnabled } from '../../lib/syncStore';
 import { clearKeyboardConfig } from '../../lib/keyboardBridge';
 import * as recordings from '../../lib/recordings';
 import * as historyStore from './historyStore';
 import * as canvasStore from './useCanvas';
+import * as deviceStore from './useDevices';
+import * as meetingsStore from './meetingsStore';
+import * as notesStore from './notesStore';
 import { notify } from '../components/ConfirmDialog';
 import { showDevicesSheet } from '../components/DevicesSyncSheet';
 
@@ -92,6 +95,14 @@ async function teardownLocalAccountState(wipeRecordings: boolean) {
   try { await clearAccountData(); } catch { /* ignore */ }
   try { await historyStore.reset(); } catch { /* ignore */ }
   try { canvasStore.reset(); } catch { /* ignore */ }
+  // Meetings + notes singletons (IDI-175/176): close their channels and drop
+  // cached rows keyed to the old account.
+  try { await meetingsStore.reset(); } catch { /* ignore */ }
+  try { await notesStore.reset(); } catch { /* ignore */ }
+  // Device singleton (IDI-177): stops the 60s heartbeat/poll — a signed-out app
+  // must not keep querying `devices` — and drops the cached list + target so the
+  // next account can't inherit the previous one's send-to device.
+  try { deviceStore.reset(); } catch { /* ignore */ }
   // clearAccountData() is AsyncStorage-only, so the native keyboard's snapshot
   // (last 15 dictations + vocabulary + snippets) outlived it. Wiped here rather
   // than inside clearAccountData because keyboardBridge imports lib/storage —
@@ -137,6 +148,11 @@ async function afterSignIn(session: any) {
     try { await historyStore.reset(); } catch { /* ignore */ }
     // Canvas kept the previous account's board + a channel keyed to the old uid.
     try { canvasStore.reset(); } catch { /* ignore */ }
+    // Meetings + notes stores likewise (IDI-175/176).
+    try { await meetingsStore.reset(); } catch { /* ignore */ }
+    try { await notesStore.reset(); } catch { /* ignore */ }
+    // …and the device list/target belonged to the old account (IDI-177).
+    try { deviceStore.reset(); } catch { /* ignore */ }
     // …and the previous account's audio files sat in documentDirectory, where
     // the new account's History could still play them (IDI-170).
     try { await recordings.removeAll(); } catch { /* ignore */ }
@@ -148,21 +164,22 @@ async function afterSignIn(session: any) {
   try { await setPairedUserId(null); } catch { /* ignore */ }
   await setUserId(uid);
   // Register this device, reconcile THIS device's sync flag from its cloud row,
-  // then show the per-device sync sheet when there are other devices to manage.
+  // then show the devices sheet when the account is already on other devices.
   try {
-    const deviceName = await getDeviceName();
     const deviceId = await getDeviceId();
-    await supabase.from('devices').upsert(
-      { user_id: uid, device_id: deviceId, device_name: deviceName,
-        device_type: 'ios', last_seen: new Date().toISOString() },
-      { onConflict: 'user_id,device_id' });
+    // Registration goes through the device singleton (IDI-177), which owns the
+    // one registerThisDevice() site — device_type is Platform.OS, not the 'ios'
+    // literal this block used to hardcode on both platforms — and starts the
+    // single heartbeat/poll for the newly signed-in account. Awaited so the row
+    // exists before we read its sync_enabled back.
+    await deviceStore.restart();
     // This device's own sync_enabled (default true) drives lib/useSync.
     const { data: mine } = await supabase
       .from('devices').select('sync_enabled')
       .eq('user_id', uid).eq('device_id', deviceId).maybeSingle();
     await setSyncEnabled((mine as any)?.sync_enabled ?? true);
-    // Other devices on the account → open the sync sheet so the user can pick
-    // which devices sync (per-device, cloud-backed).
+    // Other devices on the account → open the sheet so the user sees where
+    // they're signed in and can set THIS device's sync (IDI-177: self-only).
     const { data } = await supabase
       .from('devices').select('device_id')
       .eq('user_id', uid).neq('device_id', deviceId);

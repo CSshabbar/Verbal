@@ -10,8 +10,9 @@
 import { supabase } from './supabase';
 import {
   setUserId, setPairedUserId, setSyncEnabled,
-  getDeviceName, getDeviceId, getStoredUserId, clearAccountData,
+  getDeviceName, getStoredUserId, clearAccountData,
 } from './storage';
+import { registerThisDevice } from './deviceSync';
 
 export type PairResult = { userId: string; hostDevice: string };
 
@@ -63,13 +64,9 @@ export async function claimPairing(payload: string): Promise<PairResult> {
 
   // Register this device under the host account so it shows up in Devices
   // lists on the host's other devices. Best-effort — pairing already succeeded.
-  try {
-    const deviceId = await getDeviceId();
-    await supabase.from('devices').upsert(
-      { user_id: row.user_id, device_id: deviceId, device_name: deviceName,
-        device_type: 'ios', last_seen: new Date().toISOString() },
-      { onConflict: 'user_id,device_id' });
-  } catch { /* best effort */ }
+  // Goes through the one registration site (IDI-177) so device_type is
+  // Platform.OS, not the 'ios' literal this used to write on Android too.
+  await registerThisDevice(row.user_id);
 
   return { userId: row.user_id, hostDevice: row.host_device || '' };
 }

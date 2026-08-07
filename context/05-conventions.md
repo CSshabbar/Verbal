@@ -581,7 +581,11 @@
     "Session expired — sign in again" banner (sidebar + Settings); `delete_account` returns that actionable
     message instead of "Not signed in". A fresh `_store_session` resets it. This is safe only because RLS
     is still permissive — when RLS tightens to `auth.uid()`, a dead session must instead force
-    re-authentication.
+    re-authentication. NOTE the asymmetry (IDI-170): a DEAD SESSION keeps `sync_user_id` (anon fallback
+    keeps working, per this rule), but an explicit SIGN-OUT clears `sync_user_id`/`sync_enabled` and
+    deletes this device's `devices` row — post-sign-out, `auth.cloud_allowed()` gates every cloud path,
+    and desktop now also has the mobile-style uid-change cache wipe (`auth._clear_account_caches`, which
+    covers `voice_prints` + `meetings_opened` too).
 
 26. **Sign-in is REQUIRED, and auth UI renders from state — never latch a button on an optimistic ok
     (IDI-166).** The first-run "Later"/anonymous path was removed; the dashboard's sign-in wall is the only
@@ -599,6 +603,38 @@
     token is `flume-ui/theme/press.ts` (`PRESSED_OPACITY = 0.85`, `pressedStyle`) — all five shared
     components and every screen Pressable consume it; invisible backdrop scrims/tap-swallowers are the
     only exempt Pressables (commented in place).
+
+28. **The B4/B5 sync architecture (flow-audit waves 1-3, 2026-08) — the rules that keep it coherent:**
+    - **One sync flag.** `lib/syncStore.ts` (`verbal_sync_enabled`) is the only source; Menu/Settings/
+      Devices/DevicesSyncSheet all render `useSyncEnabled()`. The toggle is LIVE (ON → catch-up + channel
+      join; OFF → `disconnect()`, channels closed, local data untouched) and it gates
+      **history/notes/canvas/dictionary**; meetings edits + recording uploads gate on being signed in only
+      (`auth.cloud_allowed` on desktop, `getCloudUserId()` on mobile — which never mints a guest id).
+    - **Singleton stores.** history/canvas/meetings/notes/devices are module-level stores
+      (subscribe/getSnapshot + `reset()` on account teardown + `catchUp()` on foreground/reconnect +
+      channel rejoin with capped backoff). `useAuth`'s teardown calls every store's `reset()`; the
+      AppState catch-up lives in `flume-ui/hooks/syncLifecycle.ts` (NOT in `lib/supabase.ts`, whose
+      AppState listener is auth-only). One realtime channel per domain — `lib/meetings.ts` multiplexes its
+      single channel to N listeners.
+    - **Suppress your own realtime echoes.** A store that writes a row WILL receive its own echo; unmuted,
+      `mergeRemoteNote` minted a FALSE conflict pair whenever the user typed within the 60s window, and a
+      meetings refetch clobbered in-flight text. Track last-written signatures and skip matching echoes;
+      never overwrite a field with a pending local edit.
+    - **Tombstones, never DELETE.** `notes.deleted_at` + `transcriptions.deleted_at`: delete = UPDATE with
+      content cleared; merges treat a tombstone as unconditionally authoritative; back-fills skip anything
+      not `source:'local'`. A tombstone is an UPDATE — it never moves `created_at`, so reconnect backfills
+      need the separate `deleted_at`-keyed sweep (`sync.py`).
+    - **CAS on `updated_at`** for shared-row writes (`dictionary`, `meetings`): write filtered on the last
+      witnessed `updated_at`; 0 rows = conflict → refetch (+ merge-and-retry-once for dictionary; freeze-
+      and-offer-Reload for meeting notes). Never blind-update, and always `.eq('user_id', …)`.
+    - **Canvas writes** stamp `device_id`+`device_name`, OMIT columns they aren't changing (a text edit
+      must never null the image), and a clear is an EXPLICIT `{content:'', image_url:null}` write that
+      receivers apply (no falsy-drops). Own-event filtering is by `device_id` (name only for old rows).
+    - **Device identity is a per-install uuid** — desktop `config.get_device_id()` (`device_uuid`), mobile
+      `storage.getDeviceId()` (`verbal_device_uuid`, deliberately NOT wiped by `clearAccountData`). Never
+      derive identity from hostname/deviceName/user id. The per-device sync switch is SELF-only.
+    - **Fixture harnesses for this area:** `whisperflow/idi170_171_fixtures.py` +
+      `idi172_174_fixtures.py` — run them for any auth/sync/canvas/dictionary-sync change.
 
 25. **The recording overlay's Cancel button must go through `main._on_esc_pressed`, never
     `_cancel_recording` (IDI-165).** `_cancel_recording` only stops the *recorder*; it never sets

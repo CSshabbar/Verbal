@@ -10,7 +10,6 @@ import { Ionicons } from '@expo/vector-icons';
 import { Text } from '../components';
 import { colors, radius, fonts, pressedStyle } from '../theme';
 import { useMeetings } from '../hooks/useMeetings';
-import { updateActionItemsRemote } from '../../lib/meetings';
 
 type Props = {
   meetingId: string;
@@ -35,28 +34,33 @@ function fmtDur(secs: number): string {
 
 export const MeetingDetailScreen: React.FC<Props> = ({ meetingId, onBack, onOpenPlayback, onOpenNotes }) => {
   const insets = useSafeAreaInsets();
-  const { getMeeting, updateScratchpad } = useMeetings();
+  const { getMeeting, updateScratchpad, updateActionItems, flushNow } = useMeetings();
   const meeting = getMeeting(meetingId);
   const [pad, setPad] = useState(meeting?.scratchpad ?? '');
-  const [items, setItems] = useState(meeting?.actionItems ?? []);
 
-  useEffect(() => {
-    if (meeting) setItems(meeting.actionItems);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [meeting?.id, meeting?.actionItems?.length]);
+  // Action items come straight off the store row — no local copy. The old
+  // `useState` + `[meeting?.actionItems?.length]` effect never re-synced a `done`
+  // flipped on another device (the LENGTH doesn't change when a box is ticked),
+  // and the store's local-edit overlay already keeps our own tap optimistic.
+  const items = meeting?.actionItems ?? [];
 
   const toggleItem = (idx: number) => {
     if (!meeting) return;
-    const next = items.map((it, i) => (i === idx ? { ...it, done: !it.done } : it));
-    setItems(next);
-    updateActionItemsRemote(meeting.id, next);   // full loaded list — never partial
+    // Full loaded list — never a partial reconstruction.
+    updateActionItems(meeting.id, items.map((it, i) => (i === idx ? { ...it, done: !it.done } : it)));
   };
 
+  // Adopt the row's scratchpad whenever it changes and we have no unconfirmed
+  // local edit. While the user is typing the store overlays their text onto the
+  // row, so this sees the same value and is a no-op — but a desktop edit that
+  // lands while the field is idle now actually shows up.
   useEffect(() => {
-    // Adopt the loaded value once the row arrives (list may hydrate after mount).
-    if (meeting && pad === '' && meeting.scratchpad) setPad(meeting.scratchpad);
+    if (meeting && meeting.scratchpad !== pad) setPad(meeting.scratchpad);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [meeting?.id]);
+  }, [meeting?.id, meeting?.scratchpad]);
+
+  // Leaving the screen must not drop the last 600 ms of typing.
+  useEffect(() => () => { flushNow().catch(() => {}); }, [flushNow]);
 
   if (!meeting) {
     return (

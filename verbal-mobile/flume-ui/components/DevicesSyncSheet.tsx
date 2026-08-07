@@ -2,11 +2,19 @@
  * DevicesSyncSheet — the "you're signed in on these devices" popup.
  *
  * Shown right after sign-in (and reachable from Settings). Lists every device on
- * the account with a PER-DEVICE sync switch, backed by the cloud
- * `devices.sync_enabled` column. Toggling THIS device also writes the local sync
- * store (lib/syncStore), which is what actually gates realtime here — so this
- * sheet, the Menu toggle, the Settings toggle and the Devices screen self-row
- * all show one value and a flip anywhere takes effect immediately (IDI-171).
+ * the account; the sync switch renders on THIS DEVICE'S ROW ONLY (IDI-177).
+ * Other rows are informational (name + online status).
+ *
+ * Why self-only: the switch used to write `devices.sync_enabled` on any row, but
+ * no desktop ever reads that column — flipping a Mac's switch from the phone
+ * changed a number in a table and nothing else, while looking like it had turned
+ * that Mac's sync off. A control that does nothing is worse than no control.
+ *
+ * The self switch writes the local sync store (lib/syncStore), which is what
+ * actually gates realtime here, and mirrors the value onto this device's cloud
+ * row — so this sheet, the Menu toggle, the Settings toggle and the Devices
+ * screen self-row all show one value and a flip anywhere takes effect
+ * immediately (IDI-171).
  *
  * Imperative, like ConfirmDialog:
  *   import { showDevicesSheet } from '../components/DevicesSyncSheet';
@@ -19,7 +27,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { Text } from './Text';
 import { colors, radius, pressedStyle } from '../theme';
 import {
-  fetchAccountDevices, setDeviceSync, isDeviceOnline, AccountDevice,
+  fetchAccountDevices, setThisDeviceSync, isDeviceOnline, AccountDevice,
 } from '../../lib/deviceSync';
 import { useSyncEnabled } from '../hooks/useSyncEnabled';
 
@@ -61,9 +69,10 @@ export const DevicesSyncHost: React.FC = () => {
 
   useEffect(() => { if (visible) load(); }, [visible, load]);
 
-  const toggle = async (row: AccountDevice, value: boolean) => {
-    setRows((r) => (r ? r.map((d) => (d.deviceId === row.deviceId ? { ...d, syncEnabled: value } : d)) : r));
-    await setDeviceSync(row.deviceId, value);
+  // Self-row only — there is no cross-device write path any more (IDI-177).
+  const toggleSelf = async (value: boolean) => {
+    setRows((r) => (r ? r.map((d) => (d.isSelf ? { ...d, syncEnabled: value } : d)) : r));
+    await setThisDeviceSync(value);
   };
 
   const done = () => { setVisible(false); resolver?.(); setResolver(null); };
@@ -76,7 +85,8 @@ export const DevicesSyncHost: React.FC = () => {
         <Pressable style={styles.card} onPress={() => {}}>
           <Text variant="subtitle" style={styles.title}>Your devices</Text>
           <Text variant="bodyXs" color={colors.textMuted} style={styles.sub}>
-            Turn sync on for each device you want to share your dictation, notes and canvas with.
+            You're signed in on these devices. The switch turns sync on for THIS device —
+            each device controls its own.
           </Text>
 
           {rows === null ? (
@@ -106,12 +116,14 @@ export const DevicesSyncHost: React.FC = () => {
                       <Text variant="metaSm" color={colors.textSubtle}>{isDeviceOnline(r) ? 'Online' : 'Offline'}</Text>
                     </View>
                   </View>
-                  <Switch
-                    value={r.isSelf ? localSync : r.syncEnabled}
-                    onValueChange={(v) => toggle(r, v)}
-                    trackColor={{ true: colors.primary, false: colors.surface3 }}
-                    thumbColor="#fff"
-                  />
+                  {r.isSelf ? (
+                    <Switch
+                      value={localSync}
+                      onValueChange={toggleSelf}
+                      trackColor={{ true: colors.primary, false: colors.surface3 }}
+                      thumbColor="#fff"
+                    />
+                  ) : null}
                 </View>
               ))}
             </View>

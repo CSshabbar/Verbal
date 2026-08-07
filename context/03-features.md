@@ -108,6 +108,12 @@ Each feature: **what it does · desktop impl · mobile impl · backend · status
   `addReplacement`, `fetchRemote`), AsyncStorage `flume_dictionary` + Supabase upsert. Managed in
   `SettingsScreen`.
 - **Backend:** `dictionary` table (`user_id` PK, `vocabulary` jsonb, `replacements` jsonb, `updated_at`).
+- **Sync is CAS, not last-write-wins (IDI-174, 2026-08):** writes are filtered on the last-witnessed
+  `updated_at`; a conflict refetches, merges (vocab union / snippets by trigger / replacements by `from`)
+  and retries once — two devices editing in one session no longer clobber each other, and a vocab edit
+  can't drop snippets. Mobile blocks pushes until the first fetch resolves (the edit-before-load wipe),
+  sequences push→keyboard-sync (no self-clobber race), requires a real identity (`getCloudUserId()`), and
+  surfaces "Couldn't sync — will retry" on double failure in both editing UIs.
 - **Status:** full parity. Rule shape `{from, to, auto?}`.
 
 ## Snippets (spoken trigger → text expansion)
@@ -211,6 +217,14 @@ Each feature: **what it does · desktop impl · mobile impl · backend · status
 - **What:** synced, voice-first notes. **v2** (spec `NOTES_ENHANCEMENT_SWARM.md`) adds full-text search,
   auto-titling, structure detection (voice → interactive checklists), note ↔ source-recording linkage,
   raw+formatted dual storage, cost-controlled cleanup, four per-user feature flags, and conflict-pair sync.
+- **IDI-176 (2026-08), mobile:** notes live in a singleton `notesStore` with a realtime channel
+  (`verbal_notes_<uid>`, rejoin/backoff, own-echo suppression — without it your own write's echo minted a
+  FALSE conflict pair inside the 60s window) + pull-to-refresh + exported `reload`; editor autosave is
+  debounced 500ms (flushed on back/unmount/background) and `updateNote` falls back to the cache when the
+  optimistic create hasn't landed (edits can no longer be silently dropped); **conflict pairs finally have
+  UI** — badge in the list, "Edited on two devices" banner in the editor with Keep-this-version /
+  View-other-copy (promote), via `resolveConflict`; failed/empty dictation into a note shows a message and
+  deletes the orphaned audio; `reloadFlags` runs on screen focus; all note writes respect the sync toggle.
 - **Raw + formatted (Decision 1):** a dictated note stores **both** the raw transcript (`raw_content`) and
   the AI-formatted `content`; the toolbar's **"show original"** reveals the raw text. Pre-existing/typed
   notes have `raw_content` null → the affordance is hidden.
@@ -278,17 +292,32 @@ Each feature: **what it does · desktop impl · mobile impl · backend · status
   text/image-URL to the clipboard and shows a transient **"Received from X — copied to clipboard"** toast
   (`toast`/`dismissToast`, rendered by `CanvasScreen`); a failed image upload now shows an explicit toast
   instead of silently no-op'ing. Skips own writes, haptics on receive.
-- **Backend:** `canvas` table (one row/user: `content`, `image_url`, `device_name`, `updated_at`);
-  `canvas-images` bucket policy in `supabase_canvas_images_policy.sql`.
+- **IDI-173 (2026-08):** origin filtering is by stable `device_id` (name compare only for old-client rows —
+  two same-named devices used to drop each other's updates); writes OMIT columns they aren't changing (a
+  text edit can't null the image); **clears propagate** — an explicit `{content:'', image_url:null}` write
+  applied by every receiver incl. the legacy native window (falsy-drops fixed); mobile fetches on open and
+  applies the row (empty board included), with stable card ids so redelivered events don't duplicate;
+  mobile `discard` on a synced card writes the clear; subscribe lifecycle is account-epoch aware with
+  rejoin/backoff; the macOS writer's "Windows" default name is gone.
+- **Backend:** `canvas` table (one row/user: `content`, `image_url`, `device_name`, `device_id`,
+  `updated_at`); `canvas-images` bucket policy in `supabase_canvas_images_policy.sql`.
 
 ## Cross-device sync
 
 - **What:** history/notes/canvas kept in sync across your signed-in devices; all keyed by `user_id`.
+  **The sync toggle is LIVE and uniform (IDI-171):** one store per platform (`lib/syncStore.ts` mobile —
+  feeding Menu/Settings/Devices switches — and `sync_enabled` desktop), gating
+  history/notes/canvas/dictionary; ON triggers an immediate catch-up + channel join, OFF closes channels
+  without touching local data; mobile runs a foreground (AppState) catch-up and every store rejoins
+  dropped channels with backoff. Meetings edits + recording uploads gate on being signed in only.
 - **Desktop:** `sync.py::SyncClient` — Phoenix WebSocket to Supabase Realtime, subscribes to
-  `transcriptions` INSERTs filtered by `user_id`, skips own inserts, honors `target_device_id`; `push()`
-  inserts via REST; heartbeat upsert into `devices` every 60 s. On receive, `main._on_sync_receive`
-  copies+pastes into the focused app + overlay toast. Push targeting from `dashboard._target_device_id`
-  (`__all__`/`__none__`/specific).
+  `transcriptions` `*` events filtered by `user_id`, skips own inserts, honors `target_device_id`; ONE
+  reconnect loop with a bounded backfill on (re)connect (content since last-seen + separate tombstone
+  sweep — IDI-171/172); `push()` inserts via REST incl. `audio_url`/`status`. **On receive (IDI-172),
+  `main._on_sync_receive` appends to LOCAL HISTORY + clipboard and auto-pastes ONLY when the row targets
+  this device** — broadcasts no longer paste into whatever window is focused. History deletes are
+  tombstones (cross-device); Settings has "Clear history" with an optional clear-everywhere sweep. Push
+  targeting from `dashboard._target_device_id` (`__all__`/`__none__`/specific).
 - **Devices LIST vs sync-target (fixed Jul 2026):** the dashboard "Paired devices" list is built from
   `sync.fetch_account_devices(user_id)` — **every** device on the account, each with an `online` flag
   (`last_seen` within 5 min) — NOT `fetch_devices` (which returns only the last-5-min set and is now kept
@@ -303,10 +332,13 @@ Each feature: **what it does · desktop impl · mobile impl · backend · status
   desktop to parity. Root cause of "phone and Mac can't see each other": the list was a live-only,
   sync-loop-gated view, not a persistent account-devices view.
 - **Mobile:** `flume-ui/hooks/historyStore.ts` — local AsyncStorage cache is source of truth; realtime
-  channel `verbal_history_${userId}` merges remote INSERTs (skips own, respects `target_device_id`).
-  `useDevices` heartbeats every 60 s; sync gated by `getSyncEnabled()`.
-- **Backend:** `transcriptions`, `devices` tables + realtime. See `04-data-model.md` for the exact push
-  shape differences (desktop push omits `audio_url`/`status`; mobile includes them).
+  channel `verbal_history_${userId}` merges remote INSERTs (skips own, respects `target_device_id`,
+  drops+prunes tombstones); real durations persisted (`duration_ms`, local-only). `useDevices` is a
+  singleton store (IDI-177): ONE 60 s poll/heartbeat, shared target selection (picking a send-to device on
+  Home reaches the navigator's routing immediately), `reset()` on sign-out stops all `devices` queries;
+  per-device sync switch is SELF-only; other devices' rows get an honest "Remove from list" (user-scoped).
+- **Backend:** `transcriptions`, `devices` tables + realtime — both platforms push the full shape
+  (`audio_url`/`status`/`target_device_id`) since IDI-172; see `04-data-model.md` §Sync model.
 
 ## Device pairing
 
@@ -538,6 +570,15 @@ live transcript with speaker dots, and a sliding segmented control to a synced N
 window (desktop crash → stale `live` never traps the UI). The list shows a LIVE banner
 that routes to the live screen; when the meeting ends the live screen `replace()`s to the
 finished detail. New column `meetings.live`.
+
+**IDI-175 (2026-08), mobile meetings hardening:** one singleton `meetingsStore` (the four screens shared
+a channel TOPIC but not a channel — one unmount killed another's subscription; `lib/meetings.ts` now
+multiplexes ONE channel to N listeners with rejoin/backoff) with own-echo suppression so a notes-edit echo
+can't clobber in-flight text; fetch errors keep the previous list + show a retry banner (a blip used to
+blank it); scratchpad/notes writes go through a pending-retry queue (latest wins, flushed on
+catchUp/reconnect, "Couldn't save — will retry" rendered) and are **CAS on `updated_at` +
+user_id-scoped** — a desktop regeneration mid-edit freezes the field and offers Reload instead of being
+overwritten; `generateMeetingNotes` has a 30s abort; playback URL resolution has an error state + retry.
 
 **Meeting-start push:** desktop `_notify_start` fires the `notify-meeting-start` edge
 function on meeting start → reads `push_tokens` (new table) → Expo Push API. Mobile
