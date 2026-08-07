@@ -9,6 +9,7 @@ import * as Haptics from 'expo-haptics';
 import { Text, Card, ListRow, Button } from '../components';
 import { confirm } from '../components/ConfirmDialog';
 import { Dictionary, fetchRemote, saveDictionaryChecked } from '../../lib/dictionary';
+import { getSpokenLanguage, setSpokenLanguage, SPOKEN_LANGUAGES } from '../../lib/groq';
 import { colors, radius, type, pressedStyle } from '../theme';
 import { useAuth } from '../hooks/useAuth';
 import { useSyncEnabled, setSyncEnabled } from '../hooks/useSyncEnabled';
@@ -55,6 +56,7 @@ export const SettingsScreen: React.FC<Props> = ({ onOpenDevices, onOpenSnippets 
   const [notesFlags, setNotesFlags] = useState<NotesFeatureFlags>(DEFAULT_NOTES_FLAGS);
   const [clipboardHistory, setClipboardHistory] = useState(true);
   const [transformOnKeyboard, setTransformOnKeyboard] = useState(false);
+  const [spokenLang, setSpokenLang] = useState('en');
 
   useEffect(() => {
     (async () => {
@@ -64,8 +66,18 @@ export const SettingsScreen: React.FC<Props> = ({ onOpenDevices, onOpenSnippets 
       setNotesFlags(await getNotesFeatureFlags());
       setClipboardHistory(await getClipboardHistoryEnabled());
       setTransformOnKeyboard(await getTransformEnabled());
+      setSpokenLang(await getSpokenLanguage());
     })();
   }, []);
+
+  // Optimistic: the chip highlights immediately, then the write (+ the keyboard
+  // snapshot resync inside setSpokenLanguage) lands. A failed write only costs
+  // the setting, never a dictation.
+  const pickSpokenLang = async (code: string) => {
+    if (code === spokenLang) return;
+    setSpokenLang(code);
+    try { await setSpokenLanguage(code); } catch { /* best effort */ }
+  };
 
   const toggleNotesFlag = async (key: keyof NotesFeatureFlags, val: boolean) => {
     setNotesFlags(prev => ({ ...prev, [key]: val }));
@@ -230,8 +242,36 @@ export const SettingsScreen: React.FC<Props> = ({ onOpenDevices, onOpenSnippets 
           />
         </Section>
 
-        {/* Voice — snippets (spoken phrase → full text) */}
+        {/* Voice — spoken language + snippets (spoken phrase → full text) */}
         <Section label="VOICE">
+          {/* Whisper language hint (IDI-180). Applies to in-app dictation AND the
+              native keyboards (the value ships in the keyboard config snapshot).
+              A wrapping chip row, matching the dictionary's vocabulary chips —
+              10 options fit in three rows with no extra navigation. */}
+          <Card padding={14}>
+            <Text variant="button" style={{ marginBottom: 2 }}>Spoken language</Text>
+            <Text variant="bodyXs" color={colors.textMuted} style={{ marginBottom: 10 }}>
+              The language you dictate in. Auto-detect lets Whisper decide.
+            </Text>
+            <View style={styles.chipWrap}>
+              {SPOKEN_LANGUAGES.map(({ code, label }) => {
+                const on = code === spokenLang;
+                return (
+                  <Pressable
+                    key={code}
+                    onPress={() => pickSpokenLang(code)}
+                    accessibilityRole="radio"
+                    accessibilityState={{ selected: on }}
+                    accessibilityLabel={label}
+                    style={({ pressed }) => [styles.langChip, on && styles.langChipOn, pressed && pressedStyle]}
+                  >
+                    <Text variant="caption" color={on ? colors.primary : colors.textMuted}>{label}</Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+          </Card>
+
           <Pressable onPress={onOpenSnippets} style={({ pressed }) => [styles.snippetCard, pressed && pressedStyle]}>
             <View style={styles.snippetIcon}>
               <Ionicons name="flash" size={20} color={colors.primary} />
@@ -503,6 +543,11 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: colors.primaryBorder,
   },
   chipWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 10 },
+  langChip: {
+    backgroundColor: colors.surface2, borderWidth: 1, borderColor: colors.borderSubtle,
+    borderRadius: 999, paddingVertical: 6, paddingHorizontal: 12,
+  },
+  langChipOn: { backgroundColor: colors.primarySoft, borderColor: colors.primaryBorder },
   chip: {
     flexDirection: 'row', alignItems: 'center', gap: 6,
     backgroundColor: colors.primarySoft, borderWidth: 1, borderColor: colors.primaryBorder,

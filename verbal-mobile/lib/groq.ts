@@ -28,14 +28,47 @@ async function proxyHeaders(json: boolean): Promise<Record<string, string>> {
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
+const SPOKEN_LANGUAGE_KEY = 'flume_spoken_language';
+
 /** Spoken language for transcription — ISO-639-1 or 'auto'. Defaults to 'en'
- *  (the historical behavior). Set via the key below when mobile grows a picker. */
+ *  (the historical behavior). Written ONLY by setSpokenLanguage() below. */
 export async function getSpokenLanguage(): Promise<string> {
   try {
-    return (await AsyncStorage.getItem('flume_spoken_language')) || 'en';
+    return (await AsyncStorage.getItem(SPOKEN_LANGUAGE_KEY)) || 'en';
   } catch {
     return 'en';
   }
+}
+
+/** The picker's options (IDI-180). 'auto' = let Whisper detect — transcribeAudio
+ *  omits the `language` param, and both natives omit it too (keyboardBridge ships
+ *  the value as `spokenLanguage`). Mirrors desktop's `spoken_language` config. */
+export const SPOKEN_LANGUAGES: { code: string; label: string }[] = [
+  { code: 'auto', label: 'Auto-detect' },
+  { code: 'en', label: 'English' },
+  { code: 'es', label: 'Spanish' },
+  { code: 'fr', label: 'French' },
+  { code: 'de', label: 'German' },
+  { code: 'pt', label: 'Portuguese' },
+  { code: 'hi', label: 'Hindi' },
+  { code: 'ur', label: 'Urdu' },
+  { code: 'ar', label: 'Arabic' },
+  { code: 'zh', label: 'Chinese' },
+];
+
+/**
+ * Persist the spoken language and push it to the native keyboards.
+ *
+ * The keyboard snapshot carries `spokenLanguage`, so the picker would only
+ * affect in-app dictation until the snapshot is rewritten — hence the
+ * fire-and-forget resync. The import is DYNAMIC on purpose: keyboardBridge
+ * imports getSpokenLanguage from this module, so a static import here would
+ * close a cycle. Fail-closed — a failed resync never breaks the setting.
+ */
+export async function setSpokenLanguage(code: string): Promise<void> {
+  const lang = (code || 'en').trim() || 'en';
+  await AsyncStorage.setItem(SPOKEN_LANGUAGE_KEY, lang);
+  import('./keyboardBridge').then((m) => m.syncKeyboardConfig()).catch(() => { /* best effort */ });
 }
 
 export const NOTES_FORMATTER_PROMPT = `You are a world-class NOTE-MAKER, not an AI assistant.
@@ -240,6 +273,27 @@ export async function transcribeAudio(
   return applyReplacements((data.text?.trim() ?? ''), dict);
 }
 
+/** Ollama Cloud fallback model, served through the SAME groq-proxy with
+ *  `provider: 'ollama'` — a separate quota with a server-held key, so it survives
+ *  Groq's shared daily-token cap. Mirror of desktop transform.OLLAMA_FALLBACK_MODEL
+ *  (commit 4f08d1e) and of generateMeetingNotes's primary below. */
+const OLLAMA_FALLBACK_MODEL = 'gpt-oss:120b';
+
+/** Cleanup deadlines (IDI-180). Dictation is the hot path: the primary attempt is
+ *  short, and the fallback gets its own (slightly longer — the open-weight model
+ *  is slower) budget. Worst case is bounded; either way the caller keeps the raw
+ *  transcript, so a slow LLM can never lose a dictation. */
+const CLEANUP_TIMEOUT_MS = 12_000;
+const CLEANUP_FALLBACK_TIMEOUT_MS = 18_000;
+
+/** HTTP statuses worth retrying on the OTHER provider: 429 = rate limit / Groq's
+ *  daily-token cap (the whole reason this fallback exists), 413 = payload too
+ *  large for Groq, 5xx = upstream trouble. Anything else (400/401/403/404) is a
+ *  request-shape or auth problem that the fallback would hit identically. */
+function shouldFallback(status: number): boolean {
+  return status === 429 || status === 413 || status >= 500;
+}
+
 export async function formatText(
   text: string,
   _apiKey?: string,
@@ -320,26 +374,59 @@ Return ONLY the formatted text.`;
     /* fail-closed: proceed with no context */
   }
 
-  const res = await fetch(PROXY_URL, {
-    method: 'POST',
-    headers: await proxyHeaders(true),
-    body: JSON.stringify({
-      model: 'llama-3.3-70b-versatile',
-      messages: [
-        { role: 'system', content: SYSTEM },
-        {
-          role: 'user',
-          content: `${context}TRANSCRIPTION TO FORMAT:\n\`\`\`\n${text}\n\`\`\`\n\nOutput the formatted version only.`,
-        },
-      ],
-      temperature: 0,
-      max_tokens: 2048,
-    }),
-  });
+  const messages = [
+    { role: 'system', content: SYSTEM },
+    {
+      role: 'user',
+      content: `${context}TRANSCRIPTION TO FORMAT:\n\`\`\`\n${text}\n\`\`\`\n\nOutput the formatted version only.`,
+    },
+  ];
 
-  if (!res.ok) return text; // fallback to raw
-  const data = await res.json();
-  return data.choices?.[0]?.message?.content?.trim() ?? text;
+  /** One cleanup attempt. Returns the cleaned text, or a `retry` marker telling
+   *  the caller the OTHER provider is worth a shot (429 / 413 / 5xx / timeout /
+   *  network error). Never throws. */
+  const call = async (
+    model: string,
+    timeoutMs: number,
+    provider?: string,
+  ): Promise<{ text: string } | { retry: boolean }> => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const res = await fetch(PROXY_URL, {
+        method: 'POST',
+        headers: await proxyHeaders(true),
+        body: JSON.stringify({
+          model, messages, temperature: 0, max_tokens: 2048,
+          ...(provider ? { provider } : {}),
+        }),
+        signal: controller.signal,
+      });
+      if (!res.ok) return { retry: shouldFallback(res.status) };
+      const data = await res.json();
+      const out = data.choices?.[0]?.message?.content?.trim();
+      // An empty completion is a dud response, not a bad request — worth the
+      // other provider (matches desktop transform._chat's empty-or-failed test).
+      return out ? { text: out } : { retry: true };
+    } catch {
+      // Aborted (timeout) or network error — the other provider may still answer.
+      return { retry: true };
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
+  // Groq first (fast, and the model this prompt was tuned against). On a
+  // retryable failure — above all Groq's daily-token 429, which used to kill
+  // mobile cleanup outright while desktop survived (4f08d1e) — try Ollama Cloud
+  // ONCE through the same proxy. Fully fail-closed: both down → raw text, which
+  // is exactly what every formatText caller already treats a failure as.
+  const primary = await call('llama-3.3-70b-versatile', CLEANUP_TIMEOUT_MS);
+  if ('text' in primary) return primary.text;
+  if (!primary.retry) return text;
+
+  const fallback = await call(OLLAMA_FALLBACK_MODEL, CLEANUP_FALLBACK_TIMEOUT_MS, 'ollama');
+  return 'text' in fallback ? fallback.text : text;
 }
 
 // Notes model on Ollama Cloud (OpenAI-compatible). Mirror of desktop meetings.NOTES_MODEL.
@@ -422,7 +509,11 @@ export async function generateMeetingNotes(meeting: {
   try {
     if (!meeting.transcript.length) return null;
     const langCode = await getSpokenLanguage();
-    const outLang = LANG_NAMES[langCode] || 'English';
+    // 'auto' became reachable when the picker landed (IDI-180) — mapping it to
+    // English would force English notes on a non-English meeting, so it defers
+    // to the transcript instead. A named language still pins the output.
+    const outLang = LANG_NAMES[langCode]
+      || (langCode === 'auto' ? "the SAME language the transcript is in" : 'English');
     const lines = meeting.transcript.map((u) => {
       const name = meeting.speakers[u.speaker] || u.speaker;
       const t = Math.floor(u.t0 || 0);

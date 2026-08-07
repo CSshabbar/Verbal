@@ -220,6 +220,10 @@ input,textarea{font-family:inherit;color:inherit;background:none;border:0;outlin
 .preFoot{display:flex;align-items:center;gap:8px;padding:10px 20px;border-top:1px solid var(--bd);
   background:var(--footer)}
 .preFoot .hint{font:400 11px 'Geist';color:var(--faint);flex:1}
+/* a failed start_meeting is reported HERE — the modal stays put (IDI-178) */
+.preErr{display:none;margin:0 20px 10px;padding:8px 12px;border-radius:10px;background:var(--rec-subtle);
+  border:1px solid var(--rec-bd);color:var(--rec-soft);font:400 11px 'Geist'}
+.preErr.show{display:block}
 /* ── InMeetingTwoPanel (31c) ── */
 #liveRoot{display:none;flex-direction:column;height:100vh}
 #liveRoot.show{display:flex}
@@ -621,6 +625,7 @@ def _premeeting_modal():
           <select class="preLang" id="preLang" onchange="PRE.lang=this.value"></select>
         </div>
       </div>
+      <div class="preErr" id="preErr"></div>
       <div class="preFoot">
         <span class="hint">Press Enter to start</span>
         <button class="btnS" onclick="preCancel()">Cancel</button>
@@ -895,6 +900,13 @@ function loadPreLangs(){
     }).join('');
   });
 }
+let PRE_STARTING=false;            // a start_meeting call is in flight
+function preErr(msg){
+  const el=document.getElementById('preErr');
+  if(!el) return;
+  el.textContent=msg||'';
+  el.className='preErr'+(msg?' show':'');
+}
 function renderPre(){
   document.getElementById('preWrap').className = (MODE==='premeeting') ? 'show' : '';
   if(MODE==='premeeting') loadPreLangs();
@@ -903,17 +915,37 @@ function renderPre(){
   document.getElementById('preMicTgl').className='toggle'+(PRE.mic?' on':'');
   document.getElementById('preSysDisc').className='disc'+(PRE.sys?'':' off');
   document.getElementById('preMicDisc').className='disc'+(PRE.mic?'':' off');
-  document.getElementById('preStartBtn').disabled = !(PRE.sys||PRE.mic);
+  const btn=document.getElementById('preStartBtn');
+  btn.disabled = PRE_STARTING || !(PRE.sys||PRE.mic);
+  btn.textContent = PRE_STARTING ? 'Starting…' : 'Start recording';
   const t=document.getElementById('preTitle');
   setTimeout(function(){ t.focus(); }, 60);
 }
 function preToggle(which){ PRE[which]=!PRE[which]; renderPre(); }
-function preCancel(){ MODE='idle'; renderPre(); api('close_meeting_window'); }
+function preCancel(){ MODE='idle'; PRE_STARTING=false; preErr(''); renderPre(); api('close_meeting_window'); }
 function preStart(){
-  if(!(PRE.sys||PRE.mic)) return;
+  if(!(PRE.sys||PRE.mic) || PRE_STARTING) return;
   const title=(document.getElementById('preTitle').value||'').trim();
-  MODE='live'; renderPre(); renderLive();
-  api('start_meeting', title, PRE.mic, PRE.sys, PRE.lang||'');
+  // Flip to the live screen ONLY once start_meeting has actually said ok — this
+  // used to switch immediately and ignore the result, so a failed start (no
+  // permission, mic busy, meetings disabled) left an empty live screen with a
+  // REC dot that never went anywhere (IDI-178).
+  PRE_STARTING=true; preErr(''); renderPre();
+  api('start_meeting', title, PRE.mic, PRE.sys, PRE.lang||'').then(function(r){
+    PRE_STARTING=false;
+    if(r && r.ok){
+      preErr('');
+      MODE='live'; renderPre(); renderLive();
+    } else {
+      // stay on the pre-start screen and say why
+      preErr((r && r.error) ? r.error : 'Could not start recording — please try again.');
+      renderPre();
+    }
+  }, function(){
+    PRE_STARTING=false;
+    preErr('Could not start recording — please try again.');
+    renderPre();
+  });
 }
 document.addEventListener('keydown', function(ev){
   if(MODE!=='premeeting') return;

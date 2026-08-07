@@ -12,7 +12,7 @@ faulthandler.enable()
 import rumps
 
 from app.config import (
-    load_config, save_config, add_gemini_key, remove_gemini_key,
+    load_config, save_config,
     add_to_history, update_history_entry, update_daily_words, get_daily_words,
     _entry_text, _entry_app, LOG_DIR, ensure_dirs,
 )
@@ -32,7 +32,8 @@ from app.sounds import play_start, play_stop, play_done, play_added
 from app.dashboard import DashboardWindow           # legacy AppKit dashboard (fallback)
 from app.flume_web_dashboard import FlumeWebDashboard
 from app.flume_popover import FlumePopover
-from app.canvas_window import CanvasWindow
+# NB: app/canvas_window.py is legacy (IDI-179) — the canvas lives in the
+# dashboard's tab 4 now. It is no longer imported or constructed here.
 
 ensure_dirs()  # ensure ~/.verbal/logs/ exists before FileHandler is created
 
@@ -90,7 +91,6 @@ class VerbalApp(rumps.App):
         except Exception as _e:
             logging.getLogger("verbal").warning("Flume web dashboard unavailable (%s); using AppKit", _e)
             self.dashboard = DashboardWindow(self)
-        self.canvas    = CanvasWindow(self.config)
 
         # Flume menubar popover (WKWebView in an NSPopover). Optional — if it
         # can't be created the classic rumps menu is used unchanged.
@@ -145,7 +145,13 @@ class VerbalApp(rumps.App):
             _threading.Thread(target=_warm, daemon=True).start()
         except Exception as _e:
             logging.getLogger("verbal").warning("meetings unavailable (%s)", _e)
-        self.reset_onb_item = rumps.MenuItem("Reset Onboarding (dev)", callback=self._reset_onboarding)
+        # Dev-only. It wipes auth + onboarding + sync state, so it must never be
+        # one mis-click away in a shipped build: the item only exists when
+        # VERBAL_DEV is set (IDI-178). The handler itself stays for that use.
+        self._dev_mode = bool(os.environ.get("VERBAL_DEV"))
+        self.reset_onb_item = (
+            rumps.MenuItem("Reset Onboarding (dev)", callback=self._reset_onboarding)
+            if self._dev_mode else None)
 
         mode_menu = rumps.MenuItem("Recording Mode")
         self.mode_hold = rumps.MenuItem("Hold Key to Record", callback=self._set_mode_hold)
@@ -159,7 +165,10 @@ class VerbalApp(rumps.App):
         self.model_items = {}
         for m in ["tiny", "base", "small", "medium"]:
             item = rumps.MenuItem(m, callback=self._change_model)
-            item.state = 1 if m == self.config.get("whisper_model", "medium.en") else 0
+            # "base" is the real default (config.py DEFAULTS + transcriber.py).
+            # The old "medium.en" fallback matched none of the four submenu
+            # entries, so a fresh install showed NO checkmark at all (IDI-178).
+            item.state = 1 if m == self.config.get("whisper_model", "base") else 0
             self.model_items[m] = item
             model_menu.add(item)
 
@@ -174,7 +183,7 @@ class VerbalApp(rumps.App):
             self.autodetect_item,
             None,
             self.signin_item,
-            self.reset_onb_item,
+        ] + ([self.reset_onb_item] if self.reset_onb_item else []) + [
             None,
             rumps.MenuItem("Open Verbal", callback=self._open_dashboard),
             rumps.MenuItem("Open Canvas", callback=self._open_canvas),
@@ -182,6 +191,7 @@ class VerbalApp(rumps.App):
             mode_menu,
             model_menu,
             None,
+            rumps.MenuItem("Check for Updates…", callback=self._check_update_now),
             rumps.MenuItem("About Verbal", callback=self._about),
         ]
 
@@ -988,7 +998,7 @@ class VerbalApp(rumps.App):
             self.mode_hold.state = 1 if mode == MODE_HOLD else 0
         if getattr(self, "mode_toggle", None) is not None:
             self.mode_toggle.state = 1 if mode == MODE_TOGGLE else 0
-        model = cfg.get("whisper_model", "medium.en")
+        model = cfg.get("whisper_model", "base")
         for name, item in (getattr(self, "model_items", None) or {}).items():
             item.state = 1 if name == model else 0
 
@@ -1417,7 +1427,13 @@ class VerbalApp(rumps.App):
         try:
             self._processing = False
             self._is_recording = False
-            self._cancel_flag.clear()
+            # NOTE (IDI-165 carry-over, fixed in IDI-178): this must NOT clear
+            # `_cancel_flag`. `_on_esc_pressed` sets the flag and then QUEUES
+            # this reset — if the UI queue drained before the transcription
+            # worker reached its next `_cancel_flag.is_set()` check, the cancel
+            # was silently lost and the text still pasted. The flag is cleared
+            # at RECORDING START (`_on_record_start`) instead, so for the whole
+            # life of one dictation it means exactly "this one was cancelled".
             self.status_item.title = self._status_text()
             self.overlay.hide()
             if os.path.exists(ICON_PATH):
@@ -1429,77 +1445,6 @@ class VerbalApp(rumps.App):
         except Exception as e:
             logger.error(f"Reset error: {e}")
 
-    def _manage_groq_keys(self, _):
-        keys = self.config.get("groq_api_keys", [])
-        if keys:
-            key_list = "\n".join(f"  {i+1}. ...{k[-8:]}" for i, k in enumerate(keys))
-            msg = f"Groq keys (for transcription):\n{key_list}\n\nPaste a new key, or 'remove N':"
-        else:
-            msg = "No Groq API key set.\n\nGet a FREE key at console.groq.com\nPaste it here:"
-
-        response = rumps.Window(
-            message=msg,
-            title="Verbal - Groq API Key",
-            default_text="",
-            ok="Save",
-            cancel="Cancel",
-            dimensions=(400, 80),
-        ).run()
-
-        if response.clicked:
-            text = response.text.strip()
-            if not text:
-                return
-            if text.lower().startswith("remove "):
-                try:
-                    idx = int(text.split()[1]) - 1
-                    if 0 <= idx < len(keys):
-                        keys.pop(idx)
-                        self.config["groq_api_keys"] = keys
-                        save_config(self.config)
-                except (ValueError, IndexError):
-                    pass
-            else:
-                if text not in keys:
-                    keys.append(text)
-                    self.config["groq_api_keys"] = keys
-                    save_config(self.config)
-
-    def _manage_keys(self, _):
-        keys = self.config.get("gemini_api_keys", [])
-        active_idx = self.config.get("active_gemini_key_index", 0)
-
-        if keys:
-            key_list = "\n".join(
-                f"{'> ' if i == active_idx else '  '}{i+1}. ...{k[-8:]}"
-                for i, k in enumerate(keys)
-            )
-            msg = f"Current keys:\n{key_list}\n\nPaste a new key to add, or type 'remove N' to delete key N:"
-        else:
-            msg = "No Gemini API keys configured.\n\nPaste a key to add:"
-
-        response = rumps.Window(
-            message=msg,
-            title="Verbal - Gemini API Keys",
-            default_text="",
-            ok="Save",
-            cancel="Cancel",
-            dimensions=(400, 100),
-        ).run()
-
-        if response.clicked:
-            text = response.text.strip()
-            if not text:
-                return
-            if text.lower().startswith("remove "):
-                try:
-                    idx = int(text.split()[1]) - 1
-                    self.config = remove_gemini_key(self.config, idx)
-                except (ValueError, IndexError):
-                    rumps.alert("Invalid key number")
-            else:
-                self.config = add_gemini_key(self.config, text)
-
     def _change_model(self, sender):
         model_name = sender.title
         for name, item in self.model_items.items():
@@ -1507,11 +1452,23 @@ class VerbalApp(rumps.App):
         self.config["whisper_model"] = model_name
         save_config(self.config)
 
-    def _check_update(self):
-        from app.updater import check_for_update, download_update, install_update
+    def _check_update(self, announce_current=False):
+        """Background update poll. `check_for_update()` returns None both when
+        we're current AND when the check fails, so a MANUAL check has to say
+        something either way — silence reads as a broken menu item."""
+        from app.updater import check_for_update
         update = check_for_update()
         if update:
             self._on_main(lambda: self._show_update_prompt(update))
+        elif announce_current:
+            from app.config import APP_VERSION
+            self._on_main(lambda: rumps.alert(
+                "You're up to date",
+                f"Verbal v{APP_VERSION} is the latest version."))
+
+    def _check_update_now(self, _=None):
+        """Menubar 'Check for Updates…' — same path as the startup poll."""
+        threading.Thread(target=self._check_update, args=(True,), daemon=True).start()
 
     def _show_update_prompt(self, update):
         changelog = update.get('changelog', 'Bug fixes and improvements')

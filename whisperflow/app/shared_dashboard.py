@@ -629,20 +629,56 @@ class DashboardApi:
         except Exception as e:
             return {"ok": False, "error": str(e)}
 
+    def _meeting_win(self):
+        """The meeting window via the app's LAZY accessor (`main._meeting_win`).
+
+        These bridge methods used to read `getattr(app, "meeting_window", None)`
+        directly, which is None until the window has been constructed once — so
+        every call that arrived before that silently no-opped (IDI-178). The
+        accessor constructs it on demand and still fails closed to None; it does
+        no AppKit work (that happens in `MeetingWindow.show`), so it is safe from
+        the bridge's worker thread."""
+        try:
+            accessor = getattr(self.app, "_meeting_win", None)
+            if callable(accessor):
+                return accessor()
+        except Exception:
+            pass
+        return getattr(self.app, "meeting_window", None)
+
     def _meeting_mode(self, mode):
         try:
-            win = getattr(self.app, "meeting_window", None)
+            win = self._meeting_win()
             if win:
                 win.set_mode(mode)
         except Exception:
             pass
 
-    def close_meeting_window(self):
+    def _notify(self, text, duration=2.5):
+        """Ambient one-liner on the recording overlay pill. Fails closed."""
         try:
-            win = getattr(self.app, "meeting_window", None)
+            ov = getattr(self.app, "overlay", None)
+            if ov and hasattr(ov, "show_briefly"):
+                self.app._on_main(lambda: ov.show_briefly(text, duration=duration))
+        except Exception:
+            pass
+
+    def close_meeting_window(self):
+        """Hide the meeting surface.
+
+        Closing while the session is still finishing (drain → upload → summary)
+        used to be completely silent: the `stopping` state at least collapses to
+        the ambient bar, but `processing` just vanished and the user had no idea
+        notes were still being generated (IDI-178). Mirror the cue."""
+        try:
+            m = self._meetings()
+            working = bool(m and getattr(m, "processing", None))
+            win = self._meeting_win()
             if win:
                 self.app._on_main(win.hide)
-            return _ok()
+            if working:
+                self._notify("✦ Still finishing your meeting notes…")
+            return _ok(processing=working)
         except Exception as e:
             return {"ok": False, "error": str(e)}
 
@@ -660,7 +696,7 @@ class DashboardApi:
     def expand_meeting_window(self):
         """Bar → full window (fluid morph)."""
         try:
-            win = getattr(self.app, "meeting_window", None)
+            win = self._meeting_win()
             if win:
                 win.expand()
             return _ok()
@@ -670,7 +706,7 @@ class DashboardApi:
     def collapse_meeting_window(self):
         """Full window → ambient bar (only while a meeting records)."""
         try:
-            win = getattr(self.app, "meeting_window", None)
+            win = self._meeting_win()
             if win:
                 win.collapse()
             return _ok()
@@ -742,7 +778,7 @@ class DashboardApi:
                 pass
 
             def run():
-                win = self.app._meeting_win()
+                win = self._meeting_win()
                 if win:
                     win.show("summary")
                     # dedicated event: an explicit open must always replace the

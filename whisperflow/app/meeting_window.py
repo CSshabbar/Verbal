@@ -126,7 +126,10 @@ class MeetingWindow:
     def _recording_active(self):
         try:
             m = getattr(self.app, "meetings", None)
-            return bool(m and m.active)
+            # `processing` (IDI-178): the summary is still generating after Stop —
+            # the red X collapses to the bar instead of closing, same as while
+            # recording, so the "still finishing your notes" work stays visible.
+            return bool(m and (m.active or getattr(m, "processing", False)))
         except Exception:
             return False
 

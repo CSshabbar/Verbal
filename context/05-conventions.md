@@ -634,15 +634,23 @@
       `storage.getDeviceId()` (`verbal_device_uuid`, deliberately NOT wiped by `clearAccountData`). Never
       derive identity from hostname/deviceName/user id. The per-device sync switch is SELF-only.
     - **Fixture harnesses for this area:** `whisperflow/idi170_171_fixtures.py` +
-      `idi172_174_fixtures.py` — run them for any auth/sync/canvas/dictionary-sync change.
+      `idi172_174_fixtures.py` — run them for any auth/sync/canvas/dictionary-sync change
+      (+ `idi178_fixtures.py` for the ESC-cancel ordering).
+    - **Two mobile gotchas (IDI-180):** `lib/groq.ts` ↔ `lib/keyboardBridge.ts` is a cycle waiting to
+      happen — keyboardBridge statically imports from groq, so groq must reach keyboardBridge only via
+      dynamic `import()` (the `setSpokenLanguage` pattern). And `documentDirectory/recordings/` is SHARED
+      by dictation audio and note audio segments — any cleanup must consult BOTH `storage.getHistory()`
+      and `notesStorage.getCachedNotes()` for referenced files (see `recordings.sweep`, fail-closed).
 
 25. **The recording overlay's Cancel button must go through `main._on_esc_pressed`, never
     `_cancel_recording` (IDI-165).** `_cancel_recording` only stops the *recorder*; it never sets
-    `_cancel_flag`, and `_reset_to_ready` **clears** the flag — so clicking Cancel on the *Transcribing*
-    pill let the in-flight transcription finish and still paste into the focused app. `_on_esc_pressed`
-    is the only path that sets the flag **before** any reset, so `overlay.overlay_cancel` delegates to it
-    (it is safe off the main thread — it hops to main itself). Rule: ESC and the Cancel button must stay
-    literally the same code path. The same ticket established three more overlay rules:
+    `_cancel_flag` — so clicking Cancel on the *Transcribing* pill let the in-flight transcription finish
+    and still paste into the focused app. `_on_esc_pressed` sets the flag, and **since IDI-178
+    `_reset_to_ready` no longer clears it** — the clear lives at RECORDING START (both platforms), so the
+    flag reliably means "this dictation was canceled" for the whole cycle and the old race (reset draining
+    before the worker's `is_set()` check → cancel lost) is closed; proven by `idi178_fixtures.py`.
+    `overlay.overlay_cancel` delegates to `_on_esc_pressed` (safe off the main thread — it hops itself).
+    Rule: ESC and the Cancel button must stay literally the same code path. The same ticket established three more overlay rules:
     - **Failures get their own pill.** `overlay.update_status(status, error=True)` renders `mode:'error'`
       — danger red `#E05049`, a `!` disc, **no ✓ and no "Copy again"** (that CTA re-copied the *previous*
       dictation's text). `main.py` passes the flag explicitly at the `silent` / `failed` call sites; the
@@ -686,7 +694,9 @@ Single source: desktop `app/theme.py` + `app/fonts_css.py`; mobile `flume-ui/the
 - `meeting_hud.py` + `meeting_hud_html.py` — the original separate floating meeting HUD; **superseded** by
   the morphing bar layout of `meeting_window.py` (one panel: bar ⇄ expanded). Not wired anymore.
 - `history_window.py` — legacy standalone AppKit history window; not referenced.
-- `canvas_window.py` (`CanvasWindow`) — instantiated but menu routes to the web dashboard tab; effectively
+- `canvas_window.py` (`CanvasWindow`) — since IDI-178 no longer imported or constructed by `main.py`
+  (fully unreferenced by the app; `idi172_174_fixtures.py` still imports it directly); module deletion is
+  IDI-179's call. Previously: instantiated but menu routed to the web dashboard tab; effectively
   unused.
 - `transcriber._transcribe_local` has an unreachable duplicate VAD `_run()` block after its `return`.
 - `flume_dashboard_html.py` is **dual-target**: loaded into a WKWebView by `FlumeWebDashboard` on macOS

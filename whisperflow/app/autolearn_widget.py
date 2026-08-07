@@ -124,6 +124,14 @@ class AutoLearnWidget:
                 self.setup()
             if not self._window:
                 return
+            # A second correction arriving while a card is still up used to
+            # simply overwrite `_pending` — the pre-empted word never reached
+            # `record_offered`, so it escaped the anti-nag memory and could be
+            # offered again later (Hard Rule #9). Retire it as a dismissal
+            # first (IDI-178).
+            prev = self._pending
+            if prev and self._visible and tuple(prev) != (old, new):
+                self._retire(prev)
             self._pending = (old, new)
             self._window.orderFrontRegardless()
             self._visible = True
@@ -177,19 +185,31 @@ class AutoLearnWidget:
     def _resolve(self, mid, result):
         pass  # fire-and-forget
 
+    def _retire(self, pending, added=False):
+        """Report one offer's outcome exactly once (main thread)."""
+        if not (pending and self.app):
+            return
+        old, new = pending
+        self.app._on_main(lambda: self.app._autolearn_result(old, new, added))
+
     def autolearn_add(self):
-        pending = self._pending
+        # Latch: `_autolearn_result` is deferred onto the UI queue, so a fast
+        # double-click used to fire it twice — two `play_added()` chimes and two
+        # dictionary pushes for one word (IDI-178). Taking `_pending` here makes
+        # every later click (and the 20 s auto-dismiss) a no-op.
+        pending, self._pending = self._pending, None
+        if pending is None:
+            return
         self.hide()
-        if pending and self.app:
-            old, new = pending
-            self.app._on_main(lambda: self.app._autolearn_result(old, new, True))
+        self._retire(pending, added=True)
 
     def autolearn_close(self):
-        pending = self._pending
+        pending, self._pending = self._pending, None
+        if pending is None:
+            self.hide()
+            return
         self.hide()
-        if pending and self.app:
-            old, new = pending
-            self.app._on_main(lambda: self.app._autolearn_result(old, new, False))
+        self._retire(pending, added=False)
 
 
 # ── HTML ──────────────────────────────────────────────────────────────────────

@@ -927,12 +927,30 @@ class MeetingSession:
         self._cloud_update(final=True)
         # hand the window the finished meeting + flip it to the summary screen
         self._emit("meeting", self.row())
+        hidden = True
         try:
             win = getattr(self.app, "meeting_window", None)
             if win and win.visible:
+                hidden = False
                 win.set_mode("summary")
         except Exception:
             pass
+        # The window can be closed mid-`processing` (unlike `stopping`, which
+        # collapses to the ambient bar instead of closing) — so if nobody is
+        # watching, say the notes landed (IDI-178). Fails closed.
+        if hidden:
+            self._notify_done()
+
+    def _notify_done(self):
+        try:
+            ov = getattr(self.app, "overlay", None)
+            if not (ov and hasattr(ov, "show_briefly")):
+                return
+            msg = ("⚠️ Meeting notes failed — retry from Meetings"
+                   if self.state == "failed" else "✦ Meeting notes ready")
+            self.app._on_main(lambda: ov.show_briefly(msg, duration=3.0))
+        except Exception as e:
+            logger.debug("meeting done notice skipped: %s", e)
 
     def run_summary(self):
         """Generate (or regenerate) the structured summary. True on success."""
@@ -1370,6 +1388,15 @@ class MeetingManager:
     def active(self):
         s = self.session
         return s if s and s.state in ("preparing", "recording", "paused", "stopping") else None
+
+    @property
+    def processing(self):
+        """The session is past capture but STILL WORKING (drain → upload →
+        summary). Deliberately separate from `active`, whose meaning ("audio is
+        being captured") gates the mic/HUD/menubar — this one only answers "is
+        it safe to walk away from the window?" (IDI-178)."""
+        s = self.session
+        return s if s and s.state in ("stopping", "processing") else None
 
     def start(self, title="", use_mic=True, use_system=True, language=""):
         try:

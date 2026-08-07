@@ -63,9 +63,15 @@ class TransformWidget:
         self._selection = None       # original selected text
         self._rewrite = None         # pending preview
         self._busy = False
+        self._replacing = False      # IDI-178: one paste per preview (see tf_replace)
         self._speaking = False
+        self._transcribing = False
         self._page_ready = False
         self._pending_state = None   # last state emitted before the page loaded
+        # Monotonic id of the in-flight LLM run. Bumped on show/hide/cancel and
+        # on every new run, so a run the user cancelled can never come back and
+        # paint a preview over a pill that has already moved on (IDI-178).
+        self._run_token = 0
 
     # ── window (main thread) ──────────────────────────────────────────────────
     def setup(self):
@@ -134,6 +140,9 @@ class TransformWidget:
             self._selection = selection
             self._rewrite = None
             self._busy = False
+            self._replacing = False
+            self._transcribing = False
+            self._run_token += 1        # orphan anything still in flight
             self._window.orderFrontRegardless()
             self._visible = True
             self._emit({"state": "prompt",
@@ -146,6 +155,11 @@ class TransformWidget:
         self._visible = False
         self._selection = None
         self._rewrite = None
+        self._replacing = False
+        # Cancel (the busy pill's ✕ / Escape) must ORPHAN the in-flight run —
+        # otherwise it lands later and re-opens the pill with a stale preview.
+        self._run_token += 1
+        self._busy = False
         if self._speaking:
             self._stop_speak(discard=True)
         try:
@@ -208,12 +222,24 @@ class TransformWidget:
             return
         self._busy = True
         sel = self._selection
+        self._run_token += 1
+        token = self._run_token
         self._emit({"state": "busy", "label": label})
 
         def work():
-            from app import transform
-            out = fn(sel)
+            # An exception escaping this thread used to leave `_busy=True`
+            # forever — the pill sat on the spinner and every later action was
+            # swallowed by the `if self._busy: return` guard above (IDI-178).
+            out, failed = None, False
+            try:
+                out = fn(sel)
+            except Exception as e:
+                failed = True
+                logger.error("transform run (%s) failed: %s", label, e)
+
             def ui():
+                if token != self._run_token:
+                    return                      # cancelled / superseded run
                 self._busy = False
                 if not self._visible:
                     return
@@ -223,8 +249,15 @@ class TransformWidget:
                                 "truncated": len(out) > 4000})
                 else:
                     self._emit({"state": "error",
-                                "msg": "Couldn't transform — try again."})
-            self.app._on_main(ui)
+                                "msg": ("Transform failed — your text is untouched."
+                                        if failed else "Couldn't transform — try again.")})
+            try:
+                self.app._on_main(ui)
+            except Exception as e:
+                # can't even reach the UI queue — never strand the latch
+                logger.error("transform run UI hop failed: %s", e)
+                if token == self._run_token:
+                    self._busy = False
         threading.Thread(target=work, daemon=True).start()
 
     def tf_improvise(self):
@@ -315,9 +348,16 @@ class TransformWidget:
         threading.Thread(target=work, daemon=True).start()
 
     def tf_replace(self):
+        # Latch on the FIRST click. `do()` is deferred onto the UI queue, so two
+        # fast clicks both used to read `self._rewrite` before it was cleared —
+        # and the rewrite was pasted TWICE into the target app (IDI-178).
+        if self._replacing:
+            return
         rewrite = self._rewrite
         if not rewrite:
             return
+        self._replacing = True
+        self._rewrite = None
         original = self._selection
 
         def do():
@@ -326,7 +366,6 @@ class TransformWidget:
                 # the selection is still highlighted in the target app: paste replaces it
                 inject_text(rewrite)
                 self._selection = original          # kept for Undo
-                self._rewrite = None
                 self._emit({"state": "done"})
                 def later():
                     if self._visible and self._rewrite is None:
@@ -334,6 +373,9 @@ class TransformWidget:
                 threading.Timer(6.0, lambda: self.app._on_main(later)).start()
             except Exception as e:
                 logger.error("transform replace failed: %s", e)
+                # nothing was pasted — hand the preview back so Replace is retryable
+                self._replacing = False
+                self._rewrite = rewrite
                 self._emit({"state": "error", "msg": "Replace failed — text untouched."})
         self.app._on_main(do)
 
@@ -409,6 +451,18 @@ function setRecording(on){
   var mb=document.getElementById('micBtn'); if(mb) mb.className = on ? 'mic on' : 'mic';
   var w=document.getElementById('micWave'); if(w) w.className = on ? 'wave on' : 'wave';
 }
+// Errors used to be written to '#perr' unconditionally — but that field lives in
+// the PROMPT pill, so every failure raised while the PREVIEW pill was up was
+// invisible ('#perr2' was never populated). Write to whichever pill is on
+// screen, and clear the other so nothing stale lingers behind it.
+function setErr(msg){
+  var pv=document.getElementById('pPreview');
+  var onPreview = !!(pv && pv.className.indexOf('show')>=0);
+  var here=document.getElementById(onPreview?'perr2':'perr');
+  var other=document.getElementById(onPreview?'perr':'perr2');
+  if(here) here.textContent=msg||'';
+  if(other) other.textContent='';
+}
 window.VerbalTransform=function(d){
   d=d||{}; S.state=d.state;
   if(d.state!=='speaking'){ setRecording(false); }
@@ -418,30 +472,34 @@ window.VerbalTransform=function(d){
     document.getElementById('chars').textContent=(d.chars||0)+' chars selected';
     var i=document.getElementById('pin'); i.value='';
     setRecording(false);
-    document.getElementById('perr').textContent='';
     show('pPrompt');
+    setErr('');
   }
   else if(d.state==='speaking'){ setRecording(true);
-    document.getElementById('perr').textContent='Listening — click the mic again when done.'; }
+    show('pPrompt');
+    setErr('Listening — click the mic again when done.'); }
   else if(d.state==='heard'){
     // Show what we heard and let the user edit it BEFORE transforming — don't
     // auto-run. Go / Enter runs the (possibly edited) instruction.
     show('pPrompt');
     setRecording(false);
     var pin=document.getElementById('pin'); pin.value=d.instruction||'';
-    document.getElementById('perr').textContent='Heard you — edit if needed, then Go (or press Enter).';
+    setErr('Heard you — edit if needed, then Go (or press Enter).');
     try{ pin.focus(); pin.setSelectionRange(pin.value.length, pin.value.length); }catch(e){}
   }
-  else if(d.state==='busy'){ document.getElementById('busyLabel').textContent=d.label||'Working…'; show('pBusy'); }
+  else if(d.state==='busy'){ document.getElementById('busyLabel').textContent=d.label||'Working…';
+    show('pBusy'); setErr(''); }
   else if(d.state==='preview'){
     document.getElementById('pvText').textContent=(d.rewrite||'')+(d.truncated?' …':'');
     show('pPreview');
+    setErr('');
   }
   else if(d.state==='done'){ show('pDone'); }
   else if(d.state==='error'){
+    // fall back to the pill the user came from, then write the message INTO it
     if(S.prev==='preview'){ show('pPreview'); }
     else { show('pPrompt'); }
-    document.getElementById('perr').textContent=d.msg||'Something went wrong.';
+    setErr(d.msg||'Something went wrong.');
   }
   S.prev=d.state;
 };
@@ -482,7 +540,10 @@ def transform_widget_html():
       <div class="row"><div class="wave" id="micWave">{bars}</div><span class="err" id="perr"></span></div>
     </div>
     <div class="pill" id="pBusy">
-      <div class="row"><span class="spin"></span><span class="hint" id="busyLabel">Working…</span></div>
+      <div class="row"><span class="spin"></span><span class="hint" id="busyLabel">Working…</span>
+        <span style="flex:1"></span>
+        <button class="btnS" onclick="api('tf_cancel')">Cancel</button>
+        <button class="x" title="Cancel (Esc)" onclick="api('tf_cancel')">{x}</button></div>
     </div>
     <div class="pill" id="pPreview">
       <div class="row"><span class="eyebrow">PREVIEW</span><span class="hint">replaces your selection</span>

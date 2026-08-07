@@ -79,8 +79,8 @@ export async function syncKeyboardConfig(): Promise<void> {
       // replace) — an opt-in, LLM-driven feature, default OFF to match desktop's posture.
       transformEnabled,
       // Whisper language hint for keyboard dictation. Both natives read this
-      // (IDI-161/162); 'auto' → the natives omit the param. Until IDI-180 adds
-      // a picker, getSpokenLanguage() returns its 'en' default.
+      // (IDI-161/162); 'auto' → the natives omit the param. User-settable via
+      // Settings → Spoken language (IDI-180), default 'en'.
       spokenLanguage,
     });
     await writeConfig(payload);

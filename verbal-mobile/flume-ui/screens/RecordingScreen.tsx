@@ -26,6 +26,13 @@ export const RecordingScreen: React.FC<Props> = ({ onCancel, onComplete }) => {
   // and drives the "Transcribing…" UI state.
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
+  // The mock's hardcoded "9:41" shipped as-is (IDI-180). Real clock, read once on
+  // mount — a recording session is short enough that ticking would only cost a
+  // timer.
+  const [clock] = useState(() => {
+    const d = new Date();
+    return `${d.getHours() % 12 || 12}:${String(d.getMinutes()).padStart(2, '0')}`;
+  });
 
   // Refs so the unmount cleanup sees the CURRENT status/cancel — the old
   // `return () => { stop(); }` captured the first render's closure, where
@@ -94,7 +101,7 @@ export const RecordingScreen: React.FC<Props> = ({ onCancel, onComplete }) => {
       />
 
       <View style={styles.statusBar}>
-        <Text variant="caption" color={colors.textSubtle}>9:41</Text>
+        <Text variant="caption" color={colors.textSubtle}>{clock}</Text>
         <Text variant="caption" color={colors.primary}>● REC</Text>
       </View>
 

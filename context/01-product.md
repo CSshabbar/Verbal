@@ -31,7 +31,8 @@ called out in the Notes column rather than adding a 4th matrix column.
 | Feature | macOS | iOS | Windows | Notes |
 |---|:--:|:--:|:--:|---|
 | Recording + transcription (Groq→Gemini→local) | ✅ | ✅ (Groq only) | ✅ | Fallback chain desktop; mobile = Groq `whisper-large-v3-turbo` |
-| AI cleanup / formatting | ✅ | ✅ | ✅ | Desktop `process_text`; mobile `formatText`. Notes cleanup now wired on both (mobile `formatNotes`/`formatNoteWithTitle`) |
+| AI cleanup / formatting | ✅ | ✅ | ✅ | Desktop `process_text`; mobile `formatText` — both survive Groq's daily 429 via an Ollama Cloud fallback (desktop 4f08d1e; mobile IDI-180). Notes cleanup wired on both (mobile `formatNotes`/`formatNoteWithTitle`) |
+| **Spoken language** (Whisper hint, 'auto' = detect) | ✅ | ✅ | ✅ | Desktop `config['spoken_language']`; mobile Settings picker (IDI-180) writing `flume_spoken_language`, shipped to BOTH native keyboards via the config bridge; drives meeting-notes output language too |
 | Custom dictionary (vocab bias + replacement rules) | ✅ | ✅ | ✅ | Synced, one row/user |
 | **Snippets** (spoken trigger → text expansion) | ✅ | ✅ | ✅ | On the `dictionary` row; longest-first, single-pass. Windows expands in-dictation via `dictionary.apply_snippets` |
 | **Keyboard clipboard history** (quick-paste chip + overlay) | — | ✅ | — | Custom keyboard only (`targets/keyboard/KeyboardViewController.swift` + Android IME `plugins/keyboard/FlumeInputMethodService.kt` — same Expo codebase, this table just doesn't carry a separate Android column). Self-contained in each keyboard target, never synced to the app or cloud; gated by the on/off setting `clipboardHistoryEnabled` (Settings → Keyboard, default ON) |

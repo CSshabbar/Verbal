@@ -766,7 +766,10 @@ class VerbalWinApp:
     def _reset_to_ready(self):
         self._processing = False
         self._is_recording = False
-        self._cancel_flag.clear()
+        # Must NOT clear `_cancel_flag` — `_on_esc_pressed` sets it and then
+        # calls this, which used to wipe the cancel before the transcription
+        # worker's next `is_set()` check and let the text paste anyway. Cleared
+        # at recording start instead (IDI-178; mirrors main.py).
         try:
             self.recorder.cleanup()
         except Exception as e:

@@ -21,7 +21,13 @@ Each feature: **what it does · desktop impl · mobile impl · backend · status
 - **Mobile:** `flume-ui/hooks/useRecorder.ts` — `expo-audio` capture + `lib/groq.ts::transcribeAudio`
   (Groq `whisper-large-v3-turbo` only; no Gemini/local). `stop()` **persists audio first** (so a failed
   transcription is never lost → `status:'failed'`, retryable), transcribes, stashes the full result in a
-  module-level `lastRecording` read once via `consumeLastRecording()`. **Recording modal (IDI-159):**
+  module-level `lastRecording` read once via `consumeLastRecording()`. **IDI-180:** `formatText` (cleanup)
+  now has the desktop-style resilience — Groq primary with a 12s timeout, ONE retry via the proxy's
+  `provider:'ollama'` passthrough on 429/413/5xx/timeout/empty, keep-raw on total failure; Settings →
+  **Spoken language** (10 options incl. Auto-detect) writes `flume_spoken_language`, which drives in-app +
+  both keyboards' Whisper `language` param AND meeting-notes output language ('auto' → "same language as
+  the transcript"); local recordings are swept once per launch (keep 100 / 30 days, never touching audio
+  referenced by history OR note segments — both live in `documentDirectory/recordings/`). **Recording modal (IDI-159):**
   Cancel routes to `cancel()` (discard — no upload, no history entry, silent per the Cancel convention),
   a `busy` latch shows "Transcribing…" + spinner and blocks double-taps (one pipeline run per stop), stop/
   cancel handlers are try/catch'd so a hard failure can never strand the user in the modal
@@ -32,8 +38,9 @@ Each feature: **what it does · desktop impl · mobile impl · backend · status
 - **Backend:** all Groq calls (transcription + cleanup) now route through the **`groq-proxy` Edge Function**
   — the Groq key is server-side only, clients hold none, and the **in-app API-key entry has been removed**
   on macOS/mobile **and Windows** (mobile Settings card + desktop dashboard field + the menu-bar "Groq/Gemini
-  API Key…" items are gone on all three platforms — macOS's `main.py::_manage_groq_keys` is dead code,
-  unattached to any `rumps.MenuItem`; Windows's `win_main.py::_tray_manage_groq`/`_tray_manage_gemini` and
+  API Key…" items are gone on all three platforms — macOS's `main.py::_manage_groq_keys` was dead code,
+  unattached to any `rumps.MenuItem`, and was DELETED in IDI-178;
+  Windows's `win_main.py::_tray_manage_groq`/`_tray_manage_gemini` and
   their tray `MenuItem`s were removed MER-34, 2026-07, closing the one platform that still exposed reachable
   key entry). A user's pre-existing local Groq/Gemini key still works as a silent *fallback* (the read path
   in `transcriber.py`/`ai_cleanup.py` was untouched — only the management UI is gone) — the proxy is always
@@ -520,6 +527,15 @@ deletes real files under `~/.verbal/` and this development machine has a real, i
 - **Overlay** (`overlay.py`/`overlay_html.py`): non-activating pill (Recording → Transcribing → Done),
   bottom-center, `NSScreenSaverWindowLevel`, all-spaces; buttons via the bridge (`overlay_stop`/`_cancel`/
   `_pause`/`_copy`/`_dismiss`). iOS analog = the `Recording` modal screen.
+- **IDI-178 polish (2026-08):** Transform pill — Replace is single-fire (latch + synchronous rewrite
+  consume), errors render on whichever pill is visible, the LLM worker can't strand `_busy` (run-token +
+  try/except), busy state has a visible Cancel. Meeting window — `preStart` flips to live only on a real
+  `{ok:true}` (errors render on the pre-start modal), bridge methods use the lazy `_meeting_win()`
+  accessor, and a new `MeetingManager.processing` state keeps the red-X collapsing to the bar while the
+  summary generates ("Still finishing your meeting notes…" + a done/failed notice if hidden). Auto-learn —
+  Add/close are double-click latched and a pre-empted card still records its offer (anti-nag, Rule #9).
+  Menubar — "Reset Onboarding (dev)" only exists under `VERBAL_DEV`; model checkmark default is the real
+  `"base"`; new "Check for Updates…" item with an explicit "you're up to date" alert.
 - **Popover** (`flume_popover*.py`): macOS menubar `NSPopover` mini-dashboard; attached via a retrying timer.
 - **Hotkey** (`hotkey.py`): `NSEvent` global monitor; default key **54 (Right Cmd)**, ESC cancels. Hold
   mode (down=start/up=stop) vs Toggle mode (debounced tap). Windows uses `pynput` (default `alt_r`).
