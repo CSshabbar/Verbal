@@ -8,7 +8,6 @@ import { colors, radius, pressedStyle } from '../theme';
 
 type Props = {
   onBack: () => void;
-  onUseCode?: () => void;
   /** Called once with the scanned QR payload or a manually-entered code. */
   onScan?: (payload: string) => void;
 };

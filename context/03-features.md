@@ -18,10 +18,12 @@ Each feature: **what it does · desktop impl · mobile impl · backend · status
   silence gate `peak<0.01`. **Fallback chain:** ① Groq `whisper-large-v3-turbo` (each key), ② Gemini
   `gemini-2.0-flash`, ③ local `faster_whisper` (cpu/int8, 16 kHz). `main._transcribe_with_retry` retries
   `failed` ×3 with backoff.
-- **Mobile:** `flume-ui/hooks/useRecorder.ts` — `expo-audio` capture + `lib/groq.ts::transcribeAudio`
-  (Groq `whisper-large-v3-turbo` only; no Gemini/local). `stop()` **persists audio first** (so a failed
-  transcription is never lost → `status:'failed'`, retryable), transcribes, stashes the full result in a
-  module-level `lastRecording` read once via `consumeLastRecording()`. **IDI-180:** `formatText` (cleanup)
+- **Mobile:** `flume-ui/hooks/useRecorder.ts` — `expo-audio` capture; `stop()` **persists audio first**
+  (so a failed transcription is never lost → `status:'failed'`, retryable) then runs the ONE shared
+  pipeline `lib/dictationPipeline.runDictation(uri, {cleanup:true})` (transcribe → AI cleanup → snippets —
+  IDI-179; retry uses the identical call, and `StopResult.raw` carries the pre-cleanup transcript so the
+  note editor's own formatter never double-cleans, Hard Rule #12), stashing the result in a module-level
+  `lastRecording` read once via `consumeLastRecording()`. **IDI-180:** `formatText` (cleanup)
   now has the desktop-style resilience — Groq primary with a 12s timeout, ONE retry via the proxy's
   `provider:'ollama'` passthrough on 429/413/5xx/timeout/empty, keep-raw on total failure; Settings →
   **Spoken language** (10 options incl. Auto-detect) writes `flume_spoken_language`, which drives in-app +
@@ -254,7 +256,8 @@ Each feature: **what it does · desktop impl · mobile impl · backend · status
 - **Deletion (IDI-158, 2026-08):** cross-device deletes are **tombstones**, never hard DELETEs — see
   `04-data-model.md` §notes for the full contract (`deleted_at` column, tombstone-wins merge, scoped
   back-fill, desktop cloud-first delete with `ok:false` on failure, dashboard `delNote` gated on `r.ok`).
-- **Desktop:** `DashboardApi.fetch_notes/save_note/delete_note/toggle_note_pin` — local-first
+- **Desktop:** `DashboardApi.fetch_notes/save_note/delete_note` (`toggle_note_pin`/`pin_text` were
+  orphaned bridge methods, deleted in IDI-179 — `notes.is_pinned` currently has NO desktop writer) — local-first
   (`config['notes']`) merged with Supabase `notes` via `merge_remote_note` (union + conflict-pair, see
   `04-data-model.md`). `note_dictate_start/stop` = in-note dictation (stop persists the recording +
   appends to `audio_segments` when linkage is on); `format_note_with_ai(text)` returns
@@ -293,7 +296,7 @@ Each feature: **what it does · desktop impl · mobile impl · backend · status
   writes). On receive it copies **text OR the image URL** to the clipboard and fires a macOS banner
   (`_notify_native` → `osascript`, fail-closed) — **regardless of the active tab**; the `canvasRemote` JS
   handler now updates the (always-present, hidden) canvas DOM without gating on `active==="canvas"`, so a
-  photo received in the background is there when you open Canvas. `canvas_window.py::CanvasWindow` is legacy.
+  photo received in the background is there when you open Canvas. (The legacy native `canvas_window.py` was DELETED in IDI-179.)
 - **Mobile:** `flume-ui/hooks/useCanvas.ts` — `canvas` table (upsert `on_conflict=user_id`) + `canvas-images`
   bucket + `expo-clipboard` + `expo-image-picker`; realtime channel `canvas_${userId}`. On receive it copies
   text/image-URL to the clipboard and shows a transient **"Received from X — copied to clipboard"** toast
@@ -460,7 +463,7 @@ deletes real files under `~/.verbal/` and this development machine has a real, i
   `meeting_html.py` (ONE morphing WKWebView panel: an ambient glassy **bar** top-center — live dot, title,
   timer, waveform, star/pause/stop, click-to-expand — that fluidly grows into the full window via native
   frame animation; content modes `permissions` 31h / `premeeting` 31b / `live` 31c / `summary` 31e; while
-  recording, losing focus or closing collapses back to the bar. The separate `meeting_hud.py` is superseded).
+  recording, losing focus or closing collapses back to the bar; the separate `meeting_hud.py` was dead code, DELETED in IDI-179).
   Dashboard (31a/31f/31g): Home `MeetingLauncherCard`/`ActiveMeetingCard`, a **dedicated "Meetings"
   sidebar destination** (`scr-meetings`: count header, New-meeting button, active-recording bar, search,
   Today/This-week/Earlier groups, delete, empty state — user preference; it originally shipped as a folder

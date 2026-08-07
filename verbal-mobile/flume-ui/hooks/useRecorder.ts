@@ -1,6 +1,15 @@
 /**
  * useRecorder — audio capture + transcription.
  * Wired to expo-audio (works in Expo Go; expo-av was removed in SDK 55) + Groq.
+ *
+ * The post-capture text work is NOT done here (IDI-179): stop() persists the
+ * audio and then hands the file to `lib/dictationPipeline.runDictation`, the one
+ * shared transcribe → AI-cleanup → snippet-expansion sequence (the same one
+ * historyStore.retryEntry uses, so a retry of the same audio produces the same
+ * text). This hook keeps ownership of everything AROUND that: the audio is
+ * persisted BEFORE transcription so a failure never loses it, the result is
+ * classified 'ok' | 'failed', and the cues/haptics/`lastRecording` bookkeeping
+ * stays local.
  */
 import { useState, useRef, useCallback, useEffect } from 'react';
 import {
@@ -10,8 +19,7 @@ import {
   setAudioModeAsync,
 } from 'expo-audio';
 import * as Haptics from 'expo-haptics';
-import { transcribeAudio } from '../../lib/groq';
-import { getSnippets, applySnippets } from '../../lib/dictionary';
+import { runDictation } from '../../lib/dictationPipeline';
 import * as recordings from '../../lib/recordings';
 import { playCue } from '../../lib/sounds';
 
@@ -20,8 +28,12 @@ export type RecorderStatus = 'idle' | 'recording' | 'paused';
 export type StopResult = {
   uri: string;
   durationMs: number;
-  /** Final transcript (post-processed). Stream interim via `partialText`. */
+  /** Final transcript (post AI-cleanup + snippets). Stream interim via `partialText`. */
   text: string;
+  /** Transcript BEFORE cleanup/snippets. The note editor feeds this to the
+   *  separate note formatter (formatNoteWithTitle) so a dictated note is
+   *  cleaned once, not twice — see NoteEditorScreen / Hard Rule #12. */
+  raw: string;
   /** 'ok' = transcribed; 'failed' = transcription errored (audio still saved). */
   status: 'ok' | 'failed';
 };
@@ -148,31 +160,31 @@ export function useRecorder() {
       const recId = `rec_${Date.now()}`;
       const uri = (await recordings.persist(rawUri, recId)) ?? rawUri;
 
-      // Transcribe. A network/API failure must NOT throw away the audio —
-      // mark it 'failed' so it lands in History with a Retry button.
+      // Run the ONE shared dictation pipeline: transcribe → AI cleanup →
+      // snippet expansion (lib/dictationPipeline). `cleanup: true` — the
+      // feature matrix documents mobile dictation as having AI cleanup, and
+      // formatText is timeout-bounded with an Ollama fallback (IDI-180), so a
+      // slow/failed model keeps the raw transcript instead of blocking. Cleanup
+      // and snippet expansion fail closed INSIDE runDictation; only a failed
+      // transcription rejects, and that must NOT throw away the audio — mark it
+      // 'failed' so it lands in History with a Retry button (which re-runs this
+      // exact pipeline over the saved file).
+      // Auth is handled by the groq-proxy Edge Function (session JWT or anon
+      // key) — no client-side key exists or is required.
       let text = '';
+      let raw = '';
       let txStatus: 'ok' | 'failed' = 'ok';
       let transcribeMs = 0;
       try {
-        // Auth is handled by the groq-proxy Edge Function (session JWT or anon
-        // key) — no client-side key exists or is required.
         const t0 = Date.now();
-        text = await transcribeAudio(uri);
+        const result = await runDictation(uri, { cleanup: true });
+        text = result.text;
+        raw = result.raw;
         transcribeMs = Date.now() - t0;
       } catch (tErr) {
         console.warn('Transcription failed — saved for retry:', tErr);
         txStatus = 'failed';
       }
-
-      // Expand snippet triggers AFTER cleanup, immediately before the transcript
-      // is handed off for insert/append. Fully guarded — snippet expansion must
-      // never break the recording→transcribe→insert path.
-      try {
-        if (txStatus === 'ok' && text) {
-          const snippets = await getSnippets();
-          if (snippets.length) text = applySnippets(text, snippets);
-        }
-      } catch { /* fail closed */ }
 
       // Transcription finished — chime only on a successful transcript.
       if (txStatus === 'ok' && text) void playCue('done');
@@ -185,8 +197,8 @@ export function useRecorder() {
       setStatus('idle');
       setPartialText('');
 
-      lastRecording = { uri, durationMs: total, text, transcribeMs, status: txStatus, recId };
-      return { uri, durationMs: total, text, status: txStatus };
+      lastRecording = { uri, durationMs: total, text, raw, transcribeMs, status: txStatus, recId };
+      return { uri, durationMs: total, text, raw, status: txStatus };
     } catch (err) {
       console.error('Failed to stop recording:', err);
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);

@@ -1219,19 +1219,6 @@ class DashboardApi:
         pyperclip.copy(text or "")
         return _ok()
 
-    def pin_text(self, text, should_pin):
-        cfg = self.app.config = load_config()
-        pinned = list(cfg.get("pinned", []))
-        pinned_texts = [_entry_text(e) for e in pinned]
-        if should_pin and text not in pinned_texts:
-            match = next((e for e in cfg.get("history", []) if _entry_text(e) == text), None)
-            pinned.insert(0, match if isinstance(match, dict) else {"text": text, "app": "", "ts": ""})
-        elif not should_pin:
-            pinned = [e for e in pinned if _entry_text(e) != text]
-        cfg["pinned"] = pinned[:50]
-        save_config(cfg)
-        return self.get_state()
-
     def edit_text(self, old_text, new_text):
         cfg = self.app.config = load_config()
         for key in ("history", "pinned"):
@@ -1780,34 +1767,6 @@ class DashboardApi:
         matched.sort(key=lambda n: n.get("updated_at", "") or "", reverse=True)
         matched.sort(key=rank)
         return _ok(notes=matched, query=query or "")
-
-    def toggle_note_pin(self, note_id):
-        try:
-            import httpx
-            from app.sync import SUPABASE_URL
-            from app.auth import auth_header
-            user_id = self.app.config.get("sync_user_id", "")
-            if not user_id or not self._sync_on():
-                return _err(SYNC_OFF_MSG)
-            notes_resp = httpx.get(
-                f"{SUPABASE_URL}/rest/v1/notes",
-                headers=auth_header(self.app.config),
-                params={"id": f"eq.{note_id}", "select": "is_pinned"},
-                timeout=8,
-            )
-            current = notes_resp.json()[0].get("is_pinned", False) if notes_resp.status_code == 200 and notes_resp.json() else False
-            resp = httpx.patch(
-                f"{SUPABASE_URL}/rest/v1/notes?id=eq.{note_id}",
-                headers=auth_header(self.app.config, json=True),
-                json={"is_pinned": not current},
-                timeout=10,
-            )
-            if resp.status_code not in (200, 204):
-                return _err(f"Pin toggle failed: {resp.status_code}")
-            return self.fetch_notes()
-        except Exception as e:
-            logger.error(f"Pin toggle failed: {e}")
-            return _err(str(e))
 
     def format_note_with_ai(self, text):
         """Explicit Reformat (Decision 2): (re)format `text` in ONE LLM call and

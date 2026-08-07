@@ -1,34 +1,50 @@
-// Shared dictation pipeline (FLUME_KEYBOARD_SWARM.md — Agent D, "Shared Pipeline
-// Adapter"). One interface that wraps the existing transcription + AI-cleanup +
-// dictionary-replacement + snippet-expansion logic, so every front door (the
-// existing in-app recorder, the iOS keyboard-extension → main-app handoff, and
-// any RN-hosted path) runs the exact same pipeline instead of re-implementing it.
+// Shared dictation pipeline — the SINGLE in-app dictation sequence
+// (transcribe → AI-cleanup → dictionary-replacement → snippet-expansion).
 //
-// NOTE (scope, per the spec's iOS/Android split):
-//   • iOS: the keyboard extension cannot run JS. It hands off to the main Flume
-//     app, which calls runDictation() here. This adapter IS that shared entry point.
-//   • Android: a native InputMethodService (Kotlin) cannot call this TS directly —
-//     it must either mirror this sequence natively or host an RN runtime. This
-//     module is the reference contract that mirror must match.
+// WHY THIS IS THE CONTRACT (IDI-179). This module used to have zero callers,
+// which is precisely how iOS drifted (IDI-161): every front door re-implemented
+// the sequence and they disagreed. It now has exactly TWO app callers and they
+// are the only places in the RN app allowed to run this chain:
+//   • flume-ui/hooks/useRecorder.ts   — stop() (first pass)
+//   • flume-ui/hooks/historyStore.ts  — retryEntry() (retry of a failed pass)
+// Both pass `cleanup: true`. Before IDI-179 the first pass skipped `formatText`
+// while retry ran it, so retrying the SAME audio produced different text; the
+// feature matrix has always documented mobile dictation as having AI cleanup.
+// formatText carries its own timeouts + Ollama fallback (IDI-180), so latency is
+// bounded and a failure keeps the raw transcript.
+//
+// NOTE (scope, per the iOS/Android split): neither keyboard can run this TS —
+// an iOS keyboard extension and an Android InputMethodService are separate
+// native sandboxes, and there is **no main-app handoff** (the old claim of one
+// was never true — IDI-161). BOTH natives MIRROR this sequence natively
+// (`targets/keyboard/KeyboardViewController.swift`,
+// `plugins/keyboard/FlumeInputMethodService.kt`): vocab-bias prompt →
+// transcribe via groq-proxy → replacements → snippets, with NO LLM cleanup pass
+// — i.e. they implement the `cleanup: false` shape of this contract. This file
+// is the reference both mirrors must match; change the sequence here and the
+// two natives must be updated in the same change.
 //
 // Fails closed (project Hard Rule #1): any post-transcription step that throws
-// returns the best text obtained so far rather than losing the dictation.
+// returns the best text obtained so far rather than losing the dictation. Only
+// `transcribeAudio` is allowed to reject — the caller decides what a failed
+// transcription means (mobile marks the entry 'failed' and keeps the audio).
 
 import { transcribeAudio, formatText } from './groq';
 import { getSnippets, applySnippets } from './dictionary';
 
 export type DictationOptions = {
-  /** Run the LLM cleanup pass (formatText). Default false — matches the mobile
-   *  recorder, which copies raw and only cleans on retry. */
+  /** Run the LLM cleanup pass (formatText). Default false — the shape the two
+   *  native keyboard mirrors implement. Both IN-APP callers pass `true`. */
   cleanup?: boolean;
   /** Expand snippet triggers into their saved text. Default true. */
   expandSnippets?: boolean;
 };
 
 export type DictationResult = {
-  /** Final text to insert into the field. */
+  /** Final text to insert into the field (post cleanup + snippet expansion). */
   text: string;
-  /** Transcript before snippet expansion / cleanup (for history/debugging). */
+  /** Raw transcript, before cleanup/snippets. Callers use it to tell "the model
+   *  heard nothing" (empty) apart from "cleanup changed the words". */
   raw: string;
 };
 
@@ -48,6 +64,10 @@ export async function runDictation(
   const raw = await transcribeAudio(audioUri);
 
   let text = raw;
+
+  // Nothing was heard — don't spend an LLM call (or a dictionary read) on "".
+  // The caller distinguishes this case via `raw`.
+  if (!text.trim()) return { text, raw };
 
   if (cleanup) {
     try {

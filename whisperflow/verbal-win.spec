@@ -78,7 +78,8 @@ a = Analysis(
         'app.flume_popover_html',
         'app.overlay_html',
         'app.meeting_html',
-        'app.meeting_hud_html',
+        # (app.meeting_hud_html was here — the separate meeting HUD was deleted
+        # in IDI-179; a hiddenimport for a missing module fails the build.)
         'app.autolearn_widget',
         'app.fonts_css',
         # NOTE: app.theme is intentionally NOT listed — it imports AppKit/Foundation

@@ -173,7 +173,7 @@ async function afterSignIn(session: any) {
     // single heartbeat/poll for the newly signed-in account. Awaited so the row
     // exists before we read its sync_enabled back.
     await deviceStore.restart();
-    // This device's own sync_enabled (default true) drives lib/useSync.
+    // This device's own sync_enabled (default true) drives lib/syncStore.
     const { data: mine } = await supabase
       .from('devices').select('sync_enabled')
       .eq('user_id', uid).eq('device_id', deviceId).maybeSingle();

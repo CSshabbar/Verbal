@@ -10,8 +10,6 @@ export { ListRow } from './ListRow';
 export type { ListRowProps } from './ListRow';
 export { IconButton } from './IconButton';
 export type { IconButtonProps } from './IconButton';
-export { MicButton } from './MicButton';
-export type { MicButtonProps } from './MicButton';
 export { Visualizer } from './Visualizer';
 export type { VisualizerProps } from './Visualizer';
 export { PulseRing } from './PulseRing';

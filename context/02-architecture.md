@@ -78,8 +78,8 @@ separate users purely by `user_id` (the Supabase auth id after sign-in). Details
     Overlay uses `window.VerbalOverlay(mode,data)`; the auto-learn widget uses
     `window.VerbalAutolearn(data)` / `VerbalAutolearnHide()`. The meeting window uses
     `window.VerbalMeeting(event, payload)` (`mode`, `state`, `utterance`, `elapsed`, `moment`,
-    `speakers`, `meeting`, `permissions`, `testLevel`); the meeting HUD uses
-    `window.VerbalMeetingHud(event, payload)` (`state`, `elapsed`).
+    `speakers`, `meeting`, `permissions`, `testLevel`). (The separate meeting HUD —
+    `meeting_hud*.py`, `VerbalMeetingHud` — was dead code and was DELETED in IDI-179.)
   - **Shared backend for the JS = `shared_dashboard.py::DashboardApi`** — one class serving both the
     macOS WKWebView controllers and the Windows pywebview dashboard. Popover/overlay/widget
     controllers **duck-type** the dashboard interface so `main.py`/`DashboardApi` treat them uniformly.
@@ -89,7 +89,7 @@ separate users purely by `user_id` (the Supabase auth id after sign-in). Details
     *fakes* `window.pywebview.api` inside WKWebView; on Windows real pywebview provides it natively. So
     `SharedDashboard.show()` now renders the **same** `flume_html()` the Mac uses (the old light-theme
     inline `_html()` is retired), giving Windows visual parity. Same pattern applies to the other Flume
-    surfaces (`overlay_html`, `flume_popover_html`, `meeting_html`, `meeting_hud_html`, `autolearn_widget`).
+    surfaces (`overlay_html`, `flume_popover_html`, `meeting_html`, `autolearn_widget`).
 - **Config:** `~/.verbal/config.json`, written by `config.py::save_config` — **atomic** (`tempfile.mkstemp`
   unique name + `os.replace`) under a module-level `_config_lock`. This is the desktop source of truth
   for user data/settings; cloud syncs on top.
@@ -157,20 +157,23 @@ bounded `config['meetings']` (`MEETINGS_CAP`). The HUD appears when the meeting 
   AsyncStorage). Theme tokens in `flume-ui/theme/` (colors/typography/spacing/shadow/motion).
 - **The `.mock.ts` contract:** every hook `useX.ts` has a sibling `useX.mock.ts` with the *exact same
   exported shape* backed by in-memory state. Mocks are the **design contract**; no runtime file imports
-  them — the real hook is a drop-in replacement. (Memory: "flume-ui is the source of truth; hooks must
-  match the .mock.ts contracts.")
+  them — the real hook is a drop-in replacement. All pairs (incl. the newer `useSyncEnabled`) were
+  verified mutually assignable in the IDI-179 closing pass — keep them in sync with every hook change.
 - **Client:** `lib/supabase.ts` — one `@supabase/supabase-js` client, `flowType:'pkce'`,
   `storage: AsyncStorage`, `detectSessionInUrl:false`.
 - **iOS native project** committed at `ios/` (`Verbal.xcworkspace`, CocoaPods) — a dev-client/prebuilt
   Expo app; **Android native project** committed at `android/` (Gradle, `gradlew`); EAS profiles for both
   in `eas.json`.
 - **Shared dictation pipeline contract:** `lib/dictationPipeline.ts` wraps transcribe → AI-cleanup →
-  dictionary-replacement → snippet-expansion as ONE function so every RN-hosted entry point runs identical
-  logic instead of reimplementing it. Neither keyboard can run this TS (extensions/IMEs are separate native
-  sandboxes) — there is NO main-app handoff (the old claim of one was never true, IDI-161): **both** native
-  keyboards (`KeyboardViewController.swift`, `FlumeInputMethodService.kt`) mirror the sequence natively
-  (vocab-bias prompt → transcribe via groq-proxy → replacements → snippets; no LLM cleanup pass), with
-  this file as the reference contract both mirrors must match.
+  dictionary-replacement → snippet-expansion as ONE function — and since IDI-179 it is actually WIRED:
+  exactly two app callers, `useRecorder.stop()` (first pass) and `historyStore.retryEntry()` (retry), both
+  with `cleanup: true`, so retrying the same audio produces the same text and in-app dictation really has
+  the AI-cleanup pass the feature matrix documents (the first pass used to skip it). Neither keyboard can
+  run this TS (extensions/IMEs are separate native sandboxes) — there is NO main-app handoff (the old
+  claim of one was never true, IDI-161): **both** native keyboards (`KeyboardViewController.swift`,
+  `FlumeInputMethodService.kt`) mirror the sequence natively — the `cleanup: false` shape of the contract
+  (vocab-bias prompt → transcribe via groq-proxy → replacements → snippets, no LLM pass). Change the
+  sequence here and both mirrors must change in the same commit.
 - **Custom keyboards are separate native targets, not RN screens:** the iOS keyboard extension
   (`targets/keyboard/KeyboardViewController.swift`) and Android IME (`plugins/keyboard/
   FlumeInputMethodService.kt`) are full from-scratch keyboards (QWERTY layers, suggestions, dictation,

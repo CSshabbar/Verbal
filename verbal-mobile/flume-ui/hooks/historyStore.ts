@@ -1,7 +1,7 @@
 /**
  * historyStore — shared transcription-history store with real cross-device sync.
  *
- * Ports the working scheme from the original app (lib/useSync + lib/storage):
+ * Ports the working scheme from the original app (the retired lib/useSync + lib/storage):
  *   - local cache is the source of truth; remote rows merge in via mergeRemoteEntries
  *   - a realtime channel (`verbal_history_${userId}`) receives inserts from OTHER
  *     devices (own inserts skipped; respects target_device_id) and refetches on update
@@ -28,8 +28,7 @@ import {
   HistoryEntry,
 } from '../../lib/storage';
 import * as syncStore from '../../lib/syncStore';
-import { transcribeAudio, formatText } from '../../lib/groq';
-import { getSnippets, applySnippets } from '../../lib/dictionary';
+import { runDictation } from '../../lib/dictationPipeline';
 import * as recordings from '../../lib/recordings';
 
 export type HistoryItem = {
@@ -373,22 +372,23 @@ export async function addTranscription(
   return items[0];
 }
 
-/** Retry a failed transcription from its saved audio (local or cloud). */
+/**
+ * Retry a failed transcription from its saved audio (local or cloud).
+ *
+ * Goes through the SAME `lib/dictationPipeline.runDictation` as the first pass
+ * in useRecorder.stop() (IDI-179) — transcribe → AI cleanup → snippet
+ * expansion, all with `cleanup: true`. Before that, retry ran formatText and
+ * the first pass didn't, so the same audio produced different text depending on
+ * which door it came through.
+ */
 export async function retryEntry(id: string): Promise<{ ok: boolean; error?: string }> {
   const entry = (await getHistory()).find(e => e.id === id);
   if (!entry) return { ok: false, error: 'not found' };
   const path = await recordings.ensureLocal(id, entry.audio_uri, entry.audio_url);
   if (!path) return { ok: false, error: 'no audio to retry' };
   try {
-    const raw = await transcribeAudio(path);
+    const { text: formatted, raw } = await runDictation(path, { cleanup: true });
     if (!raw.trim()) return { ok: false, error: 'Still failing — check your connection' };
-    let formatted = raw;
-    try { formatted = await formatText(raw); } catch { /* keep raw */ }
-    // Expand snippet triggers AFTER cleanup, before the transcript is stored.
-    try {
-      const snippets = await getSnippets();
-      if (snippets.length) formatted = applySnippets(formatted, snippets);
-    } catch { /* fail closed */ }
     await updateEntry(id, { text: formatted, status: 'done' });
     if (!id.startsWith('local_')) {
       try {

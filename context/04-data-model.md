@@ -9,7 +9,7 @@
 - **Ref:** `ovpcthjingugwvpxlsna` · **URL:** `https://ovpcthjingugwvpxlsna.supabase.co`
 - One project shared by desktop + mobile. **Anon key hardcoded** in both:
   desktop `whisperflow/app/sync.py` (`SUPABASE_URL`/`SUPABASE_KEY`, reused via `from app.sync import …`
-  by auth/recordings/dictionary/pairing/canvas_window/shared_dashboard); mobile
+  by auth/recordings/dictionary/pairing/shared_dashboard); mobile
   `verbal-mobile/lib/supabase.ts` (`SUPABASE_URL`/`SUPABASE_ANON_KEY`).
 - **Transport:** desktop uses raw `httpx` REST (`/rest/v1`) + a raw Phoenix WebSocket for realtime; mobile
   uses the `@supabase/supabase-js` SDK.
@@ -47,7 +47,8 @@ anon-key curl: select returns `[]`, double-claim rejected, status never exposes 
 **`notes`** — `notes_migration.sql` (base) + `supabase_notes_v2.sql` (self-contained: **creates the table if
 missing** — it was never provisioned in the live DB, so Notes was local-only until 2026-07 — then adds v2 cols).
 `id` **text** PK · `user_id` text · `title` text `''` · `content` text `''` (AI-formatted) · `folder` text `''` ·
-`is_pinned` bool `false` · `device_name` text · `created_at` · `updated_at`. Indexes on `(user_id)` and
+`is_pinned` bool `false` (NB: no desktop writer since IDI-179 deleted the orphaned `toggle_note_pin`) ·
+`device_name` text · `created_at` · `updated_at`. Indexes on `(user_id)` and
 `(user_id, updated_at DESC)`. In the `supabase_realtime` publication.
 **`id` is `text`, not uuid** (migration `fix_notes_id_type_to_text`, applied 2026-07 after a live-schema
 audit found `supabase_notes_v2.sql`'s guarded `ALTER COLUMN id TYPE text` had never actually run against
@@ -364,7 +365,7 @@ Pragmatic, matches code + `GOOGLE_AUTH_SETUP.md`:
     signed in and valid, else the anon key — **fully backward-compatible**, since RLS is still permissive
     either way). `_store_session` now also stores `expires_at`. Applied across every desktop REST call site
     for `meetings`/`notes`/`canvas`/`dictionary`/`devices` (`app/sync.py`, `app/meetings.py`,
-    `app/shared_dashboard.py`, `app/dictionary.py`, `app/canvas_window.py`, `app/dashboard.py`) and to every
+    `app/shared_dashboard.py`, `app/dictionary.py`, `app/dashboard.py`) and to every
     Phoenix Realtime `phx_join` payload (`access_token` field) + WS handshake header
     (`app/flume_web_dashboard.py` too) — Realtime evaluates `postgres_changes` RLS off that field, so this
     was needed for Realtime to ever honor a future `auth.uid()` policy. Storage calls (`recordings.py`,

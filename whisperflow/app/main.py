@@ -32,8 +32,8 @@ from app.sounds import play_start, play_stop, play_done, play_added
 from app.dashboard import DashboardWindow           # legacy AppKit dashboard (fallback)
 from app.flume_web_dashboard import FlumeWebDashboard
 from app.flume_popover import FlumePopover
-# NB: app/canvas_window.py is legacy (IDI-179) — the canvas lives in the
-# dashboard's tab 4 now. It is no longer imported or constructed here.
+# NB: there is no native canvas window — app/canvas_window.py was deleted in
+# IDI-179. The canvas lives in the dashboard's tab 4.
 
 ensure_dirs()  # ensure ~/.verbal/logs/ exists before FileHandler is created
 
@@ -125,9 +125,11 @@ class VerbalApp(rumps.App):
         # Meetings (MEETINGS_DESIGN_HANDOFF.md) — manager + lazy window. Fails
         # closed: if construction fails, meetings are simply unavailable and
         # dictation is untouched (Rule #1).
+        # NB: there is no separate floating meeting HUD — meeting_hud.py was
+        # deleted in IDI-179 (superseded by meeting_window.py's morphing
+        # bar ⇄ expanded panel, and unreferenced since).
         self.meetings = None
         self.meeting_window = None
-        self.meeting_hud = None
         try:
             from app.meetings import MeetingManager
             self.meetings = MeetingManager(self)
@@ -805,17 +807,6 @@ class VerbalApp(rumps.App):
             threading.Thread(target=bg, daemon=True).start()
         except Exception:
             pass
-
-    def _meeting_hud(self):
-        """Lazy meeting HUD; fails closed to None."""
-        if getattr(self, "meeting_hud", None) is None:
-            try:
-                from app.meeting_hud import MeetingHud
-                self.meeting_hud = MeetingHud(self)
-            except Exception as e:
-                logging.getLogger("verbal").warning("meeting HUD unavailable (%s)", e)
-                self.meeting_hud = None
-        return self.meeting_hud
 
     def _toggle_meeting(self, _=None):
         """Menubar 'Start Meeting' — opens the permission checklist when setup

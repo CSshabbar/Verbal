@@ -13,8 +13,8 @@ animation (NSAnimationContext):
               titlebar, so drag/resize/traffic-lights are native. Closing while
               recording COLLAPSES to the bar instead of closing (delegate).
 
-While recording, losing key focus auto-collapses to the bar (the old separate
-meeting_hud.py is superseded by this). Python → JS: window.VerbalMeeting; the
+While recording, losing key focus auto-collapses to the bar (this superseded the
+old separate meeting HUD, deleted in IDI-179). Python → JS: window.VerbalMeeting; the
 extra 'layout' event ('bar'|'expanded') drives the CSS morph.
 
 Rules honored: all AppKit on the main thread via app._on_main (Rule #4);

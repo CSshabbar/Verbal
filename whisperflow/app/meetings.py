@@ -1344,17 +1344,6 @@ class MeetingSession:
                 win.emit(event, payload)
         except Exception:
             pass
-        try:  # mirror ticker/state to the floating HUD when it's up (31d)
-            hud = getattr(self.app, "meeting_hud", None)
-            if hud and hud.visible and event in ("elapsed", "state"):
-                if event == "state":
-                    hud.push("state", {"state": self.state, "title": self.title})
-                    if self.state in ("ready", "failed"):
-                        hud.hide()
-                else:
-                    hud.push(event, payload)
-        except Exception:
-            pass
 
     def _emit_state(self):
         self._emit("state", {

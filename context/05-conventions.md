@@ -323,7 +323,7 @@
     `.venv/bin/python -m pip install …`** (this bit the SCK wrapper install; the venv also carries a stale
     `lib/python3.14` tree). New deps for meetings: `pyobjc-framework-ScreenCaptureKit` +
     `pyobjc-framework-CoreMedia` (pinned 12.1; add to PyInstaller hiddenimports when bundling).
-    The meeting window/HUD use dedicated JS namespaces (`VerbalMeeting`, `VerbalMeetingHud`) — never emit
+    The meeting window uses a dedicated JS namespace (`VerbalMeeting`; the HUD's `VerbalMeetingHud` died with `meeting_hud.py`, IDI-179) — never emit
     meeting events through `VerbalNative`. Meeting summary generation follows the Notes cost rule: ONE
     structured LLM call per meeting (strict-JSON contract, 24k-char transcript budget, 2 attempts, 45 s),
     regenerate only on explicit Retry; a failed summary sets row status `failed` but keeps the transcript.
@@ -691,13 +691,7 @@ Single source: desktop `app/theme.py` + `app/fonts_css.py`; mobile `flume-ui/the
 **Desktop (`whisperflow/app/`):**
 - `dashboard.py` (`DashboardWindow`, ~3178 lines) — legacy AppKit dashboard, only a fallback if
   `FlumeWebDashboard` fails to construct. Superseded by the WKWebView Flume dashboard.
-- `meeting_hud.py` + `meeting_hud_html.py` — the original separate floating meeting HUD; **superseded** by
-  the morphing bar layout of `meeting_window.py` (one panel: bar ⇄ expanded). Not wired anymore.
 - `history_window.py` — legacy standalone AppKit history window; not referenced.
-- `canvas_window.py` (`CanvasWindow`) — since IDI-178 no longer imported or constructed by `main.py`
-  (fully unreferenced by the app; `idi172_174_fixtures.py` still imports it directly); module deletion is
-  IDI-179's call. Previously: instantiated but menu routed to the web dashboard tab; effectively
-  unused.
 - `transcriber._transcribe_local` has an unreachable duplicate VAD `_run()` block after its `return`.
 - `flume_dashboard_html.py` is **dual-target**: loaded into a WKWebView by `FlumeWebDashboard` on macOS
   and into a pywebview window by `SharedDashboard.show()` on Windows (its docstring is accurate again).
@@ -729,16 +723,37 @@ Single source: desktop `app/theme.py` + `app/fonts_css.py`; mobile `flume-ui/the
 
 **Mobile (`verbal-mobile/`):**
 - `_old-flume/` (~27 files) — explicitly legacy.
-- top-level `screens/` (empty) and `components/` (only `DeviceSelector.tsx`, imports legacy `lib/theme.ts`)
-  — dead; live UI is under `flume-ui/`.
-- `lib/useSync.ts` (superseded by `historyStore.ts`), `lib/useDeviceSelector.ts` (superseded by
-  `flume-ui/hooks/useDevices.ts`), `lib/MarkdownText.tsx`, `lib/theme.ts` — not imported by live code.
 - **Deleted outright (2026-08, flow-audit batch):** mobile `lib/remoteConfig.ts` + `getGroqKey`/`setGroqKey`
   (IDI-160 — see Hard Rule #15) and desktop `pairing.py::claim_pairing` (IDI-156 — desktop only ever HOSTS
   pairing; the claiming side is mobile `lib/pairing.ts::claimPairing`). Older docs may still reference them.
-  **Do not revive `lib/MarkdownText.tsx`** (it depends on stale `lib/theme.ts`); the live notes markdown/
-  checklist renderer is `flume-ui/components/MarkdownNote.tsx` (Notes v2), styled off `flume-ui/theme/`.
-- all `flume-ui/hooks/*.mock.ts` — contract references, never imported at runtime.
+- **Deleted in the IDI-179 closing pass (2026-08)** — each verified to zero live references first. Older
+  docs may still name them; they are gone, do not revive them:
+  - mobile `lib/useSync.ts` (superseded by `flume-ui/hooks/historyStore.ts`), `lib/useDeviceSelector.ts` +
+    the top-level `components/DeviceSelector.tsx` (superseded by `flume-ui/hooks/useDevices.ts`), the now-
+    empty top-level `components/` and `screens/` dirs (all live UI is under `flume-ui/`).
+  - mobile `lib/MarkdownText.tsx` and `lib/theme.ts` — the legacy renderer + its stale token file. The live
+    notes markdown/checklist renderer is `flume-ui/components/MarkdownNote.tsx` (Notes v2), styled off
+    `flume-ui/theme/`.
+  - mobile `flume-ui/components/MicButton.tsx` (+ its `components/index.ts` barrel export) — no screen ever
+    imported it; the tab-bar mic is drawn by the navigator.
+  - the orphaned `onUseCode` prop on `flume-ui/screens/PairDeviceScreen.tsx` (declared, never passed, never
+    destructured — the "Enter code instead" flip is internal state).
+  - desktop `app/meeting_hud.py` + `app/meeting_hud_html.py` (the original separate floating meeting HUD,
+    superseded by `meeting_window.py`'s morphing bar ⇄ expanded panel) together with `main.py`'s
+    `_meeting_hud()` accessor / `self.meeting_hud` slot and the `MeetingSession._emit` mirror-emit block in
+    `meetings.py` — the HUD had zero call sites, so nothing ever constructed it.
+  - desktop `app/canvas_window.py` (`CanvasWindow`) — unreferenced by the app since IDI-178; the canvas is
+    the web dashboard's tab 4. `idi172_174_fixtures.py` was its only remaining importer and its §9 gate test
+    is now an absence assertion (the "a clear is an explicit empty write, never falsy-dropped" rule is still
+    asserted on the two LIVE listeners).
+  - desktop `DashboardApi.pin_text` / `DashboardApi.toggle_note_pin` (`shared_dashboard.py`) — zero JS
+    callers in either rendered HTML file. NB `clear_history` is **wired** (IDI-172) — keep it; and
+    `search_notes` is **NOT dead** — `notes_fixtures.py` asserts its ranking (11 checks) and
+    `flume_dashboard_html.py`'s client-side `filteredNotes()` is documented as mirroring it.
+- all `flume-ui/hooks/*.mock.ts` — contract references, never imported at runtime. As of IDI-179 every
+  `useX.mock.ts` is a verified drop-in for its `useX.ts` (same exported names, params and return fields,
+  proven by mutual type-assignability), including the new `useSyncEnabled.mock.ts`. Keep them in sync in the
+  same change as the real hook — a drifted mock is worse than none, since it IS the design contract.
 - `dist/` — stale web export.
 - `flume-ui/components/ConfirmDialog.tsx` **is live** (imported directly by `useAuth`, `SettingsScreen`,
   `RootNavigator`) but intentionally **not** in the `components/index.ts` barrel.

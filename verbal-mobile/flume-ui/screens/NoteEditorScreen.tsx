@@ -193,7 +193,13 @@ export const NoteEditorScreen: React.FC<Props> = ({ noteId, onBack }) => {
 
     setBusy(true);
     try {
-      const saved = await saveDictation(target.id, { rawText: result.text, recordingUri: result.uri });
+      // Feed the RAW transcript to the note formatter, not the dictation-cleaned
+      // text (IDI-179): useRecorder now runs the AI cleanup pass, and notes have
+      // their OWN formatter (formatNoteWithTitle). Passing `text` here would
+      // clean the same words twice — a second LLM call per dictated note, which
+      // Hard Rule #12 exists to prevent — and would put cleaned text in
+      // `raw_content`, which "Show original" renders.
+      const saved = await saveDictation(target.id, { rawText: result.raw, recordingUri: result.uri });
       if (saved) {
         setNote(saved);
         setTitle(saved.title);

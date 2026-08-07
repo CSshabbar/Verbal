@@ -397,11 +397,17 @@ capp.config["sync_device_name"] = "Test Mac"
 
 
 print("\n9. canvas listeners apply an empty-content clear")
+# NB (IDI-179): this section used to also assert that the NATIVE canvas window
+# (app/canvas_window.py::CanvasWindow.applyRemoteText_) stopped falsy-dropping an
+# incoming clear. That module was unreferenced by the app since IDI-178 and has
+# been DELETED — this fixture file was its only importer. The rule it guarded
+# (a clear is an explicit empty write and receivers must APPLY it, never
+# falsy-drop it) is still enforced below on the two live listeners.
 import inspect                                        # noqa: E402
-from app import canvas_window                         # noqa: E402
-src = inspect.getsource(canvas_window.CanvasWindow.applyRemoteText_)
-check("native canvas window no longer falsy-drops an incoming clear",
-      "text is not None" in src and "and text:" not in src, src.strip()[:120])
+import os                                             # noqa: E402
+check("the deleted native canvas window is really gone (no live importer left)",
+      not os.path.exists(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                      "app", "canvas_window.py")))
 from app import flume_web_dashboard as fwd            # noqa: E402
 lsrc = inspect.getsource(fwd.FlumeWebDashboard._canvas_listen_once)
 check("mac dashboard listener filters by device_id (canvas_is_own_event)",
