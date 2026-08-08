@@ -107,6 +107,7 @@ export const SnippetsScreen: React.FC<Props> = ({ onBack }) => {
         <EmptyState hasSnippets={snippets.length > 0} onNew={openNew} />
       ) : (
         <ScrollView
+          style={{ flex: 1 }}
           showsVerticalScrollIndicator={false}
           contentContainerStyle={{ paddingTop: 14, paddingBottom: insets.bottom + 110, gap: 10 }}
         >
@@ -170,6 +171,7 @@ export const SnippetsScreen: React.FC<Props> = ({ onBack }) => {
               </View>
 
               <ScrollView
+                style={{ flexShrink: 1 }}
                 keyboardShouldPersistTaps="handled"
                 showsVerticalScrollIndicator={false}
                 contentContainerStyle={{ gap: 18, paddingTop: 6 }}

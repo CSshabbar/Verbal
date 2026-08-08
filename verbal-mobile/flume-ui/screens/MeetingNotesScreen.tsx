@@ -268,6 +268,7 @@ export const MeetingNotesScreen: React.FC<Props> = ({ meetingId, onBack, onOpenP
         />
       ) : (
         <ScrollView
+          style={{ flex: 1 }}
           contentContainerStyle={{ paddingBottom: insets.bottom + 90 }}
           showsVerticalScrollIndicator={false}
         >

@@ -205,6 +205,7 @@ export const NotesListScreen: React.FC<Props> = ({ onOpen, onCreate, onOpenMeeti
       ) : null}
 
       <ScrollView
+        style={{ flex: 1 }}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
         contentContainerStyle={{ paddingBottom: insets.bottom + 90 }}

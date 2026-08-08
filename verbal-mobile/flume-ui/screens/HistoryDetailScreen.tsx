@@ -53,7 +53,7 @@ export const HistoryDetailScreen: React.FC<Props> = ({
       {item.hasAudio && <PlaybackBar onPlay={onPlay} />}
 
       <Card padding={14} style={{ flex: 1, marginTop: 14 }}>
-        <ScrollView>
+        <ScrollView style={{ flex: 1 }}>
           <Text variant="bodySm" color={failed ? colors.textMuted : colors.textPrimary}>
             {failed
               ? 'Transcription failed. Your audio is saved — retry when you are back online.'

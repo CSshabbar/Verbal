@@ -229,6 +229,7 @@ export const SettingsScreen: React.FC<Props> = ({ onOpenDevices, onOpenSnippets 
       <Text variant="bodyXs" color={colors.textMuted}>Keys & preferences</Text>
 
       <ScrollView
+        style={{ flex: 1 }}
         showsVerticalScrollIndicator={false}
         contentContainerStyle={{ paddingTop: 20, paddingBottom: insets.bottom + 28, gap: 26 }}
       >

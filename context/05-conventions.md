@@ -602,7 +602,11 @@
     thunk)` helper (takes a THUNK so the second click never even creates the call). Mobile's equivalent
     token is `flume-ui/theme/press.ts` (`PRESSED_OPACITY = 0.85`, `pressedStyle`) — all five shared
     components and every screen Pressable consume it; invisible backdrop scrims/tap-swallowers are the
-    only exempt Pressables (commented in place).
+    only exempt Pressables (commented in place). **Every vertical ScrollView must be flex-bounded**
+    (`style={{flex:1}}`, or `flexShrink:1` inside a `maxHeight` sheet): an unbounded ScrollView with
+    header siblings sizes to its content and gets clipped by the screen — it *looks* scrollable (overscroll
+    glow/"resistance") but the bottom is unreachable. Bit SettingsScreen the moment it grew past one
+    viewport (2026-08); all 11 screen ScrollViews were bounded in the same fix.
 
 28. **The B4/B5 sync architecture (flow-audit waves 1-3, 2026-08) — the rules that keep it coherent:**
     - **One sync flag.** `lib/syncStore.ts` (`verbal_sync_enabled`) is the only source; Menu/Settings/

@@ -51,7 +51,7 @@ export const HomeScreen: React.FC<Props> = ({ onOpenMenu }) => {
         </Pressable>
       </View>
 
-      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: insets.bottom + 24 }}>
+      <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: insets.bottom + 24 }}>
         {/* Device target pills */}
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 7, paddingRight: 16 }} style={{ marginBottom: 20, flexGrow: 0 }}>
           <Pill label="All" active={!target} onPress={() => setTarget(null)} />

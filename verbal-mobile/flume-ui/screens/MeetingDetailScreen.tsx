@@ -99,7 +99,7 @@ export const MeetingDetailScreen: React.FC<Props> = ({ meetingId, onBack, onOpen
         </View>
       </View>
 
-      <ScrollView contentContainerStyle={{ paddingBottom: insets.bottom + 90, gap: 12 }}
+      <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingBottom: insets.bottom + 90, gap: 12 }}
         showsVerticalScrollIndicator={false}>
         {/* meta */}
         <View style={styles.metaRow}>

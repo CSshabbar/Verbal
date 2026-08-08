@@ -55,6 +55,7 @@ export const MenuScreen: React.FC<Props> = ({
       </View>
 
       <ScrollView
+        style={{ flex: 1 }}
         showsVerticalScrollIndicator={false}
         contentContainerStyle={{ paddingTop: 16, paddingBottom: insets.bottom + 28, gap: 24 }}
       >

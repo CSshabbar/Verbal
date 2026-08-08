@@ -89,6 +89,7 @@ export const DevicesScreen: React.FC<Props> = ({ onBack, onAddDevice }) => {
       </Text>
 
       <ScrollView
+        style={{ flex: 1 }}
         contentContainerStyle={{ gap: 8 }}
         showsVerticalScrollIndicator={false}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.textMuted} />}

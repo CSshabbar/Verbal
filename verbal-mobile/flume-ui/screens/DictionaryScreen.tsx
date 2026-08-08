@@ -69,6 +69,7 @@ export const DictionaryScreen: React.FC<Props> = ({ onBack }) => {
       </View>
 
       <ScrollView
+        style={{ flex: 1 }}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
         contentContainerStyle={{ paddingTop: 16, paddingBottom: insets.bottom + 28, gap: 20 }}
