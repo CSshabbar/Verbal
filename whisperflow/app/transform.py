@@ -240,3 +240,326 @@ def undo_in_target():
     except Exception as e:
         logger.debug("undo synth failed: %s", e)
         return False
+
+
+# ── Windows platform shim ────────────────────────────────────────────────
+# On Windows the Mac Quartz/AppKit selection-capture and undo synth paths
+# above can't run. Override `capture_selection` and `undo_in_target` with
+# SendInput-based equivalents (Ctrl+C to copy the selection out via
+# pyperclip's clipboard, Ctrl+Z to undo the Replace paste). Same fail-
+# closed contract: any error returns None / False and the user's clipboard
+# is always restored.
+import sys as _sys
+if _sys.platform == "win32":  # pragma: no cover — platform gate
+    def _win_send_ctrl_key(vk):
+        """Fire a clean Ctrl+<vk> even if the user is still holding the
+        transform chord (Ctrl+Shift+T) when the callback runs.
+
+        pynput fires the callback on key-DOWN, so by the time we
+        synthesize the copy the user is typically still physically
+        pressing Ctrl+Shift+T. If we send Ctrl+C now the target app
+        sees `Ctrl+Shift+T+C` — not the copy command. We must
+        force-release every key that would interfere (Shift, Alt, the
+        Transform key T, and Ctrl itself so we can re-press it cleanly),
+        send Ctrl+<vk>, then put back whatever the user was holding so
+        the OS's key-state model doesn't drift.
+
+        vk is the virtual-key code (e.g. 0x43=C, 0x5A=Z)."""
+        import ctypes
+        import ctypes.wintypes as wt
+
+        INPUT_KEYBOARD    = 1
+        KEYEVENTF_KEYUP   = 0x0002
+        VK_CONTROL        = 0x11
+        VK_LCONTROL       = 0xA2
+        VK_RCONTROL       = 0xA3
+        VK_SHIFT          = 0x10
+        VK_LSHIFT         = 0xA0
+        VK_RSHIFT         = 0xA1
+        VK_MENU           = 0x12
+        VK_LMENU          = 0xA4
+        VK_RMENU          = 0xA5
+        ULONG_PTR = ctypes.c_size_t
+        user32 = ctypes.windll.user32
+
+        class _KI(ctypes.Structure):
+            _fields_ = [("wVk", wt.WORD), ("wScan", wt.WORD),
+                        ("dwFlags", wt.DWORD), ("time", wt.DWORD),
+                        ("dwExtraInfo", ULONG_PTR)]
+
+        # MOUSEINPUT must be present even though we never use it: the
+        # INPUT union is sized to its LARGEST member, and Windows
+        # validates the `cbSize` we pass to SendInput against the real
+        # x64 layout (40 bytes = 4 type + 4 pad + 32 MOUSEINPUT). With
+        # only KEYBDINPUT declared, ctypes computes 32 and every call
+        # fails with ERROR_INVALID_PARAMETER (87), silently injecting
+        # nothing.
+        class _MI(ctypes.Structure):
+            _fields_ = [("dx", wt.LONG), ("dy", wt.LONG),
+                        ("mouseData", wt.DWORD), ("dwFlags", wt.DWORD),
+                        ("time", wt.DWORD), ("dwExtraInfo", ULONG_PTR)]
+
+        class _HI(ctypes.Structure):
+            _fields_ = [("uMsg", wt.DWORD), ("wParamL", wt.WORD),
+                        ("wParamH", wt.WORD)]
+
+        class _U(ctypes.Union):
+            _fields_ = [("ki", _KI), ("mi", _MI), ("hi", _HI)]
+
+        class _I(ctypes.Structure):
+            _anonymous_ = ("u",)
+            _fields_ = [("type", wt.DWORD), ("u", _U)]
+
+        def evt(vk_code, up=False):
+            i = _I()
+            i.type = INPUT_KEYBOARD
+            i.ki = _KI(wVk=vk_code, wScan=0,
+                       dwFlags=(KEYEVENTF_KEYUP if up else 0),
+                       time=0, dwExtraInfo=0)
+            return i
+
+        def held(vkey):
+            return bool(user32.GetAsyncKeyState(vkey) & 0x8000)
+
+        # Snapshot every side-key we may need to release/restore. Left/
+        # right variants are distinct: we release exactly what's down.
+        holds = {
+            VK_LSHIFT:  held(VK_LSHIFT),
+            VK_RSHIFT:  held(VK_RSHIFT),
+            VK_LMENU:   held(VK_LMENU),
+            VK_RMENU:   held(VK_RMENU),
+            VK_LCONTROL: held(VK_LCONTROL),
+            VK_RCONTROL: held(VK_RCONTROL),
+        }
+        # Also release the Transform trigger key itself if it's down —
+        # otherwise the target sees Ctrl+<vk>+<T> and may not interpret
+        # it as copy. Skip if the caller-passed `vk` IS the trigger key,
+        # since we're about to press it below anyway.
+        trigger_vks = [0x54]  # 'T' (default transform_hotkey_char)
+        for tk_ in trigger_vks:
+            if tk_ != vk and held(tk_):
+                holds[tk_] = True
+
+        def send(inputs):
+            arr = (_I * len(inputs))(*inputs)
+            return user32.SendInput(len(inputs), arr, ctypes.sizeof(_I))
+
+        # Phase 1 — release every held key that could interfere.
+        release_seq = [evt(k, up=True) for k, down in holds.items() if down]
+        if release_seq:
+            send(release_seq)
+            # A single frame delay so the target's message loop
+            # processes the releases before we press Ctrl+<vk>.
+            time.sleep(0.03)
+
+        # Phase 2 — a completely clean Ctrl+<vk>. Even if the user is
+        # still physically holding Ctrl, we synthesize a fresh Ctrl press
+        # so the target sees an unambiguous chord. The return value is the
+        # number of events Windows accepted: 0 means the injection was
+        # BLOCKED (UIPI — the foreground app is elevated and we are not).
+        sent = send([evt(VK_CONTROL, up=False),
+                     evt(vk, up=False),
+                     evt(vk, up=True),
+                     evt(VK_CONTROL, up=True)])
+        time.sleep(0.03)
+
+        # Phase 3 — restore whatever the user was actually holding so
+        # their key-state model stays coherent (else GetAsyncKeyState
+        # would report Ctrl-up when the user hasn't physically released).
+        restore_seq = [evt(k, up=False) for k, down in holds.items() if down]
+        if restore_seq:
+            send(restore_seq)
+        return sent
+
+    def _win_wait_modifiers_up(timeout=3.0):
+        """Wait until Ctrl, Shift and Alt are ALL physically released.
+
+        The Transform chord fires its callback on key-DOWN, so the user is
+        still holding Ctrl+Shift when capture starts. Synthesizing Ctrl+C
+        at that moment is unreliable no matter what we inject: Windows
+        auto-repeat on the physically-held Shift re-asserts "Shift down"
+        right after any injected Shift-up, so the target keeps seeing
+        Ctrl+Shift+C. Injected events can't outrace physical auto-repeat —
+        the only correct move is to WAIT for the real release (which
+        happens naturally within a few hundred ms of the user pressing
+        the chord), then send a clean Ctrl+C with nothing held."""
+        import ctypes
+        VK_CONTROL = 0x11
+        VK_SHIFT   = 0x10
+        VK_MENU    = 0x12  # Alt
+        u = ctypes.windll.user32
+        deadline = time.time() + timeout
+        # Require a couple of consecutive all-up samples so a mid-release
+        # bounce doesn't fool us.
+        clear_streak = 0
+        while time.time() < deadline:
+            ctrl = u.GetAsyncKeyState(VK_CONTROL) & 0x8000
+            shift = u.GetAsyncKeyState(VK_SHIFT) & 0x8000
+            alt = u.GetAsyncKeyState(VK_MENU) & 0x8000
+            if not ctrl and not shift and not alt:
+                clear_streak += 1
+                if clear_streak >= 2:
+                    return True
+            else:
+                clear_streak = 0
+            time.sleep(0.015)
+        return False
+
+    def _win_read_clipboard_text():
+        """Read CF_UNICODETEXT directly from the Win32 clipboard.
+
+        Avoids pyperclip here: pyperclip opens/closes the clipboard on
+        every call and can race the target app that is mid-write from our
+        synthesized Ctrl+C.
+
+        NOTE on ctypes: GetClipboardData and GlobalLock return HANDLE /
+        LPVOID. Without an explicit `restype` ctypes assumes `c_int` and
+        TRUNCATES the value to 32 bits on x64 — the resulting bogus
+        pointer raises an access violation inside wstring_at. Declaring
+        the signatures is mandatory, not cosmetic."""
+        import ctypes
+        import ctypes.wintypes as wt
+        CF_UNICODETEXT = 13
+        u = ctypes.windll.user32
+        k = ctypes.windll.kernel32
+
+        u.GetClipboardData.restype = ctypes.c_void_p
+        u.GetClipboardData.argtypes = [wt.UINT]
+        k.GlobalLock.restype = ctypes.c_void_p
+        k.GlobalLock.argtypes = [ctypes.c_void_p]
+        k.GlobalUnlock.argtypes = [ctypes.c_void_p]
+        k.GlobalSize.restype = ctypes.c_size_t
+        k.GlobalSize.argtypes = [ctypes.c_void_p]
+
+        # The clipboard is a shared, singly-owned resource — another app
+        # may hold it briefly. Retry a few times rather than failing.
+        for _ in range(10):
+            if u.OpenClipboard(0):
+                try:
+                    if not u.IsClipboardFormatAvailable(CF_UNICODETEXT):
+                        return None
+                    h = u.GetClipboardData(CF_UNICODETEXT)
+                    if not h:
+                        return None
+                    p = k.GlobalLock(h)
+                    if not p:
+                        return None
+                    try:
+                        # Bound the read by the real allocation size so a
+                        # block without a NUL terminator can't over-read.
+                        nbytes = k.GlobalSize(h)
+                        max_chars = max(0, int(nbytes // 2) - 1) if nbytes else 0
+                        if not max_chars:
+                            return None
+                        return ctypes.wstring_at(p, max_chars).rstrip("\x00")
+                    finally:
+                        k.GlobalUnlock(h)
+                finally:
+                    u.CloseClipboard()
+            time.sleep(0.01)
+        return None
+
+    def _win_foreground_desc():
+        """(hwnd, title, exe) of the foreground window — for logging so we
+        can tell WHERE our Ctrl+C is being delivered."""
+        import ctypes
+        import ctypes.wintypes as wt
+        import os
+        u = ctypes.windll.user32
+        k = ctypes.windll.kernel32
+        try:
+            hwnd = u.GetForegroundWindow()
+            n = u.GetWindowTextLengthW(hwnd) + 1
+            b = ctypes.create_unicode_buffer(n)
+            u.GetWindowTextW(hwnd, b, n)
+            pid = wt.DWORD()
+            u.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+            exe = ""
+            h = k.OpenProcess(0x1000, False, int(pid.value))
+            if h:
+                try:
+                    size = wt.DWORD(1024)
+                    eb = ctypes.create_unicode_buffer(size.value)
+                    if k.QueryFullProcessImageNameW(h, 0, eb, ctypes.byref(size)):
+                        exe = os.path.basename(eb.value)
+                finally:
+                    k.CloseHandle(h)
+            return hwnd, b.value, exe
+        except Exception:
+            return 0, "", ""
+
+    def _win_capture_selection():
+        """Read the current selection: wait for the chord to clear →
+        snapshot clipboard → Ctrl+C → wait for the clipboard SEQUENCE
+        NUMBER to change → read → restore the original clipboard.
+
+        Uses GetClipboardSequenceNumber rather than comparing text: it is
+        the authoritative "someone wrote to the clipboard" signal and
+        doesn't false-negative when the copied text happens to equal what
+        was already there."""
+        import ctypes
+        import pyperclip
+        u = ctypes.windll.user32
+
+        released = _win_wait_modifiers_up(timeout=3.0)
+        hwnd, title, exe = _win_foreground_desc()
+        logger.info("transform capture: modifiers released=%s target=%r (%s)",
+                    released, title[:60], exe)
+
+        try:
+            saved = pyperclip.paste()
+        except Exception:
+            saved = None
+
+        seq_before = u.GetClipboardSequenceNumber()
+        try:
+            sent = _win_send_ctrl_key(0x43)   # 'C'
+            if sent is not None and sent == 0:
+                logger.warning(
+                    "transform capture: SendInput was BLOCKED (0 events). "
+                    "The target app is likely running elevated while Verbal "
+                    "is not — Windows UIPI forbids input injection into "
+                    "higher-integrity windows. Run Verbal as administrator "
+                    "to transform text in that app.")
+                return None
+
+            got = None
+            # Poll the sequence number for up to ~1.2s — Electron apps
+            # (Cursor/VS Code/Slack) can take 300-600ms to service Ctrl+C.
+            for _ in range(48):
+                time.sleep(0.025)
+                if u.GetClipboardSequenceNumber() != seq_before:
+                    got = _win_read_clipboard_text()
+                    break
+
+            if got is None:
+                logger.info("transform capture: clipboard never changed "
+                            "(target ignored Ctrl+C or nothing selected)")
+                return None
+            logger.info("transform capture: got=%d chars", len(got))
+            if not got.strip():
+                return None
+            return got
+        except Exception as e:
+            logger.debug("win capture_selection failed closed: %s", e)
+            return None
+        finally:
+            try:
+                if saved is not None:
+                    pyperclip.copy(saved)
+            except Exception:
+                pass
+
+    def _win_undo_in_target():
+        """One-step undo after Replace: fire Ctrl+Z in the target app."""
+        try:
+            _win_send_ctrl_key(0x5A)   # 'Z'
+            return True
+        except Exception as e:
+            logger.debug("win undo synth failed: %s", e)
+            return False
+
+    # Overwrite the Mac symbols with the Windows equivalents so all callers
+    # (transform_widget / win_transform_widget) work unchanged.
+    capture_selection = _win_capture_selection    # noqa: F811
+    undo_in_target    = _win_undo_in_target       # noqa: F811

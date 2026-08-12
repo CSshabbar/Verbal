@@ -7,6 +7,17 @@ import time
 import threading
 import traceback
 
+# WebView2's GPU compositor rasterizes to a DirectX surface that bypasses
+# the WS_EX_LAYERED / SetLayeredWindowAttributes(LWA_COLORKEY) pathway we
+# use to give the overlay/HUD/autolearn pills a floating-sticker look
+# (WebView2 doesn't do real per-pixel alpha on Windows). Force the CPU
+# compositor before pywebview boots WebView2 so the chroma-key pixels
+# actually reach Windows for it to mask out.
+os.environ.setdefault(
+    "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
+    "--disable-gpu --disable-features=UseGpuMemoryBufferVideoFrames",
+)
+
 # Fix for PyInstaller "console=False" builds where sys.stderr/stdout are None
 if sys.stderr is None:
     sys.stderr = open(os.devnull, 'w')  # type: ignore[assignment]
@@ -67,6 +78,16 @@ def _play_sound(name: str):
 class VerbalWinApp:
     def __init__(self):
         self.config = load_config()
+        # Config defaults ship with the Mac glyph in `hotkey_label`
+        # ("Right ⌘"). On Windows that Command symbol is meaningless —
+        # migrate it once to a Windows-appropriate label so the Settings
+        # UI doesn't display a Mac icon on a Windows box.
+        if self.config.get("hotkey_label", "").strip() in ("Right ⌘", "⌘", ""):
+            self.config["hotkey_label"] = "Right Alt"
+            try:
+                save_config(self.config)
+            except Exception:
+                pass
         self.recorder = Recorder()
         self._is_recording = False
         self._mode = self.config.get("recording_mode", MODE_TOGGLE)
@@ -84,10 +105,31 @@ class VerbalWinApp:
         self._menu_model_items = {}
 
         from app.win_overlay import WinOverlay
+        from app.win_popover import WinPopover
+        from app.win_autolearn_widget import WinAutoLearnWidget
         from app.shared_dashboard import SharedDashboard
 
-        self.overlay = WinOverlay()
+        self.overlay = WinOverlay(self)
         self.dashboard = SharedDashboard(self)
+        self.popover = WinPopover(self)
+        self.autolearn_widget = WinAutoLearnWidget(self)
+        self._edit_watcher = None
+
+        # MER-41: Transform Mode B (selection). Lazy — the pill is only
+        # built when the Ctrl+Shift+T hotkey fires the first time.
+        self.transform_widget = None
+
+        # W6: MeetingManager wiring. Same shape as Mac main.py:122–127 —
+        # fail-closed to None so `record → transcribe → inject` continues
+        # unaffected if meetings can't spin up.
+        self.meetings = None
+        self.meeting_window = None
+        self.meeting_hud = None
+        try:
+            from app.meetings import MeetingManager
+            self.meetings = MeetingManager(self)
+        except Exception as e:
+            logger.error("MeetingManager init failed: %s", e)
 
         history = self.config.get("history", [])
         self._total_transcriptions = len(history)
@@ -145,7 +187,15 @@ class VerbalWinApp:
             *[pystray.MenuItem(m, self._tray_change_model, checked=lambda item, mn=m: self.config.get("whisper_model", "base") == mn) for m in ["tiny", "base", "small", "medium"]]
         )
 
+        # default=True routes the tray icon's LEFT-click to this item's
+        # callback instead of opening the right-click menu. It's still shown
+        # at the top of the menu so users can also invoke it via right-click.
+        self._menu_open_popover = pystray.MenuItem(
+            "Open Flume", self._tray_open_popover, default=True,
+        )
+
         self._menu_items = pystray.Menu(
+            self._menu_open_popover,
             self._menu_status,
             self._menu_record,
             pystray.Menu.SEPARATOR,
@@ -168,12 +218,10 @@ class VerbalWinApp:
 
     def start(self):
         logger.info(f"=== VERBAL v{APP_VERSION} STARTING (Windows) ===")
-        self.overlay.setup()
         self._start_hotkey()
         threading.Thread(target=self._check_update, daemon=True).start()
 
         import pystray
-        from PIL import Image, ImageDraw
 
         icon_image = self._create_icon_image(False)
         self._tray_icon = pystray.Icon(
@@ -181,7 +229,68 @@ class VerbalWinApp:
             f"Verbal v{APP_VERSION}",
             menu=self._build_tray_menu(),
         )
-        self._tray_icon.run()
+
+        # W3: pywebview must own the process main thread (its guard is a
+        # thread-name check — webview/__init__.py:168 rejects any thread
+        # not named "MainThread"). So the tray runs on a background thread
+        # and pywebview blocks on main. The recording overlay is now
+        # tkinter (real transparency; WebView2 can't do per-pixel alpha),
+        # so it owns its own tk mainloop on another thread — that means
+        # we need a hidden pywebview anchor window here to keep the
+        # webview loop alive until a real user-visible window (dashboard,
+        # popover, meeting) is created.
+        tray_thread = threading.Thread(
+            target=self._tray_icon.run, name="tray", daemon=True)
+        tray_thread.start()
+
+        # Tkinter overlay on its own thread.
+        self.overlay.setup()
+        # Autolearn confirm pill is also tkinter-hosted now (real
+        # transparency, no WebView2 canvas). Start its mainloop up-front
+        # so show() has a live tk.Tk to talk to.
+        try:
+            self.autolearn_widget.setup()
+        except Exception as e:
+            logger.debug(f"autolearn_widget.setup failed: {e}")
+
+        # Hidden pywebview anchor so webview.start() has at least one
+        # window (its hard requirement) and the loop keeps running for
+        # later create_window() calls from the tray callbacks.
+        try:
+            import webview
+            self._webview_anchor = webview.create_window(
+                "VerbalAnchor", html="<html><body></body></html>",
+                width=1, height=1, x=-32000, y=-32000,
+                frameless=True, on_top=False, hidden=True,
+            )
+        except Exception as e:
+            logger.error(f"webview anchor create failed: {e}", exc_info=True)
+            self._webview_anchor = None
+
+        # Auto-open the dashboard shortly after the webview loop is running
+        # so Verbal shows up as a normal taskbar app (not just tray-only).
+        # Users can close/minimize it like any Windows app; the tray icon
+        # stays so it can be re-opened later. Skipped if the user has
+        # explicitly opted out via config.
+        def _open_dashboard_on_start():
+            try:
+                if self.config.get("open_dashboard_on_launch", True):
+                    self.dashboard.show()
+            except Exception as e:
+                logger.debug(f"auto-open dashboard failed: {e}")
+
+        try:
+            import webview
+            webview._verbal_started = True
+            # pywebview runs `func` on a background thread once the GUI loop
+            # is up — perfect place to trigger the first create_window() so
+            # the taskbar entry appears at launch.
+            webview.start(func=_open_dashboard_on_start, debug=False)
+        except Exception as e:
+            logger.error(f"webview.start failed on main thread: {e}", exc_info=True)
+            # Fail-closed: if the GUI loop can't run, keep the tray alive so
+            # dictation still works. Block until the tray exits.
+            tray_thread.join()
 
     def _create_icon_image(self, recording: bool):
         from PIL import Image, ImageDraw
@@ -214,6 +323,17 @@ class VerbalWinApp:
     # ── Tray menu callbacks ─────────────────────────────────────────────
     def _tray_toggle_record(self, icon=None, item=None):
         self._toggle_recording()
+
+    def _tray_open_popover(self, icon=None, item=None):
+        """Left-click default: open the compact Flume popover.
+
+        Marked as pystray's default menu item so a left-click on the tray icon
+        invokes this instead of showing the right-click menu. Right-click still
+        shows the full menu."""
+        try:
+            self.popover.toggle()
+        except Exception as e:
+            logger.error(f"popover toggle failed: {e}", exc_info=True)
 
     def _tray_open_dashboard(self, icon=None, item=None):
         self.dashboard.show()
@@ -431,92 +551,36 @@ class VerbalWinApp:
         except Exception as e:
             logger.debug(f"dashboard refresh after sign-out skipped: {e}")
 
-    # ── Hotkey (pynput) ──────────────────────────────────────────────────
-    def _parse_key(self, key_name):
-        from pynput import keyboard
-        if not key_name: return None
-        try:
-            if hasattr(keyboard.Key, str(key_name).replace("Key.", "")):
-                return getattr(keyboard.Key, str(key_name).replace("Key.", ""))
-            return keyboard.KeyCode.from_char(key_name)
-        except Exception:
-            return None
-
-    def _keys_match(self, pressed_key, target_key):
-        """Check if pressed key matches target, treating alt_r/alt_gr as equivalent on Windows."""
-        if pressed_key == target_key:
-            return True
-        from pynput import keyboard
-        # On Windows, right Alt can emit either alt_r or alt_gr depending on keyboard layout
-        alt_keys = {keyboard.Key.alt_r, keyboard.Key.alt_gr}
-        if pressed_key in alt_keys and target_key in alt_keys:
-            return True
-        return False
-
+    # ── Hotkey ─────────────────────────────────────────────────────────
     def _start_hotkey(self):
-        from pynput import keyboard
-        self._parsed_hold_key = self._parse_key(self.config.get("hotkey_hold", "alt_r"))
-        self._parsed_toggle_key = self._parse_key(self.config.get("hotkey_toggle", "alt_r"))
+        """MER-41: replace the inline pynput.Listener with WinHotkeyListener
+        so `hotkey_listener.set_transform(...)` (used by
+        shared_dashboard.set_transform_hotkey) has a real seat, and the
+        Transform chord (Ctrl+Shift+T) is detected without touching the
+        dictation path."""
+        from app.win_hotkey import WinHotkeyListener
 
-        self._hotkey_listener = keyboard.Listener(
-            on_press=self._on_key_press,
-            on_release=self._on_key_release,
+        # `MODE_TOGGLE` matches the value the pill uses; WinHotkeyListener
+        # takes the exact same strings the Mac HotkeyListener does.
+        self.hotkey_listener = WinHotkeyListener(
+            on_start=self._on_record_start,
+            on_stop=self._on_record_stop,
+            on_toggle=self._toggle_recording,
+            on_esc=self._on_esc_pressed,
+            hold_key=self.config.get("hotkey_hold", "alt_r"),
+            toggle_key=self.config.get("hotkey_toggle", "alt_r"),
+            mode=self._mode,
+            on_transform=self._on_transform_hotkey,
+            transform_key=self.config.get("transform_hotkey_label", "T"),
         )
-        self._hotkey_listener.daemon = True
-        self._hotkey_listener.start()
-        logger.info(f"Hotkey listener started (Hold={self.config.get('hotkey_hold')}, Toggle={self.config.get('hotkey_toggle')})")
+        self.hotkey_listener.start()
+        # Keep the legacy private name in sync so other call sites that
+        # still reference `_hotkey_listener` don't break.
+        self._hotkey_listener = self.hotkey_listener
 
         # Start periodic cleanup timer
         self._cleanup_timer = None
         self._start_cleanup_timer()
-
-    def _on_key_press(self, key):
-        try:
-            from pynput import keyboard
-
-            hold_key = self._parsed_hold_key
-            toggle_key = self._parsed_toggle_key
-
-            # Case 1: Same key for both
-            if hold_key == toggle_key and self._keys_match(key, hold_key):
-                if self._mode == MODE_HOLD:
-                    if not self._is_recording:
-                        self._on_record_start()
-                else: # MODE_TOGGLE
-                    now = time.time()
-                    if now - self._last_toggle_time > 0.3:
-                        self._last_toggle_time = now
-                        self._toggle_recording()
-                return
-
-            # Case 2: Different keys
-            if self._keys_match(key, hold_key):
-                if not self._is_recording:
-                    self._on_record_start()
-
-            if self._keys_match(key, toggle_key):
-                now = time.time()
-                if now - self._last_toggle_time > 0.3:
-                    self._last_toggle_time = now
-                    self._toggle_recording()
-
-            if key == keyboard.Key.esc:
-                self._on_esc_pressed()
-        except Exception as e:
-            logger.error(f"Key press error: {e}", exc_info=True)
-
-    def _on_key_release(self, key):
-        try:
-            # Only handle release if we are in Hold mode or if it's explicitly the hold key
-            if self._keys_match(key, self._parsed_hold_key):
-                if self._parsed_hold_key == self._parsed_toggle_key:
-                    if self._mode == MODE_HOLD and self._is_recording:
-                        self._on_record_stop()
-                else:
-                    if self._is_recording:
-                        self._on_record_stop()
-        except Exception:
-            pass
 
     def _start_cleanup_timer(self):
         """Start a periodic cleanup timer to prevent resource accumulation"""
@@ -546,11 +610,191 @@ class VerbalWinApp:
 
     def _update_hotkeys(self):
         try:
-            if hasattr(self, "_hotkey_listener") and self._hotkey_listener:
-                self._hotkey_listener.stop()
+            if getattr(self, "hotkey_listener", None) is not None:
+                self.hotkey_listener.stop()
             self._start_hotkey()
         except Exception as e:
             logger.error(f"Failed to update hotkeys: {e}")
+
+    def capture_next_key(self, timeout=20.0, allow_modifiers=True):
+        """MER-41: Windows equivalent of main.py::capture_next_key. Blocks
+        until the user presses a single key (or times out) and returns
+        {'keycode': <pynput-key-name>, 'label': <display>, 'modifier': bool}.
+        Used by shared_dashboard's Transform / dictation hotkey picker.
+
+        The running WinHotkeyListener is suspended while we capture so the
+        current dictation key doesn't fire the recorder while the user is
+        just picking a replacement."""
+        import threading as _t
+        try:
+            from pynput import keyboard
+        except Exception as e:
+            logger.error("capture_next_key: pynput import failed: %s", e)
+            return None
+
+        result = {}
+        done = _t.Event()
+        self._capturing_key = True
+
+        # Suspend the running listener so its dictation-key handlers don't
+        # fire during capture.
+        running = getattr(self, "hotkey_listener", None)
+        was_running = running is not None
+        if was_running:
+            try:
+                running.stop()
+            except Exception:
+                pass
+
+        def key_name(key):
+            """Best-effort persistable name that _parse_key round-trips."""
+            try:
+                if hasattr(key, "name") and key.name:
+                    return key.name              # e.g. 'alt_r', 'space'
+                ch = getattr(key, "char", None)
+                if ch:
+                    return ch
+            except Exception:
+                pass
+            return None
+
+        def display_label(key, name):
+            """Short human label for the settings pill."""
+            if name is None:
+                return "?"
+            if len(name) == 1:
+                return name.upper()
+            return name.replace("_", " ").title()
+
+        modifier_keys = {
+            keyboard.Key.shift, keyboard.Key.shift_l, keyboard.Key.shift_r,
+            keyboard.Key.ctrl, keyboard.Key.ctrl_l, keyboard.Key.ctrl_r,
+            keyboard.Key.alt, keyboard.Key.alt_l, keyboard.Key.alt_r,
+            keyboard.Key.cmd, keyboard.Key.cmd_l, keyboard.Key.cmd_r,
+        }
+        # alt_gr exists on Windows layouts.
+        for opt in ("alt_gr",):
+            k = getattr(keyboard.Key, opt, None)
+            if k is not None:
+                modifier_keys.add(k)
+
+        def on_press(key):
+            try:
+                if key == keyboard.Key.esc:
+                    done.set()
+                    return False
+                is_mod = key in modifier_keys
+                if is_mod and not allow_modifiers:
+                    return                       # keep listening
+                name = key_name(key)
+                if not name:
+                    return
+                result.update(keycode=name,
+                              label=display_label(key, name),
+                              modifier=is_mod)
+                done.set()
+                return False
+            except Exception:
+                done.set()
+                return False
+
+        listener = keyboard.Listener(on_press=on_press)
+        listener.daemon = True
+        listener.start()
+        logger.info("capture_next_key armed (timeout %.0fs, allow_modifiers=%s)",
+                    timeout, allow_modifiers)
+        done.wait(timeout)
+        try:
+            listener.stop()
+        except Exception:
+            pass
+
+        # Restart the normal hotkey listener so dictation resumes.
+        if was_running:
+            try:
+                self._start_hotkey()
+            except Exception as e:
+                logger.error("capture_next_key: hotkey restart failed: %s", e)
+
+        # Small grace so the captured keypress can't double-fire the new binding.
+        _t.Timer(0.4,
+                 lambda: setattr(self, "_capturing_key", False)).start()
+
+        logger.info("capture_next_key result: %s", result or "none")
+        return result if result.get("keycode") is not None else None
+
+    def _on_transform_hotkey(self):
+        """MER-41 Mode B — Ctrl+Shift+T on Windows. Captures the current
+        selection off-thread (clipboard swap), then shows the Transform
+        pill. Never enters the dictation core, always fails closed to a
+        silent no-op."""
+        try:
+            if not self.config.get("transform_enabled"):
+                # Silent no-op is confusing — flash a brief hint on the
+                # overlay so the user knows the hotkey was received but
+                # Transform is off in Settings.
+                logger.info("Transform hotkey fired but transform_enabled=False")
+                try:
+                    self.overlay.show_briefly(
+                        "Turn on Transform in Settings first", duration=2.0)
+                except Exception:
+                    pass
+                return
+            if not self.config.get("transform_selection_enabled", True):
+                logger.info("Transform hotkey fired but selection mode disabled")
+                try:
+                    self.overlay.show_briefly(
+                        "Selection Transform is off in Settings", duration=2.0)
+                except Exception:
+                    pass
+                return
+            if self._is_recording:
+                return
+            widget = self.transform_widget
+            if widget is not None and widget.visible:
+                self._on_main(widget.hide)
+                return
+            # One capture at a time — overlapping captures each clear the
+            # clipboard while another is polling it, so they destroy each
+            # other's results (the "inconsistent" first-try failures).
+            if getattr(self, "_tf_capture_inflight", False):
+                return
+            self._tf_capture_inflight = True
+
+            def bg():
+                try:
+                    from app import transform as _tf
+                    sel = _tf.capture_selection()
+                    if not sel:
+                        # No text selected — silent no-op is confusing; hint
+                        # so the user knows what's needed.
+                        logger.info("Transform: capture_selection returned empty (nothing selected?)")
+                        try:
+                            self.overlay.show_briefly(
+                                "Select text first, then press Ctrl+Shift+T",
+                                duration=2.0)
+                        except Exception:
+                            pass
+                        return
+                    logger.info("Transform: captured %d chars, opening pill", len(sel))
+                    def ui():
+                        try:
+                            if self.transform_widget is None:
+                                from app.win_transform_widget import (
+                                    WinTransformWidget)
+                                self.transform_widget = WinTransformWidget(self)
+                            self.transform_widget.show(sel)
+                        except Exception as e:
+                            logger.error(f"transform pill failed: {e}", exc_info=True)
+                    self._on_main(ui)
+                except Exception as e:
+                    logger.error(f"transform capture failed: {e}", exc_info=True)
+                finally:
+                    self._tf_capture_inflight = False
+            threading.Thread(target=bg, daemon=True).start()
+        except Exception as e:
+            self._tf_capture_inflight = False
+            logger.debug(f"_on_transform_hotkey failed closed: {e}")
 
     # ── Recording pipeline ────────────────────────────────────────────────
     def _toggle_recording(self):
@@ -570,10 +814,25 @@ class VerbalWinApp:
         if self._processing:
             return
         try:
-            from app.win_injector import save_focused_app
+            from app.win_injector import save_focused_app, get_focused_app_pid
             save_focused_app()
         except Exception:
             pass
+        # Kick off the UIA harvest off-thread if file-tagging is on. Runs
+        # WHILE the user speaks so seen-files memory is populated by the
+        # time we build the Whisper prompt. Fail-closed: any exception here
+        # must not block the recorder.
+        try:
+            if self.config.get("filetag_enabled", False):
+                from app import win_ax
+                from app.win_injector import get_focused_app_bundle, get_focused_app_name
+                if win_ax.supported_ide(
+                        get_focused_app_bundle(), get_focused_app_name()):
+                    pid = get_focused_app_pid()
+                    if pid:
+                        win_ax.harvest_async(pid, self.config, save_config)
+        except Exception as e:
+            logger.debug(f"filetag harvest kickoff skipped: {e}")
         self._cancel_flag.clear()
         try:
             self.recorder.start()
@@ -717,7 +976,32 @@ class VerbalWinApp:
                 self._refresh_dashboards()
                 return
 
-            result = process_text(text, self.config)
+            # MER-41 Transform Mode A (inline): a trailing "…so Flume,
+            # <instruction>" transforms the dictated body instead of
+            # formatting it. Fully guarded — any miss/failure falls through
+            # to the normal process_text path so a Transform hiccup never
+            # blocks record → transcribe → inject.
+            result = None
+            transform_note = None
+            try:
+                if (self.config.get("transform_enabled")
+                        and self.config.get("transform_inline_enabled", True)):
+                    from app import transform as _tf
+                    det = _tf.detect_trailing_instruction(
+                        text, self.config.get("transform_trigger_words"))
+                    if det:
+                        body, instruction = det
+                        rewritten = _tf.apply_instruction(body, instruction, self.config)
+                        if rewritten:
+                            result = rewritten
+                            transform_note = instruction
+                            logger.info(
+                                "transform inline applied: %r", instruction[:60])
+            except Exception as e:
+                logger.debug(f"transform inline skipped: {e}")
+
+            if result is None:
+                result = process_text(text, self.config)
             if self._cancel_flag.is_set():
                 return
 
@@ -753,8 +1037,43 @@ class VerbalWinApp:
                 return
 
             from app.win_injector import inject_text
-            success = inject_text(result)
+            success = inject_text(
+                result,
+                allow_mentions=self.config.get("filetag_enabled", False),
+            )
             _play_sound("done")
+
+            # Show the split (TRANSFORM_SWARM.md P1.3): surface what was
+            # read as the instruction so a wrong split is catchable and
+            # retryable. Only fires on the inline-transform path.
+            if transform_note:
+                note = (transform_note if len(transform_note) <= 44
+                        else transform_note[:41] + "…")
+                try:
+                    self.overlay.show_briefly("✦ Transformed · " + note, 2.5)
+                except Exception:
+                    pass
+
+            # W7: arm the UIA edit-watcher AFTER injection so a user
+            # correction to the just-pasted text triggers the autolearn
+            # confirm pill. Guarded end-to-end — if UIA can't read the
+            # target field, or the classification decides against offering,
+            # the watcher silently drops the event. Never blocks the
+            # pipeline (watch runs on its own daemon thread).
+            try:
+                if success and self.config.get("autolearn_enabled", True):
+                    from app.win_editwatch import EditWatcher
+                    from app.win_injector import (
+                        get_focused_app_pid, get_focused_app_bundle)
+                    self._edit_watcher = EditWatcher()
+                    self._edit_watcher.arm(
+                        pid=get_focused_app_pid(),
+                        bundle=get_focused_app_bundle(),
+                        inserted_text=result,
+                        on_decision_callback=self._on_autolearn_decision,
+                    )
+            except Exception as e:
+                logger.debug(f"autolearn arm failed: {e}")
 
             # Push to other devices if sync is enabled
             if self._sync:
@@ -786,6 +1105,108 @@ class VerbalWinApp:
             self._reset_to_ready()
         finally:
             self._processing = False
+
+    # ── Meetings (W6) ────────────────────────────────────────────────────
+    def _meeting_win(self):
+        """Lazy meeting window; fails closed to None (mirrors main.py::_meeting_win)."""
+        if self.meeting_window is None:
+            try:
+                from app.win_meeting_window import WinMeetingWindow
+                self.meeting_window = WinMeetingWindow(self)
+            except Exception as e:
+                logger.warning("meeting window unavailable (%s)", e)
+        return self.meeting_window
+
+    def _meeting_hud(self):
+        """Lazy meeting HUD; fails closed to None."""
+        if self.meeting_hud is None:
+            try:
+                from app.win_meeting_hud import WinMeetingHud
+                self.meeting_hud = WinMeetingHud(self)
+            except Exception as e:
+                logger.warning("meeting HUD unavailable (%s)", e)
+                self.meeting_hud = None
+        return self.meeting_hud
+
+    def _toggle_meeting(self, _=None):
+        """Open the meeting checklist or pre-meeting modal (parity with
+        main.py::_toggle_meeting). Called by DashboardApi.open_meeting_launcher."""
+        try:
+            if not self.meetings:
+                return
+            if self.meetings.active:
+                win = self._meeting_win()
+                if win:
+                    self._on_main(lambda: win.show("live"))
+                return
+
+            def bg():
+                try:
+                    from app import permissions
+                    ready = bool(permissions.meeting_permissions().get("ready"))
+                except Exception:
+                    ready = False
+                skipped = bool(self.config.get("meetings_skipped_system_audio"))
+                logger.info("meeting open: ready=%s skipped=%s", ready, skipped)
+                if not ready and skipped:
+                    ready = True
+
+                def ui():
+                    try:
+                        win = self._meeting_win()
+                        if win:
+                            win.show("premeeting" if ready else "permissions")
+                    except Exception as e:
+                        logger.error("meeting show failed: %s", e)
+                self._on_main(ui)
+            threading.Thread(target=bg, daemon=True).start()
+        except Exception as e:
+            logger.error("start meeting failed: %s", e)
+
+    # ── Autolearn (W7) ────────────────────────────────────────────────────
+    def _on_autolearn_decision(self, decision):
+        """Callback from EditWatcher — decision has already passed classify()
+        + apply_observation_guard(). Show the confirm pill only when the
+        Decision asks us to offer."""
+        try:
+            if not decision:
+                return
+            # The Decision dict shape is set by autolearn.classify; the Mac
+            # side reads `action` == "offer" and pulls old/new. Anything else
+            # (ignore/reject) is silently dropped.
+            if decision.get("action") != "offer":
+                return
+            old = decision.get("old")
+            new = decision.get("new")
+            if not old or not new or old == new:
+                return
+            self._on_main(lambda: self.autolearn_widget.show(old, new))
+        except Exception as e:
+            logger.debug(f"autolearn decision handler failed: {e}")
+
+    def _autolearn_result(self, old, new, added):
+        """Widget callback — user clicked Add or dismissed. Record either
+        way so we never nag again (autolearn F9); on Add, persist the
+        dictionary rule and refresh dashboards."""
+        try:
+            from app import autolearn, dictionary
+            cfg = self.config
+            autolearn.record_offered(cfg, new, save_config)
+            if added:
+                dictionary.add_replacement(cfg, old, new, save_config, auto=True)
+                self.config = cfg
+                _play_sound("added") if False else _play_sound("done")
+                # Refresh dashboards / popover so the new rule appears live.
+                try:
+                    self.dashboard.update_recording_state(self._is_recording)
+                except Exception:
+                    pass
+                try:
+                    self.popover._refresh()
+                except Exception:
+                    pass
+        except Exception as e:
+            logger.debug(f"autolearn result failed: {e}")
 
     def _reset_to_ready(self):
         self._processing = False
@@ -880,9 +1301,47 @@ class VerbalWinApp:
             logger.error(f"Update failed: {e}")
 
 
+def _acquire_single_instance_mutex():
+    """Prevent a second Verbal from running — the second instance stacks
+    every window (tray icons, overlay pills) and steals the hotkey.
+
+    Uses a Windows named mutex; the handle stays alive for the whole
+    process lifetime (stashed on the sys module) so Windows releases it
+    on exit. Returns True if we acquired the singleton, False if another
+    Verbal is already running.
+
+    NOTE: Must call kernel32.GetLastError() directly — `ctypes.get_last_error`
+    only returns non-zero when the DLL was loaded with `use_last_error=True`,
+    which `ctypes.windll.kernel32` is not."""
+    import ctypes
+    from ctypes import wintypes
+    ERROR_ALREADY_EXISTS = 183
+    kernel32 = ctypes.windll.kernel32
+    kernel32.CreateMutexW.restype = wintypes.HANDLE
+    kernel32.CreateMutexW.argtypes = [
+        ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR]
+    kernel32.GetLastError.restype = wintypes.DWORD
+    kernel32.GetLastError.argtypes = []
+    handle = kernel32.CreateMutexW(None, False, "VerbalSingletonMutex_v1")
+    if not handle:
+        return True  # can't tell; let it run — mutex failure isn't fatal
+    # CreateMutexW succeeds either way when the name pre-exists; the "already
+    # running" signal is only in the LAST-ERROR field, so we MUST read it
+    # BEFORE any other Win32 call has a chance to overwrite it.
+    err = kernel32.GetLastError()
+    if err == ERROR_ALREADY_EXISTS:
+        kernel32.CloseHandle(handle)
+        return False
+    sys._verbal_singleton_mutex = handle
+    return True
+
+
 def main():
     import time
     sys._verbal_start_time = time.time()
+    if not _acquire_single_instance_mutex():
+        logger.info("Another Verbal instance is already running — exiting")
+        return
     app = VerbalWinApp()
     app.start()
 

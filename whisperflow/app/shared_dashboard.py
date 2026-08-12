@@ -199,11 +199,53 @@ class SharedDashboard:
             min_size=(760, 520),
             background_color="#0e1012",
         )
+        # Windows: inject a CSS override that anchors `.screen` sections to
+        # viewport height. WKWebView on macOS resolves the shared HTML's
+        # `.main { height: 100% }` against an implicit viewport-height
+        # ancestor; WebView2 doesn't, so `.main` collapses to content and
+        # overflow-y:auto has nothing to scroll (History/Notes escape this
+        # because .threepane already sets height:100vh explicitly). Keep the
+        # shared HTML untouched — this fix is host-side only.
+        try:
+            self._window.events.loaded += self._inject_scroll_fix
+        except Exception as e:
+            logger.debug("scroll-fix hook attach failed: %s", e)
         threading.Thread(target=self._device_refresh_loop, daemon=True).start()
         if not self._canvas_listener_started:
             self._canvas_listener_started = True
             threading.Thread(target=self._canvas_listen_loop, daemon=True).start()
-        webview.start(debug=False)
+        # W3 (Windows): the recording overlay owns the pywebview event loop and
+        # already called webview.start() from win_overlay.setup(). pywebview
+        # only supports one start() per process, so if that flag is set the
+        # newly-created window is already live on the running loop and we
+        # must not start() again. On macOS this path isn't reached (Mac uses
+        # flume_web_dashboard, not SharedDashboard) so the flag stays False.
+        if not getattr(webview, "_verbal_started", False):
+            webview._verbal_started = True
+            webview.start(debug=False)
+
+    def _inject_scroll_fix(self):
+        """WebView2 needs `.screen` to have an explicit height for `.main`'s
+        overflow-y:auto to work. Injected once per window load. Idempotent —
+        re-running just replaces the style element with the same content."""
+        css = (
+            "html,body{height:100vh;overflow:hidden}"
+            "section.screen{height:100vh;overflow:hidden}"
+            "section.screen>.main{height:100%;overflow-y:auto;overflow-x:hidden}"
+        )
+        js = (
+            "(function(){"
+            "var id='__verbal_scroll_fix';"
+            "var el=document.getElementById(id);"
+            "if(!el){el=document.createElement('style');el.id=id;document.head.appendChild(el);}"
+            "el.textContent=" + repr(css) + ";"
+            "})();"
+        )
+        try:
+            if self._window:
+                self._window.evaluate_js(js)
+        except Exception as e:
+            logger.debug("scroll-fix injection failed: %s", e)
 
     def update_recording_state(self, is_recording: bool):
         self._emit("recordingState", {"recording": is_recording})
@@ -669,6 +711,12 @@ class DashboardApi:
         """Hotkey picker: capture the next keypress (modifiers allowed — Right ⌘
         is the classic) and bind it as BOTH hold and toggle key."""
         try:
+            if not hasattr(self.app, "capture_next_key"):
+                # Windows: platform doesn't expose the hotkey-picker path yet.
+                # Better to return a clean unsupported message than let the
+                # user see a raw AttributeError from Settings.
+                return {"ok": False,
+                        "error": "Changing the dictation hotkey isn't supported yet on this platform."}
             got = self.app.capture_next_key(allow_modifiers=True)
             if not got:
                 return {"ok": False, "cancelled": True}
@@ -679,7 +727,9 @@ class DashboardApi:
             self.app.config["hotkey_toggle"] = kc
             self.app.config["hotkey_label"] = label
             save_config(self.app.config)
-            self.app.hotkey_listener.update_keys(kc, kc)
+            listener = getattr(self.app, "hotkey_listener", None)
+            if listener is not None and hasattr(listener, "update_keys"):
+                listener.update_keys(kc, kc)
             return _ok(keycode=kc, label=label)
         except Exception as e:
             return {"ok": False, "error": str(e)}
@@ -687,6 +737,14 @@ class DashboardApi:
     def set_transform_hotkey(self):
         """Hotkey picker for Transform: ⌘⇧ + the captured (non-modifier) key."""
         try:
+            # MER-41 stopgap: on Windows, `capture_next_key` and the
+            # `hotkey_listener.set_transform(...)` seat don't exist yet.
+            # Return a clean unsupported result instead of an AttributeError
+            # bubbling up from a Settings toggle. The real port replaces both
+            # branches once WinHotkeyListener lands.
+            if not hasattr(self.app, "capture_next_key"):
+                return {"ok": False,
+                        "error": "Setting the Transform hotkey isn't supported yet on this platform."}
             got = self.app.capture_next_key(allow_modifiers=False)
             if not got:
                 return {"ok": False, "cancelled": True}
@@ -697,7 +755,9 @@ class DashboardApi:
             self.app.config["transform_hotkey"] = kc
             self.app.config["transform_hotkey_label"] = label
             save_config(self.app.config)
-            self.app.hotkey_listener.set_transform(self.app._on_transform_hotkey, kc)
+            listener = getattr(self.app, "hotkey_listener", None)
+            if listener is not None and hasattr(listener, "set_transform"):
+                listener.set_transform(self.app._on_transform_hotkey, kc)
             return _ok(keycode=kc, label=label)
         except Exception as e:
             return {"ok": False, "error": str(e)}

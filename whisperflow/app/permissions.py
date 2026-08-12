@@ -141,3 +141,92 @@ def request(which):
         "notifications": request_notifications,
     }.get(which, lambda: None)()
     return all_status()
+
+
+# ── Windows platform shim (W6) ───────────────────────────────────────────
+# Windows meetings have no OS-level gate for loopback/system-audio capture,
+# and no Accessibility grant is needed to paste. Microphone privacy IS a
+# per-app Windows setting, but there's no synchronous API to read it — we
+# assume 'granted' and open the Settings deep-link for request. Placed at
+# the end so it overrides the Mac defs on Windows only.
+import sys as _sys
+if _sys.platform == "win32":
+    def check_accessibility():   # noqa: F811 — deliberate override
+        return "granted"
+
+    def request_accessibility():  # noqa: F811
+        return None
+
+    def check_microphone():       # noqa: F811
+        # Win10/11 gate mic under Privacy > Microphone, but there's no
+        # synchronous read API — assume granted; request opens Settings.
+        return "granted"
+
+    def request_microphone():     # noqa: F811
+        try:
+            subprocess.Popen(
+                ["cmd", "/c", "start", "ms-settings:privacy-microphone"],
+                shell=False)
+        except Exception as e:
+            logger.debug("open mic settings failed: %s", e)
+
+    def check_system_audio():     # noqa: F811
+        # WASAPI loopback is unrestricted on Windows — no screen-recording
+        # style gate. Always 'granted' so the meeting checklist reflects
+        # the actual capability.
+        return "granted"
+
+    def request_system_audio():   # noqa: F811
+        return None
+
+    def check_notifications():    # noqa: F811
+        return "granted"
+
+    def request_notifications():  # noqa: F811
+        try:
+            subprocess.Popen(
+                ["cmd", "/c", "start", "ms-settings:notifications"],
+                shell=False)
+        except Exception:
+            pass
+
+    def system_audio_capture_supported():  # noqa: F811
+        try:
+            from app.system_audio import is_supported as _is_sup
+            return bool(_is_sup())
+        except Exception:
+            return False
+
+    def meeting_permissions():    # noqa: F811
+        supported = system_audio_capture_supported()
+        mic = check_microphone()
+        sys_audio = "granted"
+        return {
+            "supported": supported,
+            "system_audio": sys_audio,
+            "microphone": mic,
+            "ready": supported and mic == "granted",
+            "steps": [
+                {"id": "support", "done": supported},
+                {"id": "system_audio", "done": True, "denied": False},
+                {"id": "microphone", "done": mic == "granted",
+                 "denied": mic == "denied"},
+            ],
+        }
+
+    def all_status():             # noqa: F811
+        return {
+            "accessibility": "granted",
+            "microphone": check_microphone(),
+            "system_audio": check_system_audio(),
+            "notifications": check_notifications(),
+        }
+
+    def request(which):           # noqa: F811
+        {
+            "accessibility": request_accessibility,
+            "microphone": request_microphone,
+            "system_audio": request_system_audio,
+            "notifications": request_notifications,
+        }.get(which, lambda: None)()
+        return all_status()

@@ -76,8 +76,16 @@ def transcribe_with_status(audio: np.ndarray, config: dict, sample_rate: int = 4
     try:
         from app import filetags as _filetags_mod
         from app.config import save_config as _save_config
-        from app.injector import (get_focused_app_pid, get_focused_app_name,
-                                   get_focused_app_bundle)
+        # W5/W8: injector is platform-native. `app.injector` imports Quartz/
+        # AppKit at module load, so on Windows we must import the win_injector
+        # variant. Same public names on both sides — see win_injector docstring.
+        import sys as _sys
+        if _sys.platform == "win32":
+            from app.win_injector import (get_focused_app_pid, get_focused_app_name,
+                                          get_focused_app_bundle)
+        else:
+            from app.injector import (get_focused_app_pid, get_focused_app_name,
+                                       get_focused_app_bundle)
         # Classify the SAVED dictation-target app (captured at record start), not
         # the live frontmost app — by transcription time focus may be the overlay.
         _tgt_pid = get_focused_app_pid()

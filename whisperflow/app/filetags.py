@@ -623,3 +623,27 @@ def tag(text, files, dict_applied=False, is_terminal=False):
                 continue
 
     return result
+
+
+# ── Windows platform shim ────────────────────────────────────────────────
+# On Windows the AX harvest / IDE classification / terminal detection all use
+# UI Automation (see app/win_ax.py). Override the four swap functions AFTER
+# the pure logic above so the cross-platform callers (transcriber, main) can
+# keep importing app.filetags unchanged — same names, Windows-native
+# implementations. All pure helpers (tag, prompt_fragment, remember_files,
+# get_seen_files, _norm_files) stay shared.
+import sys as _sys
+if _sys.platform == "win32":  # pragma: no cover - platform gate
+    try:
+        from app.win_ax import (
+            supported_ide as _win_supported_ide,
+            read_open_files as _win_read_open_files,
+            harvest_async as _win_harvest_async,
+            focus_is_terminal as _win_focus_is_terminal,
+        )
+        supported_ide     = _win_supported_ide
+        read_open_files   = _win_read_open_files
+        harvest_async     = _win_harvest_async
+        focus_is_terminal = _win_focus_is_terminal
+    except Exception as _e:  # win_ax not built / uiautomation missing
+        logger.debug("filetags: Windows shim not loaded (%s); AX harvest disabled", _e)
