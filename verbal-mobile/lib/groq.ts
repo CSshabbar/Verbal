@@ -1,4 +1,10 @@
-import { getDictionary, buildPrompt, applyReplacements, knownTerms } from './dictionary';
+import {
+  getDictionary,
+  buildPrompt,
+  applyReplacements,
+  knownTerms,
+  stripPromptEcho,
+} from './dictionary';
 import { supabase, SUPABASE_URL, SUPABASE_ANON_KEY } from './supabase';
 import { getDeviceId } from './storage';
 
@@ -269,8 +275,14 @@ export async function transcribeAudio(
   }
 
   const data = await res.json();
+  // Drop any bias-prompt echo FIRST. Whisper continues the glossary we sent when
+  // it hears no real speech, so "Glossary, M.T.:" arrives as the transcript and
+  // would be inserted verbatim into the user's field. '' here means the clip was
+  // nothing but echo — i.e. silence, which callers already handle.
+  const scrubbed = stripPromptEcho(data.text?.trim() ?? '', prompt);
+  if (!scrubbed) return '';
   // Apply the user's replacement rules to fix persistent mishearings.
-  return applyReplacements((data.text?.trim() ?? ''), dict);
+  return applyReplacements(scrubbed, dict);
 }
 
 /** Ollama Cloud fallback model, served through the SAME groq-proxy with

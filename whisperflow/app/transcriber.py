@@ -55,8 +55,10 @@ def transcribe_with_status(audio: np.ndarray, config: dict, sample_rate: int = 4
     # result with their replacement rules. The glossary is English text and the
     # Whisper prompt also HINTS the language — so it is only attached for
     # English; for auto/other languages it would drag detection toward English.
+    _dict_mod = None
     try:
         from app import dictionary as _dict
+        _dict_mod = _dict
         if lang == "en":
             prompt = _dict.build_prompt(config)
         else:
@@ -117,8 +119,21 @@ def transcribe_with_status(audio: np.ndarray, config: dict, sample_rate: int = 4
         prompt = clipped.rstrip(" ,") + "."
         logger.debug("[filetag] bias prompt capped to %d chars", len(prompt))
 
-    def finalize(t):
-        # Dictionary replacements first; track whether they changed the text.
+    def finalize(t, biased=True):
+        # Bias-prompt echo FIRST. Whisper continues the glossary we sent when it
+        # hears no real speech, so "Glossary, M.T.:" arrives as the transcript
+        # and would be injected verbatim into the user's editor. Strip it before
+        # anything else looks at the text; "" means it was nothing but echo.
+        # `biased=False` for the local-Whisper path, which is sent no prompt and
+        # therefore can't echo one.
+        if biased and prompt and _dict_mod is not None:
+            try:
+                t = _dict_mod.strip_prompt_echo(t, prompt)
+            except Exception as e:
+                logger.debug("prompt-echo scrub failed: %s", e)
+        if not t or not t.strip():
+            return ""
+        # Dictionary replacements next; track whether they changed the text.
         before = t
         t = _apply_dict(t)
         dict_applied = (t != before)
@@ -153,6 +168,12 @@ def transcribe_with_status(audio: np.ndarray, config: dict, sample_rate: int = 4
                                           language=lang, model=_model_id)
         if proxy_text and proxy_text not in (".", "...", "uh", "um", "ah", "hm"):
             proxy_text = finalize(proxy_text)
+            if not proxy_text:
+                # The model heard no speech and parroted our glossary back. That
+                # is silence, not a failure — do NOT fall through to the other
+                # providers, they would parrot the same prompt on the same audio.
+                logger.warning("[Groq proxy] bias-prompt echo only — treating as silence")
+                return "", "silent"
             logger.info(f"[Groq proxy] {time.time()-start:.2f}s: '{proxy_text[:80]}'")
             return proxy_text, "ok"
 
@@ -161,6 +182,9 @@ def transcribe_with_status(audio: np.ndarray, config: dict, sample_rate: int = 4
             result = _transcribe_groq(tmp.name, key, prompt=prompt, language=lang)
             if result is not None:
                 result = finalize(result)
+                if not result:
+                    logger.warning("[Groq] bias-prompt echo only — treating as silence")
+                    return "", "silent"
                 logger.info(f"[Groq] {time.time()-start:.2f}s: '{result[:80]}'")
                 return result, "ok"
 
@@ -169,6 +193,9 @@ def transcribe_with_status(audio: np.ndarray, config: dict, sample_rate: int = 4
             result = _transcribe_gemini(tmp.name, key, prompt=prompt, language=lang)
             if result is not None:
                 result = finalize(result)
+                if not result:
+                    logger.warning("[Gemini] bias-prompt echo only — treating as silence")
+                    return "", "silent"
                 logger.info(f"[Gemini] {time.time()-start:.2f}s: '{result[:80]}'")
                 return result, "ok"
 
@@ -177,7 +204,7 @@ def transcribe_with_status(audio: np.ndarray, config: dict, sample_rate: int = 4
         try:
             result = _transcribe_local(tmp16, config.get("whisper_model", "base"), language=lang)
             if result:
-                result = finalize(result)
+                result = finalize(result, biased=False)   # local gets no prompt
                 logger.info(f"[Local] {time.time()-start:.2f}s: '{result[:80]}'")
                 return result, "ok"
             else:

@@ -24,7 +24,8 @@ import re
 
 logger = logging.getLogger("verbal.dictionary")
 
-_MAX_PROMPT_WORDS = 180  # Whisper prompt is ~224 tokens; stay well under
+_MAX_PROMPT_TERMS = 80   # Whisper conditions on the LAST ~224 tokens of the prompt
+_MAX_PROMPT_CHARS = 600  # leaves room for the file-tag fragment under Groq's 896 cap
 _MAX_TRIGGER_CHARS = 40     # snippet trigger cap (matches the design mockups)
 _MAX_EXPANSION_CHARS = 500  # snippet expansion cap (matches the design mockups)
 
@@ -89,17 +90,152 @@ def get(config):
 
 
 def build_prompt(config):
-    """A Whisper `prompt` string that biases toward the user's vocabulary."""
+    """A Whisper `prompt` string that biases toward the user's vocabulary.
+
+    The LAST terms are kept, not the first: Whisper only conditions on the tail
+    (~224 tokens) of the prompt, and the tail of the vocabulary list is what the
+    user taught it most recently. An over-long glossary is not merely ignored —
+    every extra term is another word the model can drop into an unrelated
+    sentence, and another line it can parrot back (see strip_prompt_echo)."""
     vocab = get(config)["vocabulary"]
     if not vocab:
         return None
-    words = vocab[:200]
-    prompt = "Glossary: " + ", ".join(words) + "."
-    # keep it short
-    parts = prompt.split()
-    if len(parts) > _MAX_PROMPT_WORDS:
-        prompt = " ".join(parts[:_MAX_PROMPT_WORDS])
-    return prompt
+    words = vocab[-_MAX_PROMPT_TERMS:]
+    # Trim from the FRONT, never the back: clipping the assembled string would
+    # throw away exactly the newest terms this ordering is meant to protect.
+    while words and len("Glossary: " + ", ".join(words) + ".") > _MAX_PROMPT_CHARS:
+        words.pop(0)
+    if not words:
+        return None
+    return "Glossary: " + ", ".join(words) + "."
+
+
+# ── bias-prompt echo ("Glossary, M.T.:" showing up in a transcript) ───────────
+# Whisper's `prompt` is a CONTINUATION prompt, not an instruction: the model is
+# conditioned on it as though it were the transcript so far. Handed short, quiet
+# or speech-free audio, the likeliest continuation of "Glossary: a, b, c." is
+# MORE glossary — so the bias list comes back as the "transcription" and gets
+# injected into whatever the user was typing into. That echo is recognizable
+# because every token in it is text we sent ourselves, so it is stripped here
+# instead of injected; a transcript that was nothing BUT echo becomes "", which
+# the caller reports as silence.
+
+_BIAS_LABELS = ("glossary", "vocabulary", "files")
+_ANY_LABEL_RE = re.compile(r"\b(" + "|".join(_BIAS_LABELS) + r")\b\s*:", re.IGNORECASE)
+# Chunk on commas/semicolons/newlines and on SENTENCE periods (a period followed
+# by whitespace) so "M.T." and "main.py" survive as single chunks.
+_CHUNK_RE = re.compile(r"(\s*[,;]\s*|\s*\.\s+|\s*\n+\s*)")
+
+
+def _norm_term(s):
+    """Casefold and reduce every non-alphanumeric run to one space:
+    'M.T.:' and 'm t' both become 'm t', so an echo matches the term we sent."""
+    return re.sub(r"[^a-z0-9]+", " ", (s or "").lower()).strip()
+
+
+def prompt_labels(prompt):
+    """The section labels this prompt ACTUALLY carries ('Glossary:', 'Files:').
+
+    Only these words are treated as labels when scanning a transcript, which is
+    what keeps a dictated "Files, I need to check them" intact on a run where no
+    file list was ever sent — we can only be echoed text we spoke first."""
+    return {m.group(1).lower() for m in _ANY_LABEL_RE.finditer(prompt or "")}
+
+
+def _label_re(labels):
+    """Matcher for a leading label; group(1) marks the ':' that makes it OURS."""
+    if not labels:
+        return None
+    return re.compile(r"^\s*(?:" + "|".join(sorted(labels)) + r")\b\s*(:)?\s*", re.IGNORECASE)
+
+
+def prompt_terms(prompt):
+    """The individual biasing terms of a bias prompt, normalized for comparison.
+    Handles both sections we send: 'Glossary: a, b. Files: c.d, e.f.'"""
+    label_re = _label_re(prompt_labels(prompt))
+    out = set()
+    for raw in _CHUNK_RE.split(prompt or ""):
+        t = _norm_term(label_re.sub("", raw) if label_re else raw)
+        if t:
+            out.add(t)
+    return out
+
+
+def strip_prompt_echo(text, prompt):
+    """Remove regurgitated bias-prompt text from a transcription.
+
+    Only words we actually SENT as labels count as labels (see prompt_labels).
+    Deletes every run of chunks that is the glossary talking back to us:
+      - a run introduced by a bias LABEL ('Glossary:', 'Files:') that is either
+        followed by terms we sent, or STANDS ALONE as its own fragment — the
+        model often drops the list and echoes just the heading ('Glossary. So,
+        the thing is…'), which is not something dictation produces; and
+      - a bare comma-list of TWO OR MORE consecutive chunks that are each exactly
+        a term we sent — real speech is not a list of one's own jargon.
+    A lone dictionary term is never dropped: that is just the user saying a word
+    they taught us, and a label that keeps going inside its own clause ('Files, I
+    need to check them') is speech, not a heading. A colon-punctuated label prefix
+    is stripped even when real speech follows it ('Glossary: so I was thinking' →
+    'so I was thinking').
+
+    Returns "" when the transcript was nothing but echo. Never raises — on any
+    error the text comes back untouched, per the fail-closed pipeline rule."""
+    try:
+        if not text or not text.strip() or not prompt:
+            return text
+        terms = prompt_terms(prompt)
+        if not terms:
+            return text
+        label_re = _label_re(prompt_labels(prompt))
+
+        parts = _CHUNK_RE.split(text)
+        chunks, seps = parts[0::2], parts[1::2] + [""]
+        n = len(chunks)
+
+        info = []
+        for k, c in enumerate(chunks):
+            m = label_re.match(c) if label_re else None
+            norm = _norm_term(c[m.end():] if m else c)
+            # A heading standing on its own — 'Glossary:' or a 'Glossary.' ending
+            # the fragment — is ours. One that runs on inside its clause
+            # ('Files, I need to…') is the user talking.
+            ends_fragment = k == n - 1 or "." in seps[k] or "\n" in seps[k]
+            info.append({"label": bool(m), "term": norm in terms, "empty": not norm,
+                         "alone": bool(m) and not norm and (bool(m.group(1)) or ends_fragment)})
+            # A label punctuated like a label ('Glossary:') is ours, never
+            # speech — peel the prefix off even if the chunk survives. Without
+            # the colon it may well be a word the user said, so the chunk is
+            # left intact and only the run rules below can remove it.
+            if m and m.group(1):
+                chunks[k] = c[m.end():]
+
+        drop = [False] * n
+        i = 0
+        while i < n:
+            it = info[i]
+            nxt = info[i + 1] if i + 1 < n else None
+            start = (it["alone"] or
+                     (it["label"] and it["term"]) or
+                     (it["label"] and it["empty"] and nxt is not None and nxt["term"]) or
+                     (it["term"] and nxt is not None and nxt["term"]))
+            if not start:
+                i += 1
+                continue
+            j = i
+            while j < n and (info[j]["term"] or info[j]["empty"]):
+                drop[j] = True
+                j += 1
+            i = max(j, i + 1)
+
+        # Rebuild unconditionally: even with no run to delete, a 'Glossary:'
+        # prefix may have been peeled off an otherwise real sentence above.
+        out = "".join("" if drop[k] else (chunks[k] + seps[k]) for k in range(n))
+        out = re.sub(r"\s{2,}", " ", out).strip()
+        out = re.sub(r"^[\s,;:.–—-]+", "", out).strip()
+        return out if _norm_term(out) else ""
+    except Exception as e:
+        logger.debug("strip_prompt_echo failed: %s", e)
+        return text
 
 
 def known_terms(config, limit=60):

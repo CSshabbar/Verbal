@@ -107,14 +107,16 @@ Each feature: **what it does · desktop impl · mobile impl · backend · status
 
 - **What:** two mechanisms — **vocabulary** biases the model toward names/terms; **replacement rules**
   deterministically rewrite a misheard word (`{from,to}`).
-- **Desktop:** `dictionary.py` — `build_prompt` ("Glossary: w1, w2, …", ≤180 words) injected into the
-  Whisper `prompt`; `apply_replacements` (word-boundary, case-insensitive `re.sub`); `add_replacement`
+- **Desktop:** `dictionary.py` — `build_prompt` ("Glossary: w1, w2, …", the **last** ≤80 terms / ≤600
+  chars) injected into the Whisper `prompt`, and `strip_prompt_echo` taking it back out of the result
+  (see below); `apply_replacements` (word-boundary, case-insensitive `re.sub`); `add_replacement`
   de-dupes by `from`, tags auto rules `auto:True` (✨ in UI). `known_terms(config, limit=60)` (MER-44)
   returns vocabulary + replacement `to`-targets, deduped — this is what grounds the **cleanup** LLM (see
   §AI cleanup), distinct from `build_prompt` which grounds *Whisper*. Stored `config["dictionary"]`, synced
   to Supabase `dictionary` (one row/user) via `fetch_remote`/`_push_remote`.
-- **Mobile:** `lib/dictionary.ts` — direct mirror (`buildPrompt`, `knownTerms`, `applyReplacements`,
-  `addReplacement`, `fetchRemote`), AsyncStorage `flume_dictionary` + Supabase upsert. Managed in
+- **Mobile:** `lib/dictionary.ts` — direct mirror (`buildPrompt`, `stripPromptEcho`, `knownTerms`,
+  `applyReplacements`, `addReplacement`, `fetchRemote`), AsyncStorage `flume_dictionary` + Supabase
+  upsert. Managed in
   `SettingsScreen`.
 - **Backend:** `dictionary` table (`user_id` PK, `vocabulary` jsonb, `replacements` jsonb, `updated_at`).
 - **Sync is CAS, not last-write-wins (IDI-174, 2026-08):** writes are filtered on the last-witnessed
@@ -123,6 +125,18 @@ Each feature: **what it does · desktop impl · mobile impl · backend · status
   can't drop snippets. Mobile blocks pushes until the first fetch resolves (the edit-before-load wipe),
   sequences push→keyboard-sync (no self-clobber race), requires a real identity (`getCloudUserId()`), and
   surfaces "Couldn't sync — will retry" on double failure in both editing UIs.
+- **Bias-prompt echo is stripped from every transcript (2026-08):** Whisper's `prompt` is a
+  *continuation* prompt, so on quiet/short/speech-free audio the model kept writing the glossary and the
+  list itself was injected as the "transcription" (`"Glossary, M.T.:"`) — the same mechanism that
+  sprinkles stray vocabulary words into unrelated sentences. All four dictation front doors now (a) send
+  a much shorter, tail-weighted glossary and (b) run `strip_prompt_echo` / `stripPromptEcho` on the result
+  **before** replacements/snippets/tagging: label-introduced runs (`Glossary:`/`Files:`, whether followed
+  by sent terms or standing alone as a bare heading) and comma-lists of ≥2 sent terms are deleted, while
+  a lone dictionary word, a label that runs on inside its clause, and any label word we did not actually
+  send that call are always kept. An echo-only transcript becomes `""` → reported as **silence** ("No
+  speech detected" on the keyboards), never as a failure and never retried on another provider. See
+  `05-conventions.md` Hard Rule #6; `whisperflow/prompt_echo_fixtures.py` pins 38 cases (every echo shape
+  removed, real speech untouched).
 - **Status:** full parity. Rule shape `{from, to, auto?}`.
 
 ## Snippets (spoken trigger → text expansion)
@@ -744,8 +758,9 @@ inventing new UI:
 - **Emoji picker**: a full bundled library (~1900 emoji, 9 groups + Recents) with keyword search
   (`flume_emoji_kw.txt`) mapping typed words to relevant emoji.
 - **Dictation via mic**: records and transcribes through the same `groq-proxy` pipeline as the in-app
-  recorder. **Both** keyboards do the full sequence natively in-extension/IME (vocab-bias prompt ≤200
-  terms/≤896 chars → transcribe → replacements → single-pass snippet expansion) — iOS gained the missing
+  recorder. **Both** keyboards do the full sequence natively in-extension/IME (vocab-bias prompt, last
+  ≤80 terms/≤600 chars → transcribe → **prompt-echo scrub** → replacements → single-pass snippet
+  expansion; an echo-only transcript shows "No speech detected") — iOS gained the missing
   three stages in IDI-161 (there was never a real main-app handoff), Android's snippet cascade was fixed
   to the single-pass contract in IDI-162. Both send `x-flume-device`, read `spokenLanguage` from the
   shared config ('auto' → omit), surface every failure visibly (mic/full-access/HTTP/timeout — iOS's

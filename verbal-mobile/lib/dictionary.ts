@@ -332,9 +332,146 @@ export function mergeDictionaries(remote: Dictionary, local: Dictionary): Dictio
   };
 }
 
+/** Whisper conditions on the LAST ~224 tokens of the prompt, so the tail of the
+ *  vocabulary (= what the user taught it most recently) is what actually biases
+ *  the model. An over-long glossary is not merely ignored — every extra term is
+ *  another word that can be dropped into an unrelated sentence, and another line
+ *  that can be parroted back (see stripPromptEcho). Mirrors
+ *  whisperflow/app/dictionary.py::build_prompt. */
+const MAX_PROMPT_TERMS = 80;
+const MAX_PROMPT_CHARS = 600;
+
 export function buildPrompt(d: Dictionary): string | undefined {
   if (!d.vocabulary.length) return undefined;
-  return 'Glossary: ' + d.vocabulary.slice(0, 200).join(', ') + '.';
+  const words = d.vocabulary.slice(-MAX_PROMPT_TERMS);
+  // Trim from the FRONT, never the back: clipping the assembled string would
+  // throw away exactly the newest terms this ordering is meant to protect.
+  while (words.length && `Glossary: ${words.join(', ')}.`.length > MAX_PROMPT_CHARS) {
+    words.shift();
+  }
+  if (!words.length) return undefined;
+  return `Glossary: ${words.join(', ')}.`;
+}
+
+// ── bias-prompt echo ("Glossary, M.T.:" showing up in a transcript) ───────────
+// Whisper's `prompt` is a CONTINUATION prompt, not an instruction: the model is
+// conditioned on it as though it were the transcript so far. Handed short, quiet
+// or speech-free audio, the likeliest continuation of "Glossary: a, b, c." is
+// MORE glossary — so the bias list comes back as the "transcription" and gets
+// inserted into whatever field the user was dictating into. Mirrors
+// whisperflow/app/dictionary.py::strip_prompt_echo — edit one, edit the other.
+
+const BIAS_LABELS = ['glossary', 'vocabulary', 'files'];
+const ANY_LABEL_RE = new RegExp(`\\b(${BIAS_LABELS.join('|')})\\b\\s*:`, 'gi');
+// Chunk on commas/semicolons/newlines and on SENTENCE periods (a period followed
+// by whitespace) so "M.T." and "main.py" survive as single chunks.
+const CHUNK_RE = /(\s*[,;]\s*|\s*\.\s+|\s*\n+\s*)/;
+
+/** Casefold and reduce every non-alphanumeric run to one space: 'M.T.:' and
+ *  'm t' both become 'm t', so an echo matches the term we sent. */
+function normTerm(s: string): string {
+  return (s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+/** The section labels this prompt ACTUALLY carries ('Glossary:', 'Files:').
+ *  Only these count as labels when scanning a transcript — which is what keeps a
+ *  dictated "Files, I need to check them" intact on a run where no file list was
+ *  ever sent. We can only be echoed text we spoke first. */
+export function promptLabels(prompt: string | undefined): string[] {
+  if (!prompt) return [];
+  const found = new Set<string>();
+  for (const m of prompt.matchAll(ANY_LABEL_RE)) found.add(m[1].toLowerCase());
+  return [...found].sort();
+}
+
+/** Matcher for a leading label; group 1 marks the ':' that makes it OURS. */
+function labelRe(labels: string[]): RegExp | null {
+  return labels.length ? new RegExp(`^\\s*(?:${labels.join('|')})\\b\\s*(:)?\\s*`, 'i') : null;
+}
+
+/** The individual biasing terms of a bias prompt, normalized for comparison. */
+export function promptTerms(prompt: string | undefined): Set<string> {
+  const out = new Set<string>();
+  if (!prompt) return out;
+  const re = labelRe(promptLabels(prompt));
+  for (const raw of prompt.split(CHUNK_RE)) {
+    const t = normTerm(re ? (raw || '').replace(re, '') : raw || '');
+    if (t) out.add(t);
+  }
+  return out;
+}
+
+/**
+ * Remove regurgitated bias-prompt text from a transcription.
+ *
+ * Only words we actually SENT as labels count as labels (see promptLabels).
+ * Deletes every run of chunks that is the glossary talking back to us: a run
+ * introduced by a bias LABEL ('Glossary:', 'Files:') that is either followed by
+ * terms we sent or STANDS ALONE as its own fragment (the model often drops the
+ * list and echoes just the heading — 'Glossary. So, the thing is…'), and any
+ * bare comma-list of TWO OR MORE consecutive chunks that are each exactly a term
+ * we sent. A lone dictionary term is never dropped — that is just the user
+ * saying a word they taught us — and a label that runs on inside its own clause
+ * ('Files, I need to check them') is speech, not a heading.
+ * Returns '' when the transcript was nothing but echo; never throws.
+ */
+export function stripPromptEcho(text: string, prompt: string | undefined): string {
+  try {
+    if (!text || !text.trim() || !prompt) return text;
+    const terms = promptTerms(prompt);
+    if (!terms.size) return text;
+    const re = labelRe(promptLabels(prompt));
+
+    const parts = text.split(CHUNK_RE);
+    const chunks = parts.filter((_, i) => i % 2 === 0);
+    const seps = parts.filter((_, i) => i % 2 === 1).concat(['']);
+    const n = chunks.length;
+
+    const info = chunks.map((c, k) => {
+      const m = re ? re.exec(c) : null;
+      const norm = normTerm(m ? c.slice(m[0].length) : c);
+      // A heading standing on its own — 'Glossary:' or a 'Glossary.' ending the
+      // fragment — is ours. One that runs on inside its clause is the user.
+      const endsFragment = k === n - 1 || seps[k].includes('.') || seps[k].includes('\n');
+      const alone = !!m && !norm && (!!m[1] || endsFragment);
+      // A label punctuated like a label ('Glossary:') is ours, never speech —
+      // peel the prefix off even if the chunk survives. Without the colon it may
+      // well be a word the user said, so only the run rules below can remove it.
+      if (m && m[1]) chunks[k] = c.slice(m[0].length);
+      return { label: !!m, term: terms.has(norm), empty: !norm, alone };
+    });
+
+    const drop = new Array<boolean>(n).fill(false);
+    let i = 0;
+    while (i < n) {
+      const it = info[i];
+      const nxt = i + 1 < n ? info[i + 1] : null;
+      const start =
+        it.alone ||
+        (it.label && it.term) ||
+        (it.label && it.empty && !!nxt && nxt.term) ||
+        (it.term && !!nxt && nxt.term);
+      if (!start) {
+        i += 1;
+        continue;
+      }
+      let j = i;
+      while (j < n && (info[j].term || info[j].empty)) {
+        drop[j] = true;
+        j += 1;
+      }
+      i = Math.max(j, i + 1);
+    }
+
+    // Rebuild unconditionally: even with no run to delete, a 'Glossary:' prefix
+    // may have been peeled off an otherwise real sentence above.
+    let out = chunks.map((c, k) => (drop[k] ? '' : c + seps[k])).join('');
+    out = out.replace(/\s{2,}/g, ' ').trim();
+    out = out.replace(/^[\s,;:.–—-]+/, '').trim();
+    return normTerm(out) ? out : '';
+  } catch {
+    return text; // fail-closed: an echo scrub must never cost a dictation
+  }
 }
 
 /**

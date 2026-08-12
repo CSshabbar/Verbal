@@ -2052,7 +2052,8 @@ class KeyboardViewController: UIInputViewController, AVAudioRecorderDelegate, UI
            !lang.isEmpty {
             field("language", lang)
         }
-        if let prompt = buildBiasPrompt(cfg) { field("prompt", prompt) }
+        let biasPrompt = buildBiasPrompt(cfg)
+        if let prompt = biasPrompt { field("prompt", prompt) }
         body.append("--\(boundary)\r\n".data(using: .utf8)!)
         body.append("Content-Disposition: form-data; name=\"file\"; filename=\"audio.m4a\"\r\n".data(using: .utf8)!)
         body.append("Content-Type: audio/m4a\r\n\r\n".data(using: .utf8)!)
@@ -2072,7 +2073,11 @@ class KeyboardViewController: UIInputViewController, AVAudioRecorderDelegate, UI
             // Dictionary post-processing runs off the main thread on captured, immutable input.
             var finalText: String? = nil
             if let t = raw, !t.isEmpty {
-                var out = KeyboardViewController.applyReplacements(t, cfg?["replacements"] as? [[String: Any]])
+                // Echo scrub FIRST: the glossary parroted back is not speech, and
+                // must never reach the field. "" here falls through to the
+                // "No speech detected" branch below, which is exactly what it was.
+                var out = KeyboardViewController.stripPromptEcho(t, biasPrompt)
+                out = KeyboardViewController.applyReplacements(out, cfg?["replacements"] as? [[String: Any]])
                 out = KeyboardViewController.applySnippets(out, cfg?["snippets"] as? [[String: Any]])
                 out = out.trimmingCharacters(in: .whitespacesAndNewlines)
                 finalText = out.isEmpty ? nil : out
@@ -2138,6 +2143,147 @@ class KeyboardViewController: UIInputViewController, AVAudioRecorderDelegate, UI
             }
         }
         return prompt
+    }
+
+    // ── bias-prompt echo ("Glossary, M.T.:" arriving AS the transcript) ──────────
+    // Whisper's `prompt` is a CONTINUATION prompt, not an instruction: the model is
+    // conditioned on it as though it were the transcript so far. On quiet or
+    // speech-free audio the likeliest continuation of "Glossary: a, b, c." is MORE
+    // glossary — so the bias list comes back as the "transcription" and would be
+    // typed into the user's field. Mirrors lib/dictionary.ts::stripPromptEcho and
+    // whisperflow/app/dictionary.py::strip_prompt_echo — edit one, edit all three.
+    // Pure + fail-closed: anything unexpected returns the text untouched.
+
+    /// Chunk on commas/semicolons/newlines and on SENTENCE periods (a period
+    /// followed by whitespace) so "M.T." and "main.py" survive as single chunks.
+    private static let echoChunkRE = try? NSRegularExpression(pattern: #"\s*[,;]\s*|\s*\.\s+|\s*\n+\s*"#)
+    private static let echoAnyLabelRE = try? NSRegularExpression(
+        pattern: #"\b(glossary|vocabulary|files)\b\s*:"#, options: [.caseInsensitive])
+    private static let echoRunRE = try? NSRegularExpression(pattern: #"\s{2,}"#)
+    private static let echoLeadRE = try? NSRegularExpression(pattern: #"^[\s,;:.–—-]+"#)
+
+    /// The section labels this prompt ACTUALLY carries ("Glossary:", "Files:").
+    /// Only these count as labels when scanning a transcript — which keeps a
+    /// dictated "Files, I need to check them" intact on a run where no file list
+    /// was sent. We can only be echoed text we spoke first.
+    private static func echoLabelRE(for prompt: String) -> NSRegularExpression? {
+        guard let any = echoAnyLabelRE else { return nil }
+        let ns = prompt as NSString
+        var labels = Set<String>()
+        for m in any.matches(in: prompt, range: NSRange(location: 0, length: ns.length))
+        where m.range(at: 1).location != NSNotFound {
+            labels.insert(ns.substring(with: m.range(at: 1)).lowercased())
+        }
+        guard !labels.isEmpty else { return nil }
+        return try? NSRegularExpression(
+            pattern: #"^\s*(?:"# + labels.sorted().joined(separator: "|") + #")\b\s*(:)?\s*"#,
+            options: [.caseInsensitive])
+    }
+
+    /// Casefold and reduce every non-alphanumeric run to one space: "M.T.:" and
+    /// "m t" both become "m t", so an echo matches the term we sent.
+    private static func normEchoTerm(_ s: String) -> String {
+        var out = "", pendingSpace = false
+        for ch in s.lowercased() {
+            if ch.isASCII && (ch.isLetter || ch.isNumber) {
+                if pendingSpace && !out.isEmpty { out.append(" ") }
+                pendingSpace = false
+                out.append(ch)
+            } else {
+                pendingSpace = true
+            }
+        }
+        return out
+    }
+
+    /// Split off a leading bias label. `colon` marks "Glossary:" — punctuated like
+    /// a label, so it is ours and never dictation.
+    private static func splitEchoLabel(_ c: String, _ re: NSRegularExpression?) -> (body: String, label: Bool, colon: Bool) {
+        let ns = c as NSString
+        guard let re = re,
+              let m = re.firstMatch(in: c, range: NSRange(location: 0, length: ns.length)),
+              m.range.length > 0 else { return (c, false, false) }
+        return (ns.substring(from: m.range.length), true, m.range(at: 1).location != NSNotFound)
+    }
+
+    private static func echoSplit(_ text: String) -> (chunks: [String], seps: [String]) {
+        guard let re = echoChunkRE else { return ([text], [""]) }
+        let ns = text as NSString
+        var chunks: [String] = [], seps: [String] = [], idx = 0
+        for m in re.matches(in: text, range: NSRange(location: 0, length: ns.length)) {
+            chunks.append(ns.substring(with: NSRange(location: idx, length: m.range.location - idx)))
+            seps.append(ns.substring(with: m.range))
+            idx = m.range.location + m.range.length
+        }
+        chunks.append(ns.substring(from: idx)); seps.append("")
+        return (chunks, seps)
+    }
+
+    /// Remove regurgitated bias-prompt text. Only words we actually SENT as labels
+    /// count as labels. Deletes any run introduced by a bias LABEL that is either
+    /// followed by terms we sent or STANDS ALONE as its own fragment (the model
+    /// often drops the list and echoes just the heading — "Glossary. So, the thing
+    /// is…"), plus any bare comma-list of TWO OR MORE consecutive terms we sent. A
+    /// LONE dictionary word is never dropped — that is the user saying a word they
+    /// taught us — and a label running on inside its clause ("Files, I need to
+    /// check them") is speech. Returns "" when the transcript was nothing but echo,
+    /// which the caller already shows as "No speech detected".
+    static func stripPromptEcho(_ text: String, _ prompt: String?) -> String {
+        guard let prompt = prompt, !prompt.isEmpty,
+              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return text }
+        let labelRE = echoLabelRE(for: prompt)
+        var terms = Set<String>()
+        for piece in echoSplit(prompt).chunks {
+            let t = normEchoTerm(splitEchoLabel(piece, labelRE).body)
+            if !t.isEmpty { terms.insert(t) }
+        }
+        if terms.isEmpty { return text }
+
+        var (chunks, seps) = echoSplit(text)
+        let n = chunks.count
+        var isTerm = [Bool](), isEmpty = [Bool](), hasLabel = [Bool](), isAlone = [Bool]()
+        for k in 0..<n {
+            let (body, label, colon) = splitEchoLabel(chunks[k], labelRE)
+            let norm = normEchoTerm(body)
+            hasLabel.append(label); isTerm.append(terms.contains(norm)); isEmpty.append(norm.isEmpty)
+            // A heading standing on its own — "Glossary:" or a "Glossary." ending
+            // the fragment — is ours. One that runs on inside its clause is the user.
+            let endsFragment = k == n - 1 || seps[k].contains(".") || seps[k].contains("\n")
+            isAlone.append(label && norm.isEmpty && (colon || endsFragment))
+            // Peel a "Glossary:" prefix even when the chunk itself survives.
+            if label && colon { chunks[k] = body }
+        }
+
+        var drop = [Bool](repeating: false, count: n)
+        var i = 0
+        while i < n {
+            let nextIsTerm = (i + 1 < n) && isTerm[i + 1]
+            let start = isAlone[i]
+                || (hasLabel[i] && isTerm[i])
+                || (hasLabel[i] && isEmpty[i] && nextIsTerm)
+                || (isTerm[i] && nextIsTerm)
+            if !start { i += 1; continue }
+            var j = i
+            while j < n && (isTerm[j] || isEmpty[j]) { drop[j] = true; j += 1 }
+            i = max(j, i + 1)
+        }
+
+        // Rebuild unconditionally: even with no run to delete, a "Glossary:"
+        // prefix may have been peeled off an otherwise real sentence above.
+        var out = ""
+        for k in 0..<n where !drop[k] { out += chunks[k] + seps[k] }
+        let ns0 = out as NSString
+        if let re = echoRunRE {
+            out = re.stringByReplacingMatches(in: out, range: NSRange(location: 0, length: ns0.length),
+                                              withTemplate: " ")
+        }
+        out = out.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let re = echoLeadRE {
+            out = re.stringByReplacingMatches(in: out, range: NSRange(location: 0, length: (out as NSString).length),
+                                              withTemplate: "")
+        }
+        out = out.trimmingCharacters(in: .whitespacesAndNewlines)
+        return normEchoTerm(out).isEmpty ? "" : out
     }
 
     /// Word-boundary, case-INSENSITIVE, applied IN ARRAY ORDER — mirrors

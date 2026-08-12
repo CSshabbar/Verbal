@@ -34,9 +34,26 @@
    critical path. Always **exclude terminals and secure fields**; require the inserted text to be found in
    the field before trusting a read (Electron reads are flaky). See `electron-ax-file-tagging` memory.
 
-6. **Groq prompt 896-char cap.** The Whisper bias prompt (dictionary glossary + open-file list) must stay
-   under Groq's 896-char limit or every call 400s. `transcriber.py` trims to `_GROQ_PROMPT_CHAR_CAP=850`
-   at a comma boundary, glossary first.
+6. **Groq prompt 896-char cap — and the bias prompt is a CONTINUATION prompt, so it must be scrubbed
+   out of the result.** The Whisper bias prompt (dictionary glossary + open-file list) must stay under
+   Groq's 896-char limit or every call 400s. `transcriber.py` trims to `_GROQ_PROMPT_CHAR_CAP=850` at a
+   comma boundary, glossary first. The real caps are much tighter (`dictionary._MAX_PROMPT_TERMS=80`,
+   `_MAX_PROMPT_CHARS=600`, keeping the **last** terms — Whisper only conditions on the prompt's ~224-token
+   tail, and every extra term is another word it can sprinkle into an unrelated sentence).
+   Whisper's `prompt` is **not an instruction** — the model is conditioned on it as if it were the
+   transcript so far, so on quiet/short/speech-free audio it simply continues the list and the glossary
+   comes back **as the transcription** (`"Glossary, M.T.:"` injected into the user's editor). Every
+   transcription result therefore goes through `dictionary.strip_prompt_echo(text, prompt)` **before**
+   replacements/tagging. It deletes (a) label-introduced runs, where the label is followed by terms we
+   sent **or stands alone as its own fragment** — the model often drops the list and echoes just the
+   heading (`"Glossary. So, the thing is…"`) — and (b) bare comma-lists of ≥2 terms we sent. It never
+   drops a lone dictionary word (that's the user saying a word they taught us) or a label that runs on
+   inside its clause (`"Files, I need to check them"`), and **only words actually sent as labels in that
+   call count as labels** (`prompt_labels`) — with no file list in the prompt, "Files" is just a word.
+   Returns `""` for an echo-only transcript — which the caller reports as **silent**, with no fallback to
+   the other providers (they'd parrot the same prompt on the same audio). Mirrored in all four dictation
+   front doors: `dictionary.py`, `lib/dictionary.ts` (`stripPromptEcho`), `KeyboardViewController.swift`,
+   `FlumeInputMethodService.kt` — edit one, edit all four. Pinned by `prompt_echo_fixtures.py`.
 
 7. **Fonts:** AppKit views use CoreText-registered faces (`theme.py`); **WKWebViews can't resolve those by
    name** → inline TTFs as base64 `@font-face` via `fonts_css.web_font_css()`.

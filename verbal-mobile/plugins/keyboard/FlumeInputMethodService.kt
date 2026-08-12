@@ -2135,7 +2135,12 @@ class FlumeInputMethodService : InputMethodService() {
         // cost the user their dictation. Without it we simply transcribe unbiased and
         // skip vocabulary/replacements/snippets rather than dropping the transcript.
         val cfg = readConfig()
-        var text = proxyTranscribe(f, if (cfg != null) buildPrompt(cfg) else null, cfg) ?: return null
+        val bias = if (cfg != null) buildPrompt(cfg) else null
+        var text = proxyTranscribe(f, bias, cfg) ?: return null
+        // Echo scrub FIRST: a glossary parroted back is not speech and must never
+        // reach the field. "" here is silence, handled by the caller like any
+        // empty transcript.
+        text = stripPromptEcho(text, bias)
         if (cfg != null) {
             text = applyReplacements(text, cfg.optJSONArray("replacements"))
             text = applySnippets(text, cfg.optJSONArray("snippets"))
@@ -2143,27 +2148,163 @@ class FlumeInputMethodService : InputMethodService() {
         return text.trim()
     }
 
-    // Whisper bias prompt. Hard Rule #6: Groq rejects (400) any prompt over 896 chars,
-    // so the glossary is capped at 200 terms AND 896 characters, trimmed at a comma
-    // boundary. Blank terms are skipped so the glossary can never contain "" entries.
-    private val PROMPT_TERM_CAP = 200
-    private val PROMPT_CHAR_CAP = 896
+    // Whisper bias prompt. Hard Rule #6: Groq rejects (400) any prompt over 896 chars.
+    // The caps here are much tighter than that: Whisper only conditions on the LAST
+    // ~224 tokens, so a longer glossary is not merely ignored — every extra term is
+    // another word it can drop into an unrelated sentence, and another line it can
+    // parrot back (see stripPromptEcho). Mirrors lib/dictionary.ts::buildPrompt.
+    private val PROMPT_TERM_CAP = 80
+    private val PROMPT_CHAR_CAP = 600
 
     private fun buildPrompt(cfg: JSONObject): String? {
         val vocab = cfg.optJSONArray("vocabulary") ?: return null
         if (vocab.length() == 0) return null
-        val sb = StringBuilder("Glossary: ")
-        var n = 0
+        val words = ArrayList<String>()
         for (i in 0 until vocab.length()) {
-            if (n >= PROMPT_TERM_CAP) break
             val o = vocab.optJSONObject(i)
             val w = (if (o != null) o.optString("word", "") else vocab.optString(i, "")).trim()
-            if (w.isEmpty()) continue
-            val piece = if (n == 0) w else ", $w"
-            if (sb.length + piece.length > PROMPT_CHAR_CAP) break
-            sb.append(piece); n++
+            if (w.isNotEmpty()) words.add(w)   // blank entries can never reach the glossary
         }
-        return if (n == 0) null else sb.toString()
+        // Keep the terms nearest the END of the list (what the user taught most
+        // recently) and trim from the FRONT — clipping the assembled string would
+        // throw away exactly the newest terms this ordering is meant to protect.
+        while (words.size > PROMPT_TERM_CAP) words.removeAt(0)
+        while (words.isNotEmpty() &&
+               ("Glossary: " + words.joinToString(", ") + ".").length > PROMPT_CHAR_CAP) {
+            words.removeAt(0)
+        }
+        return if (words.isEmpty()) null else "Glossary: " + words.joinToString(", ") + "."
+    }
+
+    // ── bias-prompt echo ("Glossary, M.T.:" arriving AS the transcript) ─────────
+    // Whisper's `prompt` is a CONTINUATION prompt, not an instruction: the model is
+    // conditioned on it as though it were the transcript so far. On quiet or
+    // speech-free audio the likeliest continuation of "Glossary: a, b, c." is MORE
+    // glossary — so the bias list comes back as the "transcription" and would be
+    // typed into the user's field. Mirrors lib/dictionary.ts::stripPromptEcho,
+    // KeyboardViewController.swift::stripPromptEcho and
+    // whisperflow/app/dictionary.py::strip_prompt_echo — edit one, edit all four.
+    // Pure + fail-closed: anything unexpected returns the text untouched.
+
+    // Chunk on commas/semicolons/newlines and on SENTENCE periods (a period followed
+    // by whitespace) so "M.T." and "main.py" survive as single chunks.
+    private val ECHO_CHUNK = Regex("""\s*[,;]\s*|\s*\.\s+|\s*\n+\s*""")
+    private val ECHO_ANY_LABEL = Regex("""\b(glossary|vocabulary|files)\b\s*:""",
+                                       RegexOption.IGNORE_CASE)
+    private val ECHO_RUN = Regex("""\s{2,}""")
+    private val ECHO_LEAD = Regex("""^[\s,;:.–—-]+""")
+
+    /** The section labels this prompt ACTUALLY carries ("Glossary:", "Files:"). Only
+     *  these count as labels when scanning a transcript — which keeps a dictated
+     *  "Files, I need to check them" intact on a run where no file list was sent.
+     *  We can only be echoed text we spoke first. */
+    private fun echoLabelRegex(prompt: String): Regex? {
+        val labels = sortedSetOf<String>()
+        for (m in ECHO_ANY_LABEL.findAll(prompt)) labels.add(m.groupValues[1].lowercase())
+        if (labels.isEmpty()) return null
+        return Regex("""^\s*(?:""" + labels.joinToString("|") + """)\b\s*(:)?\s*""",
+                     RegexOption.IGNORE_CASE)
+    }
+
+    /** Casefold and reduce every non-alphanumeric run to one space: "M.T.:" and
+     *  "m t" both become "m t", so an echo matches the term we sent. */
+    private fun normEchoTerm(s: String): String {
+        val sb = StringBuilder()
+        var pending = false
+        for (ch in s.lowercase()) {
+            if (ch in 'a'..'z' || ch in '0'..'9') {
+                if (pending && sb.isNotEmpty()) sb.append(' ')
+                pending = false
+                sb.append(ch)
+            } else {
+                pending = true
+            }
+        }
+        return sb.toString()
+    }
+
+    /** (body-after-label, hadLabel, hadColon). A colon means "Glossary:" — punctuated
+     *  like a label, so it is ours and never dictation. */
+    private fun splitEchoLabel(c: String, re: Regex?): Triple<String, Boolean, Boolean> {
+        val m = re?.find(c) ?: return Triple(c, false, false)
+        if (m.value.isEmpty()) return Triple(c, false, false)
+        return Triple(c.substring(m.value.length), true, m.groupValues[1].isNotEmpty())
+    }
+
+    private fun echoSplit(text: String): Pair<MutableList<String>, MutableList<String>> {
+        val chunks = ArrayList<String>()
+        val seps = ArrayList<String>()
+        var idx = 0
+        for (m in ECHO_CHUNK.findAll(text)) {
+            chunks.add(text.substring(idx, m.range.first))
+            seps.add(m.value)
+            idx = m.range.last + 1
+        }
+        chunks.add(text.substring(idx))
+        seps.add("")
+        return Pair(chunks, seps)
+    }
+
+    /** Only words we actually SENT as labels count as labels. Deletes any run
+     *  introduced by a bias LABEL that is either followed by terms we sent or STANDS
+     *  ALONE as its own fragment (the model often drops the list and echoes just the
+     *  heading — "Glossary. So, the thing is…"), plus any bare comma-list of TWO OR
+     *  MORE consecutive terms we sent. A LONE dictionary word is never dropped — that
+     *  is the user saying a word they taught us — and a label running on inside its
+     *  clause ("Files, I need to check them") is speech. "" = echo-only transcript. */
+    private fun stripPromptEcho(text: String, prompt: String?): String {
+        try {
+            if (text.isBlank() || prompt.isNullOrEmpty()) return text
+            val labelRe = echoLabelRegex(prompt)
+            val terms = HashSet<String>()
+            for (piece in echoSplit(prompt).first) {
+                val t = normEchoTerm(splitEchoLabel(piece, labelRe).first)
+                if (t.isNotEmpty()) terms.add(t)
+            }
+            if (terms.isEmpty()) return text
+
+            val (chunks, seps) = echoSplit(text)
+            val n = chunks.size
+            val isTerm = BooleanArray(n)
+            val isEmpty = BooleanArray(n)
+            val hasLabel = BooleanArray(n)
+            val isAlone = BooleanArray(n)
+            for (k in 0 until n) {
+                val (body, label, colon) = splitEchoLabel(chunks[k], labelRe)
+                val norm = normEchoTerm(body)
+                hasLabel[k] = label; isTerm[k] = terms.contains(norm); isEmpty[k] = norm.isEmpty()
+                // A heading standing on its own — "Glossary:" or a "Glossary." ending
+                // the fragment — is ours. One that runs on inside its clause is the user.
+                val endsFragment = k == n - 1 || seps[k].contains(".") || seps[k].contains("\n")
+                isAlone[k] = label && norm.isEmpty() && (colon || endsFragment)
+                // Peel a "Glossary:" prefix even when the chunk itself survives.
+                if (label && colon) chunks[k] = body
+            }
+
+            val drop = BooleanArray(n)
+            var i = 0
+            while (i < n) {
+                val nextIsTerm = (i + 1 < n) && isTerm[i + 1]
+                val start = isAlone[i] ||
+                            (hasLabel[i] && isTerm[i]) ||
+                            (hasLabel[i] && isEmpty[i] && nextIsTerm) ||
+                            (isTerm[i] && nextIsTerm)
+                if (!start) { i++; continue }
+                var j = i
+                while (j < n && (isTerm[j] || isEmpty[j])) { drop[j] = true; j++ }
+                i = if (j > i) j else i + 1
+            }
+
+            // Rebuild unconditionally: even with no run to delete, a "Glossary:"
+            // prefix may have been peeled off an otherwise real sentence above.
+            val sb = StringBuilder()
+            for (k in 0 until n) if (!drop[k]) sb.append(chunks[k]).append(seps[k])
+            var out = ECHO_RUN.replace(sb.toString(), " ").trim()
+            out = ECHO_LEAD.replace(out, "").trim()
+            return if (normEchoTerm(out).isEmpty()) "" else out
+        } catch (e: Exception) {
+            return text   // fail-closed: an echo scrub must never cost a dictation
+        }
     }
 
     private fun proxyTranscribe(f: File, prompt: String?, cfg: JSONObject?): String? {
