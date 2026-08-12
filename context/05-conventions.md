@@ -584,14 +584,19 @@
     section" bug (Jul 2026). Also keep `overscroll-behavior:contain` on `.main` (kills the rubber-band
     "resistance" at the scroll boundary in the WKWebView).
     **Second cause of the same symptom (Aug 2026): a `renderSettings()` loop.** `renderSettings()` ends in
-    `loadMeetSettings()`, whose `get_spoken_language` callback must only call `renderSettings()` when the
-    value actually changed — an unconditional re-render loops forever (render → load → callback → render),
-    rebuilding `settingsMain.innerHTML` every bridge round-trip. Each rebuild collapses the async Meetings/
-    Transform sections to short "Loading…" stubs, so the scroll height shrinks and the `scrollTop` restore
-    clamps back to ~the Meetings section (flicker + "pulled back up"). Two invariants: (a) any settings
-    sub-load callback re-renders only on change; (b) `renderSettings()` synchronously refills the async
-    sections from cache (`renderMeetSettings()`/`renderTfSettings()`/`fillHotkeyLabels()`) *before*
-    restoring `scrollTop`, so the height is full-size when the restore happens.
+    `loadMeetSettings()`, whose `get_spoken_language` callback used to call `renderSettings()`
+    unconditionally — render → load → callback → render, forever, rebuilding `settingsMain.innerHTML` every
+    bridge round-trip. Each rebuild collapses the async Meetings/Transform sections to short "Loading…"
+    stubs, so the scroll height shrinks and the `scrollTop` restore clamps back to ~the Meetings section
+    (flicker + "pulled back up"). Two invariants: (a) **a settings sub-load must not re-render at all when
+    its data is static** — the language list is fetched ONCE behind a `LANGS_LOADED` guard (reset to
+    `false` on failure so a retry can happen) and thereafter patched into the live `<select>` by
+    `patchSpokenLangSelect()`; a callback that does need to re-render must do so only on a real change;
+    (b) `renderSettings()` synchronously refills the async sections from cache
+    (`renderMeetSettings()`/`renderTfSettings()`/`fillHotkeyLabels()`) *before* restoring `scrollTop`, so
+    the height is full-size when the restore happens. Both halves are required — (a) alone still flickers
+    on the first paint, (b) alone still loops. (The Mac and Windows sessions each hit this and fixed it
+    independently; the merge kept the fetch-once form of (a).)
 
 24. **A dead refresh token must fall back to the anon key, never send an expired JWT (`auth.py`).** When
     `_refresh_access_token` gets a 400/401/403 from the token endpoint (invalid_grant /

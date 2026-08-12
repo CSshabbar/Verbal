@@ -1,5 +1,8 @@
 """
-Meetings — macOS system-audio capture via ScreenCaptureKit (audio-only).
+Meetings — system-audio capture. macOS ScreenCaptureKit lives below; on
+Windows the top-of-file shim re-exports the WASAPI loopback implementation
+from `app.win_system_audio` so `app.meetings` and DashboardApi.test_meeting_capture
+work unchanged (WINDOWS_PARITY_PLAN.md — the paired-module convention).
 
 The one genuinely new subsystem for Meetings (MEETINGS_DESIGN_HANDOFF.md):
 captures what the Mac is PLAYING (the other side of a Zoom/Meet/Teams call)
@@ -18,6 +21,7 @@ point is try/except'd; failures surface as is_supported()=False or
 start()=False and the meeting continues mic-only.
 """
 import logging
+import sys
 import threading
 import time
 
@@ -275,3 +279,22 @@ def run_capture_test(app=None, seconds=3.0):
     except Exception as e:
         logger.error("capture test failed: %s", e)
         return {"ok": False, "error": str(e)}
+
+
+# ── Windows platform shim (W6) ───────────────────────────────────────────
+# On Windows the Mac ScreenCaptureKit defs above are unreachable (their
+# imports fail at call time on any non-Mac). Override the public symbols
+# with the WASAPI-loopback implementation so app.meetings and
+# DashboardApi.test_meeting_capture pick up the correct backend without any
+# other code change. Placed at the end so it wins the name binding.
+if sys.platform == "win32":
+    try:
+        from app.win_system_audio import (  # noqa: F401
+            SAMPLE_RATE, CHANNELS, is_supported,
+            SystemAudioCapture, run_capture_test,
+        )
+    except Exception as _e:  # win_system_audio not built / sounddevice missing
+        logger.debug("system_audio: Windows shim not loaded (%s)", _e)
+        def is_supported(): return False  # noqa: E301
+        def run_capture_test(app=None, seconds=3.0):  # noqa: E301
+            return {"ok": False, "error": "system audio unavailable"}

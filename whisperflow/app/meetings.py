@@ -1453,6 +1453,10 @@ class MeetingManager:
     def list_meetings(self):
         try:
             a = self.active
+            # Pull the shared cloud list into the local cache once every few
+            # seconds so meetings recorded on other devices (mobile, other
+            # desktop) appear here too. Fail-closed: cloud outage → local only.
+            self._hydrate_from_cloud_if_stale()
             return {"ok": True,
                     "meetings": list(self.app.config.get("meetings", [])),
                     "opened": list(self.app.config.get("meetings_opened") or []),
@@ -1462,6 +1466,62 @@ class MeetingManager:
                     "active_state": a.state if a else None}
         except Exception as e:
             return {"ok": False, "error": str(e), "meetings": []}
+
+    _CLOUD_LIST_TTL_S = 30.0
+    _cloud_list_hydrated_at = 0.0
+
+    def _hydrate_from_cloud_if_stale(self):
+        """Merge recent cloud meeting rows into config['meetings'] so this
+        device sees meetings recorded elsewhere (mobile, other desktop).
+        Synchronous but bounded (short httpx timeout inside
+        `_fetch_meeting_rows`); throttled to at most once per TTL.
+        Any failure is silently swallowed — local list is authoritative
+        as a fallback."""
+        try:
+            user_id = self.app.config.get("sync_user_id", "")
+            if not user_id:
+                return
+            now = time.time()
+            if (now - self._cloud_list_hydrated_at) < self._CLOUD_LIST_TTL_S:
+                return
+            self._cloud_list_hydrated_at = now
+            rows = _fetch_meeting_rows(self.app.config, limit=MEETINGS_CAP)
+            if not rows:
+                return
+            # Convert each cloud row into the compact meta shape stored locally.
+            cloud_metas = []
+            for r in rows:
+                try:
+                    cloud_metas.append({
+                        "id": r.get("id"),
+                        "title": r.get("title") or "",
+                        "started_at": r.get("started_at") or "",
+                        "duration_seconds": r.get("duration_seconds") or 0,
+                        "status": r.get("status") or "ready",
+                        "speakers": r.get("speakers") or {},
+                        "utterances": len(r.get("transcript") or []),
+                        "audio_url": r.get("audio_url") or "",
+                        "cloud": True,
+                    })
+                except Exception:
+                    continue
+            # Merge: local wins on same id (active session may be more current),
+            # then cloud fills in the rest. Sort newest first, cap.
+            local = list(self.app.config.get("meetings", []))
+            by_id = {m.get("id"): m for m in local if m.get("id")}
+            for cm in cloud_metas:
+                if cm.get("id") and cm["id"] not in by_id:
+                    by_id[cm["id"]] = cm
+            merged = list(by_id.values())
+            merged.sort(key=lambda m: m.get("started_at") or "", reverse=True)
+            merged = merged[:MEETINGS_CAP]
+            self.app.config["meetings"] = merged
+            try:
+                save_config(self.app.config)
+            except Exception as e:
+                logger.debug("meetings cache save failed: %s", e)
+        except Exception as e:
+            logger.debug("meetings hydrate skipped: %s", e)
 
     def retry_summary(self, meeting_id):
         """Regenerate the summary — for the in-memory session when it matches,

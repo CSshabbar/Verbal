@@ -876,7 +876,7 @@ function renderCanvas(){
   document.getElementById('canvasMain').innerHTML = `
     <div class="mhead"><div><div class="eyebrow">Shared clipboard</div><h1 class="title">Canvas</h1></div>
       <button class="roundbtn" title="Refresh" onclick="loadCanvas()">${SVG_REFRESH}</button></div>
-    <div class="dropzone" onclick="pickCanvasImage()"><div class="dzicon">${SVG.grid}</div><div><div class="dztitle">Type below, or add an image</div><div class="dzsub">Paste an image (⌘V), or click to choose a file · syncs to your devices</div></div></div>
+    <div class="dropzone" onclick="pickCanvasImage()"><div class="dzicon">${SVG.grid}</div><div><div class="dztitle">Type below, or add an image</div><div class="dzsub">Paste an image (${IS_WINDOWS?'Ctrl+V':'⌘V'}), or click to choose a file · syncs to your devices</div></div></div>
     ${img}
     <textarea class="canvasArea" id="canvasArea" placeholder="Type or paste text here…" oninput="canvasDirty()">${esc(CANVAS.content||'')}</textarea>
     <div class="canvasBar">
@@ -1581,7 +1581,7 @@ function renderSettings(){
         <div class="hotrow"><span>Dictation (hold or toggle)</span><span class="kbs"><kbd id="dictKeyLbl">…</kbd></span>
           <button class="btn ghost" style="width:auto;padding:5px 12px;margin-left:8px" id="dictKeyBtn"
             onclick="pickHotkey('dict')">Change</button></div>
-        <div class="hotrow"><span>Transform selection</span><span class="kbs"><kbd>⌘⇧</kbd> + <kbd id="tfKeyLbl">…</kbd></span>
+        <div class="hotrow"><span>Transform selection</span><span class="kbs"><kbd>${PL_KEYS.MOD_KBD}</kbd> + <kbd id="tfKeyLbl">…</kbd></span>
           <button class="btn ghost" style="width:auto;padding:5px 12px;margin-left:8px" id="tfKeyBtn"
             onclick="pickHotkey('tf')">Change</button></div>
         <div class="ssub" id="hotkeyMsg" style="margin:8px 0 0"></div>
@@ -1604,21 +1604,40 @@ function loadMeetSettings(){
   api('get_meeting_settings').then(r=>{
     if(r && r.ok){ MSET=r; renderMeetSettings(); }
   });
-  api('get_spoken_language').then(r=>{
-    if(!r || !r.ok) return;
-    // Re-render ONLY on a real change. An unconditional renderSettings() here
-    // looped forever (render -> loadMeetSettings -> this callback -> render…),
-    // rebuilding the page every bridge round-trip; each rebuild shrank the
-    // scroll height to the "Loading…" stubs and clamped scrollTop back to the
-    // Meetings section — the "can't scroll past Meetings" flicker.
-    const changed = LANGS.value!==r.value
-      || JSON.stringify(LANGS.options||[])!==JSON.stringify(r.options||[]);
-    LANGS={value:r.value, options:r.options};
-    if(changed) renderSettings();
-  });
+  // Language options don't change between fetches. Fetching them again on
+  // every renderSettings() + then calling renderSettings() inside the
+  // resolve callback creates an infinite bounce: renderSettings resets
+  // innerHTML → loadMeetSettings fires → language resolves → renderSettings
+  // → repeat. That was the "flickering between Meetings and Transform"
+  // glitch. Fetch once, and after that just patch the <select> in place.
+  if(!LANGS_LOADED){
+    LANGS_LOADED=true;
+    api('get_spoken_language').then(r=>{
+      if(r && r.ok){
+        LANGS={value:r.value, options:r.options};
+        patchSpokenLangSelect();
+      } else {
+        LANGS_LOADED=false;  // let a retry happen next open
+      }
+    });
+  } else {
+    patchSpokenLangSelect();
+  }
   api('get_transform_settings').then(r=>{
     if(r && r.ok){ TSET=r.settings||{}; TSET._tfLabel=r.hotkey_label; TSET._dictLabel=r.dictation_label; renderTfSettings(); fillHotkeyLabels(); }
   });
+}
+
+function patchSpokenLangSelect(){
+  // Update just the <select> element instead of rebuilding the whole
+  // Settings pane — no innerHTML churn, no scroll jump, no flicker.
+  const sel = document.getElementById('spokenLang');
+  if(!sel || !LANGS || !LANGS.options) return;
+  const opts = LANGS.options.map(o =>
+    `<option value="${esc(o[0])}" ${LANGS.value===o[0]?'selected':''}>${esc(o[1])}</option>`
+  ).join('');
+  if(sel.innerHTML !== opts) sel.innerHTML = opts;
+  sel.value = LANGS.value || sel.value;
 }
 function meetBadge(st){
   const cls = st==='granted'?'ready':(st==='denied'?'denied':'pending');
@@ -1671,6 +1690,10 @@ function setMeetSetting(key, val){
 }
 let TSET=null;
 let LANGS={value:'en', options:[["auto","Auto-detect"],["en","English"]]};
+// Fetch language options only once per session — they don't change between
+// calls. Preventing the re-fetch is what fixes the Settings-page flicker
+// (was: language resolve → renderSettings() → language resolve …).
+let LANGS_LOADED=false;
 function setSpokenLang(v){
   LANGS.value=v;
   api('set_spoken_language', v);
@@ -1688,12 +1711,12 @@ function renderTfSettings(){
     <div class="scard">
       ${tgl('transform_enabled','Enable Transform')}
       ${tgl('transform_inline_enabled','Inline — “…so Flume, …” at the end of a dictation')}
-      ${tgl('transform_selection_enabled','Selection — ⌘⇧'+(TSET._tfLabel||'T')+' on highlighted text (preview before replace)')}
+      ${tgl('transform_selection_enabled','Selection — '+PL_KEYS.MOD_LABEL+' '+(TSET._tfLabel||'T')+' on highlighted text (preview before replace)')}
     </div>`;
 }
 function fillHotkeyLabels(){
   if(!TSET) return;
-  const d=document.getElementById('dictKeyLbl'); if(d) d.textContent=TSET._dictLabel||'Right ⌘';
+  const d=document.getElementById('dictKeyLbl'); if(d) d.textContent=TSET._dictLabel||PL_KEYS.DICT_DEFAULT;
   const t=document.getElementById('tfKeyLbl'); if(t) t.textContent=TSET._tfLabel||'T';
 }
 function pickHotkey(which){
@@ -1702,9 +1725,7 @@ function pickHotkey(which){
   if(btn.dataset.wait) return;
   window.__HK_WAIT=true;                             // freeze settings rebuilds
   btn.dataset.wait='1'; btn.textContent='Press a key…';
-  if(msg) msg.textContent = which==='dict'
-    ? 'Press the key you want (modifiers like Right ⌘ work too). Esc cancels.'
-    : 'Press one letter/key — it will trigger with ⌘⇧. Esc cancels.';
+  if(msg) msg.textContent = which==='dict' ? PL_KEYS.PICK_DICT_HINT : PL_KEYS.PICK_TF_HINT;
   api(which==='dict'?'set_dictation_hotkey':'set_transform_hotkey').then(r=>{
     window.__HK_WAIT=false;
     delete btn.dataset.wait; btn.textContent='Change';
@@ -2204,14 +2225,44 @@ setTimeout(()=>{ if(!LOAD_STARTED) load(); }, 400);
         f'{k}:{_json_str(_svg(k))}' for k in _IC
     ) + "};</script>"
 
+    # Platform-aware key glyphs. The Mac page uses ⌘⇧ / "Right ⌘"; on
+    # Windows those Command symbols are meaningless — swap in Ctrl+Shift
+    # and a sensible Right-Alt default. Injected as a JS constant BEFORE
+    # the main script so every render function that references PL_KEYS
+    # picks up the right labels.
+    import sys as _sys
+    _is_win = _sys.platform == "win32"
+    _key_defs = {
+        "mac": {
+            "MOD_LABEL":        "⌘⇧",    # ⌘⇧
+            "MOD_KBD":          "⌘⇧",
+            "DICT_DEFAULT":     "Right ⌘",     # Right ⌘
+            "PICK_DICT_HINT":   "Press the key you want (modifiers like Right ⌘ work too). Esc cancels.",
+            "PICK_TF_HINT":     "Press one letter/key — it will trigger with ⌘⇧. Esc cancels.",
+        },
+        "win": {
+            "MOD_LABEL":        "Ctrl+Shift",
+            "MOD_KBD":          "Ctrl+Shift",
+            "DICT_DEFAULT":     "Right Alt",
+            "PICK_DICT_HINT":   "Press the key you want (modifiers like Right Alt work too). Esc cancels.",
+            "PICK_TF_HINT":     "Press one letter/key — it will trigger with Ctrl+Shift. Esc cancels.",
+        },
+    }
+    _pl = "win" if _is_win else "mac"
+    platform_map = ("<script>const PL_KEYS=" +
+                    _json_str(_key_defs[_pl]) +
+                    f";const IS_WINDOWS={('true' if _is_win else 'false')};</script>")
+
     # Strip the leftover placeholder line from the JS.
     js = js.replace("const IC. = {}; // placeholder\n", "")
 
     # pressed_css goes LAST: a handful of hover rules here also set `filter`
     # (.siGoogle, .playbtn, .dictate), and at equal specificity source order
     # decides — so the press must be able to win while hovered.
+    # platform_map defines PL_KEYS/IS_WINDOWS and must precede the body that
+    # renders hotkey labels from them.
     return (f"<style>{web_font_css()}{_CSS}{pressed_css(_PRESSED_SELECTORS)}</style>"
-            f"{svg_map}{body}{js}")
+            f"{svg_map}{platform_map}{body}{js}")
 
 
 def _json_str(s: str) -> str:
