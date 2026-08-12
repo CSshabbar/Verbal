@@ -566,6 +566,15 @@
     everything past the fold is clipped by `body{overflow:hidden}` — the "can't scroll after the meetings
     section" bug (Jul 2026). Also keep `overscroll-behavior:contain` on `.main` (kills the rubber-band
     "resistance" at the scroll boundary in the WKWebView).
+    **Second cause of the same symptom (Aug 2026): a `renderSettings()` loop.** `renderSettings()` ends in
+    `loadMeetSettings()`, whose `get_spoken_language` callback must only call `renderSettings()` when the
+    value actually changed — an unconditional re-render loops forever (render → load → callback → render),
+    rebuilding `settingsMain.innerHTML` every bridge round-trip. Each rebuild collapses the async Meetings/
+    Transform sections to short "Loading…" stubs, so the scroll height shrinks and the `scrollTop` restore
+    clamps back to ~the Meetings section (flicker + "pulled back up"). Two invariants: (a) any settings
+    sub-load callback re-renders only on change; (b) `renderSettings()` synchronously refills the async
+    sections from cache (`renderMeetSettings()`/`renderTfSettings()`/`fillHotkeyLabels()`) *before*
+    restoring `scrollTop`, so the height is full-size when the restore happens.
 
 24. **A dead refresh token must fall back to the anon key, never send an expired JWT (`auth.py`).** When
     `_refresh_access_token` gets a 400/401/403 from the token endpoint (invalid_grant /

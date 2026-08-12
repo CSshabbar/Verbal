@@ -1590,6 +1590,11 @@ function renderSettings(){
   if(!FT_LOADED){ FT_LOADED=true; loadFiletag(); }
   if(!AL_LOADED){ AL_LOADED=true; loadAutolearn(); }
   loadMeetSettings();
+  // Fill the Meetings/Transform stubs from cache synchronously (they no-op on
+  // first load) so the content height is back to full size BEFORE scrollTop is
+  // restored — otherwise the restore clamps to the shorter stub height and the
+  // page jumps up to the Meetings section on every rebuild.
+  renderMeetSettings(); renderTfSettings(); fillHotkeyLabels();
   const sc2=document.getElementById('settingsMain');
   if(sc2 && keepScroll) sc2.scrollTop=keepScroll;
 }
@@ -1600,7 +1605,16 @@ function loadMeetSettings(){
     if(r && r.ok){ MSET=r; renderMeetSettings(); }
   });
   api('get_spoken_language').then(r=>{
-    if(r && r.ok){ LANGS={value:r.value, options:r.options}; renderSettings(); }
+    if(!r || !r.ok) return;
+    // Re-render ONLY on a real change. An unconditional renderSettings() here
+    // looped forever (render -> loadMeetSettings -> this callback -> render…),
+    // rebuilding the page every bridge round-trip; each rebuild shrank the
+    // scroll height to the "Loading…" stubs and clamped scrollTop back to the
+    // Meetings section — the "can't scroll past Meetings" flicker.
+    const changed = LANGS.value!==r.value
+      || JSON.stringify(LANGS.options||[])!==JSON.stringify(r.options||[]);
+    LANGS={value:r.value, options:r.options};
+    if(changed) renderSettings();
   });
   api('get_transform_settings').then(r=>{
     if(r && r.ok){ TSET=r.settings||{}; TSET._tfLabel=r.hotkey_label; TSET._dictLabel=r.dictation_label; renderTfSettings(); fillHotkeyLabels(); }
