@@ -59,7 +59,16 @@ def _svg(key):
 
 _CSS = """
 *{box-sizing:border-box;margin:0;padding:0}
-:root{--bg:#0e1012;--chrome:#0a0c0e;--card:#17191c;--tx:#f2f2f2;--mut:rgba(240,240,240,.55);--sub:rgba(240,240,240,.42);--acc:#C85A3E;--acc-soft:rgba(200,90,62,.14);--acc-bd:rgba(200,90,62,.35);--bd:rgba(240,240,240,.06);--bd2:rgba(240,240,240,.1);--on:#4ad15a}
+:root{--bg:#0e1012;--chrome:#0a0c0e;--card:#17191c;--tx:#f2f2f2;--mut:rgba(240,240,240,.55);--sub:rgba(240,240,240,.42);--acc:#C85A3E;--acc-soft:rgba(200,90,62,.14);--acc-bd:rgba(200,90,62,.35);--bd:rgba(240,240,240,.06);--bd2:rgba(240,240,240,.1);--on:#4ad15a;
+  /* MER-46: the meeting detail view (ported from the meeting panel's 31e
+     summary) is built on the wider Flume palette — same values as
+     meeting_html.py's :root, which is the design system's source. */
+  --tx2:rgba(240,240,240,.65);--dim:rgba(240,240,240,.45);--faint:rgba(240,240,240,.35);
+  --raised:rgba(240,240,240,.06);--raised2:rgba(240,240,240,.09);
+  --bd-faint:rgba(240,240,240,.04);--subtle-alt:rgba(255,255,255,.03);
+  --acc-txt:#f0b39a;--acc-softer:rgba(200,90,62,.06);
+  --ok:#4ad15a;--rec:#E05049;--rec-soft:#f0a5a0;
+  --sp-terra:#D98A72;--sp-slate:#8FA7C2;--sp-sage:#A9BD98;--sp-ochre:#D9B36B}
 html,body{height:100%}
 body{background:var(--bg);font-family:'Geist',-apple-system,system-ui,sans-serif;color:var(--tx);-webkit-font-smoothing:antialiased;overflow:hidden}
 .app{display:grid;grid-template-columns:196px minmax(0,1fr);grid-template-rows:100vh;height:100vh;overflow:hidden}
@@ -260,6 +269,21 @@ body{background:var(--bg);font-family:'Geist',-apple-system,system-ui,sans-serif
 .notebody code{font:500 13px 'JetBrains Mono';background:rgba(240,240,240,.08);padding:1px 5px;border-radius:5px}
 .notebody pre{background:rgba(240,240,240,.05);border:1px solid var(--bd);border-radius:8px;padding:10px 12px;font:500 12.5px 'JetBrains Mono';white-space:pre-wrap;overflow-x:auto;margin:8px 0}
 .dcards{display:flex;flex-direction:column;gap:12px;margin-bottom:18px}
+/* Devices screen. The scroller is still `.main` (Hard Rule #23 — do NOT nest a
+   second scroller here); the header just sticks to the top of it so the device
+   count and "Pair a device" stay reachable with a long list. */
+.dhead{position:sticky;top:0;z-index:5;background:var(--bg);padding:2px 0 14px;margin-bottom:10px}
+.dgroup{margin-bottom:22px}
+.dgrouphead{display:flex;align-items:center;gap:9px;margin-bottom:11px;font:600 10.5px 'Geist';letter-spacing:.16em;text-transform:uppercase;color:var(--mut)}
+.dgrouphead .ghdot{width:6px;height:6px;border-radius:50%;background:var(--mut);flex:none}
+.dgrouphead .ghdot.on{background:#4ad15a;box-shadow:0 0 0 3px rgba(74,209,90,.16)}
+.dgrouphead .gcount{font:500 10.5px 'JetBrains Mono';letter-spacing:.04em;color:var(--mut);opacity:.8}
+.dgrouphead .gclean{margin-left:auto;border:1px solid var(--bd);background:transparent;color:var(--mut);border-radius:8px;padding:5px 10px;font:600 10px 'Geist';letter-spacing:.1em;text-transform:uppercase;cursor:pointer}
+.dgrouphead .gclean:hover{color:#f0b39a;border-color:var(--acc-bd);background:var(--acc-soft)}
+/* Offline rows recede so the live device is what the eye lands on. */
+.dcard.off{opacity:.62}
+.dcard.off:hover{opacity:1}
+.tgtpill .tdot{display:inline-block;width:5px;height:5px;border-radius:50%;background:#4ad15a;margin-right:6px;vertical-align:middle}
 .devhead{display:flex;align-items:center}
 .devadd{margin-left:auto;width:20px;height:20px;border-radius:6px;border:0;background:rgba(240,240,240,.06);color:var(--mut);cursor:pointer;font:400 15px 'Geist';line-height:1;display:flex;align-items:center;justify-content:center}
 .devadd:hover{background:rgba(200,90,62,.18);color:var(--acc)}
@@ -286,6 +310,23 @@ body{background:var(--bg);font-family:'Geist',-apple-system,system-ui,sans-serif
 .devrm{width:32px;height:32px;border-radius:9px;border:1px solid var(--bd);background:transparent;color:var(--mut);cursor:pointer;display:flex;align-items:center;justify-content:center;flex:none}
 .devrm svg{width:15px;height:15px}
 .devrm:hover{color:#f0b39a;border-color:var(--acc-bd);background:var(--acc-soft)}
+/* Settings — grouped rail (one group in view; see renderSettings). The pane, not
+   #settingsMain, is the scroller now, so each group's scroll position is its own. */
+#settingsMain.setshell{padding:0;overflow:hidden;display:grid;grid-template-columns:176px minmax(0,1fr)}
+.setrail{border-right:1px solid var(--bd);padding:22px 10px;display:flex;flex-direction:column;gap:1px;overflow-y:auto;overscroll-behavior:contain}
+.setrail .srl{font:600 10px 'JetBrains Mono';letter-spacing:.14em;text-transform:uppercase;color:var(--sub);padding:0 9px 10px}
+.sritem{display:flex;align-items:center;justify-content:space-between;gap:8px;width:100%;text-align:left;padding:8px 9px;border:0;border-radius:8px;background:none;color:var(--mut);font:500 12.5px 'Geist';cursor:pointer}
+.sritem:hover{background:rgba(240,240,240,.05);color:var(--tx)}
+.sritem.on{background:var(--acc-soft);color:var(--tx);box-shadow:inset 2px 0 0 var(--acc)}
+.sritem:focus-visible{outline:2px solid var(--acc-bd);outline-offset:-2px}
+.sritem em{font:500 10px 'JetBrains Mono';font-style:normal;color:var(--sub);flex:none}
+.sritem.on em{color:var(--mut)}
+.setpane{padding:24px 28px;min-width:0;overflow-y:auto;overflow-x:hidden;overscroll-behavior:contain}
+.setpane .setlede{max-width:62ch;margin-bottom:0}
+.setpane .ssection:first-of-type{margin-top:18px}
+/* Meetings/Transform render their own <h3> heading; the pane already titles the
+   group, so suppress theirs rather than editing those renderers. */
+.setpane #meetSettings>h3:first-child,.setpane #tfSettings>h3:first-child{display:none}
 .ssection{margin-top:26px}.ssection h3{font:600 12.5px 'Geist';margin-bottom:4px}.ssub{font:400 11px 'Geist';color:var(--mut);margin-bottom:14px}
 .dlabel2{font:600 10px 'JetBrains Mono';letter-spacing:.1em;color:var(--sub);margin-bottom:9px}
 .dictchips{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px}
@@ -305,6 +346,24 @@ body{background:var(--bg);font-family:'Geist',-apple-system,system-ui,sans-serif
 .dcolhead{margin-bottom:14px}.dcolhead h3{font:600 14px 'Geist';margin-bottom:3px}
 .dictcol .dictchips,.dictcol .reprows{max-height:340px;overflow-y:auto}
 .scard{background:var(--card);border:1px solid var(--bd);border-radius:14px;padding:16px;margin-bottom:12px}
+/* `.scard` is not a flex container, so every style="flex-direction:row" on one
+   was inert and those cards silently stacked (account, delete, clear history).
+   Use the class instead of re-inlining the lie. */
+.scard.row{display:flex;flex-direction:row;align-items:center;gap:12px}
+.scard.row .grow{flex:1;min-width:0}
+/* .btn is a full-width flex block by default, which only shows once the card is
+   a real row — pin the trailing action to its own content. */
+.scard.row .btn{flex:none;width:auto;white-space:nowrap}
+.sname{font:600 13.5px 'Geist';color:var(--tx)}
+.sdesc{font:400 12px 'Geist';color:var(--mut)}
+.sdanger{color:#f0b39a}
+.btn.slim{width:auto;padding:5px 12px;margin-left:8px}
+/* Meetings/Transform emit bare <select>s; without this they render as raw OS
+   widgets next to the styled .field selects. Same treatment, one source. */
+.setpane select{background:rgba(240,240,240,.05);border:1px solid var(--bd);border-radius:8px;padding:7px 30px 7px 10px;color:var(--tx);font:400 12px 'Geist';outline:0;-webkit-appearance:none;appearance:none;cursor:pointer;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23f2f2f2' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 10px center}
+.setpane select:focus{border-color:var(--acc-bd)}
+.setpane select option{background:#17191c;color:#f2f2f2}
+.setpane .field select{width:100%;padding:10px 34px 10px 12px;font-size:12.5px}
 .field{margin-bottom:12px}.field label{display:block;font:600 10px 'JetBrains Mono';color:var(--mut);letter-spacing:.08em;margin-bottom:7px}
 .field input,.field textarea,.field select{width:100%;background:rgba(240,240,240,.05);border:1px solid var(--bd);border-radius:8px;padding:10px 12px;color:var(--tx);font:400 12.5px 'Geist';outline:0}
 .field input:focus,.field textarea:focus,.field select:focus{border-color:var(--acc-bd)}
@@ -472,6 +531,234 @@ body{background:var(--bg);font-family:'Geist',-apple-system,system-ui,sans-serif
   opacity:0;pointer-events:none;transition:opacity .16s ease,transform .16s ease;max-width:70vw}
 .toast.on{opacity:1;transform:translate(-50%,0)}
 .toast.err{border-color:rgba(224,80,73,.4);color:#f0a5a0}
+/* ── meeting detail (31e), ported from the meeting panel (MER-46) ──────────────
+   The panel is live-meeting-only now; reading a meeting happens here, inside the
+   Meetings screen. Every rule is scoped to #mtgDetail because the panel's design
+   vocabulary (.card/.eyebrow/.legend/.mono) overlaps the dashboard's own.
+   Companion classes the ported markup leans on, from meeting_html.py's shared
+   region: */
+#mtgDetail .mono,#mtgNotes .mono{font-family:'JetBrains Mono',monospace}
+#mtgDetail .eyebrow,#mtgNotes .eyebrow{font:500 9.5px 'JetBrains Mono';letter-spacing:.16em;
+  text-transform:uppercase;color:var(--faint);margin:0}
+#mtgDetail .eyebrow.accd,#mtgNotes .eyebrow.accd{color:var(--acc)}
+#mtgDetail .btnS,#mtgNotes .btnS{display:inline-flex;align-items:center;gap:6px;padding:8px 12px;
+  border-radius:10px;background:transparent;border:1px solid var(--bd2);color:var(--tx);
+  font:600 12px 'Geist';cursor:pointer}
+#mtgDetail .btnS:hover,#mtgNotes .btnS:hover{background:var(--raised)}
+#mtgDetail .btnS.mini,#mtgNotes .btnS.mini{padding:6px 10px;font:600 10.5px 'JetBrains Mono';
+  letter-spacing:.08em}
+#mtgDetail .iconbtn,#mtgNotes .iconbtn{width:28px;height:28px;border-radius:7px;background:none;
+  color:var(--mut);display:inline-flex;align-items:center;justify-content:center;flex:none;
+  border:0;cursor:pointer;transition:color .14s ease}
+#mtgDetail .iconbtn:hover,#mtgNotes .iconbtn:hover{color:var(--tx)}
+#mtgDetail .schip{display:inline-flex;align-items:center;gap:6px;font:600 11px 'Geist';
+  color:var(--tx);flex:none}
+#mtgDetail .schip::before{content:'';width:6px;height:6px;border-radius:50%;
+  background:var(--faint);flex:none}
+#mtgDetail .schip.c0::before{background:var(--sp-terra)}
+#mtgDetail .schip.c1::before{background:var(--sp-slate)}
+#mtgDetail .schip.c2::before{background:var(--sp-sage)}
+#mtgDetail .schip.c3::before,#mtgDetail .schip.self::before{background:var(--sp-ochre)}
+#mtgDetail .schip.unknown{color:var(--tx2)}
+#mtgDetail .schip.unknown::before{background:var(--faint)}
+/* ── PostMeetingSummary (31e) ── */
+/* The WHOLE page scrolls (header sticky) — inner-only scroll made small
+   windows unusable; expanded sections grow naturally into the page. */
+#mtgDetail{display:none;flex-direction:column;height:100vh;padding:0 28px 24px;gap:12px;
+  overflow-y:auto}
+#mtgDetail.show{display:flex}
+#mtgDetail .sumHead{display:flex;align-items:flex-start;gap:10px;flex:none;position:sticky;top:0;z-index:6;
+  background:var(--bg);padding:18px 0 10px;border-bottom:1px solid var(--bd)}
+#mtgDetail .sumHeadL{flex:1;min-width:0}
+#mtgDetail .sumTitle{font:600 22px 'Geist';letter-spacing:-.02em;color:var(--tx);background:none;
+  border:0;outline:none;width:100%}
+#mtgDetail .sumMeta{display:flex;align-items:center;gap:8px;margin-top:5px;flex-wrap:wrap}
+#mtgDetail .sumMeta .mono{font:500 10.5px 'JetBrains Mono';color:var(--dim)}
+#mtgDetail .card{background:var(--raised);border:1px solid var(--bd);border-radius:12px;
+  padding:12px 16px}
+#mtgDetail .sumCards{flex:none;display:flex;flex-direction:column;gap:10px}
+#mtgDetail .sumBody{font:400 12.5px/1.6 'Geist';color:var(--tx);margin-top:6px}
+#mtgDetail .sumErr{font:400 12px 'Geist';color:var(--rec-soft);margin-top:6px}
+#mtgDetail .twoCol{display:flex;gap:10px;align-items:stretch}
+#mtgDetail .twoCol .colL{flex:1.4;min-width:0}
+#mtgDetail .twoCol .colR{flex:1;display:flex;flex-direction:column;gap:8px;min-width:0}
+#mtgDetail .legend{display:flex;gap:14px;margin-left:auto}
+#mtgDetail .legend span{display:inline-flex;align-items:center;gap:6px;font:400 10.5px 'Geist';color:var(--dim)}
+#mtgDetail .legend i{width:6px;height:6px;border-radius:50%}
+#mtgDetail .legend .lu i{background:var(--sp-terra)}
+#mtgDetail .legend .la i{background:var(--faint)}
+#mtgDetail .cardHead{display:flex;align-items:center;gap:8px}
+/* HybridNotesRenderer v2 (33i): dot rows, AI as an indented ↳ line, underline tabs */
+#mtgDetail .hnTabs{display:flex;gap:12px;margin-left:12px}
+#mtgDetail .hnTab{font:500 11px 'Geist';color:var(--dim);padding:0 1px 3px;border-bottom:1.5px solid transparent;
+  transition:color .14s ease}
+#mtgDetail .hnTab:hover{color:var(--tx2)}
+#mtgDetail .hnTab.on{color:var(--tx);border-bottom-color:var(--acc)}
+#mtgDetail .hnRow{position:relative;border-left:0;padding:0 40px 0 14px;margin-top:11px}
+#mtgDetail .hnRegen{position:absolute;right:8px;top:1px;width:24px;height:22px;display:inline-flex;
+  align-items:center;justify-content:center;color:var(--faint);opacity:0;transition:opacity .12s;
+  border-radius:5px}
+#mtgDetail .hnRow:hover .hnRegen{opacity:1}
+#mtgDetail .hnRegen:hover{color:var(--acc-txt)}
+#mtgDetail .hnRegen.busy{opacity:1;color:var(--acc);animation:mtgSpin 1s linear infinite}
+@keyframes mtgSpin{to{transform:rotate(360deg)}}
+#mtgDetail .hnRow::before{content:'';position:absolute;left:0;top:6px;width:6px;height:6px;border-radius:50%;
+  background:var(--sp-terra)}
+#mtgDetail .hnRow.noDot::before{display:none}
+#mtgDetail .hnUser{font:400 12.5px/1.55 'Geist';color:var(--tx)}
+#mtgDetail .hnAI{font:400 11.5px/1.55 'Geist';font-style:normal;color:var(--dim);margin-top:2px}
+#mtgDetail .hnAI::before{content:'\\21B3  ';color:var(--faint)}
+#mtgDetail #hnList.v-yours .hnAI{display:none}
+#mtgDetail #hnList.v-ai .hnUser{opacity:.5}
+#mtgDetail #hnList.v-ai .hnAI{color:var(--tx)}
+#mtgDetail .dList{margin-top:8px;display:flex;flex-direction:column;gap:6px}
+#mtgDetail .dItem{display:flex;gap:8px;font:400 12px/1.5 'Geist';color:var(--tx)}
+#mtgDetail .dItem::before{content:'\\2014';color:var(--faint)}
+/* ActionItemRow v2 (33c): rows inside ONE card, faint dividers, real checkbox */
+#mtgDetail .aiRow{display:flex;align-items:center;gap:10px;padding:9px 0;margin-top:0;
+  font:400 12.5px 'Geist';color:var(--tx);border-top:1px solid var(--bd-faint)}
+#mtgDetail .aiRow:first-of-type{border-top:0}
+#mtgDetail .aiRow.done{opacity:.55}
+#mtgDetail .aiRow.done .aiTask{text-decoration:line-through;color:var(--dim)}
+#mtgDetail .aiTask{flex:1;min-width:0}
+#mtgDetail .aiCb{width:15px;height:15px;border-radius:4px;border:1.4px solid var(--dim);background:none;flex:none;
+  display:inline-flex;align-items:center;justify-content:center;color:transparent;padding:0;
+  transition:all .15s ease}
+#mtgDetail .aiCb:hover{border-color:var(--tx2)}
+#mtgDetail .aiRow.done .aiCb{background:var(--ok);border-color:var(--ok);color:#0a1f0d}
+/* MarkedMomentCard v2 (33b): rows in the parent card, star + mono ts header */
+#mtgDetail .mmRow{padding:11px 0;border-top:1px solid var(--bd-faint)}
+#mtgDetail .mmRow:first-of-type{border-top:0}
+#mtgDetail .mmHead{display:flex;align-items:center;gap:8px}
+#mtgDetail .mmHead .star{color:var(--acc);display:inline-flex}
+#mtgDetail .mmTs{font:500 11px 'JetBrains Mono';color:var(--acc-txt);letter-spacing:.06em;
+  font-variant-numeric:tabular-nums;cursor:pointer}
+#mtgDetail .mmTs:hover{text-decoration:underline}
+#mtgDetail .mmEx{font:400 12.5px/1.6 'Geist';color:var(--tx);margin-top:5px}
+#mtgDetail .mmEx b{color:var(--dim);font-weight:400}
+#mtgDetail .mmRow{position:relative;padding-right:70px}
+#mtgDetail .mmActs{position:absolute;top:9px;right:0;display:flex;gap:2px;opacity:0;transition:opacity .12s}
+#mtgDetail .mmRow:hover .mmActs,#mtgDetail .mmRow:focus-within .mmActs{opacity:1}
+#mtgDetail .mmNote{margin-top:9px;padding-top:9px;border-top:1px solid var(--bd-faint)}
+#mtgDetail .mmNote .k{font:500 9.5px 'JetBrains Mono';letter-spacing:.16em;color:var(--sp-ochre);
+  text-transform:uppercase;margin-bottom:3px}
+#mtgDetail .mmNote p{font:400 12px/1.55 'Geist';color:var(--tx);margin:0;cursor:text;border-radius:5px}
+#mtgDetail .mmNote p:hover{background:var(--subtle-alt)}
+#mtgDetail .mmNoteAdd{font:400 11px 'Geist';color:var(--faint);cursor:pointer;margin-top:7px;
+  display:inline-block;opacity:0;transition:opacity .12s}
+#mtgDetail .mmRow:hover .mmNoteAdd{opacity:1}
+#mtgDetail .mmNoteAdd:hover{color:var(--acc-txt)}
+#mtgDetail .mmNoteIn{width:100%;font:400 12px/1.55 'Geist';color:var(--tx);background:var(--raised);
+  border:1px solid var(--acc-bd);border-radius:8px;padding:6px 9px;margin-top:6px;resize:vertical;
+  min-height:38px;caret-color:var(--acc)}
+/* summary header avatars (33d) */
+#mtgDetail .avchip{display:inline-flex;align-items:center;gap:7px;font:600 11px 'Geist';color:var(--tx)}
+#mtgDetail .av{width:22px;height:22px;border-radius:50%;display:inline-flex;align-items:center;
+  justify-content:center;font:600 9.5px 'Geist';flex:none}
+#mtgDetail .av.c0{background:rgba(217,138,114,.16);color:var(--sp-terra)}
+#mtgDetail .av.c1{background:rgba(143,167,194,.16);color:var(--sp-slate)}
+#mtgDetail .av.c2{background:rgba(169,189,152,.16);color:var(--sp-sage)}
+#mtgDetail .av.c3,#mtgDetail .av.self{background:rgba(217,179,107,.16);color:var(--sp-ochre)}
+#mtgDetail .av.self{box-shadow:0 0 0 1px var(--bg), 0 0 0 2.5px var(--sp-ochre)}
+#mtgDetail .av.unknown{background:none;border:1px dashed var(--faint);color:var(--dim)}
+#mtgDetail .avchip{position:relative}
+#mtgDetail .avFp{position:absolute;left:14px;top:14px;width:9px;height:9px;border-radius:50%;
+  background:var(--acc);border:2px solid var(--bg)}
+#mtgDetail .fpBanner{display:flex;align-items:center;gap:9px;margin-top:8px;font:400 11.5px 'Geist';
+  color:var(--tx2)}
+#mtgDetail .fpBanner b{color:var(--tx);font-weight:600}
+#mtgDetail .fpBanner .zap{color:var(--acc);display:inline-flex}
+#mtgDetail .fpBanner .k{margin-left:auto;font:500 9.5px 'JetBrains Mono';letter-spacing:.16em;
+  color:var(--faint)}
+/* transcript row action rail + inline edit (33a) */
+#mtgDetail .exUtt{position:relative;padding-right:64px}
+#mtgDetail .exUtt .xr{position:absolute;top:1px;right:2px;display:flex;gap:0;opacity:0;transition:opacity .12s}
+#mtgDetail .exUtt:hover .xr,#mtgDetail .exUtt:focus-within .xr{opacity:1}
+#mtgDetail .xr .iconbtn{width:24px;height:22px}
+#mtgDetail .edTag{font:500 9px 'JetBrains Mono';letter-spacing:.08em;color:var(--faint);margin-left:6px}
+#mtgDetail .txEditIn{width:100%;font:400 11.5px/1.55 'Geist';color:var(--tx);background:var(--raised);
+  border:1px solid var(--acc-bd);border-radius:8px;padding:6px 9px;margin-top:4px;resize:vertical;
+  min-height:44px;caret-color:var(--acc)}
+/* action item edit/delete (33c) */
+#mtgDetail .aiRow{padding-right:24px;position:relative}
+#mtgDetail .aiDel{position:absolute;right:0;top:50%;transform:translateY(-50%);width:20px;height:20px;
+  display:inline-flex;align-items:center;justify-content:center;color:var(--faint);opacity:0;
+  transition:opacity .12s;border-radius:5px;font:500 12px 'Geist'}
+#mtgDetail .aiRow:hover .aiDel,#mtgDetail .aiRow:focus-within .aiDel{opacity:1}
+#mtgDetail .aiDel:hover{color:var(--rec-soft)}
+#mtgDetail .aiTask{cursor:text;border-radius:5px}
+#mtgDetail .aiTask:hover{background:var(--subtle-alt)}
+#mtgDetail .aiEditIn{flex:1;min-width:0;font:400 12.5px 'Geist';color:var(--tx);background:var(--raised);
+  border:1px solid var(--acc-bd);border-radius:6px;padding:4px 8px;caret-color:var(--acc)}
+#mtgDetail .aiDue{font:500 9.5px 'JetBrains Mono';letter-spacing:.05em;color:var(--faint);flex:none}
+#mtgDetail .aiDue.near{color:var(--acc-txt)}
+#mtgDetail .teasers{display:flex;gap:8px;flex:none}
+#mtgDetail .teaser{flex:1;display:flex;align-items:center;gap:8px;background:var(--raised);
+  border:1px solid var(--bd);border-radius:10px;padding:9px 12px;cursor:pointer}
+#mtgDetail .teaser .tl{font:400 11px 'Geist';color:var(--tx);flex:1}
+#mtgDetail .teaser .eyebrow{margin-left:auto}
+#mtgDetail .expandBox{display:none;flex-direction:column;gap:8px}
+/* grows into the page scroll */
+#mtgDetail .expandBox.show{display:flex}
+#mtgDetail .skel{height:11px;border-radius:6px;background:var(--raised2);margin-top:8px;
+  animation:mtgShimmer 1.6s ease-in-out infinite}
+@keyframes mtgShimmer{0%,100%{opacity:.5}50%{opacity:1}}
+#mtgDetail .exUtt{cursor:pointer;border-radius:8px;padding:4px 8px}
+#mtgDetail .exUtt:hover{background:var(--raised)}
+#mtgDetail .exUtt.playing{background:var(--acc-soft)}
+/* ── Meeting Notes page (full-page view, MODE 'notes') ── */
+#mtgNotes{display:none;flex-direction:column;height:100vh;overflow-y:auto;padding:0 28px 40px}
+#mtgNotes.show{display:flex}
+#mtgDetail .ntHead{display:flex;align-items:center;gap:10px;position:sticky;top:0;z-index:6;
+  background:var(--bg);padding:16px 0 10px;border-bottom:1px solid var(--bd);flex:none}
+#mtgDetail .ntBack{display:inline-flex;align-items:center;gap:6px;background:none;border:0;
+  color:var(--tx2);font:600 12px 'Geist';cursor:pointer;padding:4px 8px;border-radius:8px}
+#mtgDetail .ntBack:hover{color:var(--tx);background:var(--raised)}
+#mtgDetail .ntTitle{font:600 15px 'Geist';letter-spacing:-.01em;color:var(--tx);flex:1;min-width:0;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#mtgDetail .ntBody{max-width:720px;width:100%;margin:18px auto 0;font:400 13.5px/1.75 'Geist';color:var(--tx)}
+#mtgDetail .ntBody p{margin:0 0 14px}
+#mtgDetail .ntBody .ctx{font:400 13.5px/1.7 'Geist';color:var(--tx2);border-left:2px solid var(--acc);
+  padding:2px 0 2px 14px;margin:0 0 22px}
+#mtgDetail .ntBody h2{font:600 11px 'JetBrains Mono';letter-spacing:.16em;text-transform:uppercase;
+  color:var(--acc-txt);margin:26px 0 10px;padding-top:16px;border-top:1px solid var(--bd-faint)}
+#mtgDetail .ntBody h2:first-child{border-top:0;padding-top:0;margin-top:0}
+#mtgDetail .ntBody h3{font:600 13.5px 'Geist';color:var(--tx);margin:16px 0 6px}
+#mtgDetail .ntBody ul,#mtgDetail .ntBody ol{margin:0 0 14px;padding-left:20px;display:flex;flex-direction:column;gap:7px}
+#mtgDetail .ntBody li{padding-left:2px}
+#mtgDetail .ntBody ul li::marker{color:var(--sp-terra)}
+#mtgDetail .ntBody ol li::marker{color:var(--dim);font:500 11px 'JetBrains Mono'}
+#mtgDetail .ntBody b,#mtgDetail .ntBody strong{font-weight:600;color:var(--tx)}
+#mtgDetail .ntBody code{font:500 12px 'JetBrains Mono';background:var(--raised);border-radius:5px;padding:1px 6px}
+#mtgDetail .ntTableWrap{overflow-x:auto;margin:6px 0 16px}
+#mtgDetail .ntTable{border-collapse:collapse;width:100%;font:400 12.5px 'Geist'}
+#mtgDetail .ntTable th{text-align:left;font:600 10px 'JetBrains Mono';letter-spacing:.1em;text-transform:uppercase;
+  color:var(--acc-txt);padding:7px 12px 7px 0;border-bottom:1px solid var(--bd2);white-space:nowrap}
+#mtgDetail .ntTable td{padding:7px 12px 7px 0;border-bottom:1px solid var(--bd-faint);color:var(--tx);vertical-align:top}
+#mtgDetail .ntTable tr:last-child td{border-bottom:0}
+#mtgDetail .ntTask{display:flex;align-items:flex-start;gap:9px;margin:0 0 8px}
+#mtgDetail .ntTask .box{width:15px;height:15px;border-radius:4px;border:1.4px solid var(--dim);flex:none;
+  margin-top:3px;display:inline-flex;align-items:center;justify-content:center;color:transparent}
+#mtgDetail .ntTask.done .box{background:var(--ok);border-color:var(--ok);color:#0a1f0d}
+#mtgDetail .ntTask.done span{text-decoration:line-through;color:var(--dim)}
+#mtgDetail .ntSkel{max-width:720px;width:100%;margin:26px auto 0;display:flex;flex-direction:column;gap:12px}
+#mtgDetail .ntSkel i{display:block;height:12px;border-radius:6px;background:var(--raised2);
+  animation:mtgShimmer 1.6s ease-in-out infinite}
+#mtgDetail .ntErr{max-width:720px;margin:30px auto;color:var(--rec-soft);font:400 13px 'Geist';text-align:center}
+/* Host overrides — the detail view sits inside `.main`, which already owns the
+   page padding and the scroll container, so it must not be a 100vh panel with a
+   sticky header of its own (sticky inside a padded scrollport leaves content
+   visible above the header). */
+#mtgDetail{height:auto;min-height:0;padding:0;overflow:visible}
+#mtgDetail .sumHead{position:static;padding:0 0 12px}
+#mtgDetail .sumTitle{font-size:24px}
+#mtgNotes{height:auto;padding:0;overflow:visible}
+#mtgNotes .ntHead{position:static;padding:0 0 10px}
+/* back-to-list affordance above the title */
+#mtgDetail .mtgBack,#mtgNotes .mtgBack{display:inline-flex;align-items:center;gap:6px;
+  background:none;border:0;color:var(--mut);font:600 12px 'Geist';cursor:pointer;
+  padding:4px 8px 4px 0;margin-bottom:2px}
+#mtgDetail .mtgBack:hover,#mtgNotes .mtgBack:hover{color:var(--tx)}
 """
 
 
@@ -1401,34 +1688,101 @@ function deviceIcon(t){
   if(k==='mac'||k==='darwin'||k==='win'||k==='windows'||k==='linux') return SVG.laptop;
   return SVG.laptop;
 }
+// Supabase hands back "2026-07-21 20:14:09.554+00" — a space separator and a
+// 2-digit offset. WebKit's Date.parse is strict and rejects both, so normalize
+// to ISO first or every device reads "never seen".
+function parseTs(iso){
+  if(!iso) return 0;
+  let s = String(iso).trim().replace(' ','T').replace(/([+-]\d\d)$/,'$1:00');
+  const t = Date.parse(s);
+  return isNaN(t) ? 0 : t;
+}
+function timeAgo(iso){
+  const t = parseTs(iso);
+  if(!t) return 'never seen';
+  const sec = Math.max(0,(Date.now()-t)/1000);
+  if(sec < 90) return 'seen moments ago';
+  const m = Math.floor(sec/60);  if(m < 60) return 'seen '+m+(m===1?' min ago':' mins ago');
+  const h = Math.floor(m/60);    if(h < 24) return 'seen '+h+(h===1?' hour ago':' hours ago');
+  const d = Math.floor(h/24);    if(d < 7)  return 'seen '+d+(d===1?' day ago':' days ago');
+  const w = Math.floor(d/7);     if(w < 5)  return 'seen '+w+(w===1?' week ago':' weeks ago');
+  const mo = Math.floor(d/30);              return 'seen '+mo+(mo===1?' month ago':' months ago');
+}
+// `device_type` is the raw platform string. 'iphone' is a LEGACY value written by
+// a pre-IDI-177 mobile build (current mobile writes Platform.OS === 'ios'); kept
+// mapped so old rows still read as a real product name rather than 'Iphone'.
+function deviceTypeLabel(t){
+  const k = String(t||'').toLowerCase();
+  if(k==='ios'||k==='iphone') return 'iPhone';
+  if(k==='ipad') return 'iPad';
+  if(k==='android') return 'Android';
+  if(k==='win'||k==='windows') return 'Windows';
+  if(k==='mac'||k==='darwin') return 'Mac';
+  return k ? k.charAt(0).toUpperCase()+k.slice(1) : 'Device';
+}
+function deviceRow(d){
+  return `<div class="dcard${d.online?'':' off'}"><div class="dtile">${deviceIcon(d.device_type)}</div>
+      <div class="dinfo"><div class="dname">${esc(d.device_name||'Device')}</div>
+      <div class="dmeta">${esc(deviceTypeLabel(d.device_type))} · ${d.online?'active now':esc(timeAgo(d.last_seen))}</div></div>
+      <span class="statpill ${d.online?'on':'offl'}"><span class="pdot"></span>${d.online?'Online':'Offline'}</span>
+      <button class="devrm" title="Remove from list"
+        onclick='removeDevice(${JSON.stringify(d.device_id||"")}, this)'>${SVG.trash}</button></div>`;
+}
 function renderDevices(){
   const devs = (STATE&&STATE.devices)||[];
   // The list EXCLUDES this device (fetch_account_devices filters it out), so
   // every row here is removable — this device leaves the list by signing out.
-  const cards = devs.map(d=>`
-    <div class="dcard"><div class="dtile">${deviceIcon(d.device_type)}</div>
-      <div class="dinfo"><div class="dname">${esc(d.device_name||'Device')}</div>
-      <div class="dmeta">${esc(d.device_type||'')}</div></div>
-      <span class="statpill ${d.online?'on':'offl'}"><span class="pdot"></span>${d.online?'Online':'Offline'}</span>
-      <button class="devrm" title="Remove from list"
-        onclick='removeDevice(${JSON.stringify(d.device_id||"")}, this)'>${SVG.trash}</button></div>`).join('')
-    || '<div class="empty">No paired devices yet. Tap “Pair a device”.</div>';
+  // PAIRED and ONLINE are different things and are grouped as such: paired ==
+  // has a row on the account, online == heartbeat within PRESENCE_ONLINE_SEC.
+  const online  = devs.filter(d=>d.online);
+  const offline = devs.filter(d=>!d.online);
+  const group = (label, on, rows, extra) => rows.length ? `<div class="dgroup">
+      <div class="dgrouphead"><span class="ghdot${on?' on':''}"></span>${label}
+        <span class="gcount">${rows.length}</span>${extra||''}</div>
+      <div class="dcards">${rows.map(deviceRow).join('')}</div></div>` : '';
+  const cleanBtn = offline.length
+    ? `<button class="gclean" onclick="removeAllOffline(this)">Remove all offline</button>` : '';
+  const cards = (group('Online now', true, online)
+               + group('Paired, offline', false, offline, cleanBtn))
+    || '<div class="empty">No other devices yet. Tap “Pair a device”.</div>';
   const pairErr = (!PAIR.active && PAIR.error)
     ? `<div class="pairsub" style="color:#f0b39a">${esc(PAIR.error)}</div>` : '';
   const pairBtn = PAIR.active ? '' :
     `${pairErr}<button class="btn primary" style="width:150px" onclick="startPairing()">${SVG.plus}Pair a device</button>`;
   const target = (STATE&&STATE.target_device_id)||'__all__';
-  const opts = [{id:'__all__',name:'All devices'}].concat(
-    devs.map(d=>({id:d.device_id,name:d.device_name||'Device'})));
+  const opts = [{id:'__all__',name:'All devices',online:false}].concat(
+    devs.map(d=>({id:d.device_id,name:d.device_name||'Device',online:!!d.online})));
+  // A green dot on the live targets: picking a device that has been dark for
+  // three weeks is almost never what you meant.
   const selector = devs.length ? `<div class="tgtwrap">
     <div class="tgtlabel">SEND MY TRANSCRIPTIONS TO</div>
-    <div class="tgtpills">${opts.map(o=>`<button class="tgtpill${o.id===target?' on':''}" onclick='setTarget(${JSON.stringify(o.id)})'>${esc(o.name)}</button>`).join('')}</div>
+    <div class="tgtpills">${opts.map(o=>`<button class="tgtpill${o.id===target?' on':''}" onclick='setTarget(${JSON.stringify(o.id)})'>${o.online?'<span class="tdot"></span>':''}${esc(o.name)}</button>`).join('')}</div>
   </div>` : '';
+  const countLine = devs.length
+    ? `${devs.length} paired · ${online.length} online now`
+    : 'No other devices';
   document.getElementById('devicesMain').innerHTML = `
-    <div class="mhead"><div><div class="eyebrow">${devs.length} paired</div><h1 class="title">Paired devices</h1></div>${pairBtn}</div>
+    <div class="mhead dhead"><div><div class="eyebrow">${countLine}</div><h1 class="title">Devices</h1></div>${pairBtn}</div>
     ${pairAreaHTML()}
     ${selector}
-    <div class="dcards">${cards}</div>`;
+    ${cards}`;
+}
+
+// Bulk list-cleanup (manual by design — nothing auto-prunes, so a phone that is
+// merely switched off never vanishes on its own). Same semantics as
+// removeDevice: a list removal, not a revocation.
+function removeAllOffline(btn){
+  const devs = (STATE&&STATE.devices)||[];
+  const n = devs.filter(d=>!d.online).length;
+  if(!n) return;
+  if(!confirm('Remove '+n+' offline device'+(n===1?'':'s')+' from this list? Each one reappears on its next heartbeat if it is still signed in.')) return;
+  busyGuard(btn||'rmoffline', ()=>api('remove_offline_devices')).then(r=>{
+    if(r && r.busy) return;
+    if(r && r.ok===false){ toast((r.error)||'Could not remove those devices.', true); return; }
+    if(STATE) STATE.devices=(STATE.devices||[]).filter(d=>d.online);
+    renderDevices();
+    load();
+  });
 }
 
 function setTarget(id){
@@ -1493,68 +1847,130 @@ function stopPairing(){
   if(ACTIVE==='devices') renderDevices();
 }
 
+// ── Settings: grouped rail ──────────────────────────────────────
+// This screen used to be TWELVE headed sections stacked in one column - every
+// setting the app has, flat, with nothing more important than anything else. It
+// renders ONE group at a time behind a rail now. Two things fall out of that:
+// each pane fits the window, so the page-length scroll (and the restore logic
+// that kept clamping it back to Meetings) is gone; and the late-resolving
+// Meetings/Transform panes only mount when you open them, so their "Loading..."
+// stubs can no longer shift content under the cursor.
+//
+// SETTINGS_GROUP lives at module scope on purpose: a state heartbeat rebuilds
+// this screen every ~30s and must not throw you back to the first group.
+const SETTINGS_GROUPS=[
+  {id:'account',    label:'Account',     lede:'Who you are signed in as — and what leaving takes with it.'},
+  {id:'dictation',  label:'Dictation',   lede:'How Flume hears you, and what it does with the words.'},
+  {id:'dictionary', label:'Dictionary',  lede:'Teach Flume names and terms so they transcribe correctly.'},
+  {id:'transform',  label:'Transform',   lede:''},
+  {id:'notes',      label:'Notes',       lede:'Individual Notes enhancements. Each is on by default.'},
+  {id:'meetings',   label:'Meetings',    lede:''},
+  {id:'shortcuts',  label:'Shortcuts',   lede:'Start dictating, or reshape a selection, from anywhere.'},
+  {id:'data',       label:'Data & sync', lede:'Where your dictations live, and how to clear them.'},
+];
+let SETTINGS_GROUP='account';
+
+function setSettingsGroup(id){
+  if(SETTINGS_GROUP===id) return;
+  SETTINGS_GROUP=id;
+  renderSettings();
+  const p=document.getElementById('setPane');
+  if(p) p.scrollTop=0;              // a new group always starts at the top
+}
+
+// Rail badges answer the question you opened Settings to ask, without opening
+// anything. Only state we hold LOCALLY - a badge fed by a late fetch would read
+// as fact while still being a guess.
+function settingsBadge(id){
+  try{
+    const s=(STATE&&STATE.settings)||{};
+    if(id==='dictionary') return DICT.vocabulary.length+' · '+DICT.replacements.length;
+    if(id==='data')       return s.sync_enabled?'on':'off';
+    if(id==='notes'){
+      const keys=['notes_search_enabled','notes_autotitle_enabled',
+                  'notes_structure_detection_enabled','notes_audio_linkage_enabled'];
+      return keys.filter(k=>s[k]!==false).length+' of 4';
+    }
+  }catch(e){}
+  return '';
+}
+
 function renderSettings(){
-  // A state heartbeat rebuilds this screen every ~30s. Without these guards the
-  // page jumps to the top mid-interaction ("so hard to click anything").
   if(window.__HK_WAIT) return;                       // hotkey capture in progress
-  const scroller=document.getElementById('settingsMain');
-  const keepScroll=scroller?scroller.scrollTop:0;
-  const s = (STATE&&STATE.settings)||{};
-  const model = (STATE&&STATE.model)||'base';
-  const u = STATE && STATE.user;
-  // A dead session keeps `user` populated, so Settings would otherwise show a
-  // perfectly healthy account while Delete account 401s (IDI-166).
-  const deadBar = (STATE && STATE.session_dead) ? `
+  const pane=document.getElementById('setPane');
+  const keepScroll=pane?pane.scrollTop:0;
+  const shell=document.getElementById('settingsMain');
+  if(!shell) return;
+  shell.classList.add('setshell');
+  const g=SETTINGS_GROUPS.find(x=>x.id===SETTINGS_GROUP)||SETTINGS_GROUPS[0];
+  const rail=SETTINGS_GROUPS.map(x=>{
+    const b=settingsBadge(x.id);
+    return '<button class="sritem '+(x.id===g.id?'on':'')+'" '+
+           'onclick="setSettingsGroup(\''+x.id+'\')" '+
+           'aria-current="'+(x.id===g.id?'page':'false')+'">'+
+           '<span>'+esc(x.label)+'</span>'+(b?'<em>'+esc(b)+'</em>':'')+'</button>';
+  }).join('');
+  shell.innerHTML = `
+    <nav class="setrail" aria-label="Settings groups"><div class="srl">Settings</div>${rail}</nav>
+    <div class="setpane" id="setPane">
+      <div class="eyebrow">Settings</div><h1 class="title">${esc(g.label)}</h1>
+      ${g.lede?`<p class="ssub setlede">${esc(g.lede)}</p>`:''}
+      ${settingsPane(g.id)}
+    </div>`;
+  if(!DICT_LOADED){ DICT_LOADED=true; loadDict(); }
+  if(!FT_LOADED){ FT_LOADED=true; loadFiletag(); }
+  if(!AL_LOADED){ AL_LOADED=true; loadAutolearn(); }
+  loadMeetSettings();
+  // Fill the async panes from cache synchronously so the pane is full height
+  // before scrollTop is restored (they no-op when their group isn't mounted).
+  renderMeetSettings(); renderTfSettings(); fillHotkeyLabels();
+  const p2=document.getElementById('setPane');
+  if(p2 && keepScroll) p2.scrollTop=keepScroll;
+}
+
+function settingsPane(id){
+  const s=(STATE&&STATE.settings)||{};
+  const model=(STATE&&STATE.model)||'base';
+  const u=STATE&&STATE.user;
+
+  if(id==='account'){
+    // A dead session keeps `user` populated, so Settings would otherwise show a
+    // perfectly healthy account while Delete account 401s (IDI-166).
+    const deadBar=(STATE&&STATE.session_dead)?`
       <div class="deadbar">
         <span class="dbtx">Session expired. You're still signed in locally, but syncing and account changes need a fresh sign-in.</span>
         <button class="dbbtn" onclick="reSignIn()">Sign in again</button>
-      </div>` : '';
-  const account = u ? `
-    <div class="ssection"><h3>Account</h3>
-      ${deadBar}
-      <div class="scard" style="flex-direction:row;align-items:center;gap:12px">
-        <div class="acctav">${esc((u.name||u.email||'?').slice(0,1).toUpperCase())}</div>
-        <div style="flex:1;min-width:0"><div style="font:600 13.5px 'Geist'">${esc(u.name||'Signed in')}</div>
-          <div style="font:400 12px 'Geist';color:var(--mut)">${esc(u.email||'')}</div></div>
-        <button class="btn ghost" style="flex:none" onclick="api('sign_out_account')">Sign out</button>
+      </div>`:'';
+    if(!u) return `
+      <div class="ssection">
+        <div class="scard"><div class="ssub" style="margin:0 0 10px">Sign in to sync across your devices.</div>
+          <button class="btn primary" style="width:180px" onclick="api('sign_in_google')">Sign in with Google</button></div></div>`;
+    return `
+      <div class="ssection">
+        ${deadBar}
+        <div class="scard row">
+          <div class="acctav">${esc((u.name||u.email||'?').slice(0,1).toUpperCase())}</div>
+          <div class="grow"><div class="sname">${esc(u.name||'Signed in')}</div>
+            <div class="sdesc">${esc(u.email||'')}</div></div>
+          <button class="btn ghost" onclick="api('sign_out_account')">Sign out</button>
+        </div>
       </div>
-      <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--bd2);display:flex;align-items:center;gap:12px">
-        <div style="flex:1;min-width:0"><div style="font:600 13px 'Geist';color:#f0b39a">Delete account</div>
-          <div style="font:400 12px 'Geist';color:var(--mut)">Permanently erases your account and all cloud data. Cannot be undone.</div></div>
-        <button id="deleteAcctBtn" class="btn ghost" style="flex:none;color:#f0b39a" onclick="deleteAccount()">Delete account</button>
-      </div></div>` : `
-    <div class="ssection"><h3>Account</h3>
-      <div class="scard"><div class="ssub" style="margin:0 0 10px">Sign in to sync across your devices.</div>
-        <button class="btn primary" style="width:180px" onclick="api('sign_in_google')">Sign in with Google</button></div></div>`;
-  document.getElementById('settingsMain').innerHTML = `
-    <div class="eyebrow">General</div><h1 class="title">Preferences</h1>
-    ${account}
+      <div class="ssection"><h3>Danger zone</h3>
+        <div class="scard row">
+          <div class="grow"><div class="sname sdanger">Delete account</div>
+            <div class="sdesc">Permanently erases your account and all cloud data. Cannot be undone.</div></div>
+          <button id="deleteAcctBtn" class="btn ghost sdanger" onclick="deleteAccount()">Delete account</button>
+        </div></div>`;
+  }
+
+  if(id==='dictation') return `
     <div class="ssection"><h3>Transcription</h3><p class="ssub">Transcription and formatting are provided by Flume — no API key needed.</p>
       <div class="scard">
         <div class="field"><label>SPOKEN LANGUAGE</label><select id="spokenLang" onchange="setSpokenLang(this.value)">
           ${(LANGS.options||[["en","English"]]).map(o=>`<option value="${o[0]}" ${LANGS.value===o[0]?'selected':''}>${o[1]}</option>`).join('')}
-        </select><span class="ssub" style="margin:4px 0 0">Applies to dictation and meetings. Pick the language you speak — “Auto-detect” works but a pinned language is steadier for meetings.</span></div>
+        </select><span class="ssub" style="margin:4px 0 0">Applies to dictation and meetings. A pinned language is steadier than auto-detect.</span></div>
         <div class="field"><label>OFFLINE WHISPER MODEL</label><select id="model">${['tiny','base','small','medium'].map(m=>`<option ${model===m?'selected':''}>${m}</option>`).join('')}</select></div>
         <button class="btn primary" style="flex:none;width:130px" onclick="saveSettings()">Save</button>
-      </div></div>
-    <div class="ssection"><h3>Cross-device sync</h3><p class="ssub">Use the same Account ID on every device to link them.</p>
-      <div class="scard">
-        <div class="saverow" style="margin-bottom:14px"><button class="toggle ${s.sync_enabled?'on':''}" id="syncToggle" onclick="this.classList.toggle('on')"></button><span style="font:500 13px Geist">Enable sync</span></div>
-        <div class="field"><label>ACCOUNT ID</label><input id="userId" value="${esc(s.sync_user_id||'')}"/></div>
-        <div class="field"><label>DEVICE NAME</label><input id="devName" value="${esc(s.sync_device_name||'This Mac')}"/></div>
-        <button class="btn primary" style="flex:none;width:130px" onclick="saveSettings()">Save sync</button>
-      </div></div>
-    <div class="ssection"><h3>History</h3><p class="ssub">Your dictations are kept on this device and, when sync is on, in your account.</p>
-      <div class="scard" style="flex-direction:row;align-items:center;gap:12px">
-        <div style="flex:1;min-width:0"><div style="font:600 13.5px 'Geist'">Clear history</div>
-          <div style="font:400 12px 'Geist';color:var(--mut)">Removes every transcription from this device. You'll then be asked whether to clear your other devices too.</div></div>
-        <button id="clearHistBtn" class="btn ghost" style="flex:none;color:#f0b39a" onclick="clearHistory(this)">Clear history</button>
-      </div></div>
-    <div class="ssection"><h3>Custom dictionary</h3><p class="ssub">Teach names &amp; terms so they transcribe correctly, and auto-fix mishearings.</p>
-      <div class="scard" style="flex-direction:row;align-items:center;gap:12px">
-        <div style="flex:1"><div style="font:600 13.5px 'Geist'">${DICT.vocabulary.length} words · ${DICT.replacements.length} rules</div>
-          <div style="font:400 12px 'Geist';color:var(--mut)">Manage your vocabulary and replacement rules</div></div>
-        <button class="btn primary" style="flex:none;width:150px" onclick="show('dictionary')">Open dictionary</button>
       </div></div>
     <div class="ssection"><h3>Auto-learn from corrections</h3>
       <p class="ssub">When you fix a misheard word right after dictating, Flume offers to remember it (marked <span style="opacity:.75">✨</span> in the dictionary). Works best in native text fields.</p>
@@ -1566,37 +1982,56 @@ function renderSettings(){
       <div class="scard">
         <div class="saverow"><button class="toggle ftToggleBtn ${FT.enabled?'on':''}" id="ftToggleSettings" onclick="toggleFiletag()"></button><span style="font:500 13px Geist">Enable file tagging</span></div>
         <div class="ssub" style="margin:10px 0 0">${FT.seen_count||0} file${FT.seen_count===1?'':'s'} remembered.</div>
-      </div></div>
-    <div class="ssection nflags"><h3>Notes features</h3><p class="ssub">Turn individual Notes enhancements on or off. Each is on by default.</p>
+      </div></div>`;
+
+  if(id==='dictionary') return `
+    <div class="ssection">
+      <div class="scard row">
+        <div class="grow"><div class="sname">${DICT.vocabulary.length} words · ${DICT.replacements.length} rules</div>
+          <div class="sdesc">Manage your vocabulary, replacement rules and snippets</div></div>
+        <button class="btn primary" style="width:150px" onclick="show('dictionary')">Open dictionary</button>
+      </div></div>`;
+
+  if(id==='transform')  return `<div class="ssection" id="tfSettings"><p class="ssub">Loading…</p></div>`;
+  if(id==='meetings')   return `<div class="ssection" id="meetSettings"><p class="ssub">Loading…</p></div>`;
+
+  if(id==='notes') return `
+    <div class="ssection nflags">
       <div class="scard">
         <div class="saverow"><button class="toggle ${s.notes_search_enabled!==false?'on':''}" aria-label="Search across notes" onclick="toggleNoteFlag('notes_search_enabled',this)"></button><span style="font:500 13px Geist">Search across notes</span></div>
         <div class="saverow"><button class="toggle ${s.notes_autotitle_enabled!==false?'on':''}" aria-label="Auto-title dictated notes" onclick="toggleNoteFlag('notes_autotitle_enabled',this)"></button><span style="font:500 13px Geist">Auto-title dictated notes</span></div>
         <div class="saverow"><button class="toggle ${s.notes_structure_detection_enabled!==false?'on':''}" aria-label="Detect lists and checklists" onclick="toggleNoteFlag('notes_structure_detection_enabled',this)"></button><span style="font:500 13px Geist">Detect lists &amp; checklists</span></div>
         <div class="saverow"><button class="toggle ${s.notes_audio_linkage_enabled!==false?'on':''}" aria-label="Link source recordings" onclick="toggleNoteFlag('notes_audio_linkage_enabled',this)"></button><span style="font:500 13px Geist">Link source recordings to notes</span></div>
-      </div></div>
-    <div class="ssection" id="meetSettings"><h3>Meetings</h3><p class="ssub">Loading…</p></div>
-    <div class="ssection" id="tfSettings"><h3>Transform</h3><p class="ssub">Loading…</p></div>
-    <div class="ssection"><h3>Hotkeys</h3><p class="ssub">Trigger recording from anywhere.</p>
+      </div></div>`;
+
+  if(id==='shortcuts') return `
+    <div class="ssection">
       <div class="scard hotcard">
-        <div class="hotrow"><span>Dictation (hold or toggle)</span><span class="kbs"><kbd id="dictKeyLbl">…</kbd></span>
-          <button class="btn ghost" style="width:auto;padding:5px 12px;margin-left:8px" id="dictKeyBtn"
+        <div class="hotrow"><span>Dictation (hold to talk, tap to keep recording)</span><span class="kbs"><kbd id="dictKeyLbl">…</kbd></span>
+          <button class="btn ghost slim" id="dictKeyBtn"
             onclick="pickHotkey('dict')">Change</button></div>
         <div class="hotrow"><span>Transform selection</span><span class="kbs"><kbd>${PL_KEYS.MOD_KBD}</kbd> + <kbd id="tfKeyLbl">…</kbd></span>
-          <button class="btn ghost" style="width:auto;padding:5px 12px;margin-left:8px" id="tfKeyBtn"
+          <button class="btn ghost slim" id="tfKeyBtn"
             onclick="pickHotkey('tf')">Change</button></div>
         <div class="ssub" id="hotkeyMsg" style="margin:8px 0 0"></div>
       </div></div>`;
-  if(!DICT_LOADED){ DICT_LOADED=true; loadDict(); }
-  if(!FT_LOADED){ FT_LOADED=true; loadFiletag(); }
-  if(!AL_LOADED){ AL_LOADED=true; loadAutolearn(); }
-  loadMeetSettings();
-  // Fill the Meetings/Transform stubs from cache synchronously (they no-op on
-  // first load) so the content height is back to full size BEFORE scrollTop is
-  // restored — otherwise the restore clamps to the shorter stub height and the
-  // page jumps up to the Meetings section on every rebuild.
-  renderMeetSettings(); renderTfSettings(); fillHotkeyLabels();
-  const sc2=document.getElementById('settingsMain');
-  if(sc2 && keepScroll) sc2.scrollTop=keepScroll;
+
+  if(id==='data') return `
+    <div class="ssection"><h3>Cross-device sync</h3><p class="ssub">Use the same Account ID on every device to link them.</p>
+      <div class="scard">
+        <div class="saverow" style="margin-bottom:14px"><button class="toggle ${s.sync_enabled?'on':''}" id="syncToggle" onclick="this.classList.toggle('on')"></button><span style="font:500 13px Geist">Enable sync</span></div>
+        <div class="field"><label>ACCOUNT ID</label><input id="userId" value="${esc(s.sync_user_id||'')}"/></div>
+        <div class="field"><label>DEVICE NAME</label><input id="devName" value="${esc(s.sync_device_name||'This Mac')}"/></div>
+        <button class="btn primary" style="flex:none;width:130px" onclick="saveSettings()">Save sync</button>
+      </div></div>
+    <div class="ssection"><h3>History</h3><p class="ssub">Your dictations are kept on this device and, when sync is on, in your account.</p>
+      <div class="scard row">
+        <div class="grow"><div class="sname">Clear history</div>
+          <div class="sdesc">Removes every transcription from this device. You'll then be asked whether to clear your other devices too.</div></div>
+        <button id="clearHistBtn" class="btn ghost sdanger" onclick="clearHistory(this)">Clear history</button>
+      </div></div>`;
+
+  return '';
 }
 
 // ── 31g — MeetingsSettingsPane ────────────────────────────────────────────────
@@ -1965,16 +2400,27 @@ function deleteSnip(id, btn){
     else toast((r&&r.error)||'Could not delete the snippet.', true);
   });
 }
+function fieldVal(id, fallback){
+  const el=document.getElementById(id);
+  return el ? el.value : fallback;
+}
+function togOn(id, fallback){
+  const el=document.getElementById(id);
+  return el ? el.classList.contains('on') : fallback;
+}
 function saveSettings(){
   // Groq/Gemini keys are no longer entered in-app (Groq is served by the groq-proxy
   // Edge Function). Preserve whatever is already in state so we never clobber it.
   const s=(STATE&&STATE.settings)||{};
   api('save_settings', {
     groq_api_keys:s.groq_api_keys||[], gemini_api_keys:s.gemini_api_keys||[],
-    whisper_model:document.getElementById('model').value,
-    sync_enabled:document.getElementById('syncToggle').classList.contains('on'),
-    sync_user_id:document.getElementById('userId').value,
-    sync_device_name:document.getElementById('devName').value,
+    // Only one settings group is mounted at a time now, so every field here may
+    // legitimately be absent — read what is on screen and keep state for the rest.
+    // Reading .value off a missing node threw, which killed the whole save.
+    whisper_model:fieldVal('model', s.whisper_model||'base'),
+    sync_enabled:togOn('syncToggle', !!s.sync_enabled),
+    sync_user_id:fieldVal('userId', s.sync_user_id||''),
+    sync_device_name:fieldVal('devName', s.sync_device_name||''),
   }).then(load);
 }
 // IDI-172: `clear_history` existed in the API but nothing ever called it. The

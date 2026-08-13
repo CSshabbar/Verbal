@@ -551,11 +551,42 @@ deletes real files under `~/.verbal/` and this development machine has a real, i
   "View transcript" instead of "Play with transcript") — that same path now also covers the expired case,
   plus a small "Audio expired — transcript kept" line where the player bar would be.
 
+## Settings screen — grouped rail (desktop, Aug 2026)
+
+- **Was:** twelve headed sections stacked in one scrolling column (every setting the app has, flat, with
+  nothing ranked above anything else), fifteen prose subtitles, two rival Save buttons and 39 inline
+  `style="…"` attributes. Two separate scroll-clamping bugs came out of that height.
+- **Now:** `#settingsMain` carries `.setshell` and becomes a two-column grid — a **rail** of eight groups
+  (Account, Dictation, Dictionary, Transform, Notes, Meetings, Shortcuts, Data & sync) plus a `#setPane`
+  that renders **one group at a time** via `settingsPane(id)`. The pane, not `#settingsMain`, is the
+  scroller, so each group keeps its own position and no group is tall enough to need one.
+- `SETTINGS_GROUP` is module-scope because the ~30s state heartbeat rebuilds this screen — a local would
+  throw the user back to the first group every rebuild. `setSettingsGroup()` re-renders and resets
+  `scrollTop`. The `__HK_WAIT` freeze during hotkey capture is preserved.
+- **Rail badges** (`settingsBadge`) show only state held **locally** — dictionary counts, notes flags,
+  sync on/off. Anything fed by a late fetch would read as fact while still being a guess.
+- Meetings and Transform still render themselves into `#meetSettings`/`#tfSettings`; both already guard on
+  their container, so they simply no-op when their group isn't mounted — which also means their
+  `Loading…` stubs can no longer shift the page under the cursor. Their own `<h3>` is hidden by CSS
+  (`.setpane #meetSettings>h3:first-child`) since the pane already titles the group.
+- **Two latent bugs this surfaced and fixed:** `saveSettings()` read `#model`/`#syncToggle`/`#userId`/
+  `#devName` unconditionally and now throws when only one group is mounted → reads via `fieldVal`/`togOn`
+  with the current state as fallback. And `.scard` was never a flex container, so every
+  `style="flex-direction:row"` on one was **inert** and those cards (account, delete, clear history,
+  dictionary) had always stacked — replaced by a real `.scard.row` class.
+
 ## Recording overlay / popover / hotkey / onboarding / updater / permissions / sounds (desktop)
 
 - **Overlay** (`overlay.py`/`overlay_html.py`): non-activating pill (Recording → Transcribing → Done),
   bottom-center, `NSScreenSaverWindowLevel`, all-spaces; buttons via the bridge (`overlay_stop`/`_cancel`/
   `_pause`/`_copy`/`_dismiss`). iOS analog = the `Recording` modal screen.
+- **Live waveform (2026-08):** the recording pill's bars track the **real mic level**, not a loop.
+  `Recorder` meters each audio block (`recorder.level`, 0..1, 0 while paused/idle); `overlay.py` pumps it
+  into the page 15×/s and the page scrolls a 13-slot history at 30 fps (newest at the right). Windows
+  (`win_overlay._sample_level`) scrolls the same number into its 10 PIL-drawn bars from the tk animation
+  loop. Both fall back to the old ambient animation if the level ever stops arriving — see
+  `05-conventions.md` Rule #35 for the curve and the fail-open contract. **Mobile is still decorative:**
+  `flume-ui/components/Visualizer.tsx` takes hardcoded `heights` from `RecordingScreen.tsx`.
 - **IDI-178 polish (2026-08):** Transform pill — Replace is single-fire (latch + synchronous rewrite
   consume), errors render on whichever pill is visible, the LLM worker can't strand `_busy` (run-token +
   try/except), busy state has a visible Cancel. Meeting window — `preStart` flips to live only on a real
