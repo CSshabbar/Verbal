@@ -67,6 +67,11 @@ ICON_ACTIVE_PATH = _asset_path("icon_active.png")
 MODE_HOLD = "hold"
 MODE_TOGGLE = "toggle"
 
+# Shortest recording worth transcribing. Below this it is an accidental key
+# brush (or a tap in HOLD mode) and Whisper answers noise with a hallucination,
+# so the clip is discarded. Applied against the recorder's real sample rate.
+MIN_RECORDING_SECONDS = 1.0
+
 
 class VerbalApp(rumps.App):
     def __init__(self):
@@ -1116,11 +1121,18 @@ class VerbalApp(rumps.App):
             if self.popover:
                 self.popover.update_recording_state(False)
 
-            # Minimum 1.0s of audio to avoid accidental clicks / hallucinations
-            # At 48kHz, we need at least 48000 samples for 1 second
-            if audio is None or len(audio) < 48000:
+            # Minimum audio to avoid accidental clicks / hallucinations. Derive the
+            # sample count from the recorder's ACTUAL rate — it captures at the mic's
+            # native rate (recorder._get_native_rate), so a hard-coded 48000 meant
+            # "1 second" only on a 48kHz device: on a 16kHz Bluetooth/HFP mic it
+            # silently demanded 3 seconds and discarded everything shorter, logging
+            # the contradictory "1.49s (< 1.0s minimum)". Mirrors win_main.py.
+            min_samples = int(self.recorder.sample_rate * MIN_RECORDING_SECONDS)
+            if audio is None or len(audio) < min_samples:
                 duration = len(audio) / self.recorder.sample_rate if audio is not None else 0
-                logger.warning(f"Audio too short: {duration:.2f}s (< 1.0s minimum)")
+                logger.warning(f"Audio too short: {duration:.2f}s "
+                               f"(< {MIN_RECORDING_SECONDS:.2f}s minimum, "
+                               f"{self.recorder.sample_rate}Hz)")
                 self.status_item.title = self._status_text()
                 self.overlay.hide()
                 return
