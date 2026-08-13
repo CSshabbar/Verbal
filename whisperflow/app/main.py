@@ -1430,6 +1430,14 @@ class VerbalApp(rumps.App):
         try:
             self._processing = False
             self._is_recording = False
+            # A hands-free (tapped) recording is over however we got here, so the
+            # listener must not still believe one is latched — otherwise the next
+            # tap is spent "stopping" it instead of starting the next dictation.
+            try:
+                if self.hotkey_listener:
+                    self.hotkey_listener.clear_latch()
+            except Exception:
+                pass
             # NOTE (IDI-165 carry-over, fixed in IDI-178): this must NOT clear
             # `_cancel_flag`. `_on_esc_pressed` sets the flag and then QUEUES
             # this reset — if the UI queue drained before the transcription

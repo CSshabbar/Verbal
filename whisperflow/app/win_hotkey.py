@@ -24,6 +24,12 @@ logger = logging.getLogger("verbal.hotkey.win")
 MODE_HOLD = "hold"
 MODE_TOGGLE = "toggle"
 
+# Tap-to-latch (HOLD mode): a press SHORTER than this is a tap, and a tap
+# leaves the recording running hands-free until the next tap. Anything longer
+# is an ordinary push-to-talk hold that stops on release. Mirrors
+# app/hotkey.py::TAP_LATCH_MAX_SECONDS — keep the two in step.
+TAP_LATCH_MAX_SECONDS = 0.4
+
 
 class WinHotkeyListener:
     def __init__(self, on_start, on_stop, on_toggle, on_esc=None,
@@ -53,6 +59,15 @@ class WinHotkeyListener:
         self._is_recording = False
         self._pressed = False
         self._last_toggle_time = 0.0
+        # Tap-to-latch state (HOLD mode only) — see TAP_LATCH_MAX_SECONDS.
+        # `_latched` = recording runs with the key released; the next press
+        # stops it. `_press_time` dates the press so release can tell a tap
+        # from a hold. `_chorded` marks that another key was struck while the
+        # hotkey was down, which makes it a shortcut, never a dictation tap.
+        self._tap_latch_seconds = TAP_LATCH_MAX_SECONDS
+        self._latched = False
+        self._press_time = 0.0
+        self._chorded = False
         # pynput.
         self._listener = None
 
@@ -91,7 +106,16 @@ class WinHotkeyListener:
     def set_mode(self, mode):
         self._mode = mode
         self._pressed = False
+        self.clear_latch()
         logger.info("Hotkey mode set to %s", mode)
+
+    def clear_latch(self):
+        """Forget a hands-free (tapped) recording. Call whenever the recording
+        ends by any route other than the second tap — ESC, an error, the max
+        duration — so the key state can't drift out of sync with the app.
+        Mirrors app/hotkey.py::clear_latch."""
+        self._latched = False
+        self._pressed = False
 
     def set_transform(self, on_transform, transform_key):
         """Bind (or unbind) the Transform hotkey. `transform_key` is a
@@ -203,6 +227,11 @@ class WinHotkeyListener:
 
     def _on_press(self, key):
         try:
+            # Any OTHER key struck while the hotkey is held makes this a chord
+            # (Alt+Tab, Ctrl+Alt+…), not dictation — remember it so the release
+            # can't latch a hands-free recording.
+            if self._pressed and not self._keys_match(key, self._parsed_hold_key):
+                self._chorded = True
             # Track modifier state BEFORE checking the chord.
             if self._is_ctrl(key):
                 self._ctrl_down = True
@@ -215,6 +244,7 @@ class WinHotkeyListener:
             try:
                 from pynput.keyboard import Key
                 if key == Key.esc and self._on_esc:
+                    self.clear_latch()
                     self._on_esc()
                     return
             except Exception:
@@ -231,8 +261,18 @@ class WinHotkeyListener:
             # Same key for both — mode-aware.
             if hold_key == toggle_key and self._keys_match(key, hold_key):
                 if self._mode == MODE_HOLD:
-                    if not self._pressed:
+                    if self._latched:
+                        # Second tap — end the hands-free recording.
+                        self._latched = False
+                        self._pressed = False
+                        logger.info("Tap-latch: stopping (second tap)")
+                        try: self._on_stop()
+                        except Exception as e:
+                            logger.error("latch on_stop failed: %s", e, exc_info=True)
+                    elif not self._pressed:
                         self._pressed = True
+                        self._chorded = False
+                        self._press_time = time.time()
                         try: self._on_start()
                         except Exception as e:
                             logger.error("hold on_start failed: %s", e, exc_info=True)
@@ -279,9 +319,14 @@ class WinHotkeyListener:
                 if self._parsed_hold_key == self._parsed_toggle_key:
                     if self._mode == MODE_HOLD and self._pressed:
                         self._pressed = False
-                        try: self._on_stop()
-                        except Exception as e:
-                            logger.error("hold on_stop failed: %s", e, exc_info=True)
+                        held = time.time() - self._press_time
+                        if held <= self._tap_latch_seconds and not self._chorded:
+                            self._latched = True
+                            logger.info("Tap-latch: recording stays on (%.2fs tap)", held)
+                        else:
+                            try: self._on_stop()
+                            except Exception as e:
+                                logger.error("hold on_stop failed: %s", e, exc_info=True)
                 else:
                     if self._pressed:
                         self._pressed = False

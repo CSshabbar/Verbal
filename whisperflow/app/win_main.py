@@ -1,5 +1,6 @@
 """Verbal for Windows — system tray app with global hotkey dictation."""
 
+import ctypes
 import logging
 import os
 import sys
@@ -24,6 +25,36 @@ if sys.stderr is None:
 if sys.stdout is None:
     sys.stdout = open(os.devnull, 'w')  # type: ignore[assignment]
 
+# Windows defaults these streams to cp1252, which can't encode the em dashes,
+# arrows and check marks our log messages use throughout (sync.py, transcriber.py,
+# recorder.py, meetings.py, ...). logging swallows handler errors, so the line is
+# silently dropped and replaced by a UnicodeEncodeError traceback — including on
+# the dictation path. Force UTF-8 here rather than policing every f-string.
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except (ValueError, OSError):
+            pass
+
+# Declare DPI awareness HERE, before any window exists. Windows bitmap-stretches
+# DPI-unaware processes, but pywebview flips this one to DPI-aware when WebView2
+# builds its first window — which happens AFTER the tkinter overlay has already
+# sized itself from a 96-DPI reading. The overlay then stayed at its unscaled
+# size and rendered at half its intended dimensions on a 200% display. Declaring
+# it up front makes win_overlay's DPI probe see the real value.
+try:
+    # -4 = DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
+    ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
+except Exception:
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)   # PER_MONITOR_AWARE
+    except Exception:
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()    # pre-8.1 fallback
+        except Exception:
+            pass
+
 import faulthandler
 faulthandler.enable()
 
@@ -45,7 +76,7 @@ logging.basicConfig(
     format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler(LOG_DIR / "app.log"),
+        logging.FileHandler(LOG_DIR / "app.log", encoding="utf-8"),
     ],
 )
 logger = logging.getLogger("verbal")
@@ -1189,6 +1220,15 @@ class VerbalWinApp:
     def _reset_to_ready(self):
         self._processing = False
         self._is_recording = False
+        # A hands-free (tapped) recording is over however we got here, so the
+        # listener must not still believe one is latched — otherwise the next
+        # tap is spent "stopping" it instead of starting the next dictation.
+        # Mirrors main.py.
+        try:
+            if getattr(self, "hotkey_listener", None):
+                self.hotkey_listener.clear_latch()
+        except Exception:
+            pass
         # Must NOT clear `_cancel_flag` — `_on_esc_pressed` sets it and then
         # calls this, which used to wipe the cancel before the transcription
         # worker's next `is_set()` check and let the text paste anyway. Cleared

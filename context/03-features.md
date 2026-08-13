@@ -366,6 +366,18 @@ Each feature: **what it does · desktop impl · mobile impl · backend · status
 
 ## Device pairing
 
+- **Devices screen (desktop, reworked 2026-08).** PAIRED and ONLINE are presented as different things,
+  because they are: paired = has a row on the account, online = heartbeat within
+  `sync.PRESENCE_ONLINE_SEC` (120 s). `renderDevices()` splits the list into **"Online now"** and
+  **"Paired, offline"** groups, each with a count; offline rows are dimmed (`.dcard.off`) so the live
+  device is what the eye lands on, and every row states its platform plus a relative `last_seen`
+  ("seen 3 weeks ago") instead of the raw type string. Header reads "N paired · M online now". The
+  "SEND MY TRANSCRIPTIONS TO" pills carry a green dot on live targets. The header is `position:sticky`
+  inside `.main` (`.dhead`) — the scroller is still `.main` per Hard Rule #23; do **not** nest a second
+  scroller here. **"Remove all offline"** (`remove_offline_devices`) bulk-clears the offline group behind
+  a confirm; it is a list removal, not a revocation, so any of those devices reappears on its next
+  heartbeat. Nothing auto-prunes — see `04-data-model` §`devices` for why, and for the reinstall-identity
+  fix that stops the list filling up in the first place.
 - QR-based, single-use token. Host (signed in) inserts a `pairings` row (`token`=`token_urlsafe(6)`,
   `expires_at`≈now+120 s), shows QR `flume://pair?t=<token>`. New device claims via the **`claim_pairing`
   RPC** (IDI-157: atomic guarded claim, server-side expiry — direct table reads/updates are gone) → adopt
@@ -556,6 +568,14 @@ deletes real files under `~/.verbal/` and this development machine has a real, i
 - **Popover** (`flume_popover*.py`): macOS menubar `NSPopover` mini-dashboard; attached via a retrying timer.
 - **Hotkey** (`hotkey.py`): `NSEvent` global monitor; default key **54 (Right Cmd)**, ESC cancels. Hold
   mode (down=start/up=stop) vs Toggle mode (debounced tap). Windows uses `pynput` (default `alt_r`).
+  **Tap-to-latch (Aug 2026):** in HOLD mode the key now does both jobs — a press longer than
+  `TAP_LATCH_MAX_SECONDS` (0.4s) is push-to-talk as before, while a shorter press is a TAP that leaves the
+  recording running hands-free until the next tap. Previously a tap started and stopped a recording inside
+  ~0.3s, which `_on_record_stop` discarded as "too short", so tapping looked like the app ignoring you.
+  Two guards keep it honest: a press with any **other key struck during it** is a chord (Right ⌘ + C), never
+  a latch; and the latch is dropped by ESC, `set_mode` and `_reset_to_ready` (`clear_latch()`) so it can
+  never survive the recording it refers to. Mirrored in `win_hotkey.py`; pinned by `tap_latch_fixtures.py`
+  (15 checks driving the real `_handle_event` with fake events). TOGGLE mode is unchanged.
 - **Onboarding:** dashboard JS flow; `DashboardApi.complete_onboarding` sets `config['onboarded']`. Mobile:
   `OnboardingScreen` (3 slides) + AsyncStorage `flume_onboarded`.
 - **Updater** (`updater.py`): polls Supabase `app_versions` per platform, downloads to temp with sha256
