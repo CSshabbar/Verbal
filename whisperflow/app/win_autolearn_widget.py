@@ -23,15 +23,47 @@ from PIL import Image, ImageDraw, ImageFont, ImageTk
 
 logger = logging.getLogger("verbal.autolearn.widget.win")
 
-# ── Layout ──────────────────────────────────────────────────────────────
-PILL_W = 620
-PILL_H = 72
-RADIUS = 16
-PANEL_W = PILL_W
-PANEL_H = PILL_H
+# ── Layout + DPI scaling ────────────────────────────────────────────────
+# 96-DPI design values. The process is DPI-aware (see win_dpi), so drawing
+# these raw makes the pill render at 1/scale of its intended physical size.
+SCALE = 1.0
 
-PAD_LEFT   = 16
-PAD_RIGHT  = 10
+_DESIGN = {
+    "PILL_W": 620, "PILL_H": 72, "RADIUS": 16,
+    "PAD_LEFT": 16, "PAD_RIGHT": 10,
+    "F_TITLE": 13, "F_PAIR": 11, "F_BTN": 12,
+}
+
+
+def _s(v):
+    """Scale a 96-DPI design length to device pixels (float)."""
+    return v * SCALE
+
+
+def _i(v):
+    """Scale a 96-DPI offset / stroke width to whole device pixels."""
+    return max(1, int(round(v * SCALE)))
+
+
+def _apply_scale(scale):
+    """Restate every layout constant in device pixels for `scale`."""
+    global SCALE, PILL_W, PILL_H, RADIUS, PANEL_W, PANEL_H
+    global PAD_LEFT, PAD_RIGHT, F_TITLE, F_PAIR, F_BTN
+    SCALE = scale
+    d = _DESIGN
+    PILL_W = int(round(d["PILL_W"] * scale))
+    PILL_H = int(round(d["PILL_H"] * scale))
+    RADIUS = int(round(d["RADIUS"] * scale))
+    PANEL_W = PILL_W
+    PANEL_H = PILL_H
+    PAD_LEFT = int(round(d["PAD_LEFT"] * scale))
+    PAD_RIGHT = int(round(d["PAD_RIGHT"] * scale))
+    F_TITLE = max(1, int(round(d["F_TITLE"] * scale)))
+    F_PAIR = max(1, int(round(d["F_PAIR"] * scale)))
+    F_BTN = max(1, int(round(d["F_BTN"] * scale)))
+
+
+_apply_scale(1.0)          # sane defaults until the monitor is probed
 
 # ── Colors (mirror autolearn_widget_html CSS vars) ──────────────────────
 CREAM_RGB   = (234, 223, 206)    # --cream #EADFCE
@@ -75,6 +107,13 @@ class WinAutoLearnWidget:
 
     def _run_tk(self):
         try:
+            # BEFORE the window/canvas: both are sized from PANEL_W/PANEL_H.
+            try:
+                from app.win_dpi import widget_scale
+                _apply_scale(widget_scale())
+                logger.info("autolearn pill: scale=%.2f -> %dx%d", SCALE, PANEL_W, PANEL_H)
+            except Exception as e:
+                logger.debug("autolearn dpi scale skipped: %s", e)
             self._root = tk.Tk()
             self._root.overrideredirect(True)
             self._root.attributes("-topmost", True)
@@ -103,9 +142,9 @@ class WinAutoLearnWidget:
     def _load_fonts(self):
         for face in ("segoeui.ttf", "arial.ttf"):
             try:
-                self._font_title = ImageFont.truetype(face, 13)
-                self._font_pair = ImageFont.truetype(face, 11)
-                self._font_btn = ImageFont.truetype(face, 12)
+                self._font_title = ImageFont.truetype(face, F_TITLE)
+                self._font_pair = ImageFont.truetype(face, F_PAIR)
+                self._font_btn = ImageFont.truetype(face, F_BTN)
                 return
             except Exception:
                 continue
@@ -201,40 +240,40 @@ class WinAutoLearnWidget:
             # Draw right-to-left so the X hugs the edge.
             x_r = PANEL_W - PAD_RIGHT
             # X close button (28x28 with soft ink fill circle).
-            x_r_size = 26
+            x_r_size = _i(26)
             x_left = x_r - x_r_size
             draw.ellipse(
                 (x_left, cy - x_r_size // 2,
                  x_left + x_r_size, cy + x_r_size // 2),
                 fill=(0, 0, 0, 24))
-            k = 5
+            k = _i(5)
             cx = x_left + x_r_size // 2
             draw.line((cx - k, cy - k, cx + k, cy + k),
-                      fill=INK_RGB + (220,), width=2)
+                      fill=INK_RGB + (220,), width=_i(2))
             draw.line((cx - k, cy + k, cx + k, cy - k),
-                      fill=INK_RGB + (220,), width=2)
+                      fill=INK_RGB + (220,), width=_i(2))
             self._hits.append((x_left, cy - x_r_size // 2,
                                x_left + x_r_size, cy + x_r_size // 2,
                                "autolearn_close"))
-            x_r = x_left - 8
+            x_r = x_left - _i(8)
 
             # Add button — dark rounded rect with cream label.
             btn_label = "Add to dictionary"
-            btn_w = _text_width(draw, btn_label, self._font_btn) + 28
-            btn_h = 34
+            btn_w = _text_width(draw, btn_label, self._font_btn) + _i(28)
+            btn_h = _i(34)
             btn_left = x_r - btn_w
             btn_top = cy - btn_h // 2
             draw.rounded_rectangle(
                 (btn_left, btn_top, btn_left + btn_w, btn_top + btn_h),
-                radius=11, fill=DARK_RGB + (255,))
+                radius=_i(11), fill=DARK_RGB + (255,))
             tw = _text_width(draw, btn_label, self._font_btn)
             draw.text(
-                (btn_left + (btn_w - tw) // 2, btn_top + 9),
+                (btn_left + (btn_w - tw) // 2, btn_top + _i(9)),
                 btn_label, fill=CREAM_RGB + (255,), font=self._font_btn)
             self._hits.append((btn_left, btn_top,
                                btn_left + btn_w, btn_top + btn_h,
                                "autolearn_add"))
-            content_right = btn_left - 12
+            content_right = btn_left - _i(12)
 
             # Left side: two-line text stack. Title + pair.
             new_word_disp = f"“{self._new}”"
@@ -245,7 +284,7 @@ class WinAutoLearnWidget:
             # Line 1 pieces so the quoted word renders bold-ish (we fake
             # emphasis via colored contrast).
             _title_max_w = content_right - PAD_LEFT
-            title_y = cy - 18
+            title_y = cy - _i(18)
             x_run = PAD_LEFT
             draw.text((x_run, title_y), title_prefix,
                       fill=INK_MUT_RGB + (255,), font=self._font_title)
@@ -260,7 +299,7 @@ class WinAutoLearnWidget:
                       fill=INK_MUT_RGB + (255,), font=self._font_title)
 
             # Line 2 — "Replaces <old> when misheard".
-            pair_y = cy + 3
+            pair_y = cy + _i(3)
             replaces = "Replaces "
             when = " when misheard"
             x_run = PAD_LEFT
@@ -268,7 +307,7 @@ class WinAutoLearnWidget:
                       fill=INK_MUT_RGB + (200,), font=self._font_pair)
             x_run += _text_width(draw, replaces, self._font_pair)
             _old_shown = _fit_to_width(draw, old_word_disp, self._font_pair,
-                                       _title_max_w - (x_run - PAD_LEFT) - 90)
+                                       _title_max_w - (x_run - PAD_LEFT) - _i(90))
             draw.text((x_run, pair_y), _old_shown,
                       fill=INK_RGB + (230,), font=self._font_pair)
             x_run += _text_width(draw, _old_shown, self._font_pair)

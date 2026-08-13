@@ -31,21 +31,65 @@ from PIL import Image, ImageDraw, ImageFont, ImageTk
 
 logger = logging.getLogger("verbal.transform.widget.win")
 
-# ── Geometry (the pill IS the window) ───────────────────────────────────
-PANEL_W = 660
-RADIUS  = 16
-PAD     = 18
+# ── Geometry + DPI scaling (the pill IS the window) ─────────────────────
+# Every number below is a 96-DPI DESIGN value. The process is DPI-aware (see
+# win_dpi), so tkinter/PIL work in real device pixels — drawing these raw made
+# the pill render at 59% on the 200% test VM. `_apply_scale()` restates them
+# once the monitor's scale is known; every inline offset in the drawing code
+# goes through `_i()`/`_s()` for the same reason.
+SCALE = 1.0
 
-H_PROMPT  = 132
-H_BUSY    = 68
-H_PREVIEW = 244
-H_DONE    = 64
+_DESIGN = {
+    "PANEL_W": 660, "RADIUS": 16, "PAD": 18,
+    "H_PROMPT": 132, "H_BUSY": 68, "H_PREVIEW": 244, "H_DONE": 64,
+    "BOTTOM_MARGIN": 80,
+    "ROW_Y": 56,      # control row top
+    "ROW_H": 34,
+    "MIC_D": 34,      # mic diameter
+    # PIL font sizes, and the tk Entry/Text sizes in PIXELS (a negative tk font
+    # size means pixels — points would be re-scaled by tk's own 96-DPI factor
+    # and come out too small on a scaled monitor).
+    "F_EYEBROW": 10, "F_BODY": 12, "F_SMALL": 11, "F_BTN": 12,
+    "TK_PX": 13,
+}
 
-BOTTOM_MARGIN = 80
 
-ROW_Y   = 56      # control row top
-ROW_H   = 34
-MIC_D   = 34      # mic diameter
+def _s(v):
+    """Scale a 96-DPI design length to device pixels (float)."""
+    return v * SCALE
+
+
+def _i(v):
+    """Scale a 96-DPI offset / stroke width to whole device pixels."""
+    return max(1, int(round(v * SCALE)))
+
+
+def _apply_scale(scale):
+    """Restate every layout constant in device pixels for `scale`."""
+    global SCALE, PANEL_W, RADIUS, PAD, H_PROMPT, H_BUSY, H_PREVIEW, H_DONE
+    global BOTTOM_MARGIN, ROW_Y, ROW_H, MIC_D
+    global F_EYEBROW, F_BODY, F_SMALL, F_BTN, TK_PX
+    SCALE = scale
+    d = _DESIGN
+    PANEL_W = int(round(d["PANEL_W"] * scale))
+    RADIUS = int(round(d["RADIUS"] * scale))
+    PAD = int(round(d["PAD"] * scale))
+    H_PROMPT = int(round(d["H_PROMPT"] * scale))
+    H_BUSY = int(round(d["H_BUSY"] * scale))
+    H_PREVIEW = int(round(d["H_PREVIEW"] * scale))
+    H_DONE = int(round(d["H_DONE"] * scale))
+    BOTTOM_MARGIN = int(round(d["BOTTOM_MARGIN"] * scale))
+    ROW_Y = int(round(d["ROW_Y"] * scale))
+    ROW_H = int(round(d["ROW_H"] * scale))
+    MIC_D = int(round(d["MIC_D"] * scale))
+    F_EYEBROW = max(1, int(round(d["F_EYEBROW"] * scale)))
+    F_BODY = max(1, int(round(d["F_BODY"] * scale)))
+    F_SMALL = max(1, int(round(d["F_SMALL"] * scale)))
+    F_BTN = max(1, int(round(d["F_BTN"] * scale)))
+    TK_PX = max(1, int(round(d["TK_PX"] * scale)))
+
+
+_apply_scale(1.0)          # sane defaults before _run_tk probes the monitor
 
 # ── Palette — transform_widget_html CSS flattened over cream ────────────
 CREAM      = (234, 223, 206)
@@ -133,6 +177,13 @@ class WinTransformWidget:
 
     def _run_tk(self):
         try:
+            # BEFORE the canvas: it is sized from PANEL_W.
+            try:
+                from app.win_dpi import widget_scale
+                _apply_scale(widget_scale())
+                logger.info("transform pill: scale=%.2f -> %dx%d", SCALE, PANEL_W, H_PROMPT)
+            except Exception as e:
+                logger.debug("transform dpi scale skipped: %s", e)
             root = tk.Tk()
             root.overrideredirect(True)
             root.attributes("-topmost", True)
@@ -160,19 +211,19 @@ class WinTransformWidget:
     def _load_fonts(self):
         for face in ("consola.ttf", "cour.ttf"):
             try:
-                self._f_eyebrow = ImageFont.truetype(face, 10)
+                self._f_eyebrow = ImageFont.truetype(face, F_EYEBROW)
                 break
             except Exception:
                 continue
         for face in ("segoeui.ttf", "arial.ttf"):
             try:
-                self._f_body = ImageFont.truetype(face, 12)
-                self._f_small = ImageFont.truetype(face, 11)
+                self._f_body = ImageFont.truetype(face, F_BODY)
+                self._f_small = ImageFont.truetype(face, F_SMALL)
                 break
             except Exception:
                 continue
         try:
-            self._f_btn = ImageFont.truetype("segoeuib.ttf", 12)
+            self._f_btn = ImageFont.truetype("segoeuib.ttf", F_BTN)
         except Exception:
             self._f_btn = self._f_body
         self._f_eyebrow = self._f_eyebrow or ImageFont.load_default()
@@ -184,13 +235,13 @@ class WinTransformWidget:
         self._instr_entry = tk.Entry(
             self._root, bg=INPUT_BG_HEX, fg=INK_HEX,
             insertbackground=INK_HEX, bd=0, relief="flat",
-            highlightthickness=0, font=("Segoe UI", 10))
+            highlightthickness=0, font=("Segoe UI", -TK_PX))
         self._instr_entry.bind("<Return>", lambda e: self._send_typed_prompt())
 
         self._preview_text = tk.Text(
             self._root, bg=PREVIEW_BG_HEX, fg=INK_HEX,
-            font=("Segoe UI", 10), wrap="word", bd=0, relief="flat",
-            highlightthickness=0, state="disabled", padx=8, pady=6,
+            font=("Segoe UI", -TK_PX), wrap="word", bd=0, relief="flat",
+            highlightthickness=0, state="disabled", padx=_i(8), pady=_i(6),
             cursor="arrow")
 
     def _apply_geometry(self, h):
@@ -502,10 +553,10 @@ class WinTransformWidget:
         if self._state == "prompt":
             ex, ey, ew, eh = self._entry_rect
             if ew > 0:
-                self._instr_entry.place(x=ex + 12, y=ey + 9,
-                                        width=ew - 24, height=eh - 18)
+                self._instr_entry.place(x=ex + _i(12), y=ey + _i(9),
+                                        width=ew - _i(24), height=eh - _i(18))
         elif self._state == "preview":
-            box_y, box_h = 46, H_PREVIEW - 46 - 58
+            box_y, box_h = _i(46), H_PREVIEW - _i(46) - _i(58)
             rw = self._rewrite or ""
             try:
                 self._preview_text.configure(state="normal")
@@ -515,9 +566,9 @@ class WinTransformWidget:
                 self._preview_text.configure(state="disabled")
             except Exception:
                 pass
-            self._preview_text.place(x=PAD + 6, y=box_y + 6,
-                                     width=PANEL_W - 2 * PAD - 12,
-                                     height=box_h - 12)
+            self._preview_text.place(x=PAD + _i(6), y=box_y + _i(6),
+                                     width=PANEL_W - 2 * PAD - _i(12),
+                                     height=box_h - _i(12))
 
     # ── render ──────────────────────────────────────────────────────────
     def _render(self):
@@ -547,100 +598,107 @@ class WinTransformWidget:
             logger.error("transform render error: %s", e, exc_info=True)
 
     # ── chip primitives ─────────────────────────────────────────────────
-    def _chip_dark(self, draw, x, y, label, action, h=ROW_H):
-        w = _tw(draw, label, self._f_btn) + 34
-        draw.rounded_rectangle((x, y, x + w, y + h), radius=11,
+    # Every literal here is a 96-DPI design offset, so each one is scaled: a
+    # correctly-sized panel with unscaled internals is worse than an unscaled
+    # panel, because the hit-boxes stop matching what is drawn.
+    def _chip_dark(self, draw, x, y, label, action, h=None):
+        h = ROW_H if h is None else h
+        w = _tw(draw, label, self._f_btn) + _i(34)
+        draw.rounded_rectangle((x, y, x + w, y + h), radius=_i(11),
                                fill=DARK + (255,))
-        draw.text((x + 17, y + (h - 15) // 2), label,
+        draw.text((x + _i(17), y + (h - _i(15)) // 2), label,
                   fill=CREAM + (255,), font=self._f_btn)
         self._hits.append((x, y, x + w, y + h, action))
         return w
 
-    def _chip_outline(self, draw, x, y, label, action, h=ROW_H):
-        w = _tw(draw, label, self._f_btn) + 30
-        draw.rounded_rectangle((x, y, x + w, y + h), radius=11,
-                               outline=LINE + (255,), width=1)
-        draw.text((x + 15, y + (h - 15) // 2), label,
+    def _chip_outline(self, draw, x, y, label, action, h=None):
+        h = ROW_H if h is None else h
+        w = _tw(draw, label, self._f_btn) + _i(30)
+        draw.rounded_rectangle((x, y, x + w, y + h), radius=_i(11),
+                               outline=LINE + (255,), width=_i(1))
+        draw.text((x + _i(15), y + (h - _i(15)) // 2), label,
                   fill=INK + (255,), font=self._f_btn)
         self._hits.append((x, y, x + w, y + h, action))
         return w
 
-    def _chip_mic(self, draw, x, y, action, d=MIC_D):
+    def _chip_mic(self, draw, x, y, action, d=None):
+        d = MIC_D if d is None else d
         cx, cy, r = x + d // 2, y + d // 2, d // 2
         if self._speaking:
             draw.ellipse((x, y, x + d, y + d), fill=REC_RED + (255,))
             col = (255, 255, 255, 255)
         else:
             draw.ellipse((x, y, x + d, y + d),
-                         outline=LINE + (255,), width=1)
+                         outline=LINE + (255,), width=_i(1))
             col = INK + (235,)
-        draw.rounded_rectangle((cx - 3, cy - 8, cx + 3, cy + 1),
-                               radius=3, outline=col, width=2)
-        draw.arc((cx - 7, cy - 5, cx + 7, cy + 6), start=0, end=180,
-                 fill=col, width=2)
-        draw.line((cx, cy + 6, cx, cy + 9), fill=col, width=2)
+        draw.rounded_rectangle((cx - _i(3), cy - _i(8), cx + _i(3), cy + _i(1)),
+                               radius=_i(3), outline=col, width=_i(2))
+        draw.arc((cx - _i(7), cy - _i(5), cx + _i(7), cy + _i(6)),
+                 start=0, end=180, fill=col, width=_i(2))
+        draw.line((cx, cy + _i(6), cx, cy + _i(9)), fill=col, width=_i(2))
         self._hits.append((x, y, x + d, y + d, action))
         return d
 
-    def _chip_x(self, draw, cx, cy, action, r=14):
+    def _chip_x(self, draw, cx, cy, action, r=None):
+        r = _i(14) if r is None else r
         draw.ellipse((cx - r, cy - r, cx + r, cy + r), fill=X_BG + (255,))
-        k = 4
-        draw.line((cx - k, cy - k, cx + k, cy + k), fill=INK + (230,), width=2)
-        draw.line((cx - k, cy + k, cx + k, cy - k), fill=INK + (230,), width=2)
+        k = _i(4)
+        draw.line((cx - k, cy - k, cx + k, cy + k), fill=INK + (230,), width=_i(2))
+        draw.line((cx - k, cy + k, cx + k, cy - k), fill=INK + (230,), width=_i(2))
         self._hits.append((cx - r, cy - r, cx + r, cy + r, action))
 
     # ── state painters ──────────────────────────────────────────────────
     def _draw_prompt(self, draw):
-        y1 = 20
+        y1 = _i(20)
         eyebrow_w = _track_text(draw, (PAD, y1), "TRANSFORM SELECTION",
-                                self._f_eyebrow, MUT + (255,), 1.6)
+                                self._f_eyebrow, MUT + (255,), _s(1.6))
 
-        x_cx = PANEL_W - PAD - 14
+        x_cx = PANEL_W - PAD - _i(14)
         chars_lbl = f"{len(self._selection or '')} chars"
         chars_w = _tw(draw, chars_lbl, self._f_small)
-        draw.text((x_cx - 22 - chars_w, y1 - 1), chars_lbl,
+        draw.text((x_cx - _i(22) - chars_w, y1 - _i(1)), chars_lbl,
                   fill=MUT + (190,), font=self._f_small)
-        self._chip_x(draw, x_cx, y1 + 5, "tf_cancel")
+        self._chip_x(draw, x_cx, y1 + _i(5), "tf_cancel")
 
-        ex_x = PAD + eyebrow_w + 14
-        ex_max = (x_cx - 22 - chars_w) - 12 - ex_x
+        ex_x = PAD + eyebrow_w + _i(14)
+        ex_max = (x_cx - _i(22) - chars_w) - _i(12) - ex_x
         excerpt = _fit(draw, (self._selection or "").replace("\n", " "),
                        self._f_body, ex_max)
-        draw.text((ex_x, y1 - 2), excerpt, fill=MUT + (215,), font=self._f_body)
+        draw.text((ex_x, y1 - _i(2)), excerpt, fill=MUT + (215,), font=self._f_body)
 
         # control row
         x = PAD
-        x += self._chip_dark(draw, x, ROW_Y, "Improvise", "tf_improvise") + 9
-        x += self._chip_mic(draw, x, ROW_Y, "tf_speak") + 9
+        x += self._chip_dark(draw, x, ROW_Y, "Improvise", "tf_improvise") + _i(9)
+        x += self._chip_mic(draw, x, ROW_Y, "tf_speak") + _i(9)
 
-        go_w = _tw(draw, "Go", self._f_btn) + 30
-        input_w = PANEL_W - PAD - x - go_w - 9
+        go_w = _tw(draw, "Go", self._f_btn) + _i(30)
+        input_w = PANEL_W - PAD - x - go_w - _i(9)
         draw.rounded_rectangle((x, ROW_Y, x + input_w, ROW_Y + ROW_H),
-                               radius=11, fill=INPUT_BG + (255,),
-                               outline=LINE + (255,), width=1)
+                               radius=_i(11), fill=INPUT_BG + (255,),
+                               outline=LINE + (255,), width=_i(1))
         self._entry_rect = (x, ROW_Y, input_w, ROW_H)
         try:
             typed = self._instr_entry.get() if self._instr_entry else ""
         except Exception:
             typed = ""
         if not typed:
-            draw.text((x + 13, ROW_Y + 10),
+            draw.text((x + _i(13), ROW_Y + _i(10)),
                       "…or type an instruction",
                       fill=MUT + (160,), font=self._f_body)
-        x += input_w + 9
+        x += input_w + _i(9)
         self._chip_outline(draw, x, ROW_Y, "Go", "tf_go")
 
         # status line
-        y3 = H_PROMPT - 30
+        y3 = H_PROMPT - _i(30)
         if self._speaking:
             secs = int(max(0, time.time() - self._speak_t0))
             pulse = 0.55 + 0.45 * abs(math.sin(time.time() * 4.0))
-            draw.ellipse((PAD, y3 + 4, PAD + 8, y3 + 12),
+            draw.ellipse((PAD, y3 + _i(4), PAD + _i(8), y3 + _i(12)),
                          fill=REC_RED + (int(255 * pulse),))
-            draw.text((PAD + 15, y3), f"Listening  {secs//60}:{secs%60:02d}",
+            draw.text((PAD + _i(15), y3), f"Listening  {secs//60}:{secs%60:02d}",
                       fill=REC_RED + (255,), font=self._f_small)
             w = _tw(draw, f"Listening  {secs//60}:{secs%60:02d}", self._f_small)
-            draw.text((PAD + 15 + w + 10, y3),
+            draw.text((PAD + _i(15) + w + _i(10), y3),
                       "— click the mic again when you're done",
                       fill=MUT + (190,), font=self._f_small)
         elif self._error:
@@ -654,16 +712,16 @@ class WinTransformWidget:
                       fill=MUT + (160,), font=self._f_small)
 
     def _draw_busy(self, draw):
-        cx, cy, r = PAD + 12, H_BUSY // 2, 9
+        cx, cy, r = PAD + _i(12), H_BUSY // 2, _i(9)
         draw.ellipse((cx - r, cy - r, cx + r, cy + r),
-                     outline=LINE + (255,), width=2)
+                     outline=LINE + (255,), width=_i(2))
         start = int(math.degrees((time.time() * 4.0) % (2 * math.pi)))
         draw.arc((cx - r, cy - r, cx + r, cy + r),
                  start=start, end=(start + 240) % 360,
-                 fill=DARK + (255,), width=2)
-        draw.text((cx + r + 14, cy - 8), self._busy_label,
+                 fill=DARK + (255,), width=_i(2))
+        draw.text((cx + r + _i(14), cy - _i(8)), self._busy_label,
                   fill=INK + (235,), font=self._f_body)
-        self._chip_x(draw, PANEL_W - PAD - 14, cy, "tf_cancel")
+        self._chip_x(draw, PANEL_W - PAD - _i(14), cy, "tf_cancel")
         try:
             self._root.after(66, lambda: (
                 self._visible and self._state == "busy" and self._render()))
@@ -671,36 +729,36 @@ class WinTransformWidget:
             pass
 
     def _draw_preview(self, draw):
-        y1 = 20
+        y1 = _i(20)
         w = _track_text(draw, (PAD, y1), "PREVIEW", self._f_eyebrow,
-                        MUT + (255,), 1.6)
-        draw.text((PAD + w + 12, y1 - 1), "replaces your selection",
+                        MUT + (255,), _s(1.6))
+        draw.text((PAD + w + _i(12), y1 - _i(1)), "replaces your selection",
                   fill=MUT + (180,), font=self._f_small)
-        self._chip_x(draw, PANEL_W - PAD - 14, y1 + 5, "tf_cancel")
+        self._chip_x(draw, PANEL_W - PAD - _i(14), y1 + _i(5), "tf_cancel")
 
-        box_y, box_h = 46, H_PREVIEW - 46 - 58
+        box_y, box_h = _i(46), H_PREVIEW - _i(46) - _i(58)
         draw.rounded_rectangle((PAD, box_y, PANEL_W - PAD, box_y + box_h),
-                               radius=11, fill=PREVIEW_BG + (255,),
-                               outline=LINE + (255,), width=1)
+                               radius=_i(11), fill=PREVIEW_BG + (255,),
+                               outline=LINE + (255,), width=_i(1))
 
-        yb = H_PREVIEW - 46
+        yb = H_PREVIEW - _i(46)
         x = PAD
-        x += self._chip_dark(draw, x, yb, "Replace", "tf_replace") + 9
-        x += self._chip_outline(draw, x, yb, "Cancel", "tf_cancel") + 14
+        x += self._chip_dark(draw, x, yb, "Replace", "tf_replace") + _i(9)
+        x += self._chip_outline(draw, x, yb, "Cancel", "tf_cancel") + _i(14)
         if self._error:
-            draw.text((x, yb + 10), self._error, fill=ERR + (255,),
+            draw.text((x, yb + _i(10)), self._error, fill=ERR + (255,),
                       font=self._f_small)
 
     def _draw_done(self, draw):
         cy = H_DONE // 2
-        w = _track_text(draw, (PAD, cy - 6), "REPLACED", self._f_eyebrow,
-                        MUT + (255,), 1.6)
-        x = PAD + w + 14
-        draw.text((x, cy - 8), "changed your mind?",
+        w = _track_text(draw, (PAD, cy - _i(6)), "REPLACED", self._f_eyebrow,
+                        MUT + (255,), _s(1.6))
+        x = PAD + w + _i(14)
+        draw.text((x, cy - _i(8)), "changed your mind?",
                   fill=MUT + (190,), font=self._f_body)
-        x += _tw(draw, "changed your mind?", self._f_body) + 14
+        x += _tw(draw, "changed your mind?", self._f_body) + _i(14)
         self._chip_outline(draw, x, cy - ROW_H // 2, "Undo", "tf_undo")
-        self._chip_x(draw, PANEL_W - PAD - 14, cy, "tf_cancel")
+        self._chip_x(draw, PANEL_W - PAD - _i(14), cy, "tf_cancel")
 
     # ── clicks ──────────────────────────────────────────────────────────
     def _on_click(self, event):

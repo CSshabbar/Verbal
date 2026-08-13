@@ -22,10 +22,45 @@ from PIL import Image, ImageDraw, ImageFont, ImageTk
 
 logger = logging.getLogger("verbal.meetinghud.win")
 
-# ── Layout ──────────────────────────────────────────────────────────────
-HUD_W = 380
-HUD_H = 52
-RADIUS = 18
+# ── Layout + DPI scaling ────────────────────────────────────────────────
+# 96-DPI design values. The process is DPI-aware (see win_dpi), so drawing
+# these raw makes the HUD render at 1/scale of its intended physical size.
+SCALE = 1.0
+
+_DESIGN = {
+    "HUD_W": 380, "HUD_H": 52, "RADIUS": 18,
+    "BAR_W": 2.5, "BAR_GAP": 3.0, "BAR_MAX_H": 20,
+    "F_TEXT": 11, "F_NUM": 12,
+}
+
+
+def _s(v):
+    """Scale a 96-DPI design length to device pixels (float)."""
+    return v * SCALE
+
+
+def _i(v):
+    """Scale a 96-DPI offset / stroke width to whole device pixels."""
+    return max(1, int(round(v * SCALE)))
+
+
+def _apply_scale(scale):
+    """Restate every layout constant in device pixels for `scale`."""
+    global SCALE, HUD_W, HUD_H, RADIUS, BAR_W, BAR_GAP, BAR_MAX_H
+    global F_TEXT, F_NUM
+    SCALE = scale
+    d = _DESIGN
+    HUD_W = int(round(d["HUD_W"] * scale))
+    HUD_H = int(round(d["HUD_H"] * scale))
+    RADIUS = int(round(d["RADIUS"] * scale))
+    BAR_W = d["BAR_W"] * scale          # float: sub-pixel bar geometry
+    BAR_GAP = d["BAR_GAP"] * scale
+    BAR_MAX_H = d["BAR_MAX_H"] * scale
+    F_TEXT = max(1, int(round(d["F_TEXT"] * scale)))
+    F_NUM = max(1, int(round(d["F_NUM"] * scale)))
+
+
+_apply_scale(1.0)          # sane defaults until the monitor is probed
 
 # Colors match meeting_hud_html CSS.
 BG_RGB     = (14, 16, 18)         # rgba(14,16,18,.9) as solid
@@ -37,10 +72,7 @@ BORDER_RGB = (60, 55, 50)
 
 CHROMA_TK = "#0a0a0a"
 
-BAR_COUNT = 5
-BAR_W     = 2.5
-BAR_GAP   = 3.0
-BAR_MAX_H = 20
+BAR_COUNT = 5              # a count, never scaled
 
 _HUD_ACTIONS = {"hud_star", "hud_pause", "hud_return"}
 
@@ -84,6 +116,13 @@ class WinMeetingHud:
 
     def _run_tk(self):
         try:
+            # BEFORE the window/canvas: both are sized from HUD_W/HUD_H.
+            try:
+                from app.win_dpi import widget_scale
+                _apply_scale(widget_scale())
+                logger.info("meeting HUD: scale=%.2f -> %dx%d", SCALE, HUD_W, HUD_H)
+            except Exception as e:
+                logger.debug("hud dpi scale skipped: %s", e)
             root = tk.Tk()
             root.overrideredirect(True)
             root.attributes("-topmost", True)
@@ -113,13 +152,13 @@ class WinMeetingHud:
     def _load_fonts(self):
         for face in ("segoeui.ttf", "arial.ttf"):
             try:
-                self._font = ImageFont.truetype(face, 11)
+                self._font = ImageFont.truetype(face, F_TEXT)
                 break
             except Exception:
                 continue
         for face in ("Consola.ttf", "consola.ttf", "cour.ttf"):
             try:
-                self._font_num = ImageFont.truetype(face, 12)
+                self._font_num = ImageFont.truetype(face, F_NUM)
                 break
             except Exception:
                 continue
@@ -248,55 +287,55 @@ class WinMeetingHud:
             # Pill background — dark rounded rect.
             draw.rounded_rectangle(
                 (0, 0, HUD_W - 1, HUD_H - 1), radius=RADIUS,
-                fill=BG_RGB + (230,), outline=BORDER_RGB + (140,), width=1)
+                fill=BG_RGB + (230,), outline=BORDER_RGB + (140,), width=_i(1))
 
             self._hits = []
             cy = HUD_H // 2
-            x = 12
+            x = _i(12)
 
             # Red pulse dot (dim & steady when paused).
-            r = 5
+            r = _i(5)
             if self._paused:
                 dot_color = (200, 200, 200, 120)
             else:
                 pulse = 0.6 + 0.4 * abs(math.sin(self._phase * 2.0))
                 dot_color = DOT_RGB + (int(200 * pulse),)
             draw.ellipse((x, cy - r, x + 2 * r, cy + r), fill=dot_color)
-            x += 2 * r + 8
+            x += 2 * r + _i(8)
 
             # Timer (M:SS).
             timer_text = f"{self._elapsed_secs // 60}:{self._elapsed_secs % 60:02d}"
             tw = _text_width(draw, timer_text, self._font_num)
             timer_color = MUT_RGB + (255,) if self._paused else TEXT_RGB + (255,)
-            draw.text((x, cy - 7), timer_text,
+            draw.text((x, cy - _i(7)), timer_text,
                       fill=timer_color, font=self._font_num)
-            x += tw + 10
+            x += tw + _i(10)
 
             # Waveform bars.
             level = 0.0 if self._paused else max(self._mic_level, self._sys_level)
             for i in range(BAR_COUNT):
                 frac = 1.0 - abs(i - (BAR_COUNT - 1) / 2.0) / ((BAR_COUNT - 1) / 2.0)
                 wave = abs(math.sin(self._phase * 3.0 + i * 0.7))
-                bh = max(3, BAR_MAX_H * (0.35 + 0.65 * frac) * (0.35 + 0.65 * level) * wave)
+                bh = max(_i(3), BAR_MAX_H * (0.35 + 0.65 * frac) * (0.35 + 0.65 * level) * wave)
                 bx = x + i * (BAR_W + BAR_GAP)
                 draw.rounded_rectangle(
                     (bx, cy - bh / 2, bx + BAR_W, cy + bh / 2),
                     radius=BAR_W / 2,
                     fill=TEXT_RGB + (int(210 * (0.55 + 0.45 * frac)),))
-            x += int(BAR_COUNT * (BAR_W + BAR_GAP)) + 12
+            x += int(BAR_COUNT * (BAR_W + BAR_GAP)) + _i(12)
 
             # Title — ellipsized to available room before the buttons.
-            btn_r = 12
-            btn_gap = 6
-            buttons_w = 3 * (2 * btn_r) + 2 * btn_gap + 12
+            btn_r = _i(12)
+            btn_gap = _i(6)
+            buttons_w = 3 * (2 * btn_r) + 2 * btn_gap + _i(12)
             title_max_w = HUD_W - x - buttons_w
             title = _fit_to_width(draw, self._title or "Meeting",
                                   self._font, title_max_w)
-            draw.text((x, cy - 7), title,
+            draw.text((x, cy - _i(7)), title,
                       fill=TEXT_RGB + (230,), font=self._font)
 
             # Right cluster: star / pause / return.
-            rx = HUD_W - 10 - btn_r
+            rx = HUD_W - _i(10) - btn_r
             self._draw_hud_btn(draw, rx, cy, glyph="return")
             rx -= 2 * btn_r + btn_gap
             self._draw_hud_btn(draw, rx, cy,
@@ -312,31 +351,31 @@ class WinMeetingHud:
             logger.error("HUD render error: %s", e, exc_info=True)
 
     def _draw_hud_btn(self, draw, cx, cy, glyph):
-        r = 12
+        r = _i(12)
         # Star sits in an accent-tinted circle; others muted.
         bg = (200, 90, 62, 60) if glyph == "star" else (240, 240, 240, 30)
         outline = (240, 240, 240, 60)
         draw.ellipse((cx - r, cy - r, cx + r, cy + r),
-                     fill=bg, outline=outline, width=1)
+                     fill=bg, outline=outline, width=_i(1))
         col = (240, 179, 154, 255) if glyph == "star" else TEXT_RGB + (230,)
         if glyph == "star":
-            _draw_star(draw, cx, cy, 4.5, col)
+            _draw_star(draw, cx, cy, _s(4.5), col)
             action = "hud_star"
         elif glyph == "pause":
-            draw.rectangle((cx - 3, cy - 4, cx - 1, cy + 4), fill=col)
-            draw.rectangle((cx + 1, cy - 4, cx + 3, cy + 4), fill=col)
+            draw.rectangle((cx - _i(3), cy - _i(4), cx - _i(1), cy + _i(4)), fill=col)
+            draw.rectangle((cx + _i(1), cy - _i(4), cx + _i(3), cy + _i(4)), fill=col)
             action = "hud_pause"
         elif glyph == "play":
             draw.polygon(
-                [(cx - 3, cy - 5), (cx - 3, cy + 5), (cx + 4, cy)], fill=col)
+                [(cx - _i(3), cy - _i(5)), (cx - _i(3), cy + _i(5)), (cx + _i(4), cy)], fill=col)
             action = "hud_pause"
         elif glyph == "return":
             # Small maximize/return arrow icon (arrow into square).
-            draw.rectangle((cx - 4, cy - 4, cx + 4, cy + 4),
-                           outline=col, width=1)
-            draw.line((cx - 1, cy + 1, cx + 3, cy - 3), fill=col, width=1)
+            draw.rectangle((cx - _i(4), cy - _i(4), cx + _i(4), cy + _i(4)),
+                           outline=col, width=_i(1))
+            draw.line((cx - _i(1), cy + _i(1), cx + _i(3), cy - _i(3)), fill=col, width=_i(1))
             draw.polygon(
-                [(cx + 3, cy - 3), (cx + 3, cy - 1), (cx + 1, cy - 3)],
+                [(cx + _i(3), cy - _i(3)), (cx + _i(3), cy - _i(1)), (cx + _i(1), cy - _i(3))],
                 fill=col)
             action = "hud_return"
         else:
