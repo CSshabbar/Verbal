@@ -12,10 +12,11 @@ VK_ESCAPE = 0x35
 
 # Tap-to-latch (HOLD mode): a press SHORTER than this is a tap, and a tap leaves
 # the recording running hands-free until the next tap. Anything longer is an
-# ordinary push-to-talk hold that stops on release. 0.4s is comfortably above a
-# deliberate tap and below the shortest press anyone makes when they mean to
-# hold and speak.
-TAP_LATCH_MAX_SECONDS = 0.4
+# ordinary push-to-talk hold that stops on release. 0.8s: a deliberate tap is
+# well under it, and anyone who means to HOLD and speak is past it before the
+# first syllable. It also narrows the dead zone against MIN_RECORDING_SECONDS —
+# a release between this and 1.0s stops a recording too short to transcribe.
+TAP_LATCH_MAX_SECONDS = 0.8
 
 
 class HotkeyListener:
@@ -165,8 +166,8 @@ class HotkeyListener:
 
             # Hold-to-talk WITH tap-to-latch — only in HOLD mode.
             #   press           → start recording
-            #   release > 0.4s  → push-to-talk: stop (the classic behaviour)
-            #   release < 0.4s  → it was a TAP: keep recording hands-free
+            #   release > 0.8s  → push-to-talk: stop (the classic behaviour)
+            #   release < 0.8s  → it was a TAP: keep recording hands-free
             #   press again     → stop the latched recording
             # A tap used to start a recording and end it in the same third of a
             # second, which _on_record_stop then discarded as too short: the

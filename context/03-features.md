@@ -569,7 +569,7 @@ deletes real files under `~/.verbal/` and this development machine has a real, i
 - **Hotkey** (`hotkey.py`): `NSEvent` global monitor; default key **54 (Right Cmd)**, ESC cancels. Hold
   mode (down=start/up=stop) vs Toggle mode (debounced tap). Windows uses `pynput` (default `alt_r`).
   **Tap-to-latch (Aug 2026):** in HOLD mode the key now does both jobs — a press longer than
-  `TAP_LATCH_MAX_SECONDS` (0.4s) is push-to-talk as before, while a shorter press is a TAP that leaves the
+  `TAP_LATCH_MAX_SECONDS` (0.8s) is push-to-talk as before, while a shorter press is a TAP that leaves the
   recording running hands-free until the next tap. Previously a tap started and stopped a recording inside
   ~0.3s, which `_on_record_stop` discarded as "too short", so tapping looked like the app ignoring you.
   Two guards keep it honest: a press with any **other key struck during it** is a chord (Right ⌘ + C), never

@@ -28,7 +28,7 @@ MODE_TOGGLE = "toggle"
 # leaves the recording running hands-free until the next tap. Anything longer
 # is an ordinary push-to-talk hold that stops on release. Mirrors
 # app/hotkey.py::TAP_LATCH_MAX_SECONDS — keep the two in step.
-TAP_LATCH_MAX_SECONDS = 0.4
+TAP_LATCH_MAX_SECONDS = 0.8
 
 
 class WinHotkeyListener:
