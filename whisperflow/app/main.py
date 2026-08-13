@@ -31,9 +31,13 @@ from app.autolearn_widget import AutoLearnWidget
 from app.sounds import play_start, play_stop, play_done, play_added
 from app.dashboard import DashboardWindow           # legacy AppKit dashboard (fallback)
 from app.flume_web_dashboard import FlumeWebDashboard
-from app.flume_popover import FlumePopover
+from app import menubar_menu
 # NB: there is no native canvas window — app/canvas_window.py was deleted in
 # IDI-179. The canvas lives in the dashboard's tab 4.
+# NB: there is no menubar popover either — flume_popover.py was deleted in
+# IDI-183 and the menubar surface is a real NSMenu (menubar_menu.py).
+# flume_popover_html.py stays: it is the WINDOWS tray popover's HTML, and
+# flume_dashboard_html imports its _mark_data_uri().
 
 ensure_dirs()  # ensure ~/.verbal/logs/ exists before FileHandler is created
 
@@ -97,14 +101,13 @@ class VerbalApp(rumps.App):
             logging.getLogger("verbal").warning("Flume web dashboard unavailable (%s); using AppKit", _e)
             self.dashboard = DashboardWindow(self)
 
-        # Flume menubar popover (WKWebView in an NSPopover). Optional — if it
-        # can't be created the classic rumps menu is used unchanged.
-        try:
-            self.popover = FlumePopover(self)
-        except Exception as _e:
-            logging.getLogger("verbal").warning("Flume popover unavailable (%s)", _e)
-            self.popover = None
-        self._popover_hook_tries = 0
+        # Transient status shown in the menubar menu's header row while
+        # something long-running is happening ("Downloading update…"). Empty
+        # means idle, and the header falls back to "Ready" + the hotkey hint.
+        self._status_line = ""
+        # Wall-clock start of the current dictation, so the header's timer is
+        # right even when the menu is opened mid-recording.
+        self._rec_started_at = 0.0
         # Last interactive sign-in failure, surfaced in the dashboard's sign-in
         # pane via get_state (IDI-166). "" = nothing to report.
         self._auth_error = ""
@@ -112,6 +115,11 @@ class VerbalApp(rumps.App):
         # "Your account has been deleted." Cleared when a new sign-in starts.
         self._auth_notice = ""
 
+        # Running totals. WRITE-ONLY on macOS since IDI-183 — the menu header
+        # takes its number from get_daily_words() instead — but they must stay:
+        # win_main.py has its own `_status_text()` that reads them for its tray
+        # row, and the cross-platform shared_dashboard.py resets them when the
+        # user clears history.
         history = self.config.get("history", [])
         self._total_transcriptions = len(history)
         self._total_words = sum(len(_entry_text(h).split()) for h in history)
@@ -119,13 +127,6 @@ class VerbalApp(rumps.App):
         # Sync client — starts if sync is enabled in config
         self._sync = None
         self._init_sync()
-
-        self.status_item = rumps.MenuItem(self._status_text(), callback=None)
-        self.status_item.set_callback(None)
-
-        self.record_btn = rumps.MenuItem("Start Recording", callback=self._toggle_recording)
-        self.meeting_btn = rumps.MenuItem("Start Meeting", callback=self._toggle_meeting)
-        self.signin_item = rumps.MenuItem("Sign in with Google", callback=self._sign_in)
 
         # Meetings (MEETINGS_DESIGN_HANDOFF.md) — manager + lazy window. Fails
         # closed: if construction fails, meetings are simply unavailable and
@@ -156,51 +157,25 @@ class VerbalApp(rumps.App):
         # one mis-click away in a shipped build: the item only exists when
         # VERBAL_DEV is set (IDI-178). The handler itself stays for that use.
         self._dev_mode = bool(os.environ.get("VERBAL_DEV"))
-        self.reset_onb_item = (
-            rumps.MenuItem("Reset Onboarding (dev)", callback=self._reset_onboarding)
-            if self._dev_mode else None)
 
-        mode_menu = rumps.MenuItem("Recording Mode")
-        self.mode_hold = rumps.MenuItem("Hold Key to Record", callback=self._set_mode_hold)
-        self.mode_toggle = rumps.MenuItem("Toggle On/Off", callback=self._set_mode_toggle)
-        self.mode_hold.state = 1 if self._mode == MODE_HOLD else 0
-        self.mode_toggle.state = 1 if self._mode == MODE_TOGGLE else 0
-        mode_menu.add(self.mode_hold)
-        mode_menu.add(self.mode_toggle)
-
-        model_menu = rumps.MenuItem("Whisper Model")
-        self.model_items = {}
-        for m in ["tiny", "base", "small", "medium"]:
-            item = rumps.MenuItem(m, callback=self._change_model)
-            # "base" is the real default (config.py DEFAULTS + transcriber.py).
-            # The old "medium.en" fallback matched none of the four submenu
-            # entries, so a fresh install showed NO checkmark at all (IDI-178).
-            item.state = 1 if m == self.config.get("whisper_model", "base") else 0
-            self.model_items[m] = item
-            model_menu.add(item)
-
-        self.autodetect_item = rumps.MenuItem(
-            "Auto-detect meetings", callback=self._toggle_meeting_autodetect)
-        self.autodetect_item.state = 1 if self.config.get("meeting_autodetect", True) else 0
-
-        self.menu = [
-            self.status_item,
-            self.record_btn,
-            self.meeting_btn,
-            self.autodetect_item,
-            None,
-            self.signin_item,
-        ] + ([self.reset_onb_item] if self.reset_onb_item else []) + [
-            None,
-            rumps.MenuItem("Open Verbal", callback=self._open_dashboard),
-            rumps.MenuItem("Open Canvas", callback=self._open_canvas),
-            rumps.MenuItem("Open Notes", callback=self._open_notes),
-            mode_menu,
-            model_menu,
-            None,
-            rumps.MenuItem("Check for Updates…", callback=self._check_update_now),
-            rumps.MenuItem("About Verbal", callback=self._about),
-        ]
+        # The menubar surface: a real NSMenu with one custom-drawn header row
+        # (IDI-183). menubar_menu.build() assigns the item references the
+        # callbacks below mutate — record_btn, meeting_btn, mode_hold/toggle,
+        # model_items, autodetect_item, sync_item, signin_item, reset_onb_item.
+        self.menu = menubar_menu.build(self)
+        # The NSMenu only exists once `self.menu` has been assigned, so the
+        # delegate (rebuild-on-open + header animation) is attached after it.
+        # Fails closed: without it the menu is static but fully usable.
+        self._menu_ctl.attach()
+        # Apply the gate NOW rather than waiting for the first menu open. The
+        # delegate keeps it fresh, but a launch-time apply means a signed-out
+        # start is already locked even if the delegate never fires.
+        self._menu_ctl.refresh()
+        self.sync_menu_state()
+        # rumps appends its own quit row at launch; name it the way a Mac app
+        # does. Passing the key here survives rumps' later set_callback(), which
+        # only overwrites the key equivalent when it is given one.
+        self.quit_button = rumps.MenuItem("Quit Flume", key="q")
 
         self.hotkey_listener = HotkeyListener(
             on_start=self._on_hotkey_press,
@@ -227,8 +202,6 @@ class VerbalApp(rumps.App):
         self._meeting_detect_timer = rumps.Timer(self._detect_meeting_tick, 5.0)
 
         self._ui_timer = rumps.Timer(self._drain_ui_queue, 0.1)
-        # attaches the popover to the status item once rumps has created it
-        self._popover_hook_timer = rumps.Timer(self._install_popover_hook, 0.5)
 
     def _on_hotkey_toggle(self):
         """Called by HotkeyListener when the toggle key is pressed."""
@@ -242,8 +215,15 @@ class VerbalApp(rumps.App):
                 self.config.get("hotkey_toggle", 54)
             )
 
-    def _status_text(self):
-        return f"{self._total_transcriptions} transcriptions | {self._total_words} words"
+    def _status_note(self, text=""):
+        """Set (or clear) the transient line the menu header shows when idle.
+
+        Replaces the old `status_item` menu row: the counts it used to carry now
+        live in the header's right-hand column, and recording/transcribing are
+        derived from app state, so the only thing left to say here is the
+        occasional long-running note like "Downloading update…".
+        """
+        self._status_line = text or ""
 
     def _install_edit_menu(self):
         """rumps/menubar apps ship no standard Edit menu, so the system paste
@@ -292,8 +272,6 @@ class VerbalApp(rumps.App):
         self.overlay.setup()
         self.hotkey_listener.start()
         self._ui_timer.start()
-        if self.popover:
-            self._popover_hook_timer.start()
         # Poll for calls in progress (Granola-style prompt). Meetings-only, macOS-only;
         # fails closed — a detection error never touches dictation/capture.
         if self.meetings:
@@ -320,8 +298,10 @@ class VerbalApp(rumps.App):
 
         # Reflect sign-in state in the menubar. Sign-in is REQUIRED (IDI-166),
         # so there is no first-run "Later" alert any more — the dashboard we
-        # just showed renders the sign-in wall itself. Hotkey dictation still
-        # works signed-out; we simply stop advertising that as a path.
+        # just showed renders the sign-in wall itself. As of IDI-183 that is
+        # enforced rather than merely un-advertised: the menu greys out every
+        # account feature and `_on_record_start` refuses, so there is no longer
+        # a signed-out hotkey path into dictation.
         self._update_auth_menu()
 
     def _load_dictionary_once(self):
@@ -492,21 +472,43 @@ class VerbalApp(rumps.App):
     def _on_main(self, fn):
         self._ui_queue.put(fn)
 
-    def _install_popover_hook(self, timer):
-        """Attach the Flume popover to the status-bar button once rumps has
-        created it. Retries a few times, then stops the timer."""
-        self._popover_hook_tries += 1
-        done = False
+    def _open_settings(self, _=None):
+        """Settings… — the dashboard's Settings tab (index 3)."""
+        if not self._require_signin():
+            return
         try:
-            if self.popover and self.popover.install_status_hook():
-                done = True
+            self.dashboard.show()
+            self.dashboard._on_tab_select(3)
         except Exception as e:
-            logger.warning(f"popover hook attempt failed: {e}")
-        if done or self._popover_hook_tries >= 10:
-            try:
-                timer.stop()
-            except Exception:
-                pass
+            logger.warning(f"open settings failed: {e}")
+
+    def _toggle_sync(self, sender=None):
+        """Menu checkmark for cross-device sync. Gated: enabling sync without an
+        account is exactly what cloud_allowed() exists to prevent.
+
+        `_init_sync` is the gate that matters (signed in + a user_id), so this
+        only has to flip the flag and restart the client; the menu delegate
+        disables the row entirely while signed out.
+        """
+        if not self._require_signin():
+            return
+        try:
+            on = not bool(self.config.get("sync_enabled", False))
+            self.config["sync_enabled"] = on
+            save_config(self.config)
+            if self._sync:
+                try:
+                    self._sync.stop()
+                except Exception:
+                    pass
+                self._sync = None
+            if on:
+                self._init_sync()
+            if sender is not None:
+                sender.state = 1 if on else 0
+            logger.info("sync %s", "on" if on else "off")
+        except Exception as e:
+            logger.warning("toggle sync failed: %s", e)
 
     # ── Google auth ───────────────────────────────────────────────────────────
     def _update_auth_menu(self):
@@ -519,7 +521,7 @@ class VerbalApp(rumps.App):
             self.signin_item.set_callback(self._sign_in)
 
     def _push_auth_state(self):
-        """Re-render the dashboard (and popover) from the current auth state.
+        """Re-render the dashboard from the current auth state.
         The sign-in pane is data-driven off `get_state`, so this is how a
         FAILED sign-in gets back to the user — without it the pane kept the
         button disabled forever and only a restart recovered (IDI-166)."""
@@ -527,11 +529,6 @@ class VerbalApp(rumps.App):
             self.dashboard._refresh()
         except Exception as e:
             logger.debug("auth state push failed: %s", e)
-        try:
-            if self.popover:
-                self.popover._refresh()
-        except Exception:
-            pass
 
     def _sign_in(self, _=None):
         # Clear any previous failure the moment a new attempt starts, and push
@@ -614,8 +611,6 @@ class VerbalApp(rumps.App):
         try:
             self.dashboard.show()  # bring Flume to the front after sign-in
             self.dashboard._refresh()
-            if self.popover:
-                self.popover._refresh()
         except Exception:
             pass
 
@@ -635,6 +630,15 @@ class VerbalApp(rumps.App):
         # a meeting left recording keeps capturing audio and then tries to
         # upload/patch rows for an account this device no longer owns.
         self._stop_active_meeting("sign-out")
+        # Same rule for dictation (IDI-183): now that signed-out dictation is
+        # refused at the start, a recording already in flight must not survive
+        # the sign-out and paste a transcript for an account we just left.
+        if self._is_recording:
+            logger.info("cancelling in-flight dictation on sign-out")
+            try:
+                self._cancel_recording()
+            except Exception as e:
+                logger.warning(f"cancel on sign-out failed: {e}")
         if self._sync:
             try:
                 self._sync.stop()
@@ -646,8 +650,6 @@ class VerbalApp(rumps.App):
         self._update_auth_menu()
         try:
             self.dashboard._refresh()
-            if self.popover:
-                self.popover._refresh()
         except Exception:
             pass
 
@@ -675,11 +677,18 @@ class VerbalApp(rumps.App):
     def _open_dashboard(self, _=None):
         self.dashboard.show()
 
+    # The menu greys these rows out while signed out; the guards are what make
+    # them refuse. See _require_signin. ("Open Flume" is deliberately NOT gated —
+    # it renders the sign-in wall, so it is the way back in.)
     def _open_canvas(self, _=None):
+        if not self._require_signin():
+            return
         self.dashboard.show()
         self.dashboard._on_tab_select(4)
 
     def _open_notes(self, _=None):
+        if not self._require_signin():
+            return
         self.dashboard.show()
         self.dashboard._on_tab_select(5)
 
@@ -814,6 +823,8 @@ class VerbalApp(rumps.App):
             pass
 
     def _toggle_meeting(self, _=None):
+        if not self._require_signin():
+            return
         """Menubar 'Start Meeting' — opens the permission checklist when setup
         is incomplete, otherwise the pre-meeting modal. When a meeting is
         already running, focuses its window.
@@ -999,6 +1010,8 @@ class VerbalApp(rumps.App):
             item.state = 1 if name == model else 0
 
     def _set_mode_hold(self, _):
+        if not self._require_signin():
+            return
         self._mode = MODE_HOLD
         self.mode_hold.state = 1
         self.mode_toggle.state = 0
@@ -1008,6 +1021,8 @@ class VerbalApp(rumps.App):
             self.hotkey_listener.set_mode(MODE_HOLD)
 
     def _set_mode_toggle(self, _):
+        if not self._require_signin():
+            return
         self._mode = MODE_TOGGLE
         self.mode_hold.state = 0
         self.mode_toggle.state = 1
@@ -1045,6 +1060,49 @@ class VerbalApp(rumps.App):
             logger.info("ESC - cancelling recording")
             self._on_main(self._cancel_recording)
 
+    # ── sign-in gate ──────────────────────────────────────────────────────────
+    # Flume requires an account, so dictation requires one too. This reverses the
+    # IDI-166 note that hotkey dictation kept working while signed out: the
+    # menubar menu greys every row out, and leaving the hotkey live meant anyone
+    # who knew it could still record with no account behind it.
+    _SIGNIN_PROMPT_EVERY = 4.0   # seconds; holding the key must not spam windows
+
+    def _signed_in(self) -> bool:
+        """Fails CLOSED — an auth error blocks dictation rather than allowing it."""
+        try:
+            return bool(auth.current_user())
+        except Exception as e:
+            logger.warning(f"auth check failed, treating as signed out: {e}")
+            return False
+
+    def _require_signin(self) -> bool:
+        """True when the caller may proceed; otherwise prompts and returns False.
+
+        Every account-shaped menu callback goes through this. A disabled menu item
+        SHOULD never fire, but the enabled state is applied by us (auto-enabling
+        is off) and refreshed by a delegate — so treating "the row was greyed out"
+        as the enforcement would make the gate depend on two AppKit behaviours
+        instead of one plain check. Mirrors win_main.py.
+        """
+        if self._signed_in():
+            return True
+        logger.info("blocked: not signed in")
+        self._prompt_sign_in()
+        return False
+
+    def _prompt_sign_in(self):
+        """Show the sign-in wall the dashboard already renders, at most once every
+        few seconds — a held hotkey fires this repeatedly."""
+        now = time.time()
+        if now - getattr(self, "_last_signin_prompt", 0.0) < self._SIGNIN_PROMPT_EVERY:
+            return
+        self._last_signin_prompt = now
+        try:
+            self.dashboard.show()
+            self.dashboard._refresh()
+        except Exception as e:
+            logger.warning(f"sign-in prompt failed: {e}")
+
     def _toggle_recording(self, _):
         if self._is_recording:
             self._on_record_stop()
@@ -1053,6 +1111,13 @@ class VerbalApp(rumps.App):
 
     def _on_record_start(self):
         if self._processing:
+            return
+        # The single choke point for every start path — the menu row, the toggle
+        # key and the hold key all arrive here, so the sign-in gate lives here
+        # and nowhere else. Checked BEFORE anything is saved, harvested or opened.
+        if not self._signed_in():
+            logger.info("dictation blocked: not signed in")
+            self._prompt_sign_in()
             return
         try:
             save_focused_app()  # Remember where user was typing
@@ -1086,12 +1151,12 @@ class VerbalApp(rumps.App):
 
             if os.path.exists(ICON_ACTIVE_PATH):
                 self.icon = ICON_ACTIVE_PATH
-            self.status_item.title = "Recording... (ESC to cancel)"
+            # The menu header derives "Recording" + its timer from this.
+            self._rec_started_at = time.time()
+            self._status_note("")
             self.record_btn.title = "Stop Recording"
             self.overlay.show("Listening…")
             self.dashboard.update_recording_state(True)
-            if self.popover:
-                self.popover.update_recording_state(True)
         except Exception as e:
             self._is_recording = False
             logger.error(f"Record start failed: {e}\n{traceback.format_exc()}")
@@ -1118,8 +1183,6 @@ class VerbalApp(rumps.App):
                 self.icon = ICON_PATH
             self.record_btn.title = "Start Recording"
             self.dashboard.update_recording_state(False)
-            if self.popover:
-                self.popover.update_recording_state(False)
 
             # Minimum audio to avoid accidental clicks / hallucinations. Derive the
             # sample count from the recorder's ACTUAL rate — it captures at the mic's
@@ -1133,12 +1196,12 @@ class VerbalApp(rumps.App):
                 logger.warning(f"Audio too short: {duration:.2f}s "
                                f"(< {MIN_RECORDING_SECONDS:.2f}s minimum, "
                                f"{self.recorder.sample_rate}Hz)")
-                self.status_item.title = self._status_text()
+                self._status_note("")
                 self.overlay.hide()
                 return
 
             self._processing = True
-            self.status_item.title = "Transcribing... (ESC to cancel)"
+            self._status_note("")
             self.overlay.update_status("Transcribing…")
             threading.Thread(target=self._process_audio, args=(audio,), daemon=True).start()
         except Exception as e:
@@ -1205,16 +1268,32 @@ class VerbalApp(rumps.App):
             self.dashboard._refresh()
         except Exception:
             pass
-        if self.popover:
-            try:
-                self.popover._refresh()
-            except Exception:
-                pass
+        # The menubar menu needs no push — its delegate rebuilds it on open.
 
     def _process_audio(self, audio):
         rec_id = recordings.new_id()
-        audio_path = recordings.save_wav(audio, self.recorder.sample_rate, rec_id)
-        logger.info(f"Recording saved: {audio_path} (id={rec_id})")
+        # The archive write (resample + encode + prune of the recordings dir) used
+        # to run to completion before the first byte of audio left the machine, yet
+        # nothing about the transcript depends on it. Run it alongside the network
+        # call instead; `_saved_path()` joins it back before the path is first used,
+        # by which point transcription has long since paid for it.
+        _saved = {}
+
+        def _save():
+            try:
+                _saved["path"] = recordings.save_wav(audio, self.recorder.sample_rate, rec_id)
+                logger.info(f"Recording saved: {_saved['path']} (id={rec_id})")
+            except Exception as e:
+                _saved["path"] = None
+                logger.error(f"save_wav failed: {e}")
+
+        _saver = threading.Thread(target=_save, daemon=True)
+        _saver.start()
+
+        def _saved_path():
+            _saver.join(timeout=10)
+            return _saved.get("path")
+
         try:
             if self._cancel_flag.is_set():
                 return
@@ -1226,9 +1305,10 @@ class VerbalApp(rumps.App):
 
             if status == "silent":
                 logger.warning("No speech detected — discarding recording")
-                if audio_path:
+                _discard = _saved_path()
+                if _discard:
                     try:
-                        os.remove(audio_path)
+                        os.remove(_discard)
                     except Exception:
                         pass
                 self._on_main(lambda: self.overlay.update_status(
@@ -1240,10 +1320,11 @@ class VerbalApp(rumps.App):
             if status == "failed":
                 # Network/API down — keep the audio and save a retryable entry.
                 logger.error("Transcription failed after retries — saved for retry")
+                _path = _saved_path()
                 self.config = add_to_history(
                     self.config, "", get_focused_app_name(),
-                    entry_id=rec_id, audio=audio_path or "", status="failed")
-                self._upload_recording_async(rec_id, audio_path)
+                    entry_id=rec_id, audio=_path or "", status="failed")
+                self._upload_recording_async(rec_id, _path)
                 self._on_main(lambda: self.overlay.update_status(
                     "⚠️ Transcription failed — retry from History", error=True))
                 time.sleep(2.0)
@@ -1289,22 +1370,53 @@ class VerbalApp(rumps.App):
                 logger.debug("apply_snippets skipped: %s", e)
 
             self._last_result_text = result
-            self.config = add_to_history(
-                self.config, result, get_focused_app_name(),
-                entry_id=rec_id, audio=audio_path or "", status="done")
+            # Joins the background archive write. By now transcription + cleanup
+            # have run, so it finished long ago and this returns immediately.
+            audio_path = _saved_path()
             word_count = len(result.split())
-            self._total_transcriptions += 1
-            self._total_words += word_count
-            self.config = update_daily_words(self.config, word_count)
+            # Resolve the dictation TARGET here, before injection: inject_text()
+            # calls restore_focused_app(), so asking afterwards can answer with a
+            # different app. Only the two save_config() writes move past the paste
+            # — this read must not.
+            target_app = get_focused_app_name()
 
-            self._on_main(lambda: self.overlay.hide())
-            time.sleep(0.3)
+            # The pill must be gone before inject_text() restores focus to the
+            # target app. This used to be a flat `time.sleep(0.3)` — a guess at how
+            # long the hop to the main thread takes, paid in full on every single
+            # dictation. Wait for the hide to actually happen instead: `_on_main`
+            # enqueues onto `_ui_queue`, drained by a 0.1s rumps.Timer, so this
+            # normally returns in well under 100ms. The timeout keeps the old
+            # behaviour as a ceiling if the main thread is wedged.
+            _hidden = threading.Event()
+
+            def _hide_overlay():
+                try:
+                    self.overlay.hide()
+                finally:
+                    _hidden.set()
+
+            self._on_main(_hide_overlay)
+            if not _hidden.wait(timeout=0.5):
+                logger.warning("overlay hide did not confirm in 0.5s — injecting anyway")
 
             if self._cancel_flag.is_set():
                 return
 
             success = inject_text(result, allow_mentions=self.config.get("filetag_enabled", False))
             play_done()
+
+            # Persist AFTER the paste. These are two atomic config.json writes
+            # (~3.5ms on a 34KB config, ~7ms at 250KB) and nothing about the
+            # injected text depends on them, so the user should never wait on them.
+            # They must still land HERE — before the sync-push and upload blocks
+            # below, which both look the entry up by rec_id — and the app name is
+            # the pre-injection `target_app`, not a fresh (post-focus-restore) read.
+            self.config = add_to_history(
+                self.config, result, target_app,
+                entry_id=rec_id, audio=audio_path or "", status="done")
+            self._total_transcriptions += 1
+            self._total_words += word_count
+            self.config = update_daily_words(self.config, word_count)
 
             # Show the split (TRANSFORM_SWARM.md P1.3): surface what was read as
             # the instruction so a wrong split is catchable + retryable.
@@ -1341,13 +1453,12 @@ class VerbalApp(rumps.App):
             # Upload the audio to the cloud + attach its URL (async)
             self._upload_recording_async(rec_id, audio_path)
 
-            status = self._status_text()
             if success:
                 brief = f"Pasted · {word_count}w"
             else:
                 brief = "In clipboard · paste with ⌘V"
 
-            self._on_main(lambda: self._show_result(status, brief))
+            self._on_main(lambda: self._show_result(brief))
 
         except Exception as e:
             logger.critical(f"PROCESS CRASH: {e}\n{traceback.format_exc()}")
@@ -1355,13 +1466,14 @@ class VerbalApp(rumps.App):
         finally:
             self._processing = False
 
-    def _show_result(self, status, brief):
+    def _show_result(self, brief):
         try:
-            self.status_item.title = status
+            # The `status` argument this used to take was the menubar counts
+            # string, which the header now derives itself — so it only ever
+            # shadowed the real transcriber status. Dropped with the row.
+            self._status_note("")
             self.overlay.show_briefly(brief, duration=2.0)
             self.dashboard._refresh()
-            if self.popover:
-                self.popover._refresh()
         except Exception as e:
             logger.error(f"_show_result error: {e}\n{traceback.format_exc()}")
 
@@ -1445,18 +1557,18 @@ class VerbalApp(rumps.App):
             # was silently lost and the text still pasted. The flag is cleared
             # at RECORDING START (`_on_record_start`) instead, so for the whole
             # life of one dictation it means exactly "this one was cancelled".
-            self.status_item.title = self._status_text()
+            self._status_note("")
             self.overlay.hide()
             if os.path.exists(ICON_PATH):
                 self.icon = ICON_PATH
             self.record_btn.title = "Start Recording"
             self.dashboard.update_recording_state(False)
-            if self.popover:
-                self.popover.update_recording_state(False)
         except Exception as e:
             logger.error(f"Reset error: {e}")
 
     def _change_model(self, sender):
+        if not self._require_signin():
+            return
         model_name = sender.title
         for name, item in self.model_items.items():
             item.state = 1 if name == model_name else 0
@@ -1490,7 +1602,7 @@ class VerbalApp(rumps.App):
             cancel="Later",
         )
         if resp == 1:
-            self.status_item.title = "Downloading update..."
+            self._status_note("Downloading update…")
             threading.Thread(target=self._do_update, args=(update,), daemon=True).start()
 
     def _do_update(self, update):
@@ -1500,7 +1612,7 @@ class VerbalApp(rumps.App):
             install_update(path)
         else:
             self._on_main(lambda: rumps.alert("Update failed", "Could not download the update. Try again later."))
-            self._on_main(lambda: setattr(self.status_item, 'title', self._status_text()))
+            self._on_main(lambda: self._status_note(""))
 
     def _about(self, _):
         from app.config import APP_VERSION

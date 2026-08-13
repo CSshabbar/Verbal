@@ -1,7 +1,8 @@
 pynput==1.7.6
 sounddevice==0.4.6
 soundfile==0.12.1
-numpy==1.24.3
+# numpy/scipy are a matched pair — see the note beside scipy below before bumping either.
+numpy==1.26.4
 groq==0.9.0
 google-generativeai==0.7.0
 pyperclip==1.8.2
@@ -12,7 +13,16 @@ websocket-client==1.6.0
 httpx==0.27.0
 pystray==0.19.5
 pywebview==5.3
-scipy==1.18.0
+# Windows target is Python 3.11, so scipy is capped at the 1.14.x line:
+#   - scipy 1.18.x requires Python >=3.12 (pip rejects it outright on 3.11)
+#   - scipy >=1.15 requires numpy >=2; we stay on numpy 1.x because that is what
+#     the app has been developed against. (No numpy-2-removed API is actually used
+#     in app/ today, so a 3.12 + numpy 2 + scipy 1.18 combination is a viable
+#     future bump — it just hasn't been exercised on Windows.)
+# The old pins (numpy 1.24.3 + scipy 1.18.0) were unsatisfiable on EVERY Python
+# version: 1.24.3 has no wheels past 3.11, and scipy 1.18 needs 3.12+.
+# Verified working: Python 3.11.9 + numpy 1.26.4 + scipy 1.14.1 (2026-08-12).
+scipy==1.14.1
 # Windows UI Automation (AX-equivalent) for reading focused-app text / edit fields.
 uiautomation==2.0.20
 comtypes==1.4.6
@@ -22,3 +32,10 @@ comtypes==1.4.6
 soundcard==0.4.3
 # Native Windows toast notifications.
 winotify==1.1.0
+# QR rendering for device pairing (app/pairing.py::qr_svg). Lazy-imported inside
+# that function, so its absence surfaced only as "No module named qrcode" when
+# opening "Pair a device" — it was missing from BOTH requirements files and both
+# PyInstaller specs. Core package only (qr_svg hand-builds the SVG from
+# get_matrix(), so the pil/png extras aren't needed); pulls in colorama on win32,
+# which is already here transitively.
+qrcode==8.2

@@ -45,10 +45,17 @@
    comes back **as the transcription** (`"Glossary, M.T.:"` injected into the user's editor). Every
    transcription result therefore goes through `dictionary.strip_prompt_echo(text, prompt)` **before**
    replacements/tagging. It deletes (a) label-introduced runs, where the label is followed by terms we
-   sent **or stands alone as its own fragment** — the model often drops the list and echoes just the
-   heading (`"Glossary. So, the thing is…"`) — and (b) bare comma-lists of ≥2 terms we sent. It never
-   drops a lone dictionary word (that's the user saying a word they taught us) or a label that runs on
-   inside its clause (`"Files, I need to check them"`), and **only words actually sent as labels in that
+   sent **or stands alone** — as its own fragment (`"Glossary. So, the thing is…"`, the model often drops
+   the list and echoes just the heading) or, for a heading we *invented*
+   (`_OWNED_LABELS` = glossary/vocabulary), on **any** punctuation — and (b) bare comma-lists of ≥2 terms
+   we sent. That `_OWNED_LABELS` rule is the 2026-08 follow-up fix: the separator rules treated a comma as
+   "the clause keeps going, so this is speech", but `"Glossary, <real speech>"` is exactly what Whisper
+   emits most of the time, so the dominant form of the leak survived the original fix for weeks
+   (`"Glossary, Right now,"` pasted into VS Code). Its cost is that a sentence genuinely opening with the
+   word "glossary" loses it on a run where a glossary was sent — accepted, because that heading is our own
+   invention. **`files` is deliberately NOT owned**: `"Files, I need to check them"` is real dictation.
+   It never drops a lone dictionary word (that's the user saying a word they taught us) or a label that
+   runs on inside its clause, and **only words actually sent as labels in that
    call count as labels** (`prompt_labels`) — with no file list in the prompt, "Files" is just a word.
    Returns `""` for an echo-only transcript — which the caller reports as **silent**, with no fallback to
    the other providers (they'd parrot the same prompt on the same audio). Mirrored in all four dictation
@@ -293,9 +300,11 @@
     Dictate chip rides this same path — the paste lands in the focused scratchpad and the same words
     legitimately also enter the meeting transcript via the meeting mic. **Cold-start cost lives off the main
     thread:** the ScreenCaptureKit import (~1 s) is pre-warmed at startup and `_toggle_meeting` runs its
-    permission check on a background thread — main-thread work froze every first click. The summary screen
-    scrolls as ONE page (sticky header, expanded sections grow into the page) — inner-only scroll containers
-    were unusable in small windows.
+    permission check on a background thread — main-thread work froze every first click. The meeting detail
+    view scrolls as ONE page (expanded sections grow into the page) — inner-only scroll containers were
+    unusable in small windows. Since MER-46 it lives inside the dashboard's `.main`, which owns the scroll
+    container, so its header is static there: a `position:sticky` header inside a *padded* scrollport leaves
+    content visible above it.
     ScreenCaptureKit facts that cost time: SCK **audio** is gated by the *Screen Recording* TCC class
     (`CGPreflightScreenCaptureAccess`) even when no pixels are read; you must still configure a tiny video
     stream (2×2 + `CMTimeMake(1,1)` frame interval) and drop the video buffers; set
@@ -620,7 +629,10 @@
 
 26. **Sign-in is REQUIRED, and auth UI renders from state — never latch a button on an optimistic ok
     (IDI-166).** The first-run "Later"/anonymous path was removed; the dashboard's sign-in wall is the only
-    entry (hotkey dictation still works signed-out but is not advertised). The `#signin` pane renders from
+    entry. **macOS enforces it as of IDI-183** — `_on_record_start` refuses while signed out (the one choke
+    point all three start paths reach) and the menubar menu disables every account row; the old "hotkey
+    dictation still works signed-out but is not advertised" carve-out is GONE. Windows still has it.
+    Both gates fail closed: an auth error is treated as signed out. The `#signin` pane renders from
     `get_state` (`auth_error` field, cleared on retry/success) via `applyAuthGate`/`renderSignin` — the
     OAuth flow returns an optimistic `_ok()` immediately, so any failure must be pushed back as state, and
     `auth.cancel_sign_in()` frees the loopback port so a retry can bind.
@@ -704,6 +716,252 @@
     Manager opt-outs `.auxiliary (1<<17)` + `.canJoinAllApplications (1<<18)`. Stock `WKWebView` swallowed
     the first click on both surfaces.
 
+29. **Windows log streams must be forced to UTF-8 — our log messages are full of non-ASCII.** Windows
+    defaults `sys.stdout`/`sys.stderr` and `logging.FileHandler` to **cp1252**, which cannot encode the
+    em dashes, `→`, `✓` and `…` used in log strings across `sync.py`, `transcriber.py`, `recorder.py`,
+    `meetings.py`, `auth.py`, `theme.py` and `win_main.py` (12 files). `logging` swallows handler
+    exceptions, so the affected line is **silently dropped** and replaced by a `UnicodeEncodeError`
+    traceback — including on the dictation path (`win_main.py` "No speech detected —", `transcriber.py`
+    "VAD filtered everything —"), which makes a real Windows debugging session unreadable. `win_main.py`
+    therefore (a) `reconfigure(encoding="utf-8", errors="replace")`s both streams immediately after the
+    PyInstaller `None`-stream guard, and (b) passes `encoding="utf-8"` to `FileHandler`. Fix the streams,
+    never the log strings. macOS is UTF-8 by default and was never affected.
+
+30. **`requirements-win.txt` pins numpy and scipy as a matched pair.** The Windows target is **Python
+    3.11**; scipy 1.18+ requires 3.12+, and scipy 1.15+ requires numpy 2. Verified working set:
+    **Python 3.11.9 + numpy 1.26.4 + scipy 1.14.1**. Before bumping either, check the Python floor —
+    the previous pins (`numpy==1.24.3` + `scipy==1.18.0`) were unsatisfiable on *every* Python version
+    (1.24.3 has no wheels past 3.11, scipy 1.18 needs 3.12+), so `pip install -r requirements-win.txt`
+    failed outright and Windows setup was blocked. Also note `requirements.txt` is **macOS-only** — it
+    omits scipy (imported by `recorder.py`, `transcriber.py`, `recordings.py`) and carries `rumps`/pyobjc
+    behind `sys_platform == 'darwin'` markers. On Windows always use `requirements-win.txt`.
+    **A LAZY import still needs declaring — in requirements AND the PyInstaller specs.** `qrcode` (used
+    only inside `app/pairing.py::qr_svg`) was missing from *both* requirements files and *both* specs for
+    months: nothing failed until someone opened "Pair a device" on a machine that didn't happen to have it,
+    which then read as "pairing is broken" (`No module named qrcode`). It works on a dev Mac purely because
+    it was pip-installed there ad hoc. When adding a function-level import of a third-party package, add it
+    to `requirements.txt`, `requirements-win.txt`, and the `hiddenimports` list in `verbal-win.spec` /
+    `whisperflow.spec` — bytecode analysis of a lazy import is not something to rely on for a frozen build.
+    Audit with `importlib.util.find_spec` over every import in `app/` (find_spec, not import — it doesn't
+    execute module side effects). Known-and-fine absences on Windows: `faster_whisper` (optional offline
+    transcription, guarded at `transcriber.py:358` — but note `verbal-win.spec` lists it in
+    `hiddenimports`, so the BUILD env does need it), `win10toast` (undeclared *second* fallback in
+    `_notify_native`; `winotify` is primary and installed), and the pyobjc/AppKit family (macOS-only).
+
+31. **Windows: declare DPI awareness at import, and scale every tkinter/PIL surface by it.** The app
+    runs **DPI-aware** — pywebview flips the process to per-monitor awareness when WebView2 builds its
+    first window — so tkinter geometry and PIL drawing are in **real device pixels**. Any surface using
+    96-DPI pixel constants renders at **half** size on a 200% display (a third at 300%). Two halves to
+    the rule:
+    - `win_main.py` calls `SetProcessDpiAwarenessContext(-4)` (PER_MONITOR_AWARE_V2, falling back to
+      `SetProcessDpiAwareness(2)` then `SetProcessDPIAware()`) **before any window exists**. Without
+      this, awareness flipped *after* the overlay had already sized itself from a 96-DPI reading, so the
+      result depended on startup ordering.
+    - `win_overlay.py` keeps its 96-DPI numbers in `_DESIGN` and calls `_apply_scale(dpi/96)` at setup,
+      with `_s()` / `_i()` for inline offsets and stroke widths. `_probe_scale()` returns 1.0 when the
+      process is DPI-unaware, so it never double-scales. Verify with the startup line
+      `overlay: dpi scale=2.00 pill=940x88`.
+    **Still unscaled (known gap):** `win_autolearn_widget.py`, `win_meeting_hud.py`,
+    `win_transform_widget.py` all use fixed-pixel geometry with no scale factor and will render at half
+    size on a scaled display. Give them the same `_DESIGN` / `_apply_scale` treatment when touched.
+
+32. **Windows overlay position must be recomputed on every show, from the WORK AREA.** `win_overlay`
+    computed `y` once in `_run_tk` from `winfo_screenheight()`, so any later resolution change (VM/RDP
+    auto-fit, docking, display swap) stranded the pill mid-screen, and using full screen height rather
+    than the work area put it behind the taskbar. `_reposition()` now runs from both `_run_tk` and
+    `_show_internal`, using `SystemParametersInfoW(SPI_GETWORKAREA)` with a `winfo_*` fallback.
+
+33. **Don't use PIL `rounded_rectangle` for thin shapes (Pillow 10).** It derives its own inner radius
+    and builds `(y0 + r + 1 .. y1 - r - 1)`, which inverts and raises
+    `ValueError: y1 must be greater than or equal to y0` for a band of short boxes — 3.5-4.4px tall fail
+    while 3.0 and 4.4 pass, so it is **not monotonic** and clamping the radius you pass does not avoid
+    it. The overlay's waveform bars hit this on ~2.6% of animation frames, and because `_render` wraps
+    the whole repaint in one try/except, a single bad bar dropped the entire pill frame. Use
+    `draw.rectangle` when a shape is only a few pixels across — corner rounding is invisible there.
+
+34. **"Online" must mean online, and device rows are NEVER auto-pruned.** Two halves, both learned from a
+    test account that had accumulated 16 `devices` rows (14 identically-named dead "iPhone"s):
+    - **Presence is tight, not generous.** `sync.PRESENCE_ONLINE_SEC = 120` against a 60 s heartbeat — one
+      missed beat of tolerance. The old 300 s let a device that vanished four minutes ago read "Online",
+      which makes the whole indicator untrustworthy. Any UI that says "online now" must use this window,
+      and must show a relative `last_seen` for anything offline so staleness is visible rather than implied.
+    - **Pruning is manual, always.** A phone that is switched off is *offline, not gone* — auto-deleting
+      its row would make it silently disappear and force a re-pair. Cleanup is an explicit, confirmed user
+      action (`remove_offline_devices`). Fix the *cause* of row growth instead: identity must survive
+      reinstall (mobile keeps `verbal_device_uuid` in the Keychain, not just AsyncStorage — see
+      `04-data-model` §`devices`). Never add a TTL sweep to this table.
+
+35. **The recording pill's waveform is REAL audio, and its shaping lives in the recorder.** The bars used
+    to be a CSS keyframe loop (Mac) / a sine over `_phase` (Windows) — they animated identically whether
+    you were shouting or silent, which made the pill read as decorative rather than as feedback.
+    - **One meter, one curve.** `recorder.Recorder` computes the level inside `_audio_callback`: block
+      peak → dBFS → mapped from `LEVEL_FLOOR_DB=-55` … `LEVEL_CEIL_DB=-12` onto 0..1, `** LEVEL_GAMMA`
+      (1.5, so room tone stays flat), then asymmetric smoothing (`LEVEL_ATTACK=.55` / `LEVEL_RELEASE=.12`
+      — snap up on a syllable, ease down between words). `recorder.level` returns **0.0 when not
+      recording or paused**. Both platforms render that one number as-is; never re-shape it per-UI, or the
+      two waveforms drift apart. It's computed **outside** the buffer lock and wrapped in `try/except` —
+      metering is cosmetic and must never break capture. This works for meeting-mode dictation too
+      (`feed_external` goes through the same callback).
+    - **Mac: Python pushes, the page interpolates.** `overlay.py` runs a daemon pump at `LEVEL_HZ=15`
+      that hops to main (WKWebView discipline, Rule #18) and calls `window.VerbalWave(level)`. The pump is
+      started in `show()` and stopped in `update_status`/`show_briefly`/`hide`/`cleanup`. It carries
+      **backpressure** (`_level_inflight`): a stalled main thread can never accumulate a queue of stale
+      level evals. The page keeps its own 30 fps `requestAnimationFrame` scroll (13-slot history, newest
+      at the right) so it stays smooth *between* pushes.
+    - **Fail-open, both platforms.** If no level arrives for ~0.9 s the page re-adds `.wave.idle` and the
+      old keyframe animation takes back over (and the inline heights we set are cleared, so the keyframes
+      own the bars again); `win_overlay` falls back to the sine whenever its level history is empty. A
+      broken meter degrades to the old decoration, never to a blank pill.
+
+36. **The macOS menubar is an `NSMenu`, and the rules for living inside one are not obvious** (IDI-183,
+    `menubar_menu.py`). The old `NSPopover` was replaced because a menu inherits light/dark, the user's
+    accent colour, Increase Contrast, Reduce Transparency and keyboard navigation, while a WKWebView panel
+    has to re-implement each one and then drift. Five things bite:
+    - **Rebuild on open; never push state in.** `MenuController.menuNeedsUpdate:` is the only place that
+      refreshes titles, checkmarks and the Recent/Canvas submenus. The popover needed
+      `popover._refresh()` at six call sites in `main.py` precisely because a webview can't read app
+      state; a menu can, so those calls are gone. Don't reintroduce a push path.
+    - **A timer must be registered in `NSEventTrackingRunLoopMode` too.** While a menu is open AppKit runs
+      that mode, so a timer added only to `NSDefaultRunLoopMode` never fires — the header's waveform would
+      freeze the instant you opened the menu it lives in. `_HeaderView.startAnim` adds it to both, and
+      only between `menuWillOpen:`/`menuDidClose:`.
+    - **`setEnabled_` does NOTHING until you turn off auto-enabling.** `NSMenu.autoenablesItems` defaults
+      to YES, so AppKit re-derives every item's enabled state at display time from target/action
+      validation. Our items all target rumps' `NSApp` with a live `callback:` action, so AppKit re-ENABLES
+      them and any manual gate silently evaporates — it looked correct in a unit test (which never runs a
+      display pass) and did nothing in the real menu. `MenuController.attach()` calls
+      `setAutoenablesItems_(False)`; from then on enabled state is ours to manage. This is what the
+      sign-in gate and the signed-out sync row depend on.
+    - **Menu item targets are held WEAKLY.** The dynamically built Recent/Canvas rows target the
+      controller and carry their payload in `representedObject`; `MenuController._keepalive` holds the
+      submenus so nothing is collected between rebuilds.
+    - **A view-backed item draws its own highlight, and a parent item with a submenu never fires its own
+      action.** The header is therefore `setEnabled_(False)` (passive, nothing to highlight), and Sync is
+      a plain checkmark row rather than the checkmark-plus-submenu the mockup showed — the submenu would
+      have swallowed the click.
+    - **pyobjc turns underscores into colons.** A helper named `start_anim` becomes the selector
+      `start:anim` and blows up at class-creation time. Methods on `_HeaderView`/`MenuController` are
+      camelCase with no inner underscores (`startAnim`), or trailing-underscore for real one-arg
+      selectors (`tick_`, `copyItem_`).
+    Two smaller findings from building it: `⎋` (U+238B) has no SF Pro glyph at 11px and rendered as an
+    unrelated symbol — write "esc"; and menu key equivalents (⌘O, ⌘,) only fire **while the menu is
+    open**, so the global dictation hotkey stays in `hotkey.py` and is advertised in the header subtitle
+    (`config["hotkey_label"]`, e.g. "Right ⌘") rather than faked as a key equivalent.
+
+37. **The dictation upload is 16 kHz mono FLAC, and nothing on the critical path may block on
+    non-transcript work** (2026-08, Tier-1 latency pass). Three rules, all measured:
+    - **Never upload at the mic's native rate.** Every Whisper backend resamples its input to 16 kHz mono
+      before the mel frontend, so the 48 kHz capture was paying **3×** the bytes to send information the
+      model discards; FLAC (lossless) roughly halves it again. `transcriber.transcribe_with_status`
+      downsamples ONCE via `_to_16k_array` and writes the upload with `_write_temp(..., ".flac", "FLAC")`.
+      Measured on 8 real dictations (2–36 s): **5.0–6.1× smaller**, proxy round-trip **median −24%,
+      mean −41%**, with **identical WER** against 48 kHz ground truth. `_write_temp` falls back to WAV if
+      libsndfile can't encode FLAC (Rule #1). The 48 kHz array is still what `recordings.save_wav`
+      archives — only the wire format changed. Side effect: a max-length 300 s recording was 27.5 MiB at
+      48 kHz PCM_16, over Groq's 25 MB upload limit; at 16 kHz FLAC it is ~5 MB.
+    - **Groq identifies the audio container from the multipart FILENAME.** Both call sites used to
+      hardcode `"audio.wav"`. `groq_proxy.transcribe_via_proxy` and `transcriber._transcribe_groq` now
+      derive the name + mime from the real path (`_MIME`). Send FLAC bytes labelled `.wav` and you are
+      relying on server-side sniffing that is not contractual.
+    - **The 16 kHz WAV is materialized lazily.** Gemini needs `audio/wav` bytes and local `faster_whisper`
+      needs a WAV path, but neither runs unless Groq already failed — so `_wav16()` writes it on demand
+      and the hot path never pays for it. (This also removed a second, redundant resample that the local
+      fallback used to do from scratch.)
+    - **Don't sleep where you can wait for the actual event.** `main._process_audio` used a flat
+      `time.sleep(0.3)` to let the overlay pill disappear before `inject_text()` restores focus — a guess,
+      paid on every dictation. It now sets a `threading.Event` inside the `_on_main` closure and waits on
+      it (0.5 s ceiling); the UI queue drains on a 0.1 s timer, so it typically returns in <100 ms.
+      **The Windows path still sleeps 0.3 s** — `win_overlay.hide()` schedules an animated `_fade_out` via
+      `root.after`, so the wait is covering a real fade, and changing it needs a Windows visual check.
+    - **`recordings.save_wav` runs on a background thread** in both `main._process_audio` and
+      `win_main._process_audio` (resample + encode + `prune()` of the recordings dir ≈ 19 ms at 11 s,
+      54 ms at 35 s). It has nothing to do with the transcript. A local `_saved_path()` closure joins the
+      thread before the path is first used — by then transcription has long since paid for it. Anything
+      else added here (uploads, analytics, learning) belongs off the path the same way.
+    - **Nothing persists before the paste.** The order in `_process_audio` (both platforms) is: transcribe
+      → transform/cleanup → snippets → **`inject_text`** → `add_to_history` → `update_daily_words`
+      (→ `_update_tray_menu` on Windows) → autolearn → sync push → cloud upload. Cross-device sync and the
+      Storage upload were always after the paste and on daemon threads; the two `save_config` writes moved
+      after it too (~1.75 ms each on a 34 KB config, ~7 ms at 250 KB — it scales with config size, so watch
+      it if the history/meetings caps ever rise). Three constraints hold this together, and each one broke
+      something when reasoned about carelessly:
+      - **`get_focused_app_name()` must be read BEFORE injection**, into a local `target_app`.
+        `inject_text()` calls `restore_focused_app()`, so a post-paste read can name a different app and
+        the history entry records the wrong dictation target. Only the *writes* move; this *read* cannot.
+      - **The history write must still precede the sync-push and upload blocks**, which both resolve the
+        entry via `self._history_entry(rec_id)`. Deferring it further (e.g. onto its own thread) races
+        them into writing a row that doesn't exist yet.
+      - **On Windows `_update_tray_menu()` must follow the counter bump** (`_total_words` /
+        `_total_transcriptions`), so it moved with them rather than staying in front of the paste.
+      Known, accepted trade-off: a cancel in the ~50–100 ms window between the overlay-hide wait and
+      injection now discards the transcript instead of filing it — consistent, since that path doesn't
+      paste either. And a crash between paste and persist loses the History entry for text already
+      injected; the window is the two writes above.
+
+37. **Pillow's ImageDraw does NOT alpha-composite, and the Windows overlay window keys on COLOUR, not
+    alpha.** Two facts that multiply: `draw.ellipse(..., fill=(240,240,240,24))` writes that pixel
+    verbatim — alpha included — rather than blending 9% white over the pill; and the layered window uses
+    `LWA_COLORKEY`, which ignores the alpha channel entirely. So every "faint tint" in `win_overlay.py`
+    was landing at FULL strength: the pause/cancel chips, meant to be barely-there dark discs, rendered as
+    solid near-white blobs (found in IDI-184 by rendering the PIL output and looking at it). Pre-composite
+    with `_over(fg, alpha, bg=BG_RGB)` and pass an opaque colour. Anything that wants translucency on
+    Windows has to be blended by us, in advance.
+
+38. **`win_overlay.ACC_RGB` was the RETIRED orange.** It shipped as `(232,82,42)` = `#E8522A`, with the
+    comment "--acc (orange)", while Rule #16 retired that in favour of terracotta `#C85A3E`. Fixed to
+    `(200,90,62)` in IDI-184. When a platform port hardcodes design tokens as tuples, they drift silently —
+    the CSS side got the memo and the PIL side didn't.
+
+39. **Verify a rendered surface by rendering it.** Three separate bugs in one week reached the user because
+    HTML/PIL was written and shipped without being looked at (a `.rec` class collision that turned every
+    pill into a CSS grid; a `<div>` inside a `<p>` that auto-closed the paragraph and exploded an inline
+    widget; a menu gate whose `setEnabled_` was silently undone by auto-enabling). The scratchpad harnesses
+    are the answer and are cheap to rebuild: load the page in an offscreen `WKWebView`, report every
+    element overflowing its parent or the viewport, and snapshot it; for Windows, stub `tkinter`/`ImageTk`
+    (this venv has no `_tkinter`) and drive the PIL draw functions directly, knocking out `CHROMA_TK` so
+    the sheet shows only what is actually visible and clickable.
+    - **Gotcha inside the gotcha:** an offscreen `WKWebView` has no window, so its animation timeline never
+      advances — CSS transitions stay pinned at their START value. Every "hovered" screenshot came back
+      identical to the resting one until the harness injected
+      `*{transition:none!important;animation:none!important}`. The reveal was correct all along.
+
+40. **CSS `:hover` does not work in the overlay panel — hover has to be driven from Python.** macOS
+    delivers `mouseMoved` only to the **active** application, and the recording pill's panel belongs to a
+    background app by definition (you are typing in someone else's window). So the Capsule's hover-to-expand
+    did nothing until the pill was clicked, which is not the interaction. `overlay.py` now runs a **global**
+    `NSEvent` monitor (`NSEventMaskMouseMoved`, no Accessibility grant needed — only key events require
+    one), converts the cursor to panel-local coordinates (AppKit screen space is bottom-up, CSS is
+    top-down), and calls `window.VerbalHover(x, y)`; the page hit-tests against its own pill rect so the
+    geometry has exactly one definition. Throttled to ~25/s and only while the cursor is over the panel,
+    with a single `x<0` "left" message on the way out. `:hover` stays in the CSS as a bonus for when Flume
+    IS the active app, and `showPill()` clears a stale `.peek` across state changes.
+    **Windows has the same problem for different reasons** and the same answer: the tk window is
+    colour-keyed (so most of it is masked and click-through) and never focused, so `<Motion>` cannot be
+    relied on. `win_overlay._poll_hover()` reads `winfo_pointerxy()` against the drawn pill's rect inside
+    the 33 ms loop that already repaints the waveform; the `<Motion>`/`<Leave>` bindings remain only as
+    latency accelerators.
+
+41. **In the overlay panel, CSS animations and JS timers are both unreliable — anything that must MOVE has
+    to be pushed from Python.** The transcribing ring was a plain `animation:spin .8s linear infinite` and
+    it sat perfectly still on macOS (reported 2026-08; Windows was fine, its arc rides the 33 ms
+    `_start_animation_loop` phase). This is the third instance of the same family as Rule #40: the pill
+    lives in a WKWebView owned by an accessory app that is never active, and its animation timeline and
+    timer throttling cannot be relied on. `setInterval` is affected too — a timer-based watchdog for the
+    spinner never fired when measured, so a JS fallback would have been exactly as dead as the animation
+    it was rescuing.
+    - **The mechanism:** `overlay.py::_start_spin_pump` (a daemon thread, `SPIN_HZ=20`,
+      `SPIN_DEG_PER_SEC=420`, same `_on_main` + `_inflight` backpressure shape as the level pump) pushes an
+      absolute angle to `window.VerbalSpin(deg)`, which sets an inline `transform`. A JS-driven style
+      change forces a repaint, which is precisely why the waveform never suffered from this.
+    - **`.spinner.idle` carries the keyframes as the fail-open fallback**, and an inline transform cannot
+      override a RUNNING animation — so the two must never both be active. `VerbalSpin(-1)` means
+      "release": re-add `.idle`, drop the transform. `_stop_spin_pump()` sends it explicitly, because the
+      page has no timer it can trust to notice that ticks stopped.
+    - **Still outstanding:** the recording pill's elapsed clock is a `setInterval(tick, 1000)` in the same
+      webview, so it is exposed to the same throttling and may drift or stall. Python already computes the
+      elapsed seconds for the transcribing state — pushing them for the recording state too is the fix if
+      anyone reports a wrong duration.
+
 ## Design system (Flume)
 
 Single source: desktop `app/theme.py` + `app/fonts_css.py`; mobile `flume-ui/theme/`. Also
@@ -727,6 +985,19 @@ Single source: desktop `app/theme.py` + `app/fonts_css.py`; mobile `flume-ui/the
 - `dashboard.py` (`DashboardWindow`, ~3178 lines) — legacy AppKit dashboard, only a fallback if
   `FlumeWebDashboard` fails to construct. Superseded by the WKWebView Flume dashboard.
 - `history_window.py` — legacy standalone AppKit history window; not referenced.
+- ~~`flume_popover.py` (`FlumePopover`, `_StatusClickHandler`, `_POPOVER_METHODS`)~~ — **DELETED in
+  IDI-183.** The macOS menubar is a native `NSMenu` (`menubar_menu.py`); left-click opens it again, so the
+  left/right-click split and the retrying `_install_popover_hook` timer are gone too.
+  **`flume_popover_html.py` is NOT dead** — it is now Windows-only (`win_popover.py` renders
+  `popover_html()`) plus `_mark_data_uri()`, which `flume_dashboard_html.py` imports for the sign-in
+  pane's logo. It stays in **both** spec files' `hiddenimports`.
+- `main.py::status_item` and `_status_text()` are gone with the popover: the menubar's counts live in the
+  header row's right-hand column, recording/transcribing are derived from app state, and the only thing
+  left to say is a transient note via `_status_note("…")` (currently just "Downloading update…").
+  `_show_result` lost its `status` argument, which had only ever shadowed the real transcriber status.
+  `_total_transcriptions`/`_total_words` are now **write-only on macOS** and must NOT be removed —
+  `win_main.py` keeps its own `_status_text()` that reads them for its tray row, and the cross-platform
+  `shared_dashboard.py` resets them on clear-history.
 - `transcriber._transcribe_local` has an unreachable duplicate VAD `_run()` block after its `return`.
 - `flume_dashboard_html.py` is **dual-target**: loaded into a WKWebView by `FlumeWebDashboard` on macOS
   and into a pywebview window by `SharedDashboard.show()` on Windows (its docstring is accurate again).
@@ -755,6 +1026,14 @@ Single source: desktop `app/theme.py` + `app/fonts_css.py`; mobile `flume-ui/the
   server-mediated via `groq-proxy`, Hard Rule #15).
 - `ai_cleanup.apply_file_tags`/`FILE_TAG_PATTERNS` kept for reference/tests only — real tagging is in
   `filetags.py`.
+- **Deleted in MER-46 (2026-08) — the meeting panel's `summary` + `notes` content modes** (~700 lines of
+  `meeting_html.py`: `_summary_screen()`, the `#notesRoot` page, `renderSummary`/`renderNotesPage`/
+  `renderMarksBox`/`renderTxBox`/`mdRender` and their helpers, and the panel's `openMeeting`/`meeting`
+  events). The panel holds ONE mode at a time, so a past meeting fought the live screen, could not be read
+  while another meeting recorded, and was yanked back to the ambient bar whenever the panel lost focus
+  mid-meeting. The view now lives in the dashboard (`#mtgDetail`, `03-features.md` §Meeting detail) and the
+  panel hands off through the bar instead (`set_handoff`). `MeetingWindow.set_mode`/`show` no longer accept
+  `"summary"`; nothing may emit `meeting` at the panel again.
 
 **Mobile (`verbal-mobile/`):**
 - `_old-flume/` (~27 files) — explicitly legacy.

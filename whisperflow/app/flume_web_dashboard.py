@@ -131,6 +131,12 @@ class FlumeWebDashboard:
         self._delegate = None
         self._api = DashboardApi(self)
         self._ready = False
+        # MER-46: events emitted before the page installed VerbalNative used to
+        # evaporate. `open_meeting` can now show() a window and push into it in
+        # the same breath (the meeting bar's handoff), so queue until the page's
+        # `dashboard_page_ready` handshake — same contract as MeetingWindow.
+        self._page_ready = False
+        self._pending = []
         self._canvas_stop = threading.Event()
         # attributes DashboardApi reads:
         self._known_devices = []
@@ -199,6 +205,7 @@ class FlumeWebDashboard:
         self._window.contentView().addSubview_(self._webview)
         self._webview.loadHTMLString_baseURL_(flume_html(), None)
         self._ready = True
+        self._page_ready = False    # fresh page — wait for its handshake
 
         # keep the sidebar device list fresh
         threading.Thread(target=self._device_refresh_loop, daemon=True).start()
@@ -358,7 +365,22 @@ class FlumeWebDashboard:
         self._eval(js)
 
     def _emit(self, event, payload):
-        self._eval("window.VerbalNative(%s, %s);" % (json.dumps(event), json.dumps(payload, default=str)))
+        if not self._webview:
+            return          # never built — dropping is still correct (as before)
+        if not self._page_ready:
+            self._pending.append((event, payload))
+            if len(self._pending) > 200:        # bound the buffer
+                self._pending = self._pending[-200:]
+            return
+        self._eval("window.VerbalNative && window.VerbalNative(%s, %s);" % (
+            json.dumps(event), json.dumps(payload, default=str)))
+
+    def page_ready(self):
+        """Called (via the bridge) when the page JS has installed VerbalNative."""
+        self._page_ready = True
+        pending, self._pending = self._pending, []
+        for event, payload in pending:
+            self._emit(event, payload)
 
     def _eval(self, js):
         if not self._webview:

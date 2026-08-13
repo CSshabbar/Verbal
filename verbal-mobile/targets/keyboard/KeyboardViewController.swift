@@ -2175,10 +2175,17 @@ class KeyboardViewController: UIInputViewController, AVAudioRecorderDelegate, UI
             labels.insert(ns.substring(with: m.range(at: 1)).lowercased())
         }
         guard !labels.isEmpty else { return nil }
+        // Group 1 is the label WORD (which decides whether it is one of ours per
+        // echoOwnedLabels), group 2 the ':' that makes it ours regardless.
         return try? NSRegularExpression(
-            pattern: #"^\s*(?:"# + labels.sorted().joined(separator: "|") + #")\b\s*(:)?\s*"#,
+            pattern: #"^\s*("# + labels.sorted().joined(separator: "|") + #")\b\s*(:)?\s*"#,
             options: [.caseInsensitive])
     }
+
+    /// Headings WE invented, which therefore can't be something the user said: a
+    /// bare "Glossary" chunk is ours whatever punctuation follows it. "files" is
+    /// deliberately absent — "Files, I need to check them" is real dictation.
+    private static let echoOwnedLabels: Set<String> = ["glossary", "vocabulary"]
 
     /// Casefold and reduce every non-alphanumeric run to one space: "M.T.:" and
     /// "m t" both become "m t", so an echo matches the term we sent.
@@ -2197,13 +2204,17 @@ class KeyboardViewController: UIInputViewController, AVAudioRecorderDelegate, UI
     }
 
     /// Split off a leading bias label. `colon` marks "Glossary:" — punctuated like
-    /// a label, so it is ours and never dictation.
-    private static func splitEchoLabel(_ c: String, _ re: NSRegularExpression?) -> (body: String, label: Bool, colon: Bool) {
+    /// a label, so it is ours and never dictation. `owned` marks a heading we
+    /// invented, which is ours on any punctuation at all.
+    private static func splitEchoLabel(_ c: String, _ re: NSRegularExpression?) -> (body: String, label: Bool, colon: Bool, owned: Bool) {
         let ns = c as NSString
         guard let re = re,
               let m = re.firstMatch(in: c, range: NSRange(location: 0, length: ns.length)),
-              m.range.length > 0 else { return (c, false, false) }
-        return (ns.substring(from: m.range.length), true, m.range(at: 1).location != NSNotFound)
+              m.range.length > 0 else { return (c, false, false, false) }
+        let word = m.range(at: 1).location != NSNotFound
+            ? ns.substring(with: m.range(at: 1)).lowercased() : ""
+        return (ns.substring(from: m.range.length), true,
+                m.range(at: 2).location != NSNotFound, echoOwnedLabels.contains(word))
     }
 
     private static func echoSplit(_ text: String) -> (chunks: [String], seps: [String]) {
@@ -2243,13 +2254,16 @@ class KeyboardViewController: UIInputViewController, AVAudioRecorderDelegate, UI
         let n = chunks.count
         var isTerm = [Bool](), isEmpty = [Bool](), hasLabel = [Bool](), isAlone = [Bool]()
         for k in 0..<n {
-            let (body, label, colon) = splitEchoLabel(chunks[k], labelRE)
+            let (body, label, colon, owned) = splitEchoLabel(chunks[k], labelRE)
             let norm = normEchoTerm(body)
             hasLabel.append(label); isTerm.append(terms.contains(norm)); isEmpty.append(norm.isEmpty)
             // A heading standing on its own — "Glossary:" or a "Glossary." ending
             // the fragment — is ours. One that runs on inside its clause is the user.
+            // A bare heading we INVENTED is ours whatever follows it: Whisper emits
+            // "Glossary, <speech>" far more often than "Glossary. <speech>", and the
+            // comma form used to survive because a comma reads as "clause continues".
             let endsFragment = k == n - 1 || seps[k].contains(".") || seps[k].contains("\n")
-            isAlone.append(label && norm.isEmpty && (colon || endsFragment))
+            isAlone.append(label && norm.isEmpty && (colon || endsFragment || owned))
             // Peel a "Glossary:" prefix even when the chunk itself survives.
             if label && colon { chunks[k] = body }
         }

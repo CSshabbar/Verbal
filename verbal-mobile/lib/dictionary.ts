@@ -363,6 +363,11 @@ export function buildPrompt(d: Dictionary): string | undefined {
 
 const BIAS_LABELS = ['glossary', 'vocabulary', 'files'];
 const ANY_LABEL_RE = new RegExp(`\\b(${BIAS_LABELS.join('|')})\\b\\s*:`, 'gi');
+// Headings WE invented, which therefore can't be something the user said: a bare
+// 'Glossary' chunk is ours whatever punctuation follows it (the `owned` rule in
+// stripPromptEcho). 'files' is deliberately NOT here — "Files, I need to check
+// them" is a sentence someone really dictates.
+const OWNED_LABELS = ['glossary', 'vocabulary'];
 // Chunk on commas/semicolons/newlines and on SENTENCE periods (a period followed
 // by whitespace) so "M.T." and "main.py" survive as single chunks.
 const CHUNK_RE = /(\s*[,;]\s*|\s*\.\s+|\s*\n+\s*)/;
@@ -384,9 +389,11 @@ export function promptLabels(prompt: string | undefined): string[] {
   return [...found].sort();
 }
 
-/** Matcher for a leading label; group 1 marks the ':' that makes it OURS. */
+/** Matcher for a leading label; group 1 is the label WORD (which decides whether
+ *  it is one of ours per OWNED_LABELS) and group 2 marks the ':' that makes it
+ *  ours regardless. */
 function labelRe(labels: string[]): RegExp | null {
-  return labels.length ? new RegExp(`^\\s*(?:${labels.join('|')})\\b\\s*(:)?\\s*`, 'i') : null;
+  return labels.length ? new RegExp(`^\\s*(${labels.join('|')})\\b\\s*(:)?\\s*`, 'i') : null;
 }
 
 /** The individual biasing terms of a bias prompt, normalized for comparison. */
@@ -407,8 +414,11 @@ export function promptTerms(prompt: string | undefined): Set<string> {
  * Only words we actually SENT as labels count as labels (see promptLabels).
  * Deletes every run of chunks that is the glossary talking back to us: a run
  * introduced by a bias LABEL ('Glossary:', 'Files:') that is either followed by
- * terms we sent or STANDS ALONE as its own fragment (the model often drops the
- * list and echoes just the heading — 'Glossary. So, the thing is…'), and any
+ * terms we sent or STANDS ALONE — as its own fragment ('Glossary. So, the thing
+ * is…') or, for a heading we invented (OWNED_LABELS), on ANY punctuation, which
+ * is what catches the dominant real-world form 'Glossary, <real speech>'; the
+ * cost is that a sentence genuinely opening with "glossary" loses that word on a
+ * run where a glossary was sent. Plus any
  * bare comma-list of TWO OR MORE consecutive chunks that are each exactly a term
  * we sent. A lone dictionary term is never dropped — that is just the user
  * saying a word they taught us — and a label that runs on inside its own clause
@@ -433,11 +443,16 @@ export function stripPromptEcho(text: string, prompt: string | undefined): strin
       // A heading standing on its own — 'Glossary:' or a 'Glossary.' ending the
       // fragment — is ours. One that runs on inside its clause is the user.
       const endsFragment = k === n - 1 || seps[k].includes('.') || seps[k].includes('\n');
-      const alone = !!m && !norm && (!!m[1] || endsFragment);
+      // ...and a bare heading we INVENTED is ours whatever follows it: Whisper
+      // emits 'Glossary, <speech>' far more often than 'Glossary. <speech>', and
+      // the comma form used to survive because a comma reads as "the clause keeps
+      // going, so this is speech".
+      const owned = !!m && OWNED_LABELS.includes(m[1].toLowerCase());
+      const alone = !!m && !norm && (!!m[2] || endsFragment || owned);
       // A label punctuated like a label ('Glossary:') is ours, never speech —
       // peel the prefix off even if the chunk survives. Without the colon it may
       // well be a word the user said, so only the run rules below can remove it.
-      if (m && m[1]) chunks[k] = c.slice(m[0].length);
+      if (m && m[2]) chunks[k] = c.slice(m[0].length);
       return { label: !!m, term: terms.has(norm), empty: !norm, alone };
     });
 

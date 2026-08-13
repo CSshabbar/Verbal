@@ -22,45 +22,70 @@ _CSS = """
 html,body{height:100%;background:transparent}
 body{font-family:'Geist',-apple-system,system-ui,sans-serif;-webkit-font-smoothing:antialiased;
 display:flex;flex-direction:column;align-items:center;justify-content:flex-end;overflow:visible;
-padding:22px 46px 40px}
-.statelabel{font:600 9px 'JetBrains Mono';letter-spacing:.24em;color:var(--mut);margin-bottom:9px;text-transform:uppercase}
-.pill{display:none;align-items:center;gap:10px;background:var(--pill);border:1px solid var(--bd);
-border-radius:22px;padding:7px 8px 7px 14px;box-shadow:0 10px 32px rgba(0,0,0,.5);white-space:nowrap}
+padding:12px 20px 40px}
+/* ── Capsule (IDI-184) ──────────────────────────────────────────────────────
+   At rest the pill carries only what is LIVE — the waveform and the clock —
+   and grows on hover to the full control bar. What went away entirely:
+     * the RECORDING caption above the pill (the terracotta border + a moving
+       waveform already say it, so it was a second indicator for one state),
+     * the "mute" disc, which was decorative — nothing in the app ever set it,
+     * the device tag while recording (the Done state already names the target,
+       "Pasted to MacBook", which is when that fact is actually news).
+   Hover reveals pause / cancel / stop; `.peek` forces the same expanded state
+   for screenshots and tests, since :hover can't be driven from script. */
+.pill{display:none;align-items:center;gap:9px;background:var(--pill);border:1px solid var(--bd);
+border-radius:20px;padding:6px 12px;box-shadow:0 10px 32px rgba(0,0,0,.5);white-space:nowrap;
+transition:gap .2s cubic-bezier(.2,.8,.2,1)}
 .pill.on{display:flex;animation:pillIn .24s cubic-bezier(.2,.8,.2,1)}
 @keyframes pillIn{from{opacity:0;transform:translateY(10px) scale(.95)}to{opacity:1;transform:none}}
-.statelabel{animation:pillIn .24s cubic-bezier(.2,.8,.2,1)}
-.vbar{width:1px;height:17px;background:rgba(240,240,240,.14);flex:none}
+.vbar{width:1px;height:15px;background:rgba(240,240,240,.14);flex:none}
+/* the collapsed cluster: zero width until hover, and clipped so nothing of it
+   shows through in the resting state */
+.opt{display:flex;align-items:center;gap:9px;max-width:0;opacity:0;overflow:hidden;
+transition:max-width .22s cubic-bezier(.2,.8,.2,1),opacity .16s linear}
+.pill:hover>.opt,.pill.peek>.opt,.pill.rec.paused>.opt{max-width:130px;opacity:1}
+.pill.rec.paused .wave{opacity:.35}
+.pill.rec.paused{border-color:rgba(240,240,240,.22)}
 /* recording */
 .pill.rec{border-color:rgba(200,90,62,.5)}
-.mute{width:20px;height:20px;border-radius:50%;border:1.5px solid var(--acc);background:transparent;color:var(--acc);
-display:flex;align-items:center;justify-content:center;font:600 12px 'Geist';line-height:1;flex:none}
-.timer{font:600 13px 'JetBrains Mono';color:var(--tx);letter-spacing:.02em;font-variant-numeric:tabular-nums}
+.timer{font:600 12px 'JetBrains Mono';color:var(--tx);letter-spacing:.02em;font-variant-numeric:tabular-nums}
 .wave{display:flex;align-items:center;gap:2px;height:18px}
-.wave i{width:2px;border-radius:2px;background:rgba(240,240,240,.85);animation:wv .9s ease-in-out infinite}
+/* Bar heights are driven from the real mic level (window.VerbalWave). The
+   keyframe animation is only the FALLBACK, applied while `.idle` is on —
+   i.e. before the first level arrives or if the pushes ever stop. */
+.wave i{width:2px;height:3px;border-radius:2px;background:rgba(240,240,240,.85);
+transition:height .07s linear}
+.wave.idle i{animation:wv .9s ease-in-out infinite}
 @keyframes wv{0%,100%{height:4px}50%{height:15px}}
-.dev{font:600 10.5px 'JetBrains Mono';letter-spacing:.07em;color:var(--mut);text-transform:uppercase}
-.ctrl{width:26px;height:26px;border-radius:50%;border:0;background:rgba(240,240,240,.08);color:var(--tx);
-cursor:pointer;display:flex;align-items:center;justify-content:center;flex:none}
+.ctrl{width:22px;height:22px;border-radius:50%;border:0;background:rgba(240,240,240,.08);color:var(--tx);
+cursor:pointer;display:flex;align-items:center;justify-content:center;flex:none;padding:0}
 .ctrl:hover{background:rgba(240,240,240,.14)}
-.ctrl svg{width:12px;height:12px}
+.ctrl svg{width:11px;height:11px}
 .ctrl span{display:flex;align-items:center;justify-content:center}
-.stop{width:26px;height:26px;border-radius:50%;border:0;background:var(--acc);cursor:pointer;
-display:flex;align-items:center;justify-content:center;flex:none}
+.stop{width:22px;height:22px;border-radius:50%;border:0;background:var(--acc);cursor:pointer;
+display:flex;align-items:center;justify-content:center;flex:none;padding:0}
 .stop:hover{filter:brightness(1.08)}
-.stop .sq{width:9px;height:9px;border-radius:2px;background:#fff}
+.stop .sq{width:8px;height:8px;border-radius:2px;background:#fff}
 /* transcribing */
+/* The ring is rotated from Python (window.VerbalSpin) — a pure CSS animation
+   sits perfectly still in this panel, see 05-conventions Rule #41. `.idle` is
+   the fail-open fallback: it carries the keyframes and is re-applied whenever
+   ticks stop arriving, exactly like `.wave.idle`. An inline transform cannot
+   override a RUNNING animation, so the two must never both be active. */
 .spinner{width:16px;height:16px;border-radius:50%;border:2px solid rgba(200,90,62,.25);
-border-top-color:var(--acc);animation:spin .8s linear infinite;flex:none}
+border-top-color:var(--acc);flex:none}
+.spinner.idle{animation:spin .8s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
 .tlabel{font:600 12px 'Geist';color:var(--tx)}
 /* done */
 .pill.done{border-color:rgba(74,209,90,.55)}
-.check{width:19px;height:19px;border-radius:50%;background:rgba(74,209,90,.16);color:var(--green);
-display:flex;align-items:center;justify-content:center;font:600 11px 'Geist';flex:none}
-.dlabel{font:600 12px 'Geist';color:var(--tx)}
+.check{width:17px;height:17px;border-radius:50%;background:rgba(74,209,90,.16);color:var(--green);
+display:flex;align-items:center;justify-content:center;font:600 10px 'Geist';flex:none}
+.dlabel{font:600 12px 'Geist';color:var(--tx);max-width:170px;min-width:0;
+overflow:hidden;text-overflow:ellipsis}
 .dmeta{font:600 10.5px 'JetBrains Mono';color:var(--mut);letter-spacing:.03em}
-.cta{background:rgba(240,240,240,.08);border:0;border-radius:13px;padding:6px 11px;color:var(--tx);
-cursor:pointer;font:600 12px 'Geist';flex:none}
+.cta{background:rgba(240,240,240,.08);border:0;border-radius:11px;padding:4px 9px;color:var(--tx);
+cursor:pointer;font:600 11.5px 'Geist';flex:none}
 .cta:hover{background:rgba(240,240,240,.14)}
 /* error — NO checkmark and NO "Copy again" (it would re-copy stale text).
    Uses the approved danger red #E05049, never the terracotta accent. */
@@ -108,44 +133,138 @@ function paintPause(){
 }
 function setPaused(p){
   paused = !!p; paintPause();
+  // No state caption any more, so paused has to read from the pill itself:
+  // hold the control cluster open (the resume button must be reachable without
+  // hunting for it) and dim the bars. The frozen clock does the rest.
+  const pill=$('#pill-rec');
+  if(pill) pill.classList.toggle('paused', paused);
   if(paused){ stopTimer(); }
   else if(!timerId){ timerId=setInterval(tick, 1000); }
 }
 
+// ── live waveform ──────────────────────────────────────────────────────────
+// Python pushes the recorder's smoothed 0..1 mic level into VerbalWave ~15x/s.
+// This loop keeps its own 30fps scroll so the bars stay smooth BETWEEN pushes:
+// the newest sample enters at the right and the history walks left, which is
+// what makes it read as audio rather than as a looping animation.
+// Fail-open: if no level arrives for ~0.9s (older build, a failed eval, the
+// main thread stalling) the bars drop back to the ambient CSS animation.
+const WN=11, WMIN=3, WMAX=17;
+let wHist=[], wTarget=0, wNow=0, wLast=0, wRaf=null, wStep=0, wIdle=true;
+
+function waveEl(){ return $('#wave'); }
+function waveIdle(on){
+  const w=waveEl(); if(!w || wIdle===on) return;
+  wIdle=on; w.classList.toggle('idle', on);
+  // Clear the inline heights we set, so the keyframes own the bars again.
+  if(on){ for(const b of w.children) b.style.height=''; }
+}
+function waveStart(){
+  wHist=new Array(WN).fill(0); wTarget=0; wNow=0; wLast=0; wStep=0;
+  wIdle=false; waveIdle(true);
+  if(!wRaf) wRaf=requestAnimationFrame(waveFrame);
+}
+function waveStop(){
+  if(wRaf){ cancelAnimationFrame(wRaf); wRaf=null; }
+  waveIdle(true);
+}
+window.VerbalWave = function(lvl){
+  lvl=+lvl; if(!(lvl>=0)) lvl=0; if(lvl>1) lvl=1;
+  wTarget=lvl; wLast=Date.now();
+};
+function waveFrame(){
+  wRaf=requestAnimationFrame(waveFrame);
+  const w=waveEl(); if(!w) return;
+  const now=Date.now();
+  if(!wLast || now-wLast>900){ waveIdle(true); return; }
+  waveIdle(false);
+  // Same attack/release feel as the meter itself: snap up, ease down.
+  wNow += (wTarget-wNow) * (wTarget>wNow ? 0.5 : 0.18);
+  if(now-wStep>=55){ wStep=now; wHist.push(wNow); wHist.shift(); }
+  const bars=w.children;
+  for(let i=0;i<bars.length && i<WN;i++){
+    const v=wHist[i]||0;
+    // A touch of shimmer, scaled by level, so a steady tone still breathes
+    // and silence stays perfectly flat.
+    const j=1+0.12*Math.sin(now/140+i*1.7)*Math.min(1,v*3);
+    const h=WMIN+(WMAX-WMIN)*Math.min(1,v*j);
+    bars[i].style.height=Math.round(h)+'px';
+  }
+}
+
+// ── transcribing spinner ───────────────────────────────────────────────────
+// Python pushes an absolute angle ~20x/s (overlay.py::_start_spin_pump). A
+// JS-driven style change forces a repaint, which a background WKWebView's
+// throttled animation timeline does not.
+// A NEGATIVE angle means "release": hand the ring back to the CSS keyframes.
+// Python sends it when the pump stops. This deliberately does NOT use a JS
+// timeout watchdog like the waveform's — setInterval is throttled in this
+// webview too (measured), so a timer-based fallback is exactly as unreliable as
+// the animation it was meant to rescue. Python owns the lifecycle instead.
+window.VerbalSpin = function(deg){
+  const el=$('#spinner'); if(!el) return;
+  if(deg < 0){ el.classList.add('idle'); el.style.transform=''; return; }
+  el.classList.remove('idle');
+  el.style.transform='rotate('+deg+'deg)';
+};
+function spinWatch(on){
+  // Reset to the keyframe fallback; ticks (if they come) take over on arrival.
+  const el=$('#spinner');
+  if(el){ el.classList.add('idle'); el.style.transform=''; }
+}
+
 function showPill(id){
   ['pill-rec','pill-trans','pill-done','pill-err'].forEach(p=>{
-    const el=document.getElementById(p); if(el) el.classList.toggle('on', p===id);
+    const el=document.getElementById(p); if(el){
+      el.classList.toggle('on', p===id);
+      // a stale reveal must not carry across a state change
+      if(p!==id) el.classList.remove('peek');
+    }
   });
 }
+
+// Hover → expand, driven from Python (overlay.py::_on_global_mouse) rather than
+// from CSS :hover. macOS only delivers mouseMoved to the ACTIVE app, and this
+// panel always belongs to a background one while you dictate, so :hover alone
+// left the capsule collapsed until it was clicked. x<0 means "cursor left".
+// A couple of px of slop makes the edge forgiving without being sticky.
+window.VerbalHover = function(x, y){
+  const p = document.querySelector('.pill.on');
+  if(!p) return;
+  let on = false;
+  if(x >= 0){
+    const r = p.getBoundingClientRect();
+    on = x >= r.left - 3 && x <= r.right + 3 && y >= r.top - 3 && y <= r.bottom + 3;
+  }
+  p.classList.toggle('peek', on);
+};
 
 window.VerbalOverlay = function(mode, data){
   data = data || {};
   if(mode==='recording'){
-    $('#stateLabel').textContent='Recording';
-    $('#recDev').textContent = esc(data.device || 'MAC');
-    showPill('pill-rec'); startTimer();
+    // `data.device` is no longer rendered here — the Done state names the
+    // target, which is when it matters. Kept in the payload for Windows.
+    spinWatch(false);
+    showPill('pill-rec'); startTimer(); waveStart();
   } else if(mode==='paused'){
     setPaused(data.paused);
-    $('#stateLabel').textContent = paused ? 'Paused' : 'Recording';
   } else if(mode==='transcribing'){
-    stopTimer();
-    $('#stateLabel').textContent='Transcribing';
-    $('#transRoute').textContent = esc(((data.src||'MAC')+' → '+(data.dst||'MAC')));
+    stopTimer(); waveStop();
     $('#transLabel').textContent = 'Transcribing '+((data.secs!=null?data.secs:0)+'s');
-    showPill('pill-trans');
+    showPill('pill-trans'); spinWatch(true);
   } else if(mode==='done'){
-    stopTimer();
-    $('#stateLabel').textContent='Done';
+    stopTimer(); waveStop();
+    spinWatch(false);
     $('#doneLabel').textContent = esc(data.label || 'Pasted');
     $('#doneMeta').textContent = esc(data.meta || '');
     showPill('pill-done');
   } else if(mode==='error'){
-    stopTimer();
-    $('#stateLabel').textContent = esc(data.state || 'Failed');
+    stopTimer(); waveStop();
+    spinWatch(false);
     $('#errLabel').textContent = esc(data.label || 'Something went wrong');
     showPill('pill-err');
   } else { // hide
-    stopTimer(); showPill('');
+    stopTimer(); waveStop(); spinWatch(false); showPill('');
   }
 };
 
@@ -155,36 +274,41 @@ api('overlay_ready');
 
 
 def overlay_html():
+    # 11 bars — the ambient (`.wave.idle`) animation staggers them; the live
+    # waveform overwrites their heights from the mic level. Keep the count in
+    # sync with WN in the JS. (13 in the pre-Capsule bar; the narrower resting
+    # capsule carries 11.)
     bars = "".join(
-        '<i style="animation-delay:%.2fs"></i>' % (i * 0.08) for i in range(13)
+        '<i style="animation-delay:%.2fs"></i>' % (i * 0.08) for i in range(11)
     )
     body = """
-    <div class="statelabel" id="stateLabel">Recording</div>
     <div class="pill rec" id="pill-rec">
-      <div class="mute">&#8722;</div>
+      <div class="wave idle" id="wave">{bars}</div>
       <span class="timer" id="timer">00:00</span>
-      <span class="vbar"></span>
-      <div class="wave">{bars}</div>
-      <span class="dev" id="recDev">MAC</span>
-      <button class="ctrl" id="pauseBtn" title="Pause" onclick="api('overlay_pause')"><span
-        id="icoPause">{pause}</span><span id="icoPlay" style="display:none">{play}</span></button>
-      <button class="ctrl" title="Cancel" onclick="api('overlay_cancel')">{x}</button>
-      <button class="stop" title="Stop" onclick="api('overlay_stop')"><span class="sq"></span></button>
+      <span class="opt">
+        <span class="vbar"></span>
+        <button class="ctrl" id="pauseBtn" title="Pause" onclick="api('overlay_pause')"><span
+          id="icoPause">{pause}</span><span id="icoPlay" style="display:none">{play}</span></button>
+        <button class="ctrl" title="Cancel" onclick="api('overlay_cancel')">{x}</button>
+        <button class="stop" title="Stop" onclick="api('overlay_stop')"><span class="sq"></span></button>
+      </span>
     </div>
     <div class="pill trans" id="pill-trans">
-      <span class="spinner"></span>
+      <span class="spinner idle" id="spinner"></span>
       <span class="tlabel" id="transLabel">Transcribing 0s</span>
-      <span class="vbar"></span>
-      <span class="dev" id="transRoute">MAC</span>
-      <button class="ctrl" title="Cancel" onclick="api('overlay_cancel')">{x}</button>
+      <span class="opt">
+        <span class="vbar"></span>
+        <button class="ctrl" title="Cancel" onclick="api('overlay_cancel')">{x}</button>
+      </span>
     </div>
     <div class="pill done" id="pill-done">
       <span class="check">&#10003;</span>
       <span class="dlabel" id="doneLabel">Pasted</span>
-      <span class="vbar"></span>
-      <span class="dmeta" id="doneMeta">38W &middot; 14S</span>
-      <button class="cta" onclick="api('overlay_copy')">Copy again</button>
-      <button class="ctrl" title="Dismiss" onclick="api('overlay_dismiss')">{x}</button>
+      <span class="dmeta" id="doneMeta">38W</span>
+      <span class="opt">
+        <button class="cta" onclick="api('overlay_copy')">Copy again</button>
+        <button class="ctrl" title="Dismiss" onclick="api('overlay_dismiss')">{x}</button>
+      </span>
     </div>
     <div class="pill err" id="pill-err">
       <span class="bang">!</span>

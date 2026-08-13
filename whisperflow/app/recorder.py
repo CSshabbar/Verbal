@@ -1,4 +1,5 @@
 import logging
+import math
 import time
 import numpy as np
 import sounddevice as sd
@@ -22,6 +23,22 @@ NOISE_SAMPLE_DURATION = 0.5  # seconds to sample noise floor
 # BEGINNING and ignore further audio (dictation should never lose its start).
 MAX_RECORDING_SECONDS = 300
 
+# ── Live level metering (drives the overlay waveform) ────────────────────────
+# The block peak is mapped from dBFS onto 0..1: a quiet room sits around
+# -55 dBFS and normal dictation peaks near -12, so speech fills most of the
+# bar without the user having to raise their voice, and silence reads as flat.
+LEVEL_FLOOR_DB = -55.0
+LEVEL_CEIL_DB = -12.0
+# Gamma applied after the dB map. A pure dB scale is generous to quiet sounds,
+# so room tone still wobbled the bars; this pushes the bottom of the range down
+# without touching speech. Shaping lives HERE, once, so the Mac (JS) and
+# Windows (PIL) waveforms render the same number identically.
+LEVEL_GAMMA = 1.5
+# Asymmetric smoothing: rise almost instantly so a syllable shows up on the
+# same frame, fall slowly so the bars don't strobe between words.
+LEVEL_ATTACK = 0.55
+LEVEL_RELEASE = 0.12
+
 
 def _get_native_rate():
     try:
@@ -44,11 +61,23 @@ class Recorder:
         self._max_samples = int(MAX_RECORDING_SECONDS * self._sample_rate)
         self._cap_warned = False
         self._paused = False
+        self._level = 0.0
         logger.info(f"Mic native rate: {self._sample_rate}Hz")
 
     @property
     def sample_rate(self):
         return self._sample_rate
+
+    @property
+    def level(self):
+        """Smoothed 0..1 mic level for the recording overlay's waveform.
+
+        0.0 whenever we aren't capturing (idle or paused), so the bars settle
+        flat instead of freezing at the last syllable.
+        """
+        if not self._recording or self._paused:
+            return 0.0
+        return self._level
 
     def _open_stream(self):
         stream = sd.InputStream(
@@ -67,6 +96,7 @@ class Recorder:
             self._total_samples = 0
             self._cap_warned = False
             self._paused = False
+            self._level = 0.0
             self._recording = True
         try:
             try:
@@ -112,6 +142,7 @@ class Recorder:
             self._total_samples = 0
             self._cap_warned = False
             self._paused = False
+            self._level = 0.0
             self._recording = True
         self._external = True
         self._sample_rate = int(sample_rate)
@@ -131,7 +162,8 @@ class Recorder:
         self._external = False
         with self._lock:
             self._recording = False
-        
+            self._level = 0.0
+
         # Give callbacks time to finish processing last audio frames
         time.sleep(0.1)  # 100ms delay to ensure all audio is captured
         
@@ -173,7 +205,8 @@ class Recorder:
         if status:
             logger.warning(f"Audio status: {status}")
         with self._lock:
-            if self._recording and not self._paused:
+            capturing = self._recording and not self._paused
+            if capturing:
                 if self._total_samples < self._max_samples:
                     self._buffer.append(indata.copy())
                     self._total_samples += frames
@@ -182,6 +215,24 @@ class Recorder:
                     logger.warning(
                         f"Recording reached {MAX_RECORDING_SECONDS}s cap — "
                         "keeping the beginning, ignoring further audio")
+        # Metering is done OUTSIDE the lock (it only touches a float) so the
+        # audio callback keeps the lock for as short as possible.
+        self._update_level(indata if capturing else None)
+
+    def _update_level(self, block):
+        """Fold one captured block into the smoothed level the overlay draws."""
+        try:
+            if block is None or len(block) == 0:
+                target = 0.0
+            else:
+                peak = float(np.abs(block).max())
+                db = 20.0 * math.log10(peak) if peak > 1e-6 else -120.0
+                target = (db - LEVEL_FLOOR_DB) / (LEVEL_CEIL_DB - LEVEL_FLOOR_DB)
+                target = min(1.0, max(0.0, target)) ** LEVEL_GAMMA
+            k = LEVEL_ATTACK if target > self._level else LEVEL_RELEASE
+            self._level += (target - self._level) * k
+        except Exception:
+            pass  # metering is cosmetic — it must never break capture
 
     def _enhance_audio(self, audio: np.ndarray) -> np.ndarray:
         """Apply noise reduction and audio enhancement for low-quality microphones."""
@@ -331,4 +382,5 @@ class Recorder:
         with self._lock:
             self._buffer = []
             self._recording = False
+            self._level = 0.0
             self._noise_profile = None

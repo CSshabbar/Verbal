@@ -101,6 +101,11 @@ a = Analysis(
         'ctranslate2',
         'google.generativeai',
         'groq',
+        # Device pairing's QR renderer. `app/pairing.py::qr_svg` imports this
+        # INSIDE the function, so a frozen build that misses it fails only when
+        # the user opens "Pair a device" — listed explicitly rather than trusting
+        # bytecode analysis of a lazy import.
+        'qrcode',
         'webview',
         'webview.platforms.winforms',
         'webview.platforms.edgechromium',

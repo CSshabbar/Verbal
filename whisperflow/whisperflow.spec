@@ -44,6 +44,10 @@ a = Analysis(
         'rumps',
         'pyperclip',
         'websocket',
+        # Device pairing's QR renderer — `app/pairing.py::qr_svg` imports it
+        # inside the function, so a frozen build missing it fails only when the
+        # user opens "Pair a device".
+        'qrcode',
         'google.generativeai',
         'huggingface_hub',
         'objc',
@@ -54,8 +58,11 @@ a = Analysis(
         'ScreenCaptureKit',
         'CoreMedia',
         'app.flume_web_dashboard',
-        'app.flume_popover',
+        # app.flume_popover is gone (IDI-183 — the menubar is a real NSMenu now).
+        # flume_popover_html stays: flume_dashboard_html imports _mark_data_uri
+        # from it for the sign-in pane's logo.
         'app.flume_popover_html',
+        'app.menubar_menu',
         'app.overlay_html',
         'app.fonts_css',
         'app.recordings',

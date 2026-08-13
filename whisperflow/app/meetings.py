@@ -851,14 +851,14 @@ class MeetingSession:
             return
         self.state = "stopping"
         self._emit_state()
-        # INSTANT feedback: flip the surface to the summary screen right away —
-        # row() maps 'stopping' to status 'processing', so the summary renders
-        # skeletons while transcription drain / upload / LLM finish behind it.
+        # INSTANT feedback: the panel HANDS OFF instead of morphing into a
+        # summary (MER-46). The summary lives in the dashboard now, so the panel
+        # collapses to the ambient bar and says the notes are still being
+        # written; clicking it opens the meeting in the Flume window.
         try:
-            self._emit("meeting", self.row())
             win = getattr(self.app, "meeting_window", None)
             if win and win.visible:
-                win.set_mode("summary")
+                win.set_handoff("processing", self.row())
         except Exception:
             pass
 
@@ -925,14 +925,14 @@ class MeetingSession:
         self._emit_state()
         self._persist_local()
         self._cloud_update(final=True)
-        # hand the window the finished meeting + flip it to the summary screen
-        self._emit("meeting", self.row())
+        # hand the finished meeting to the bar: "Notes ready →" (or "Notes
+        # failed"), which opens the dashboard's meeting detail when clicked.
         hidden = True
         try:
             win = getattr(self.app, "meeting_window", None)
             if win and win.visible:
                 hidden = False
-                win.set_mode("summary")
+                win.set_handoff(self.state, self.row())
         except Exception:
             pass
         # The window can be closed mid-`processing` (unlike `stopping`, which
@@ -1537,7 +1537,9 @@ class MeetingManager:
                     s._emit_state()
                     s._persist_local()
                     s._cloud_update(final=True)
-                    s._emit("meeting", s.row())
+                    # The retry button lives in the dashboard's detail view now
+                    # (MER-46) and _emit_state already told it to refresh — the
+                    # panel has no summary to hand a row to.
                 threading.Thread(target=rerun, daemon=True).start()
                 return {"ok": True}
 
@@ -1548,7 +1550,6 @@ class MeetingManager:
 
             def rerun_row():
                 try:
-                    win = getattr(self.app, "meeting_window", None)
                     parsed = generate_meeting_summary(
                         self.app.config, row.get("transcript", []),
                         row.get("speakers", {}), row.get("scratchpad", ""),
@@ -1574,8 +1575,15 @@ class MeetingManager:
                         if m.get("id") == meeting_id:
                             m["status"] = patch["status"]
                     save_config(cfg)
-                    if win:
-                        win.emit("meeting", row)
+                    # Tell the DASHBOARD (MER-46): a retry started from its detail
+                    # view, and no state event covers this path.
+                    try:
+                        dash = getattr(self.app, "dashboard", None)
+                        if dash and hasattr(dash, "_emit"):
+                            dash._emit("meetingsUpdated",
+                                       {"id": meeting_id, "state": patch["status"]})
+                    except Exception:
+                        pass
                 except Exception as e:
                     logger.error("retry summary (row) failed: %s", e)
             threading.Thread(target=rerun_row, daemon=True).start()
@@ -1747,6 +1755,40 @@ class MeetingManager:
                     f"{SUPABASE_URL}/rest/v1/meetings?id=eq.{meeting_id}",
                     headers=auth_header(self.app.config, json=True),
                     json={"pinned": pinned}, timeout=10)
+            return {"ok": True}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def set_meeting_title_by_id(self, meeting_id, title):
+        """Rename a meeting BY ID — local meta + cloud column (MER-46).
+
+        `DashboardApi.set_meeting_title` only ever addressed the live session,
+        which was fine while the summary lived in the meeting panel. The summary
+        now lives in the dashboard, where the meeting on screen is usually a past
+        one, so the id form is what the title field needs. The live session is
+        still handled first so renaming an in-progress meeting keeps emitting
+        state to the bar/live screen."""
+        try:
+            title = str(title or "").strip()
+            if not title:
+                return {"ok": False, "error": "empty title"}
+            s = self.session
+            if s and s.id == meeting_id:
+                s.set_title(title)
+                return {"ok": True}
+            for m in self.app.config.get("meetings", []):
+                if m.get("id") == meeting_id:
+                    m["title"] = title[:120]
+                    break
+            save_config(self.app.config)
+            if _cloud_gate(self.app.config):
+                import httpx
+                from app.sync import SUPABASE_URL
+                from app.auth import auth_header
+                httpx.patch(
+                    f"{SUPABASE_URL}/rest/v1/meetings?id=eq.{meeting_id}",
+                    headers=auth_header(self.app.config, json=True),
+                    json={"title": title[:120]}, timeout=10)
             return {"ok": True}
         except Exception as e:
             return {"ok": False, "error": str(e)}

@@ -699,9 +699,18 @@ def delete_device_presence(user_id: str, device_id: str = "", headers: dict | No
         logger.debug(f"delete_device_presence error: {e}")
 
 
+#: A device counts as ONLINE only within this many seconds of its last heartbeat.
+#: The heartbeat is every 60s, so 120s tolerates exactly one missed beat. This
+#: used to be 300s, which let a device that vanished four minutes ago still read
+#: "Online" — the dashboard promises "online right now", so it must be tight.
+PRESENCE_ONLINE_SEC = 120
+
+
 def fetch_account_devices(user_id: str, exclude_device_id: str = "") -> list:
-    """ALL devices on the account, each tagged with an ``online`` flag (last_seen
-    within 5 min) — NOT just the last-5-min set that ``fetch_devices`` returns.
+    """ALL devices on the account, each tagged with an ``online`` flag
+    (``last_seen`` within ``PRESENCE_ONLINE_SEC``) — NOT just the live set that
+    ``fetch_devices`` returns. ``last_seen`` is passed through so the UI can show
+    how stale an offline device is.
 
     This backs the "your devices" list: a device must stay VISIBLE even when its
     heartbeat is stale (app closed / sync off), or two apps can't see each other
@@ -730,7 +739,7 @@ def fetch_account_devices(user_id: str, exclude_device_id: str = "") -> list:
                     t = datetime.datetime.fromisoformat(str(ls).replace("Z", "+00:00"))
                     if t.tzinfo is None:
                         t = t.replace(tzinfo=datetime.timezone.utc)
-                    online = (now - t).total_seconds() < 300
+                    online = (now - t).total_seconds() < PRESENCE_ONLINE_SEC
                 except Exception:
                     online = False
             d["online"] = online

@@ -18,6 +18,13 @@ Each feature: **what it does · desktop impl · mobile impl · backend · status
   silence gate `peak<0.01`. **Fallback chain:** ① Groq `whisper-large-v3-turbo` (each key), ② Gemini
   `gemini-2.0-flash`, ③ local `faster_whisper` (cpu/int8, 16 kHz). `main._transcribe_with_retry` retries
   `failed` ×3 with backoff.
+  **The upload is 16 kHz mono FLAC**, downsampled once via `_to_16k_array` — not the native-rate WAV it
+  used to be (5–6× fewer bytes, median −24% round-trip, no WER change; the WAV for Gemini/local is written
+  lazily and only if Groq fails). **Nothing persists before the paste:** `inject_text` runs first, then
+  `add_to_history` / `update_daily_words`, then autolearn / sync push / cloud upload. See
+  `05-conventions.md` Hard Rule #37, which also covers the archive write running off the critical path,
+  the overlay-hide wait that replaced a fixed `sleep(0.3)`, and the three ordering constraints that the
+  post-paste persist has to respect.
 - **Mobile:** `flume-ui/hooks/useRecorder.ts` — `expo-audio` capture; `stop()` **persists audio first**
   (so a failed transcription is never lost → `status:'failed'`, retryable) then runs the ONE shared
   pipeline `lib/dictationPipeline.runDictation(uri, {cleanup:true})` (transcribe → AI cleanup → snippets —
@@ -134,8 +141,12 @@ Each feature: **what it does · desktop impl · mobile impl · backend · status
   by sent terms or standing alone as a bare heading) and comma-lists of ≥2 sent terms are deleted, while
   a lone dictionary word, a label that runs on inside its clause, and any label word we did not actually
   send that call are always kept. An echo-only transcript becomes `""` → reported as **silence** ("No
-  speech detected" on the keyboards), never as a failure and never retried on another provider. See
-  `05-conventions.md` Hard Rule #6; `whisperflow/prompt_echo_fixtures.py` pins 38 cases (every echo shape
+  speech detected" on the keyboards), never as a failure and never retried on another provider.
+  **Follow-up fix (2026-08):** a bare heading we invented (`glossary`/`vocabulary`, never `files`) counts
+  as an echo on ANY punctuation, not just a fragment-ending one — the comma form (`"Glossary, Right now,"`)
+  is what Whisper actually emits and it survived the first fix, since a comma reads as "this clause keeps
+  going, so it's speech". See
+  `05-conventions.md` Hard Rule #6; `whisperflow/prompt_echo_fixtures.py` pins 46 cases (every echo shape
   removed, real speech untouched).
 - **Status:** full parity. Rule shape `{from, to, auto?}`.
 
@@ -221,7 +232,8 @@ Each feature: **what it does · desktop impl · mobile impl · backend · status
 ## Recordings — save / playback / retry
 
 - **Desktop:** `recordings.py` — every capture saved as **16 kHz mono WAV** in `~/.verbal/recordings/{id}.wav`
-  (LRU 60). `upload_cloud` → `recordings` bucket (`{user_id}/{id}.wav`), the bare **object path** (not a
+  (LRU 60), written on a **background thread** so the archive never delays transcription (Hard Rule #37).
+  `upload_cloud` → `recordings` bucket (`{user_id}/{id}.wav`), the bare **object path** (not a
   URL — bucket is private, MER-27) stored on the history entry. `DashboardApi._ensure_local_audio` signs a
   short-lived URL (`recordings.sign_url`) before downloading — the one choke point for
   `play_recording`/`get_audio` (base64 data-URI)/`retry_transcription`. Failed transcriptions saved
@@ -398,9 +410,14 @@ Each feature: **what it does · desktop impl · mobile impl · backend · status
 
 ## Google auth
 
-- **Sign-in is REQUIRED on all platforms (IDI-166, 2026-08):** the desktop first-run "Later" path and all
-  anonymous-mode remnants are gone; the dashboard's sign-in wall is the only entry (hotkey dictation still
-  functions signed-out but is not advertised). Failure UX is state-driven: `get_state` carries
+- **Sign-in is REQUIRED on all platforms (IDI-166, 2026-08; ENFORCED on macOS in IDI-183):** the desktop
+  first-run "Later" path and all anonymous-mode remnants are gone; the dashboard's sign-in wall is the only
+  entry. Since IDI-183 that is enforced rather than merely un-advertised on macOS: **dictation itself
+  refuses while signed out.** `VerbalApp._on_record_start` is the single choke point every start path
+  reaches (menu row, toggle key, hold key), and it returns early after surfacing the sign-in wall —
+  throttled to one window every 4 s, because a held hotkey re-fires. The menubar menu greys out every
+  account row in the same state (see the menubar entry below). Both gates **fail closed**: an auth error
+  reads as signed out. Failure UX is state-driven: `get_state` carries
   `auth_error` (+ new `DashboardApi.cancel_sign_in` frees the loopback port), so a canceled/timed-out
   OAuth attempt re-enables the button with an error instead of latching forever. A **dead session**
   (revoked/expired refresh token) is persisted (`config['auth']['session_dead']`), surfaced as a
@@ -488,18 +505,39 @@ deletes real files under `~/.verbal/` and this development machine has a real, i
   paused→stopping→processing→ready|failed) + `system_audio.py` (SCK audio capture) + `meeting_window.py`/
   `meeting_html.py` (ONE morphing WKWebView panel: an ambient glassy **bar** top-center — live dot, title,
   timer, waveform, star/pause/stop, click-to-expand — that fluidly grows into the full window via native
-  frame animation; content modes `permissions` 31h / `premeeting` 31b / `live` 31c / `summary` 31e; while
+  frame animation; content modes `permissions` 31h / `premeeting` 31b / `live` 31c; while
   recording, losing focus or closing collapses back to the bar; the separate `meeting_hud.py` was dead code, DELETED in IDI-179).
+  The panel is **live-meeting-only** (MER-46): reading a meeting happens in the dashboard, and when a
+  meeting stops the panel collapses to a **handoff pill** ("Finishing notes…" → "Notes ready →", ✕ to
+  dismiss) whose click calls `open_meeting` — `MeetingWindow.set_handoff(state, row)` on both platforms,
+  driven from `MeetingSession._stop_impl`. See the retired-modes note in `05-conventions.md`.
   Dashboard (31a/31f/31g): Home `MeetingLauncherCard`/`ActiveMeetingCard`, a **dedicated "Meetings"
   sidebar destination** (`scr-meetings`: count header, New-meeting button, active-recording bar, search,
   Today/This-week/Earlier groups, delete, empty state — user preference; it originally shipped as a folder
-  inside Notes), and a Settings group; popover gets a "Start meeting" row; menubar gets
+  inside Notes), and a Settings group; the Windows popover gets a "Start meeting" row; the macOS menubar
+  menu gets
   "Start Meeting"/"Return to Meeting". (Mobile keeps its Meetings entry inside the Notes tab — there is no
-  sidebar on mobile.) Bridge methods on `DashboardApi`: `start/stop/pause_meeting`,
-  `mark_moment`, `save_meeting_scratchpad`, `set_meeting_title`, `rename_speaker`, `list_meetings`,
-  `get_meeting`, `open_meeting(_launcher)`, `delete_meeting`, `retry_meeting_summary`, `get_meeting_audio`,
-  `get_meeting_permissions`, `test_meeting_capture`, `get/set_meeting_setting(s)`. Scratchpad dictation
+  sidebar on mobile.) `scr-meetings` is a **two-level route** (`MVIEW` = `list` | `detail`, plus the
+  `MSUBNOTES` full-notes sub-page): the detail view IS the ported PostMeetingSummary — see
+  **Meeting detail** below. Bridge methods on `DashboardApi`: `start/stop/pause_meeting`,
+  `mark_moment`, `save_meeting_scratchpad`, `set_meeting_title` (live session) /
+  `set_meeting_title_by_id` (any meeting — what the detail view's title field calls), `rename_speaker`,
+  `list_meetings`, `get_meeting`, `open_meeting(_launcher)`, `delete_meeting`, `retry_meeting_summary`,
+  `get_meeting_audio`, `get_meeting_permissions`, `test_meeting_capture`, `get/set_meeting_setting(s)`,
+  `dashboard_page_ready`. Scratchpad dictation
   reuses the standard dictation path (paste lands in the focused scratchpad).
+- **Meeting detail (31e, in the dashboard — MER-46, 2026-08):** the summary + full-notes views live in
+  `flume_dashboard_html.py` under `#mtgDetail` / `#mtgNotes`, rendered into `meetingsMain`:
+  `renderMeetDetail()` builds the shell once and `fillMeetDetail()` fills the cards (so an edit never
+  rebuilds the DOM under an expanded transcript or a focused input), `renderMeetNotes()` + `openNotes()`
+  own the markdown notes sub-page. Everything the panel's summary had is here — speaker avatars +
+  fingerprint banner, hybrid notes with Yours/Merged/AI, decisions, action items, marked moments, full
+  transcript with inline edit, TXT/MD export, two-step delete, regenerate, audio playback. All CSS is
+  **scoped to `#mtgDetail`** because the panel's design vocabulary (`.card`/`.eyebrow`/`.legend`/`.mono`)
+  overlaps the dashboard's own; the wider Flume palette tokens it needs were added to the dashboard
+  `:root`. It replaced the panel's `summary` mode because one panel can only hold one mode: a past meeting
+  fought the live screen, could not be read while another meeting recorded, and was yanked back to the bar
+  whenever the panel lost focus mid-meeting.
 - **Summary generation:** `meetings.generate_meeting_summary` — strict-JSON contract
   `{summary, decisions[], action_items[{owner,task,done}], hybrid_notes[{user_line, ai_addition}]}` via
   `chat_via_proxy` (2 attempts, 45 s, 24k-char transcript budget head+tail). Failure → status `failed`
@@ -521,10 +559,15 @@ deletes real files under `~/.verbal/` and this development machine has a real, i
   question-relevant transcript lines ±1 neighbor, ~3.2k chars each), answers via `chat_via_proxy` with a
   grounded-only system prompt, and cites source meeting titles. Client keeps a 6-turn thread (Q bubbles /
   A cards / typing dots). Desktop-only for now.
-- **Open/delete:** clicking a row opens the meeting in the summary window — the meeting window buffers
-  events until the page's `meeting_page_ready` handshake (a fresh window used to lose the mode/meeting
-  events → "click does nothing"). Delete: ✕ on each row, plus a two-step confirm trash button in the
-  summary header; deletes emit `meetingsUpdated` so the dashboard list refreshes everywhere.
+- **Open/delete:** clicking a row (or the handoff pill) calls `open_meeting`, which fetches the row, marks
+  it read, shows the dashboard and emits `openMeeting` into it → `openMeetingDetail(row)`. Both dashboards
+  now **buffer** emits until the page's `dashboard_page_ready` handshake and flush on it (the same contract
+  `meeting_page_ready` gives the panel) — without it an `openMeeting` pushed into a window built by that
+  very click would evaporate. `open_meeting` also hides a consumed handoff pill, but never while a meeting
+  is capturing/finishing. A meeting that finishes (or is retried) while its detail is open refreshes in
+  place via `meetingsUpdated` → `refreshOpenMeeting`; a `deleted` payload (or a `not found` re-fetch) drops
+  back to the list. Delete: ✕ on each row, plus a two-step confirm trash button in the
+  detail header; deletes emit `meetingsUpdated` so the dashboard list refreshes everywhere.
 - **Backend:** `meetings` table + `meeting-audio` bucket (`supabase_meetings.sql`, realtime on, RLS
   `TO public`). Bucket is **private** (MER-27, 2026-07 — was public); `meetings.audio_url` stores a bare
   object path, and both `shared_dashboard.py::get_meeting_audio` (desktop) and
@@ -545,8 +588,9 @@ deletes real files under `~/.verbal/` and this development machine has a real, i
   time** from the desktop setting `meetings_keep_audio_days` (default **0 = never expire** — changing the
   setting only affects meetings captured afterward, not retroactively; a future billing tier would write
   this same column instead of it being user-editable — the seam is already there, no schema change needed).
-  Clients: desktop's meeting summary screen shows "Audio expired — notes and transcript kept" and clicks on
-  the transcript no-op instead of erroring (`meeting_html.py`); mobile's `MeetingPlaybackScreen`/
+  Clients: desktop's meeting detail view shows "Audio expired — notes and transcript kept" and clicks on
+  the transcript no-op instead of erroring (`flume_dashboard_html.py`, `#mtgDetail` — was `meeting_html.py`
+  before MER-46); mobile's `MeetingPlaybackScreen`/
   `MeetingDetailScreen` already degraded gracefully on a missing `audioUrl` (hide the player bar / show
   "View transcript" instead of "Play with transcript") — that same path now also covers the expired case,
   plus a small "Audio expired — transcript kept" line where the player bar would be.
@@ -580,6 +624,28 @@ deletes real files under `~/.verbal/` and this development machine has a real, i
 - **Overlay** (`overlay.py`/`overlay_html.py`): non-activating pill (Recording → Transcribing → Done),
   bottom-center, `NSScreenSaverWindowLevel`, all-spaces; buttons via the bridge (`overlay_stop`/`_cancel`/
   `_pause`/`_copy`/`_dismiss`). iOS analog = the `Recording` modal screen.
+- **Capsule sizing (IDI-184, 2026-08):** the pill was ~306×42 on macOS and a FIXED 470×44 on Windows —
+  a third of the screen width on a 1366px laptop. It now rests at **123×36 (macOS) / 150×40 (Windows)**
+  carrying only what is live (waveform + elapsed clock) and **grows on hover** to the full control bar
+  (217 / 250). Nothing was dropped: pause/cancel/stop are revealed, and `esc` still cancels regardless.
+  What went away is genuinely redundant — the uppercase RECORDING caption above the pill (the terracotta
+  border plus a moving waveform already said it), the left "mute" disc (**decorative: no code ever set a
+  mute state**), the recording-state device tag and the transcribing SRC→DST route (the Done pill names
+  the destination, which is when it is news). A **paused** recording force-reveals the cluster and dims
+  the bars, because with no caption the resume button is the only thing that says "paused". Waveform is
+  11 bars on both platforms now (was 13 Mac / 10 Windows). Other states scale the same way: transcribing
+  148/180 (Mac), done 202/313. The macOS panel shrank from 720×150 to **440×96** — it is transparent but
+  still takes mouse events, so every pixel was a dead zone over whatever was underneath (−61% area).
+  On Windows the *window* stays at its widest (340) and the pill is drawn content-sized and centred
+  inside it, so hover never resizes the window (a resize would make Enter/Leave flap as the frame moved
+  out from under the cursor); the surplus is chroma-keyed, hence invisible and click-through. Clicking a
+  collapsed Windows capsule reveals the controls rather than hitting an invisible button — also the only
+  way in on a touchscreen. **Hover is driven from Python on both platforms, not by CSS `:hover` or tk
+  `<Motion>`** — see `05-conventions.md` Rule #40 for why neither fires for a background app's
+  colour-keyed, never-focused panel. The **transcribing ring is rotated from Python** as well
+  (`_start_spin_pump` → `window.VerbalSpin(deg)` at 20 Hz): written as a CSS `animation` it did not move
+  at all on macOS, because that panel throttles animation timelines and JS timers alike — Rule #41.
+  Windows needed no change; its arc already rides the 33 ms repaint loop's phase counter.
 - **Live waveform (2026-08):** the recording pill's bars track the **real mic level**, not a loop.
   `Recorder` meters each audio block (`recorder.level`, 0..1, 0 while paused/idle); `overlay.py` pumps it
   into the page 15×/s and the page scrolls a 13-slot history at 30 fps (newest at the right). Windows
@@ -596,7 +662,22 @@ deletes real files under `~/.verbal/` and this development machine has a real, i
   Add/close are double-click latched and a pre-empted card still records its offer (anti-nag, Rule #9).
   Menubar — "Reset Onboarding (dev)" only exists under `VERBAL_DEV`; model checkmark default is the real
   `"base"`; new "Check for Updates…" item with an explicit "you're up to date" alert.
-- **Popover** (`flume_popover*.py`): macOS menubar `NSPopover` mini-dashboard; attached via a retrying timer.
+- **Menubar menu** (`menubar_menu.py`, macOS, IDI-183): a real `NSMenu`, left-click. Header row (custom
+  `NSView`: mark, status, hotkey hint / waveform + elapsed / meeting timer, words-today) → Start
+  Recording · Start Meeting → Recent ▸ (last 10, click copies; Open History…) · Canvas (N) ▸ · Notes →
+  Recording Mode: <value> ▸ · Whisper Model: <value> ▸ · ✓ Auto-detect Meetings · ✓ Sync to My Devices
+  (disabled while signed out) → Open Flume ⌘O · Settings… ⌘, · sign in/out → Check for Updates… · About
+  Flume · Quit ⌘Q. `Reset Onboarding (dev)` still only exists under `VERBAL_DEV`.
+  **Signed out, the menu is locked:** every account row (record, meeting, Recent, Canvas, Notes, mode,
+  model, auto-detect, sync, Settings…) is disabled, the Recent/Canvas submenus are emptied so the previous
+  account's local history isn't on display, the words-today count is suppressed, and the header reads
+  "Sign in to get started". Only **Sign in with Google**, **Open Flume** (which renders the sign-in wall),
+  Check for Updates…, About and Quit stay live — otherwise there is no way back in. A dead session
+  (identity kept, refresh token rejected) keeps the rows usable but the header says "Session expired". Rebuilds itself on open
+  via `MenuController.menuNeedsUpdate:`; the ⌘-equivalents are menu-local (the global dictation hotkey
+  stays in `hotkey.py` and is advertised in the header subtitle instead of faked as a key equivalent).
+- **Popover** (`flume_popover_html.py`): **Windows only** now — the tray-click pywebview mini-dashboard
+  (`win_popover.py`). The macOS `NSPopover` host (`flume_popover.py`) was deleted in IDI-183.
 - **Hotkey** (`hotkey.py`): `NSEvent` global monitor; default key **54 (Right Cmd)**, ESC cancels. Hold
   mode (down=start/up=stop) vs Toggle mode (debounced tap). Windows uses `pynput` (default `alt_r`).
   **Tap-to-latch (Aug 2026):** in HOLD mode the key now does both jobs — a press longer than

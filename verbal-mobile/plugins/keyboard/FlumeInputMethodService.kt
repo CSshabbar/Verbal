@@ -2202,7 +2202,9 @@ class FlumeInputMethodService : InputMethodService() {
         val labels = sortedSetOf<String>()
         for (m in ECHO_ANY_LABEL.findAll(prompt)) labels.add(m.groupValues[1].lowercase())
         if (labels.isEmpty()) return null
-        return Regex("""^\s*(?:""" + labels.joinToString("|") + """)\b\s*(:)?\s*""",
+        // Group 1 is the label WORD (which decides whether it is one of ours per
+        // ECHO_OWNED_LABELS), group 2 the ':' that makes it ours regardless.
+        return Regex("""^\s*(""" + labels.joinToString("|") + """)\b\s*(:)?\s*""",
                      RegexOption.IGNORE_CASE)
     }
 
@@ -2223,12 +2225,23 @@ class FlumeInputMethodService : InputMethodService() {
         return sb.toString()
     }
 
-    /** (body-after-label, hadLabel, hadColon). A colon means "Glossary:" — punctuated
-     *  like a label, so it is ours and never dictation. */
-    private fun splitEchoLabel(c: String, re: Regex?): Triple<String, Boolean, Boolean> {
-        val m = re?.find(c) ?: return Triple(c, false, false)
-        if (m.value.isEmpty()) return Triple(c, false, false)
-        return Triple(c.substring(m.value.length), true, m.groupValues[1].isNotEmpty())
+    /** Headings WE invented, which therefore can't be something the user said: a bare
+     *  "Glossary" chunk is ours whatever punctuation follows it. "files" is
+     *  deliberately absent — "Files, I need to check them" is real dictation. */
+    private val ECHO_OWNED_LABELS = setOf("glossary", "vocabulary")
+
+    /** (body-after-label, hadLabel, hadColon, isOwnedHeading). A colon means
+     *  "Glossary:" — punctuated like a label, so it is ours and never dictation; an
+     *  owned heading is ours on any punctuation at all. */
+    private data class EchoLabel(val body: String, val label: Boolean,
+                                 val colon: Boolean, val owned: Boolean)
+
+    private fun splitEchoLabel(c: String, re: Regex?): EchoLabel {
+        val m = re?.find(c) ?: return EchoLabel(c, false, false, false)
+        if (m.value.isEmpty()) return EchoLabel(c, false, false, false)
+        return EchoLabel(c.substring(m.value.length), true,
+                         m.groupValues[2].isNotEmpty(),
+                         m.groupValues[1].lowercase() in ECHO_OWNED_LABELS)
     }
 
     private fun echoSplit(text: String): Pair<MutableList<String>, MutableList<String>> {
@@ -2258,7 +2271,7 @@ class FlumeInputMethodService : InputMethodService() {
             val labelRe = echoLabelRegex(prompt)
             val terms = HashSet<String>()
             for (piece in echoSplit(prompt).first) {
-                val t = normEchoTerm(splitEchoLabel(piece, labelRe).first)
+                val t = normEchoTerm(splitEchoLabel(piece, labelRe).body)
                 if (t.isNotEmpty()) terms.add(t)
             }
             if (terms.isEmpty()) return text
@@ -2270,13 +2283,16 @@ class FlumeInputMethodService : InputMethodService() {
             val hasLabel = BooleanArray(n)
             val isAlone = BooleanArray(n)
             for (k in 0 until n) {
-                val (body, label, colon) = splitEchoLabel(chunks[k], labelRe)
+                val (body, label, colon, owned) = splitEchoLabel(chunks[k], labelRe)
                 val norm = normEchoTerm(body)
                 hasLabel[k] = label; isTerm[k] = terms.contains(norm); isEmpty[k] = norm.isEmpty()
                 // A heading standing on its own — "Glossary:" or a "Glossary." ending
                 // the fragment — is ours. One that runs on inside its clause is the user.
+                // A bare heading we INVENTED is ours whatever follows it: Whisper emits
+                // "Glossary, <speech>" far more often than "Glossary. <speech>", and the
+                // comma form used to survive because a comma reads as "clause continues".
                 val endsFragment = k == n - 1 || seps[k].contains(".") || seps[k].contains("\n")
-                isAlone[k] = label && norm.isEmpty() && (colon || endsFragment)
+                isAlone[k] = label && norm.isEmpty() && (colon || endsFragment || owned)
                 // Peel a "Glossary:" prefix even when the chunk itself survives.
                 if (label && colon) chunks[k] = body
             }

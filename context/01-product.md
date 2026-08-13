@@ -50,7 +50,7 @@ called out in the Notes column rather than adding a 4th matrix column.
 | **Meetings** (capture + live transcript + AI summary) | ✅ | 👁 read + edit | ❌ | macOS captures system audio (ScreenCaptureKit) + mic, with **Granola-style auto-detection** (a "Meeting detected · <source>" pill offers one-click capture when a Zoom/Meet/Teams call is in progress — `meeting_detect.py`). Mobile has full read parity: list, detail (summary, decisions, action items w/ due + tappable done, marked moments w/ notes), the **full AI Notes page** (renders `notes_md`; can generate on-device if absent) — **and edits both the scratchpad and the AI notes themselves** (`MeetingNotesScreen.tsx`, raw-markdown edit mode, debounced sync via `updateNotesRemote`), plus tap-to-seek playback with continuous transcript highlighting (`MeetingPlaybackScreen.tsx`, reachable from both Detail and Notes). No capture on mobile. Windows port specced — `windows_specs/W6-meetings-wasapi.md` |
 | **Transform — inline** (“…so Flume, make it formal”) | ✅ | ❌ (planned) | ❌ (TBD) | Trailing-instruction gate + LLM rewrite before paste; default OFF (`transform_enabled`) |
 | **Transform — selection** (⌘⇧T / keyboard button → preview → replace) | ✅ | ✅ | ❌ (TBD) | Desktop: clipboard-captured selection, cream pill (Improvise / spoken / typed), preview + undo. Mobile (iOS + Android via the shared Expo codebase, same no-separate-Android-column caveat as the clipboard row): a dedicated Transform button on the custom keyboard reads the host field's selection (`selectedText`/`getSelectedText`), same Improvise/typed/spoken instruction paths and prompts, preview before replace; "undo" is a soft delete-and-reinsert (no OS-level undo API on mobile). Default OFF (`transformEnabled`, Settings → Keyboard), matching desktop's opt-in posture |
-| Menubar popover | ✅ | — | ⚠️ | macOS NSPopover. Windows equivalent (tray-click pywebview `popover_html()`) specced — `windows_specs/W4-popover.md` |
+| Menubar / tray menu | ✅ | — | ⚠️ | **macOS: a real `NSMenu`** (`menubar_menu.py`) with one custom-drawn header row — the `NSPopover` mini-dashboard was retired in IDI-183. Windows still uses the tray-click pywebview popover (`popover_html()`) — `windows_specs/W4-popover.md`; a native Win32 tray menu is the open parity item |
 
 Legend: ✅ present · ⚠️ partial/legacy · ❌ not present · — N/A.
 
@@ -71,7 +71,8 @@ Legend: ✅ present · ⚠️ partial/legacy · ❌ not present · — N/A.
   transcript, a user scratchpad, and a hybrid AI summary (summary + decisions + action items + the user's
   notes enhanced with transcript context). Mobile can't capture a meeting, but can edit both the scratchpad
   and the full AI notes, and play the recording back with the transcript synced to playback position.
-- **Popover** — the macOS menubar dropdown (NSPopover) mini-dashboard.
+- **Popover** — the **Windows** tray-click mini-dashboard (pywebview, `popover_html()`). macOS had the
+  same thing as an `NSPopover` until IDI-183; its menubar surface is now a native `NSMenu` instead.
 
 ## Repo layout (top level)
 

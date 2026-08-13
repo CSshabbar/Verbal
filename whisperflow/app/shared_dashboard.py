@@ -233,6 +233,11 @@ class SharedDashboard:
     def __init__(self, app):
         self.app = app
         self._window = None
+        # MER-46: see FlumeWebDashboard.__init__ — events emitted before the page
+        # installs VerbalNative are queued, not dropped, so `open_meeting` can
+        # show() a window and push into it immediately.
+        self._page_ready = False
+        self._pending = []
         self._target_device_id = "__all__"
         self._known_devices = []
         self._last_canvas_loaded = False
@@ -265,6 +270,9 @@ class SharedDashboard:
         from app.flume_dashboard_html import flume_html
 
         api = DashboardApi(self)
+        # A rebuild means a fresh page: a stale `_page_ready` from the previous
+        # window would let emits fire at a page that has no VerbalNative yet.
+        self._page_ready = False
         self._window = webview.create_window(
             "Flume",
             html=flume_html(),
@@ -283,6 +291,11 @@ class SharedDashboard:
         # shared HTML untouched — this fix is host-side only.
         try:
             self._window.events.loaded += self._inject_scroll_fix
+            # Belt-and-braces flush, same reasoning as win_meeting_window._on_loaded:
+            # on WebView2 the JS-initiated handshake can lose the bridge-init race
+            # on a freshly-created window. Idempotent — the second flush finds an
+            # empty queue.
+            self._window.events.loaded += self.page_ready
         except Exception as e:
             logger.debug("scroll-fix hook attach failed: %s", e)
         threading.Thread(target=self._device_refresh_loop, daemon=True).start()
@@ -340,6 +353,11 @@ class SharedDashboard:
 
     def _emit(self, event: str, payload: dict[str, Any]):
         if not self._window:
+            return          # never built — dropping is still correct (as before)
+        if not self._page_ready:
+            self._pending.append((event, payload))
+            if len(self._pending) > 200:        # bound the buffer
+                self._pending = self._pending[-200:]
             return
         try:
             import json
@@ -348,6 +366,13 @@ class SharedDashboard:
             self._window.evaluate_js(js)
         except Exception as e:
             logger.debug(f"Dashboard emit failed: {e}")
+
+    def page_ready(self):
+        """Called (via the bridge) when the page JS has installed VerbalNative."""
+        self._page_ready = True
+        pending, self._pending = self._pending, []
+        for event, payload in pending:
+            self._emit(event, payload)
 
     def _cloud_sync_on(self) -> bool:
         """The uniform desktop sync gate (IDI-171): user toggle AND signed in
@@ -735,6 +760,21 @@ class DashboardApi:
         except Exception as e:
             return {"ok": False, "error": str(e)}
 
+    def dashboard_page_ready(self):
+        """Page-load handshake from the DASHBOARD's JS (MER-46).
+
+        Same contract as meeting_page_ready. Needed because `open_meeting` can now
+        target a dashboard window that show() built a millisecond earlier — its
+        page has no `VerbalNative` yet, so the openMeeting event has to be queued
+        and flushed here instead of evaporating."""
+        try:
+            d = self.dashboard
+            if hasattr(d, "page_ready"):
+                d.page_ready()
+            return _ok()
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
     def expand_meeting_window(self):
         """Bar → full window (fluid morph)."""
         try:
@@ -806,8 +846,24 @@ class DashboardApi:
         except Exception as e:
             return {"ok": False, "error": str(e)}
 
+    def _dash(self):
+        """The MAIN Flume window.
+
+        Not `self.dashboard`: one DashboardApi is created per window (dashboard,
+        meeting panel, transform widget), so `self.dashboard` is whichever window
+        this bridge instance belongs to. Anything that must land in the main
+        window goes through the app, exactly as delete_meeting already does."""
+        return getattr(self.app, "dashboard", None)
+
     def open_meeting(self, meeting_id):
-        """Open a past meeting in the summary view (31e)."""
+        """Open a meeting in the DASHBOARD's detail view (31e, MER-46).
+
+        Was `meeting_window.show('summary')`. The panel holds ONE mode at a time,
+        so a past meeting fought the live screen, could not be read while another
+        meeting recorded, and got yanked back to the ambient bar the moment the
+        panel lost focus mid-meeting. The detail view now lives in the Flume
+        window right next to the list it was opened from; the panel is
+        live-meeting-only."""
         try:
             m = self._meetings()
             got = m.get_meeting(meeting_id) if m else {"ok": False, "error": "unavailable"}
@@ -818,15 +874,29 @@ class DashboardApi:
                 m.mark_meeting_opened(meeting_id)   # clears the NEW indicator
             except Exception:
                 pass
+            dash = self._dash()
+            if dash is None:
+                return {"ok": False, "error": "no dashboard"}
 
             def run():
-                win = self._meeting_win()
-                if win:
-                    win.show("summary")
-                    # dedicated event: an explicit open must always replace the
-                    # displayed meeting (the generic 'meeting' event is guarded
-                    # against background sessions hijacking the view)
-                    win.emit("openMeeting", row)
+                try:
+                    dash.show()
+                except Exception as e:
+                    logger.debug("dashboard show failed: %s", e)
+                # Buffered by the dashboard until its page handshakes, so this
+                # works on a window that show() only just built (the bar handoff
+                # is exactly that case).
+                dash._emit("openMeeting", row)
+                # Opening the meeting CONSUMES a leftover handoff bar — but never
+                # touch the panel while a meeting is still capturing/finishing,
+                # where the bar is the live HUD.
+                try:
+                    win = self._meeting_win()
+                    busy = bool(m and (m.active or m.processing))
+                    if win and win.visible and not busy:
+                        win.hide()
+                except Exception:
+                    pass
             self.app._on_main(run)
             return _ok()
         except Exception as e:
@@ -985,6 +1055,7 @@ class DashboardApi:
             return {"ok": False, "error": str(e)}
 
     def set_meeting_title(self, title):
+        """Rename the LIVE meeting (the panel's live-screen title field)."""
         try:
             m = self._meetings()
             if m and m.session:
@@ -993,6 +1064,13 @@ class DashboardApi:
             return {"ok": False, "error": "No meeting."}
         except Exception as e:
             return {"ok": False, "error": str(e)}
+
+    def set_meeting_title_by_id(self, meeting_id, title):
+        """Rename any meeting — the dashboard detail view's title field (MER-46),
+        which is usually pointed at a FINISHED meeting."""
+        m = self._meetings()
+        return (m.set_meeting_title_by_id(meeting_id, title)
+                if m else {"ok": False, "error": "unavailable"})
 
     def rename_speaker(self, speaker_id, name):
         try:
@@ -1482,6 +1560,48 @@ class DashboardApi:
         except Exception:
             pass
         return _ok(device_id=device_id)
+
+    def remove_offline_devices(self):
+        """Drop every OFFLINE row from the account's device list in one action.
+
+        The device list has no TTL and nothing prunes it, so a reinstalled app —
+        or, historically, any identity-scheme change — leaves its old row behind
+        forever. One test account had 14 dead "iPhone" rows, none seen in three
+        weeks, which buried the one device that was actually online.
+
+        Deliberately MANUAL, never automatic: a phone that is merely switched off
+        is offline, not gone, and it must not disappear from the list on its own.
+        Same semantics as `remove_device` — a list removal, not a revocation, so
+        any of these devices re-registers on its next heartbeat. Never touches
+        THIS device (signing out is what removes this one)."""
+        cfg = self.app.config
+        user_id = cfg.get("sync_user_id", "")
+        if not user_id or not _cloud_allowed(cfg):
+            return _err("Sign in to manage your devices.")
+        my_id, _name = device_identity(self.app)
+        try:
+            from app.auth import auth_header
+            from app.sync import fetch_account_devices, delete_device_presence
+            header = auth_header(cfg)
+            rows = fetch_account_devices(user_id, my_id) or []
+            stale = [d.get("device_id") for d in rows
+                     if not d.get("online") and d.get("device_id")]
+            removed = 0
+            for did in stale:
+                try:
+                    delete_device_presence(user_id, did, header)
+                    removed += 1
+                except Exception as e:
+                    # Keep going — one failed row must not abort the sweep.
+                    logger.debug("remove_offline_devices: %s failed: %s", did, e)
+        except Exception as e:
+            logger.error("remove_offline_devices failed: %s", e)
+            return _err(str(e))
+        try:
+            self.dashboard._load_devices()
+        except Exception:
+            pass
+        return _ok(removed=removed)
 
     # ── Notes API ───────────────────────────────────────────────────────
     # ── notes: local-first, cloud-synced when enabled ─────────────────────────

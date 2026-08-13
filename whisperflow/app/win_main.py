@@ -196,6 +196,15 @@ class VerbalWinApp:
     def _build_tray_menu(self):
         import pystray
 
+        # Sign-in gate for appearance: pystray accepts a callable for `enabled`
+        # and re-evaluates it every time the menu is shown, which is the tray's
+        # equivalent of NSMenuDelegate.menuNeedsUpdate: on macOS. Enforcement
+        # does NOT rest on this — every callback below re-checks — so if a
+        # pystray build ever ignored the callable, the rows would merely look
+        # available while still refusing.
+        def gated(item):
+            return self._signed_in()
+
         # Dynamic status text
         self._menu_status = pystray.MenuItem(
             lambda item: self._status_text(), None, enabled=False
@@ -203,19 +212,21 @@ class VerbalWinApp:
 
         # Dynamic record button text
         self._menu_record = pystray.MenuItem(
-            lambda item: "Stop Recording" if self._is_recording else "Start Recording",
-            self._tray_toggle_record,
+            lambda item: ("Stop Recording" if self._is_recording
+                          else "Start Recording" if self._signed_in()
+                          else "Sign in to dictate"),
+            self._tray_toggle_record, enabled=gated,
         )
 
         # Recording Mode submenu
         mode_menu = pystray.Menu(
-            pystray.MenuItem("Hold Key to Record", self._tray_set_mode_hold, checked=lambda item: self._mode == MODE_HOLD),
-            pystray.MenuItem("Toggle On/Off", self._tray_set_mode_toggle, checked=lambda item: self._mode == MODE_TOGGLE),
+            pystray.MenuItem("Hold Key to Record", self._tray_set_mode_hold, checked=lambda item: self._mode == MODE_HOLD, enabled=gated),
+            pystray.MenuItem("Toggle On/Off", self._tray_set_mode_toggle, checked=lambda item: self._mode == MODE_TOGGLE, enabled=gated),
         )
 
         # Whisper Model submenu
         model_menu = pystray.Menu(
-            *[pystray.MenuItem(m, self._tray_change_model, checked=lambda item, mn=m: self.config.get("whisper_model", "base") == mn) for m in ["tiny", "base", "small", "medium"]]
+            *[pystray.MenuItem(m, self._tray_change_model, checked=lambda item, mn=m: self.config.get("whisper_model", "base") == mn, enabled=gated) for m in ["tiny", "base", "small", "medium"]]
         )
 
         # default=True routes the tray icon's LEFT-click to this item's
@@ -230,12 +241,14 @@ class VerbalWinApp:
             self._menu_status,
             self._menu_record,
             pystray.Menu.SEPARATOR,
+            # "Open Verbal" stays enabled while signed out — it renders the
+            # sign-in wall, so it is part of the way back in.
             pystray.MenuItem("Open Verbal", self._tray_open_dashboard),
-            pystray.MenuItem("Open Canvas", self._tray_open_canvas),
-            pystray.MenuItem("Open Notes", self._tray_open_notes),
-            pystray.MenuItem("Settings...", self._tray_open_settings),
-            pystray.MenuItem("Recording Mode", mode_menu),
-            pystray.MenuItem("Whisper Model", model_menu),
+            pystray.MenuItem("Open Canvas", self._tray_open_canvas, enabled=gated),
+            pystray.MenuItem("Open Notes", self._tray_open_notes, enabled=gated),
+            pystray.MenuItem("Settings...", self._tray_open_settings, enabled=gated),
+            pystray.MenuItem("Recording Mode", mode_menu, enabled=gated),
+            pystray.MenuItem("Whisper Model", model_menu, enabled=gated),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem(lambda item: self._auth_menu_label(), self._tray_toggle_auth),
             pystray.Menu.SEPARATOR,
@@ -351,7 +364,14 @@ class VerbalWinApp:
             pass
 
     # ── Tray menu callbacks ─────────────────────────────────────────────
+    # NB: every callback below re-checks the sign-in gate. The `enabled=`
+    # callables in _build_tray_menu only control how the rows LOOK; these
+    # returns are what make them refuse.
     def _tray_toggle_record(self, icon=None, item=None):
+        # _on_record_start gates too, but stopping needs no account and this
+        # keeps the refusal (and the prompt) at the tray edge.
+        if not self._is_recording and not self._require_signin():
+            return
         self._toggle_recording()
 
     def _tray_open_popover(self, icon=None, item=None):
@@ -359,7 +379,15 @@ class VerbalWinApp:
 
         Marked as pystray's default menu item so a left-click on the tray icon
         invokes this instead of showing the right-click menu. Right-click still
-        shows the full menu."""
+        shows the full menu.
+
+        Signed out, the popover is a panel of dead buttons, so left-click goes
+        to the dashboard's sign-in wall instead — the one thing that IS useful.
+        """
+        if not self._signed_in():
+            logger.info("popover suppressed: not signed in")
+            self._prompt_sign_in()
+            return
         try:
             self.popover.toggle()
         except Exception as e:
@@ -369,31 +397,41 @@ class VerbalWinApp:
         self.dashboard.show()
 
     def _tray_open_canvas(self, icon=None, item=None):
+        if not self._require_signin():
+            return
         self.dashboard.show()
         self.dashboard._on_tab_select(3)
 
     def _tray_open_notes(self, icon=None, item=None):
+        if not self._require_signin():
+            return
         self.dashboard.show()
         self.dashboard._on_tab_select(5)
 
     def _tray_open_settings(self, icon=None, item=None):
+        if not self._require_signin():
+            return
         self.dashboard.show()
         self.dashboard._on_tab_select(4)
 
     def _tray_set_mode_hold(self, icon=None, item=None):
+        if not self._require_signin():
+            return
         self._mode = MODE_HOLD
         self.config["recording_mode"] = MODE_HOLD
         save_config(self.config)
         self._update_tray_menu()
 
     def _tray_set_mode_toggle(self, icon=None, item=None):
+        if not self._require_signin():
+            return
         self._mode = MODE_TOGGLE
         self.config["recording_mode"] = MODE_TOGGLE
         save_config(self.config)
         self._update_tray_menu()
 
     def _tray_change_model(self, icon=None, item=None):
-        if item is None:
+        if item is None or not self._require_signin():
             return
         model_name = str(item.text if hasattr(item, 'text') else item)
         self.config["whisper_model"] = model_name
@@ -419,6 +457,45 @@ class VerbalWinApp:
             "Powered by Whisper + Gemini"
         )
         root.destroy()
+
+    # ── Sign-in gate (IDI-183, mirrors main.py on macOS) ──────────────────
+    # Flume requires an account, so nothing account-shaped may run without one.
+    # Defence in depth, because the tray is a different beast from an NSMenu:
+    #   1. `enabled=` callables grey the rows out (appearance),
+    #   2. every tray callback re-checks (enforcement — a greyed row that still
+    #      fires, or a pystray build that ignores callables, changes nothing),
+    #   3. `_on_record_start` refuses (covers the hotkeys, which bypass the tray
+    #      entirely).
+    _SIGNIN_PROMPT_EVERY = 4.0
+
+    def _signed_in(self) -> bool:
+        """Fails CLOSED — an auth error blocks the feature rather than allowing it."""
+        try:
+            return bool(auth.current_user())
+        except Exception as e:
+            logger.warning(f"auth check failed, treating as signed out: {e}")
+            return False
+
+    def _prompt_sign_in(self):
+        """Surface the dashboard's sign-in wall, at most once every few seconds —
+        a held hotkey re-fires this path continuously."""
+        now = time.time()
+        if now - getattr(self, "_last_signin_prompt", 0.0) < self._SIGNIN_PROMPT_EVERY:
+            return
+        self._last_signin_prompt = now
+        try:
+            self.dashboard.show()
+            self.dashboard._refresh()
+        except Exception as e:
+            logger.warning(f"sign-in prompt failed: {e}")
+
+    def _require_signin(self) -> bool:
+        """True when the caller may proceed; otherwise prompts and returns False."""
+        if self._signed_in():
+            return True
+        logger.info("blocked: not signed in")
+        self._prompt_sign_in()
+        return False
 
     # ── Google auth ───────────────────────────────────────────────────────
     def _auth_menu_label(self):
@@ -517,6 +594,15 @@ class VerbalWinApp:
                     meetings.stop_async()
             except Exception as e:
                 logger.debug(f"meeting stop on sign-out skipped: {e}")
+            # Same rule for dictation (IDI-183): signed-out dictation is refused
+            # at the start, so a recording already in flight must not survive the
+            # sign-out and paste a transcript for the account we just left.
+            if self._is_recording:
+                logger.info("cancelling in-flight dictation on sign-out")
+                try:
+                    self._cancel_recording()
+                except Exception as e:
+                    logger.warning(f"cancel on sign-out failed: {e}")
             if self._sync:
                 try:
                     self._sync.stop()
@@ -795,6 +881,13 @@ class VerbalWinApp:
     def _on_record_start(self):
         if self._processing:
             return
+        # The single choke point every start path reaches — tray row, toggle key
+        # and hold key (see the HotkeyListener wiring: on_start/on_toggle both
+        # land here). Checked before anything is saved or harvested.
+        if not self._signed_in():
+            logger.info("dictation blocked: not signed in")
+            self._prompt_sign_in()
+            return
         try:
             from app.win_injector import save_focused_app, get_focused_app_pid
             save_focused_app()
@@ -920,16 +1013,29 @@ class VerbalWinApp:
             logger.debug(f"recording upload dispatch failed: {e}")
 
     def _process_audio(self, audio):
-        # Save the recording locally FIRST (playback backup + retry cache), same
-        # as the Mac app. Fail-closed: a save failure leaves audio_path=None and
-        # never blocks transcription/injection.
+        # Save the recording locally (playback backup + retry cache) on a
+        # background thread, same as the Mac app: the archive write has nothing
+        # to do with the transcript, so it runs alongside the network call rather
+        # than in front of it. `_saved_path()` joins it before first use.
+        # Fail-closed: a save failure leaves the path None and never blocks
+        # transcription/injection.
         rec_id = recordings.new_id()
-        try:
-            audio_path = recordings.save_wav(audio, self.recorder.sample_rate, rec_id)
-            logger.info(f"Recording saved: {audio_path} (id={rec_id})")
-        except Exception as e:
-            logger.error(f"save_wav failed: {e}")
-            audio_path = None
+        _saved = {}
+
+        def _save():
+            try:
+                _saved["path"] = recordings.save_wav(audio, self.recorder.sample_rate, rec_id)
+                logger.info(f"Recording saved: {_saved['path']} (id={rec_id})")
+            except Exception as e:
+                logger.error(f"save_wav failed: {e}")
+                _saved["path"] = None
+
+        _saver = threading.Thread(target=_save, daemon=True)
+        _saver.start()
+
+        def _saved_path():
+            _saver.join(timeout=10)
+            return _saved.get("path")
 
         try:
             if self._cancel_flag.is_set():
@@ -944,9 +1050,10 @@ class VerbalWinApp:
             # "silent" — empty/too-short audio. Discard the WAV, tell the user.
             if status == "silent":
                 logger.warning("No speech detected — discarding recording")
-                if audio_path:
+                _discard = _saved_path()
+                if _discard:
                     try:
-                        os.remove(audio_path)
+                        os.remove(_discard)
                     except Exception:
                         pass
                 try:
@@ -959,13 +1066,14 @@ class VerbalWinApp:
             # "failed" — network/API down. Keep the audio + a retryable entry.
             if status == "failed":
                 logger.error("Transcription failed after retries — saved for retry")
+                _path = _saved_path()
                 try:
                     self.config = add_to_history(
                         self.config, "", get_focused_app_name(),
-                        entry_id=rec_id, audio=audio_path or "", status="failed")
+                        entry_id=rec_id, audio=_path or "", status="failed")
                 except Exception as e:
                     logger.error(f"failed-entry write failed: {e}")
-                self._upload_recording_async(rec_id, audio_path)
+                self._upload_recording_async(rec_id, _path)
                 try:
                     self.overlay.show_briefly("Transcription failed — retry from History", duration=2.0)
                 except Exception:
@@ -1018,20 +1126,13 @@ class VerbalWinApp:
             except Exception as e:
                 logger.debug(f"apply_snippets skipped: {e}")
 
-            try:
-                self.config = add_to_history(
-                    self.config, result, get_focused_app_name(),
-                    entry_id=rec_id, audio=audio_path or "", status="done")
-            except Exception as e:
-                logger.error(f"history write failed: {e}")
+            # Joins the background archive write; transcription + cleanup have
+            # already run, so it finished long ago and this returns immediately.
+            audio_path = _saved_path()
             word_count = len(result.split())
-            self._total_transcriptions += 1
-            self._total_words += word_count
-            try:
-                self.config = update_daily_words(self.config, word_count)
-            except Exception:
-                pass
-            self._update_tray_menu()
+            # Resolve the dictation TARGET before injection — inject_text()
+            # restores focus, so a later read can name a different app.
+            target_app = get_focused_app_name()
 
             self.overlay.hide()
             time.sleep(0.3)
@@ -1045,6 +1146,24 @@ class VerbalWinApp:
                 allow_mentions=self.config.get("filetag_enabled", False),
             )
             _play_sound("done")
+
+            # Persist AFTER the paste (same as macOS): two atomic config.json
+            # writes the user should never wait on. Must land here — before the
+            # sync-push and upload blocks below, which look the entry up by
+            # rec_id — and the tray rebuild has to follow the counter bump.
+            try:
+                self.config = add_to_history(
+                    self.config, result, target_app,
+                    entry_id=rec_id, audio=audio_path or "", status="done")
+            except Exception as e:
+                logger.error(f"history write failed: {e}")
+            self._total_transcriptions += 1
+            self._total_words += word_count
+            try:
+                self.config = update_daily_words(self.config, word_count)
+            except Exception:
+                pass
+            self._update_tray_menu()
 
             # Show the split (TRANSFORM_SWARM.md P1.3): surface what was
             # read as the instruction so a wrong split is catchable and

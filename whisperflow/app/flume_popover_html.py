@@ -1,7 +1,11 @@
 """
-HTML for the Flume menubar popover (macOS). Data-driven, hosted in a WKWebView
-inside an NSPopover (see flume_popover.py). Reuses the same Geist/JBM fonts and
-the window.pywebview.api bridge as the dashboard.
+HTML for the Flume tray popover — WINDOWS ONLY as of IDI-183.
+
+macOS retired its NSPopover for a real NSMenu (app/menubar_menu.py), so
+flume_popover.py is gone; `popover_html()` now has exactly one host:
+win_popover.py's pywebview window. `_mark_data_uri()` is also imported by
+flume_dashboard_html.py for the sign-in pane's logo, so this module stays on the
+macOS side of the build too.
 """
 import base64
 import os
@@ -92,6 +96,17 @@ border:0;border-radius:14px;padding:15px 16px;cursor:pointer;margin-bottom:12px;
 .recacts .copy{color:var(--acc)}
 .recacts .copy:hover{opacity:.75}
 .empty{color:var(--mut);font:400 13px 'Geist';padding:14px 2px}
+/* signed-out gate (IDI-183) — the notice replaces the recent list, and every
+   action is dimmed AND inert. pointer-events is the look; the JS guards in
+   toggleRecord/go/startMeeting are the lock (keyboard reaches these too). */
+.dot.off{background:rgba(240,240,240,.35)}
+.gate{background:var(--card);border:1px solid var(--bd2);border-radius:12px;padding:14px;margin-bottom:10px}
+.gate h4{font:700 14px 'Geist';margin-bottom:5px}
+.gate p{font:400 12.5px/1.45 'Geist';color:var(--mut);margin-bottom:12px}
+.gate button{width:100%;background:var(--acc);color:var(--acc-ink);border:0;border-radius:10px;
+padding:10px;font:700 13px 'Geist';cursor:pointer}
+body.gated .record,body.gated .qcards,body.gated .toggle,body.gated .reclab,body.gated .recscroll{
+opacity:.32;pointer-events:none}
 /* footer */
 .footer{display:flex;align-items:center;border-top:1px solid var(--bd);padding:12px 8px;gap:4px;margin-top:6px}
 .fbtn{flex:1;display:flex;align-items:center;justify-content:center;gap:8px;background:0;border:0;color:var(--mut);cursor:pointer;font:500 13px 'Geist';padding:8px 4px;border-radius:8px}
@@ -143,11 +158,21 @@ function render(){
   $('#v-history').hidden = VIEW!=='history';
   $('#v-canvas').hidden = VIEW!=='canvas';
 
+  // Sign-in gate (IDI-183). Flume requires an account, so signed out every
+  // action here is dead: the tray suppresses this panel in that state, but the
+  // panel can also be OPEN when a sign-out happens in the dashboard, and the
+  // 'state' event lands here. Gate rather than trust the caller.
+  const signedIn = STATE.signed_in !== false;
+  document.body.classList.toggle('gated', !signedIn);
+  const gate = $('#gate');
+  if(gate) gate.hidden = signedIn;
+
   const rec = !!STATE.recording, busy = !!STATE.processing;
-  const dev = STATE.target_device_name || (STATE.settings&&STATE.settings.sync_device_name) || 'This Mac';
-  const statusTx = rec ? 'Recording…' : busy ? 'Transcribing…' : 'Ready';
+  const dev = STATE.target_device_name || (STATE.settings&&STATE.settings.sync_device_name) || 'This device';
+  const statusTx = !signedIn ? 'Not signed in' : rec ? 'Recording…' : busy ? 'Transcribing…' : 'Ready';
   $('#hname').textContent = 'Flume';
-  $('#hstat').innerHTML = '<span class="dot'+(rec||busy?' busy':'')+'"></span>'+esc(statusTx)+' · '+esc(dev);
+  $('#hstat').innerHTML = '<span class="dot'+(!signedIn?' off':(rec||busy?' busy':''))+'"></span>'
+    + esc(statusTx) + (signedIn ? ' · '+esc(dev) : '');
   const syncOn = !!(STATE.settings && STATE.settings.sync_enabled);
   $('#syncToggle').className = 'toggle'+(syncOn?' on':'');
 
@@ -170,7 +195,8 @@ function render(){
   }
 }
 
-function go(v){ VIEW=v; render(); if(v==='canvas') loadCanvas(); }
+function go(v){ if(gatedOut()) return openWindow(); VIEW=v; render(); if(v==='canvas') loadCanvas(); }
+function startMeeting(){ if(gatedOut()) return openWindow(); api('open_meeting_launcher'); }
 
 function loadCanvas(){
   $('#canvasBody').innerHTML = '<div class="empty">Loading…</div>';
@@ -193,7 +219,10 @@ function renderCanvas(){
 }
 
 function doCopy(t){ api('copy_text', t); }
-function toggleRecord(){ api('toggle_recording'); }
+// Every action re-checks the gate: CSS pointer-events is a look, not a lock,
+// and these are also reachable by keyboard.
+function gatedOut(){ return STATE && STATE.signed_in === false; }
+function toggleRecord(){ if(gatedOut()) return openWindow(); api('toggle_recording'); }
 function toggleSync(){
   const on = !$('#syncToggle').classList.contains('on');
   $('#syncToggle').className = 'toggle'+(on?' on':'');
@@ -233,11 +262,16 @@ def popover_html():
           <div class="hinfo"><div class="hname" id="hname">Flume</div><div class="hstat" id="hstat"><span class="dot"></span>Ready</div></div>
           <button class="toggle on" id="syncToggle" onclick="toggleSync()"><span class="knob"></span></button>
         </div>
+        <div class="gate" id="gate" hidden>
+          <h4>Sign in to get started</h4>
+          <p>Flume needs your account before it can dictate, sync or keep your notes.</p>
+          <button onclick="openWindow()">Sign in with Google</button>
+        </div>
         <button class="record" id="recordBtn" onclick="toggleRecord()">
           <span class="mic">{mic}</span><span class="rlabel" id="rlabel">Start recording</span>
           <span class="kbd">⌘⌥</span>
         </button>
-        <button class="record meeting" onclick="api('open_meeting_launcher')">
+        <button class="record meeting" onclick="startMeeting()">
           <span class="mic">{mic}</span><span class="rlabel">Start meeting</span>
         </button>
         <div class="qcards">

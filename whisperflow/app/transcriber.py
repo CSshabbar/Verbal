@@ -161,18 +161,42 @@ def transcribe_with_status(audio: np.ndarray, config: dict, sample_rate: int = 4
                 logger.debug("[filetag] tag() failed: %s", e)
         return t
 
-    # Save at native sample rate — cloud APIs handle resampling
-    tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+    # Downsample ONCE, up front, and upload 16 kHz mono FLAC.
+    #
+    # Every Whisper implementation resamples its input to 16 kHz mono before the
+    # mel frontend ever sees it, so shipping the mic's native 48 kHz was paying 3×
+    # the bytes to send information the model then throws away — and on the
+    # dictation critical path those bytes are pure latency. FLAC is lossless and
+    # roughly halves it again. The full-rate audio is still what gets archived by
+    # `recordings.save_wav`; only the wire format changes here.
+    #
+    # `wav16` is the same audio as a WAV, materialized lazily: Gemini is sent raw
+    # bytes under an `audio/wav` mime type and local faster-whisper wants a plain
+    # WAV path, but neither runs unless Groq already failed — so on the hot path
+    # we never write it at all.
     try:
-        sf.write(tmp.name, audio, sample_rate)
-        tmp.close()
+        audio16 = _to_16k_array(audio, sample_rate)
+        tmp = _write_temp(audio16, ".flac", "FLAC")
+    except Exception as e:
+        # Rule #1: never raise out of the dictation path. 'failed' is retryable
+        # and keeps the recording, so the user loses nothing.
+        logger.error("upload encode failed: %s", e)
+        return "", "failed"
+    wav16 = None
 
+    def _wav16():
+        nonlocal wav16
+        if wav16 is None:
+            wav16 = _write_temp(audio16, ".wav", "WAV")
+        return wav16
+
+    try:
         # 1. Groq via the Supabase proxy (key held server-side — no local key needed).
         # Non-English pinned languages route to full large-v3 — the turbo distil
         # is noticeably weaker on lower-resource languages.
         from app.groq_proxy import transcribe_via_proxy
         _model_id = "whisper-large-v3" if lang not in (None, "en") else "whisper-large-v3-turbo"
-        proxy_text = transcribe_via_proxy(tmp.name, config, prompt=prompt,
+        proxy_text = transcribe_via_proxy(tmp, config, prompt=prompt,
                                           language=lang, model=_model_id)
         if proxy_text and proxy_text not in (".", "...", "uh", "um", "ah", "hm"):
             proxy_text = finalize(proxy_text)
@@ -187,7 +211,7 @@ def transcribe_with_status(audio: np.ndarray, config: dict, sample_rate: int = 4
 
         # 1b. Legacy fallback: any local Groq keys still configured
         for key in config.get("groq_api_keys", []):
-            result = _transcribe_groq(tmp.name, key, prompt=prompt, language=lang)
+            result = _transcribe_groq(tmp, key, prompt=prompt, language=lang)
             if result is not None:
                 result = finalize(result)
                 if not result:
@@ -198,7 +222,7 @@ def transcribe_with_status(audio: np.ndarray, config: dict, sample_rate: int = 4
 
         # 2. Gemini Flash (user has keys)
         for key in config.get("gemini_api_keys", []):
-            result = _transcribe_gemini(tmp.name, key, prompt=prompt, language=lang)
+            result = _transcribe_gemini(_wav16(), key, prompt=prompt, language=lang)
             if result is not None:
                 result = finalize(result)
                 if not result:
@@ -208,9 +232,8 @@ def transcribe_with_status(audio: np.ndarray, config: dict, sample_rate: int = 4
                 return result, "ok"
 
         # 3. Local whisper fallback — needs 16kHz (works offline)
-        tmp16 = _resample_to_16k(audio, sample_rate)
         try:
-            result = _transcribe_local(tmp16, config.get("whisper_model", "base"), language=lang)
+            result = _transcribe_local(_wav16(), config.get("whisper_model", "base"), language=lang)
             if result:
                 result = finalize(result, biased=False)   # local gets no prompt
                 logger.info(f"[Local] {time.time()-start:.2f}s: '{result[:80]}'")
@@ -219,46 +242,50 @@ def transcribe_with_status(audio: np.ndarray, config: dict, sample_rate: int = 4
                 logger.warning("Local Whisper not available - all transcription methods failed")
         except Exception as e:
             logger.error(f"Local Whisper failed: {e}")
-        finally:
-            try:
-                os.unlink(tmp16)
-            except:
-                pass
 
         # All methods failed (likely network/API down) — retryable
         logger.error("All transcription methods failed")
         return "", "failed"
     finally:
-        try:
-            os.unlink(tmp.name)
-        except:
-            pass
+        for _p in (tmp, wav16):
+            if _p:
+                try:
+                    os.unlink(_p)
+                except Exception:
+                    pass
 
 
-def _resample_to_16k(audio, orig_rate):
-    """Resample audio to 16kHz for local Whisper."""
-    if orig_rate == 16000:
-        tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
-        sf.write(tmp.name, audio, 16000)
-        tmp.close()
-        return tmp.name
-
+def _to_16k_array(audio, orig_rate):
+    """Resample to 16 kHz mono — the rate every Whisper backend works in."""
+    if int(orig_rate) == 16000:
+        return audio.astype(np.float32)
     try:
         from scipy.signal import resample_poly
         from math import gcd
-        g = gcd(orig_rate, 16000)
-        resampled = resample_poly(audio, 16000 // g, orig_rate // g).astype(np.float32)
+        g = gcd(int(orig_rate), 16000)
+        return resample_poly(audio, 16000 // g, int(orig_rate) // g).astype(np.float32)
     except ImportError:
         # Fallback: simple decimation
         ratio = orig_rate / 16000
         indices = np.arange(0, len(audio), ratio).astype(int)
         indices = indices[indices < len(audio)]
-        resampled = audio[indices]
+        return audio[indices].astype(np.float32)
 
-    tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
-    sf.write(tmp.name, resampled, 16000)
-    tmp.close()
-    return tmp.name
+
+def _write_temp(audio16, suffix, fmt):
+    """Write already-16 kHz audio to a temp file. FLAC falls back to WAV if this
+    libsndfile build can't encode it (never let a container choice break a
+    transcription — Hard Rule #1)."""
+    try:
+        tmp = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
+        tmp.close()
+        sf.write(tmp.name, audio16, 16000, format=fmt, subtype="PCM_16")
+        return tmp.name
+    except Exception as e:
+        if fmt == "FLAC":
+            logger.warning("FLAC encode unavailable (%s) — falling back to WAV", e)
+            return _write_temp(audio16, ".wav", "WAV")
+        raise
 
 
 def _transcribe_groq(wav_path: str, api_key: str, prompt: str | None = None,
@@ -268,7 +295,9 @@ def _transcribe_groq(wav_path: str, api_key: str, prompt: str | None = None,
         client = Groq(api_key=api_key)
         with open(wav_path, "rb") as f:
             kwargs = dict(
-                file=("audio.wav", f),
+                # Groq reads the container from this filename — keep the real
+                # extension (the upload is FLAC on the normal path).
+                file=("audio" + (os.path.splitext(wav_path)[1].lower() or ".wav"), f),
                 model="whisper-large-v3" if language not in (None, "en") else "whisper-large-v3-turbo",
                 temperature=0.0,
             )

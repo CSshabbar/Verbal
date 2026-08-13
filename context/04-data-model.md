@@ -198,11 +198,27 @@ from hostname/name/account; one stale old-format row per upgraded device is expe
 `Platform.OS`, the old `'iphone'` literal is gone) · `last_seen` timestamptz default `now()` ·
 **`sync_enabled`** bool default `true` (SELF-only since IDI-177: each device mirrors its own toggle here;
 nothing reads it as remote control). Unique index `(user_id, device_id)` (the upsert conflict target).
-"Online" = `last_seen` within 5 min. In the realtime publication. The desktop device LIST reads
-`sync.fetch_account_devices` (ALL rows for the `user_id`, each tagged `online`), not `fetch_devices` (last
-5 min only). Presence heartbeats are APP-LEVEL 30 s daemons (`main._presence_loop`/`win_main`), gated on
+"Online" = `last_seen` within **`sync.PRESENCE_ONLINE_SEC` = 120 s** (2026-08; was 300 s, which let a
+device that vanished four minutes ago still read "Online" — the dashboard promises "online right now", and
+the heartbeat is 60 s, so 120 s tolerates exactly one missed beat). In the realtime publication. The
+desktop device LIST reads `sync.fetch_account_devices` (ALL rows for the `user_id`, each tagged `online`,
+`last_seen` passed through so the UI can say how stale a row is), not `fetch_devices` (live set only).
+Presence heartbeats are APP-LEVEL 30 s daemons (`main._presence_loop`/`win_main`), gated on
 being signed in — not on any window being open (IDI-177); mobile's is the device store's single 60 s
-poll/upsert loop. **Lifecycle:** sign-out DELETEs this device's row (IDI-170); both platforms offer
+poll/upsert loop.
+**Identity survives reinstall (2026-08):** mobile `getDeviceId()` reads/writes `verbal_device_uuid` in the
+**Keychain** (`expo-secure-store`) first and AsyncStorage second, promoting a pre-Keychain AsyncStorage id
+into the Keychain on first read (so existing installs keep their row). AsyncStorage is wiped by an app
+reinstall or simulator reset, so before this every reinstall minted a fresh identity and orphaned its row:
+one test account reached **16 rows — 14 of them identically-named dead "iPhone"s**, none seen in 3 weeks,
+which buried the single device that was actually online. Those ids also record two dead schemes —
+`iphone_dcf871` (name + *cloud* `userId.slice(-6)`) and `iphone_gyoco7` etc. (same shape but seeded from an
+ephemeral **local** user id, hence one row per install) — plus `Shabbar-Windows` (desktop's old
+hostname-as-id).
+**There is NO TTL and nothing auto-prunes** — deliberate: a phone that is merely switched off is offline,
+not gone, and must not vanish from the list on its own. Cleanup is manual via
+`shared_dashboard.remove_offline_devices()` ("Remove all offline", user-confirmed, skips THIS device).
+**Lifecycle:** sign-out DELETEs this device's row (IDI-170); both platforms offer
 "Remove from list" for other devices (user_id+device_id-scoped, honestly labeled — removal doesn't revoke
 anything until IDI-29's per-device credentials).
 

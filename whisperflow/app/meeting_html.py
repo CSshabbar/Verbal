@@ -9,8 +9,14 @@ VerbalOverlay / VerbalAutolearn.
 
 One page, three modes (swapped by JS, state preserved):
   'permissions' — PermissionChecklistModal (31h)
-  'live'        — InMeetingTwoPanel (31c)          [Phase 2+]
-  'summary'     — PostMeetingSummary (31e)         [Phase 5]
+  'premeeting'  — PreMeetingModal (31b)
+  'live'        — InMeetingTwoPanel (31c)
+
+Plus two bar states: the live HUD, and the post-meeting HANDOFF pill (MER-46).
+This surface is LIVE-MEETING-ONLY — the PostMeetingSummary (31e) and the full
+notes page moved to the dashboard's Meetings screen (flume_dashboard_html.py,
+`#mtgDetail`), because one panel could only hold one mode: a past meeting fought
+the live screen and was yanked back to the bar whenever the panel lost focus.
 
 Token gaps from the handoff are resolved here as CSS variables, sourced from
 theme.py where a token exists and from the handoff's inline annotations
@@ -89,11 +95,9 @@ body{background:transparent;font-family:'Geist',-apple-system,system-ui,sans-ser
    the bar pill and the full window content */
 body.lay-expanded{background:var(--bg)}
 body.lay-bar{background:transparent}
-body.lay-bar #permWrap,body.lay-bar #preWrap,body.lay-bar #liveRoot,body.lay-bar #summaryRoot,body.lay-bar #notesRoot{display:none !important}
+body.lay-bar #permWrap,body.lay-bar #preWrap,body.lay-bar #liveRoot{display:none !important}
 /* native traffic lights overlay the top-left in expanded mode (hidden titlebar) */
 body.lay-expanded .mhead{padding-left:86px}
-body.lay-expanded .sumHead{padding-left:86px}
-body.lay-expanded .ntHead{padding-left:86px}
 /* ── the ambient meeting bar ── */
 #barRoot{display:none;position:fixed;inset:0;padding:5px 6px}
 body.lay-bar #barRoot{display:flex}
@@ -126,6 +130,24 @@ body.lay-bar #barRoot{display:flex}
 .barBtn.stop{background:var(--rec);color:#fff;box-shadow:0 2px 10px rgba(224,80,73,.4)}
 .barBtn.stop:hover{background:#e8635c}
 .barPill{overflow:hidden}
+/* ── post-meeting handoff pill (MER-46) ──
+   The panel never renders a summary any more: when a meeting stops it collapses
+   to this bar ("Finishing notes…" → "Notes ready") and hands the meeting to the
+   dashboard's detail view on click. */
+#barHandoff{display:none}
+body.handoff #barPill{display:none}
+body.handoff #barHandoff{display:flex}
+/* The meeting is OVER: never leave the live screen (with its Stop/Pause header)
+   on screen during the morph down to the pill. */
+body.handoff #liveRoot{display:none !important}
+.hoDot{width:8px;height:8px;border-radius:50%;flex:none;background:var(--acc);
+  animation:mpulse 1.4s ease-in-out infinite}
+body.ho-ready .hoDot{background:var(--ok);animation:none;box-shadow:0 0 10px rgba(74,209,90,.6)}
+body.ho-failed .hoDot{background:var(--rec);animation:none}
+.hoLabel{font:400 11.5px 'Geist';color:var(--mut);flex:1;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap}
+.hoGo{font:600 11px 'JetBrains Mono';letter-spacing:.06em;color:var(--acc-txt);flex:none}
+body:not(.ho-ready):not(.ho-failed) .hoGo{color:var(--faint)}
 button{font-family:inherit;border:0;background:none;color:inherit;cursor:pointer}
 input,textarea{font-family:inherit;color:inherit;background:none;border:0;outline:none}
 .mono{font-family:'JetBrains Mono',monospace}
@@ -227,7 +249,6 @@ input,textarea{font-family:inherit;color:inherit;background:none;border:0;outlin
 /* ── InMeetingTwoPanel (31c) ── */
 #liveRoot{display:none;flex-direction:column;height:100vh}
 #liveRoot.show{display:flex}
-#summaryRoot{display:none}
 @keyframes screenIn{from{opacity:0}to{opacity:1}}
 ::selection{background:var(--acc-soft)}
 ::-webkit-scrollbar{width:9px;height:9px}
@@ -371,197 +392,13 @@ input,textarea{font-family:inherit;color:inherit;background:none;border:0;outlin
   font:600 11.5px 'Geist';box-shadow:0 8px 24px rgba(200,90,62,.4)}
 #markToast.show{display:inline-flex}
 #markToast .mono{font:600 10.5px 'JetBrains Mono'}
-/* export buttons (summary header) */
-.btnS.mini{padding:6px 10px;font:600 10.5px 'JetBrains Mono';letter-spacing:.08em}
-/* ── PostMeetingSummary (31e) ── */
-/* The WHOLE page scrolls (header sticky) — inner-only scroll made small
-   windows unusable; expanded sections grow naturally into the page. */
-#summaryRoot{display:none;flex-direction:column;height:100vh;padding:0 28px 24px;gap:12px;
-  overflow-y:auto}
-#summaryRoot.show{display:flex}
-.sumHead{display:flex;align-items:flex-start;gap:10px;flex:none;position:sticky;top:0;z-index:6;
-  background:var(--bg);padding:18px 0 10px;border-bottom:1px solid var(--bd)}
-.sumHeadL{flex:1;min-width:0}
-.sumTitle{font:600 22px 'Geist';letter-spacing:-.02em;color:var(--tx);background:none;
-  border:0;outline:none;width:100%}
-.sumMeta{display:flex;align-items:center;gap:8px;margin-top:5px;flex-wrap:wrap}
-.sumMeta .mono{font:500 10.5px 'JetBrains Mono';color:var(--dim)}
-.card{background:var(--raised);border:1px solid var(--bd);border-radius:12px;
-  padding:12px 16px}
-.sumCards{flex:none;display:flex;flex-direction:column;gap:10px}
-.sumBody{font:400 12.5px/1.6 'Geist';color:var(--tx);margin-top:6px}
-.sumErr{font:400 12px 'Geist';color:var(--rec-soft);margin-top:6px}
-.twoCol{display:flex;gap:10px;align-items:stretch}
-.twoCol .colL{flex:1.4;min-width:0}
-.twoCol .colR{flex:1;display:flex;flex-direction:column;gap:8px;min-width:0}
-.legend{display:flex;gap:14px;margin-left:auto}
-.legend span{display:inline-flex;align-items:center;gap:6px;font:400 10.5px 'Geist';color:var(--dim)}
-.legend i{width:6px;height:6px;border-radius:50%}
-.legend .lu i{background:var(--sp-terra)} .legend .la i{background:var(--faint)}
-.cardHead{display:flex;align-items:center;gap:8px}
-/* HybridNotesRenderer v2 (33i): dot rows, AI as an indented ↳ line, underline tabs */
-.hnTabs{display:flex;gap:12px;margin-left:12px}
-.hnTab{font:500 11px 'Geist';color:var(--dim);padding:0 1px 3px;border-bottom:1.5px solid transparent;
-  transition:color .14s ease}
-.hnTab:hover{color:var(--tx2)}
-.hnTab.on{color:var(--tx);border-bottom-color:var(--acc)}
-.hnRow{position:relative;border-left:0;padding:0 40px 0 14px;margin-top:11px}
-.hnRegen{position:absolute;right:8px;top:1px;width:24px;height:22px;display:inline-flex;
-  align-items:center;justify-content:center;color:var(--faint);opacity:0;transition:opacity .12s;
-  border-radius:5px}
-.hnRow:hover .hnRegen{opacity:1}
-.hnRegen:hover{color:var(--acc-txt)}
-.hnRegen.busy{opacity:1;color:var(--acc);animation:spin 1s linear infinite}
-@keyframes spin{to{transform:rotate(360deg)}}
-.hnRow::before{content:'';position:absolute;left:0;top:6px;width:6px;height:6px;border-radius:50%;
-  background:var(--sp-terra)}
-.hnRow.noDot::before{display:none}
-.hnUser{font:400 12.5px/1.55 'Geist';color:var(--tx)}
-.hnAI{font:400 11.5px/1.55 'Geist';font-style:normal;color:var(--dim);margin-top:2px}
-.hnAI::before{content:'\\21B3  ';color:var(--faint)}
-#hnList.v-yours .hnAI{display:none}
-#hnList.v-ai .hnUser{opacity:.5}
-#hnList.v-ai .hnAI{color:var(--tx)}
-.dList{margin-top:8px;display:flex;flex-direction:column;gap:6px}
-.dItem{display:flex;gap:8px;font:400 12px/1.5 'Geist';color:var(--tx)}
-.dItem::before{content:'\\2014';color:var(--faint)}
-/* ActionItemRow v2 (33c): rows inside ONE card, faint dividers, real checkbox */
-.aiRow{display:flex;align-items:center;gap:10px;padding:9px 0;margin-top:0;
-  font:400 12.5px 'Geist';color:var(--tx);border-top:1px solid var(--bd-faint)}
-.aiRow:first-of-type{border-top:0}
-.aiRow.done{opacity:.55}
-.aiRow.done .aiTask{text-decoration:line-through;color:var(--dim)}
-.aiTask{flex:1;min-width:0}
-.aiCb{width:15px;height:15px;border-radius:4px;border:1.4px solid var(--dim);background:none;flex:none;
-  display:inline-flex;align-items:center;justify-content:center;color:transparent;padding:0;
-  transition:all .15s ease}
-.aiCb:hover{border-color:var(--tx2)}
-.aiRow.done .aiCb{background:var(--ok);border-color:var(--ok);color:#0a1f0d}
-/* MarkedMomentCard v2 (33b): rows in the parent card, star + mono ts header */
-.mmRow{padding:11px 0;border-top:1px solid var(--bd-faint)}
-.mmRow:first-of-type{border-top:0}
-.mmHead{display:flex;align-items:center;gap:8px}
-.mmHead .star{color:var(--acc);display:inline-flex}
-.mmTs{font:500 11px 'JetBrains Mono';color:var(--acc-txt);letter-spacing:.06em;
-  font-variant-numeric:tabular-nums;cursor:pointer}
-.mmTs:hover{text-decoration:underline}
-.mmEx{font:400 12.5px/1.6 'Geist';color:var(--tx);margin-top:5px}
-.mmEx b{color:var(--dim);font-weight:400}
-.mmRow{position:relative;padding-right:70px}
-.mmActs{position:absolute;top:9px;right:0;display:flex;gap:2px;opacity:0;transition:opacity .12s}
-.mmRow:hover .mmActs,.mmRow:focus-within .mmActs{opacity:1}
-.mmNote{margin-top:9px;padding-top:9px;border-top:1px solid var(--bd-faint)}
-.mmNote .k{font:500 9.5px 'JetBrains Mono';letter-spacing:.16em;color:var(--sp-ochre);
-  text-transform:uppercase;margin-bottom:3px}
-.mmNote p{font:400 12px/1.55 'Geist';color:var(--tx);margin:0;cursor:text;border-radius:5px}
-.mmNote p:hover{background:var(--subtle-alt)}
-.mmNoteAdd{font:400 11px 'Geist';color:var(--faint);cursor:pointer;margin-top:7px;
-  display:inline-block;opacity:0;transition:opacity .12s}
-.mmRow:hover .mmNoteAdd{opacity:1}
-.mmNoteAdd:hover{color:var(--acc-txt)}
-.mmNoteIn{width:100%;font:400 12px/1.55 'Geist';color:var(--tx);background:var(--raised);
-  border:1px solid var(--acc-bd);border-radius:8px;padding:6px 9px;margin-top:6px;resize:vertical;
-  min-height:38px;caret-color:var(--acc)}
 /* star count numeral (33f) — no badge disc */
 #mStarBtn{position:relative}
 #mStarBtn .stN{position:absolute;top:-3px;right:-5px;font:500 9.5px 'JetBrains Mono';
   color:var(--acc-txt);font-variant-numeric:tabular-nums}
-/* summary header avatars (33d) */
-.avchip{display:inline-flex;align-items:center;gap:7px;font:600 11px 'Geist';color:var(--tx)}
-.av{width:22px;height:22px;border-radius:50%;display:inline-flex;align-items:center;
-  justify-content:center;font:600 9.5px 'Geist';flex:none}
-.av.c0{background:rgba(217,138,114,.16);color:var(--sp-terra)}
-.av.c1{background:rgba(143,167,194,.16);color:var(--sp-slate)}
-.av.c2{background:rgba(169,189,152,.16);color:var(--sp-sage)}
-.av.c3,.av.self{background:rgba(217,179,107,.16);color:var(--sp-ochre)}
-.av.self{box-shadow:0 0 0 1px var(--bg), 0 0 0 2.5px var(--sp-ochre)}
-.av.unknown{background:none;border:1px dashed var(--faint);color:var(--dim)}
-.avchip{position:relative}
-.avFp{position:absolute;left:14px;top:14px;width:9px;height:9px;border-radius:50%;
-  background:var(--acc);border:2px solid var(--bg)}
-.fpBanner{display:flex;align-items:center;gap:9px;margin-top:8px;font:400 11.5px 'Geist';
-  color:var(--tx2)}
-.fpBanner b{color:var(--tx);font-weight:600}
-.fpBanner .zap{color:var(--acc);display:inline-flex}
-.fpBanner .k{margin-left:auto;font:500 9.5px 'JetBrains Mono';letter-spacing:.16em;
-  color:var(--faint)}
-/* transcript row action rail + inline edit (33a) */
-.exUtt{position:relative;padding-right:64px}
-.exUtt .xr{position:absolute;top:1px;right:2px;display:flex;gap:0;opacity:0;transition:opacity .12s}
-.exUtt:hover .xr,.exUtt:focus-within .xr{opacity:1}
-.xr .iconbtn{width:24px;height:22px}
-.edTag{font:500 9px 'JetBrains Mono';letter-spacing:.08em;color:var(--faint);margin-left:6px}
-.txEditIn{width:100%;font:400 11.5px/1.55 'Geist';color:var(--tx);background:var(--raised);
-  border:1px solid var(--acc-bd);border-radius:8px;padding:6px 9px;margin-top:4px;resize:vertical;
-  min-height:44px;caret-color:var(--acc)}
-/* action item edit/delete (33c) */
-.aiRow{padding-right:24px;position:relative}
-.aiDel{position:absolute;right:0;top:50%;transform:translateY(-50%);width:20px;height:20px;
-  display:inline-flex;align-items:center;justify-content:center;color:var(--faint);opacity:0;
-  transition:opacity .12s;border-radius:5px;font:500 12px 'Geist'}
-.aiRow:hover .aiDel,.aiRow:focus-within .aiDel{opacity:1}
-.aiDel:hover{color:var(--rec-soft)}
-.aiTask{cursor:text;border-radius:5px}
-.aiTask:hover{background:var(--subtle-alt)}
-.aiEditIn{flex:1;min-width:0;font:400 12.5px 'Geist';color:var(--tx);background:var(--raised);
-  border:1px solid var(--acc-bd);border-radius:6px;padding:4px 8px;caret-color:var(--acc)}
-.aiDue{font:500 9.5px 'JetBrains Mono';letter-spacing:.05em;color:var(--faint);flex:none}
-.aiDue.near{color:var(--acc-txt)}
-/* dictated-text flash (33h) */
+/* dictated-text flash (33h) — the live scratchpad confirms dictated text landed */
 .spad{transition:background .8s ease}
 .spad.flash{background:var(--acc-softer);transition:none}
-.teasers{display:flex;gap:8px;flex:none}
-.teaser{flex:1;display:flex;align-items:center;gap:8px;background:var(--raised);
-  border:1px solid var(--bd);border-radius:10px;padding:9px 12px;cursor:pointer}
-.teaser .tl{font:400 11px 'Geist';color:var(--tx);flex:1}
-.teaser .eyebrow{margin-left:auto}
-.expandBox{display:none;flex-direction:column;gap:8px}   /* grows into the page scroll */
-.expandBox.show{display:flex}
-.skel{height:11px;border-radius:6px;background:var(--raised2);margin-top:8px;
-  animation:shimmer 1.6s ease-in-out infinite}
-@keyframes shimmer{0%,100%{opacity:.5}50%{opacity:1}}
-.exUtt{cursor:pointer;border-radius:8px;padding:4px 8px}
-.exUtt:hover{background:var(--raised)}
-.exUtt.playing{background:var(--acc-soft)}
-/* ── Meeting Notes page (full-page view, MODE 'notes') ── */
-#notesRoot{display:none;flex-direction:column;height:100vh;overflow-y:auto;padding:0 28px 40px}
-#notesRoot.show{display:flex}
-.ntHead{display:flex;align-items:center;gap:10px;position:sticky;top:0;z-index:6;
-  background:var(--bg);padding:16px 0 10px;border-bottom:1px solid var(--bd);flex:none}
-.ntBack{display:inline-flex;align-items:center;gap:6px;background:none;border:0;
-  color:var(--tx2);font:600 12px 'Geist';cursor:pointer;padding:4px 8px;border-radius:8px}
-.ntBack:hover{color:var(--tx);background:var(--raised)}
-.ntTitle{font:600 15px 'Geist';letter-spacing:-.01em;color:var(--tx);flex:1;min-width:0;
-  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.ntBody{max-width:720px;width:100%;margin:18px auto 0;font:400 13.5px/1.75 'Geist';color:var(--tx)}
-.ntBody p{margin:0 0 14px}
-.ntBody .ctx{font:400 13.5px/1.7 'Geist';color:var(--tx2);border-left:2px solid var(--acc);
-  padding:2px 0 2px 14px;margin:0 0 22px}
-.ntBody h2{font:600 11px 'JetBrains Mono';letter-spacing:.16em;text-transform:uppercase;
-  color:var(--acc-txt);margin:26px 0 10px;padding-top:16px;border-top:1px solid var(--bd-faint)}
-.ntBody h2:first-child{border-top:0;padding-top:0;margin-top:0}
-.ntBody h3{font:600 13.5px 'Geist';color:var(--tx);margin:16px 0 6px}
-.ntBody ul,.ntBody ol{margin:0 0 14px;padding-left:20px;display:flex;flex-direction:column;gap:7px}
-.ntBody li{padding-left:2px}
-.ntBody ul li::marker{color:var(--sp-terra)}
-.ntBody ol li::marker{color:var(--dim);font:500 11px 'JetBrains Mono'}
-.ntBody b,.ntBody strong{font-weight:600;color:var(--tx)}
-.ntBody code{font:500 12px 'JetBrains Mono';background:var(--raised);border-radius:5px;padding:1px 6px}
-.ntTableWrap{overflow-x:auto;margin:6px 0 16px}
-.ntTable{border-collapse:collapse;width:100%;font:400 12.5px 'Geist'}
-.ntTable th{text-align:left;font:600 10px 'JetBrains Mono';letter-spacing:.1em;text-transform:uppercase;
-  color:var(--acc-txt);padding:7px 12px 7px 0;border-bottom:1px solid var(--bd2);white-space:nowrap}
-.ntTable td{padding:7px 12px 7px 0;border-bottom:1px solid var(--bd-faint);color:var(--tx);vertical-align:top}
-.ntTable tr:last-child td{border-bottom:0}
-.ntTask{display:flex;align-items:flex-start;gap:9px;margin:0 0 8px}
-.ntTask .box{width:15px;height:15px;border-radius:4px;border:1.4px solid var(--dim);flex:none;
-  margin-top:3px;display:inline-flex;align-items:center;justify-content:center;color:transparent}
-.ntTask.done .box{background:var(--ok);border-color:var(--ok);color:#0a1f0d}
-.ntTask.done span{text-decoration:line-through;color:var(--dim)}
-.ntSkel{max-width:720px;width:100%;margin:26px auto 0;display:flex;flex-direction:column;gap:12px}
-.ntSkel i{display:block;height:12px;border-radius:6px;background:var(--raised2);
-  animation:shimmer 1.6s ease-in-out infinite}
-.ntErr{max-width:720px;margin:30px auto;color:var(--rec-soft);font:400 13px 'Geist';text-align:center}
 """
 
 
@@ -686,73 +523,9 @@ def _live_screen():
   </div>"""
 
 
-def _summary_screen():
-    """PostMeetingSummary (31e) — shells; content rendered by JS renderSummary()."""
-    return f"""
-  <div id="summaryRoot">
-    <div class="sumHead">
-      <div class="sumHeadL">
-        <span class="eyebrow" id="sumEyebrow">Meeting</span>
-        <input class="sumTitle" id="sumTitle" value="" spellcheck="false"
-               onchange="api('set_meeting_title', this.value)"/>
-        <div class="sumMeta" id="sumMeta"></div>
-      </div>
-      <div class="mact">
-        <button class="btnS mini" id="expTxtBtn" title="Export transcript as .txt" onclick="sumExport('txt')">TXT</button>
-        <button class="btnS mini" id="expMdBtn" title="Export as Markdown" onclick="sumExport('md')">MD</button>
-        <button class="iconbtn" id="sumDelBtn" title="Delete meeting" onclick="sumDelete()">{_svg('trash', 13)}</button>
-        <button class="iconbtn" title="Copy summary to clipboard" onclick="sumShare(this)">{_svg('share', 13)}</button>
-        <button class="iconbtn" title="Regenerate summary" onclick="sumRegen()">{_svg('refresh', 13)}</button>
-      </div>
-    </div>
-    <div class="sumCards">
-      <div class="card" id="sumCard">
-        <div class="cardHead"><span class="eyebrow accd">Summary</span></div>
-        <div id="sumBody"></div>
-      </div>
-      <div class="twoCol">
-        <div class="card colL" id="hnCard">
-          <div class="cardHead"><span class="eyebrow">Notes</span>
-            <span class="hnTabs">
-              <button class="hnTab" data-hnv="yours" onclick="hnView('yours')">Yours</button>
-              <button class="hnTab on" data-hnv="merged" onclick="hnView('merged')">Merged</button>
-              <button class="hnTab" data-hnv="ai" onclick="hnView('ai')">AI</button>
-            </span>
-            <span class="legend"><span class="lu"><i></i>Your notes</span><span class="la"><i></i>AI additions</span></span>
-            <button class="btnS mini" style="margin-left:10px" title="Full AI notes of this meeting" onclick="openNotes()">Open notes &#8599;</button>
-          </div>
-          <div id="hnBody"></div>
-        </div>
-        <div class="colR">
-          <div class="card"><div class="cardHead"><span class="eyebrow accd">Decisions</span></div><div id="decBody"></div></div>
-          <div class="card" style="flex:1"><div class="cardHead"><span class="eyebrow accd">Action items</span></div><div id="aiBody"></div></div>
-        </div>
-      </div>
-      <div class="card expandBox" id="marksBox"></div>
-      <div class="card expandBox" id="txBox"></div>
-    </div>
-    <div class="teasers">
-      <div class="teaser" onclick="toggleBox('marksBox', renderMarksBox)">{_svg('star', 12)}<span class="tl" id="marksTeaseL">Marked moments</span><span class="eyebrow">Expand</span></div>
-      <div class="teaser" onclick="toggleBox('txBox', renderTxBox)">{_svg('search', 12)}<span class="tl" id="txTeaseL">Full transcript</span><span class="eyebrow">Expand</span></div>
-    </div>
-    <audio id="sumAudio"></audio>
-  </div>"""
-
-
 def _bar():
     """The ambient meeting bar (morph target) — click to expand."""
     return f"""
-  <div id="notesRoot">
-    <div class="ntHead">
-      <button class="ntBack" onclick="notesBack()">&#8249; Summary</button>
-      <span class="ntTitle" id="ntTitle">Meeting notes</span>
-      <button class="btnS mini" title="Copy notes as Markdown" onclick="notesCopy(this)">Copy</button>
-      <button class="iconbtn" title="Regenerate notes" onclick="openNotes(true)">{_svg('refresh', 13)}</button>
-    </div>
-    <div class="ntSkel" id="ntSkel" style="display:none"><i style="width:38%"></i><i style="width:92%"></i><i style="width:85%"></i><i style="width:60%"></i><i style="width:88%"></i><i style="width:74%"></i></div>
-    <div class="ntErr" id="ntErr" style="display:none"></div>
-    <div class="ntBody" id="ntBody"></div>
-  </div>
   <div id="markToast"><span id="markToastMsg">★ Marked</span> <span class="mono" id="markToastT"></span></div>
   <div id="barRoot">
     <div class="barPill" id="barPill" onclick="barExpand(event)">
@@ -765,6 +538,14 @@ def _bar():
       <button class="barBtn" id="barPause" title="Pause / resume" onclick="event.stopPropagation();api('pause_meeting')">{_svg('pause', 12)}</button>
       <button class="barBtn stop" title="Stop meeting" onclick="event.stopPropagation();api('stop_meeting')">{_svg('stop', 11)}</button>
     </div>
+    <div class="barPill handoff" id="barHandoff" onclick="handoffOpen(event)">
+      <span class="hoDot" id="hoDot"></span>
+      <span class="barTitle" id="hoTitle">Meeting</span>
+      <span class="hoLabel" id="hoLabel">Finishing notes…</span>
+      <span class="hoGo" id="hoGo">Open &#8594;</span>
+      <button class="barBtn" id="hoDismiss" title="Dismiss"
+              onclick="event.stopPropagation();api('close_meeting_window')">&#10005;</button>
+    </div>
   </div>"""
 
 
@@ -773,8 +554,7 @@ def meeting_html() -> str:
   {_bar()}
   {_permission_modal()}
   {_premeeting_modal()}
-  {_live_screen()}
-  {_summary_screen()}"""
+  {_live_screen()}"""
 
     js = r"""
 <script>
@@ -783,15 +563,35 @@ function api(name){ const a=[].slice.call(arguments,1);
     ? window.pywebview.api[name].apply(null,a) : Promise.resolve({ok:false}); }
 const esc = s => String(s==null?'':s).replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
-let MODE='permissions';           // permissions | premeeting | live | summary
+let MODE='permissions';           // permissions | premeeting | live
+let HANDOFF=null;                 // post-meeting bar state (MER-46): {state,id,title}
 let LAYOUT='expanded';            // bar | expanded (native panel morph)
 let PERMS=null;                   // meeting_permissions() payload
 let TESTING=false;
-let HNVIEW='merged';              // hybrid-notes view: yours | merged | ai (33i)
 document.body && (document.body.className='lay-expanded');
 
 function applyLayout(){
-  document.body.className='lay-'+LAYOUT;
+  // The handoff classes ride along on <body>, so re-assert them on every morph
+  // or the pill would revert to the live layout mid-animation.
+  document.body.className='lay-'+LAYOUT
+    + (HANDOFF ? ' handoff ho-'+(HANDOFF.state==='ready'?'ready':
+        HANDOFF.state==='failed'?'failed':'working') : '');
+}
+function renderHandoff(){
+  applyLayout();
+  if(!HANDOFF) return;
+  const ready=HANDOFF.state==='ready', failed=HANDOFF.state==='failed';
+  document.getElementById('hoTitle').textContent=HANDOFF.title||'Meeting';
+  document.getElementById('hoLabel').textContent = failed
+    ? 'Notes failed — open to retry'
+    : ready ? 'Notes ready' : 'Finishing notes…';
+  document.getElementById('hoGo').textContent = ready||failed ? 'Open →' : 'Open ↗';
+}
+function handoffOpen(ev){
+  // Opening is safe at any stage: a still-processing meeting renders its
+  // skeletons in the dashboard and fills in when the summary lands.
+  if(!HANDOFF || !HANDOFF.id) return;
+  api('open_meeting', HANDOFF.id);
 }
 function barExpand(ev){
   api('expand_meeting_window');
@@ -1184,518 +984,20 @@ document.addEventListener('keydown', function(ev){
   else if((ev.metaKey||ev.ctrlKey) && (ev.key==='k'||ev.key==='K')){ ev.preventDefault(); toggleDictate(); }
 });
 
-// ── PostMeetingSummary (31e) ───────────────────────────────────────────────────
-let ROW=null;                 // the finished meeting row
-let AUDIO_SRC=null, PLAYING_IDX=-1;
-
-function relDate(iso){
-  try{
-    const d=new Date(iso), now=new Date();
-    const days=Math.round((now-d)/86400000);
-    const hm=d.toLocaleTimeString([], {hour:'numeric', minute:'2-digit'});
-    if(days<=0) return 'Today '+hm;
-    if(days===1) return 'Yesterday '+hm;
-    return d.toLocaleDateString([], {month:'short', day:'numeric'})+' '+hm;
-  }catch(e){ return ''; }
-}
-function renderSummary(){
-  document.getElementById('summaryRoot').className = (MODE==='summary') ? 'show' : '';
-  if(MODE!=='summary' || !ROW) return;
-  document.getElementById('sumEyebrow').textContent='Meeting · '+relDate(ROW.started_at);
-  const t=document.getElementById('sumTitle');
-  if(document.activeElement!==t) t.value=ROW.title||'';
-  const spk=ROW.speakers||{};
-  const rec=ROW.recognized||{};
-  document.getElementById('sumMeta').innerHTML=
-    '<span class="mono">'+fmtT(ROW.duration_seconds)+'</span>'+
-    Object.keys(spk).map(function(sid){
-      // 33d avatar variant: initial disc (self ringed) + fingerprint corner dot
-      const nm=spk[sid]||sid, cls=chipClass(sid);
-      const init=esc((nm||'?').trim().charAt(0).toUpperCase()||'?');
-      return '<span class="avchip" title="Double-click to rename" ondblclick="sumRename(\''+esc(sid)+'\', this)">'+
-        '<span class="av '+cls+'">'+init+'</span>'+
-        (rec[sid]?'<span class="avFp" title="Voice recognized"></span>':'')+
-        '<span class="avNm">'+esc(nm)+'</span></span>';
-    }).join('')+
-    Object.keys(rec).map(function(sid){
-      const r=rec[sid]||{};
-      return '<span class="fpBanner" style="flex-basis:100%">'+
-        '<span class="zap"><svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L4 14h6l-1 8 9-12h-6z"/></svg></span>'+
-        'Voice recognized from '+(r.meetings||1)+' previous meeting'+((r.meetings||1)>1?'s':'')+
-        ' — auto-named <b>'+esc(r.name||'')+'</b><span class="k">FINGERPRINT</span></span>';
-    }).join('')+
-    // MER-31: audio was reaped by the retention policy — transcript/summary/
-    // notes are all still intact, only playback is gone. Never an error state.
-    (ROW.audio_expired ? '<span style="flex-basis:100%;font:400 11.5px \'Geist\';color:var(--mut)">'+
-      'Audio expired — notes and transcript kept</span>' : '');
-  const skel='<div class="skel" style="width:88%"></div><div class="skel" style="width:70%"></div>';
-  const proc = ROW.status==='processing';
-  // Summary card
-  const sb=document.getElementById('sumBody');
-  if(proc) sb.innerHTML=skel;
-  else if(ROW.status==='failed')
-    sb.innerHTML='<div class="sumErr">Summary generation failed — the transcript is saved. '+
-      '<button class="btnS" style="margin-left:8px" onclick="sumRegen()">Retry</button></div>';
-  else sb.innerHTML='<div class="sumBody">'+esc(ROW.summary||'No speech was detected in this meeting.')+'</div>';
-  // Hybrid notes (33i — dot rows, ↳ AI additions, Yours/Merged/AI views)
-  const hn=document.getElementById('hnBody');
-  const hybrid=ROW.hybrid_notes||[];
-  if(proc) hn.innerHTML=skel;
-  else if(!hybrid.length){
-    const pad=(ROW.scratchpad||'').split('\n').filter(function(l){return l.trim();});
-    hn.innerHTML = '<div id="hnList" class="v-'+HNVIEW+'">'+(pad.length
-      ? pad.map(function(l){return '<div class="hnRow"><div class="hnUser">'+esc(l)+'</div></div>';}).join('')
-      : (ROW.notes_md
-          ? '<div class="ntBody" style="margin:4px 0 0;font-size:12.5px">'+mdRender(String(ROW.notes_md).split('\n').slice(0,7).join('\n'))+'</div>'+
-            '<button class="btnS mini" style="margin-top:10px" onclick="openNotes()">Read the full notes &#8599;</button>'
-          : '<div class="hnRow noDot"><div class="hnAI" style="margin-top:0">No notes were taken — open the full AI notes instead.</div></div>'+
-            '<button class="btnS mini" style="margin-top:10px" onclick="openNotes()">Generate meeting notes &#8599;</button>'))+'</div>';
-  } else {
-    hn.innerHTML='<div id="hnList" class="v-'+HNVIEW+'">'+hybrid.map(function(h,i){
-      return '<div class="hnRow"><div class="hnUser">'+esc(h.user_line)+'</div>'+
-        (h.ai_addition?'<div class="hnAI" id="hnA'+i+'">'+esc(h.ai_addition)+'</div>':'<div class="hnAI" id="hnA'+i+'" style="display:none"></div>')+
-        '<button class="hnRegen" id="hnR'+i+'" title="Regenerate AI addition" onclick="hnRegen('+i+')">'+
-        '<svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.6-6.3"/><path d="M21 3v6h-6"/></svg></button>'+
-        '</div>';
-    }).join('')+'</div>';
-  }
-  // Decisions
-  const dec=document.getElementById('decBody');
-  const ds=ROW.decisions||[];
-  dec.innerHTML = proc ? skel : (ds.length
-    ? '<div class="dList">'+ds.map(function(d){return '<div class="dItem">'+esc(d)+'</div>';}).join('')+'</div>'
-    : '<div class="hnAI" style="margin-top:8px">No explicit decisions found.</div>');
-  // Action items (33c — checkbox rows in one card, faint dividers)
-  const ai=document.getElementById('aiBody');
-  const items=ROW.action_items||[];
-  ai.innerHTML = proc ? skel : (items.length
-    ? items.map(function(it, i){
-        const sid=it.owner, name=sid&&spk[sid]?spk[sid]:(sid||null);
-        const chip=name?'<span class="schip '+chipClass(sid)+'">'+esc(name)+'</span>'
-                       :'<span class="schip unknown">Unknown</span>';
-        return '<div class="aiRow'+(it.done?' done':'')+'" id="aiR'+i+'">'+
-          '<button class="aiCb" role="checkbox" aria-checked="'+(it.done?'true':'false')+'"'+
-          ' aria-label="'+esc(it.task)+'" onclick="aiToggle('+i+')">'+
-          '<svg viewBox="0 0 24 24" width="9" height="9" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg>'+
-          '</button>'+chip+
-          '<span class="aiTask" id="aiTx'+i+'" title="Click to edit" onclick="aiEdit('+i+')">'+esc(it.task)+'</span>'+
-          (it.edited?'<span class="edTag">edited</span>':'')+
-          '<span class="aiDue'+(it.due?' near':'')+'">'+(it.due?esc(String(it.due).toUpperCase()):'—')+'</span>'+
-          '<button class="aiDel" title="Remove item (AI got it wrong?)" onclick="aiDel('+i+')">✕</button></div>';
-      }).join('')
-    : '<div class="hnAI" style="margin-top:8px">No action items found.</div>');
-  // Teasers
-  document.getElementById('marksTeaseL').textContent=(ROW.marked_moments||[]).length+' marked moments';
-  document.getElementById('txTeaseL').textContent=(ROW.transcript||[]).length+' transcript segments';
-}
-// ── Meeting Notes page (full AI notes, markdown-rendered) ─────────────────────
-function mdRender(md){
-  const lines=String(md||'').replace(/\r/g,'').split('\n');
-  let html='', list=null, first=true;
-  function closeList(){ if(list){ html+='</'+list+'>'; list=null; } }
-  function inline(t){
-    t=esc(t);
-    t=t.replace(/\*\*([^*]+)\*\*/g,'<b>$1</b>');
-    t=t.replace(/`([^`]+)`/g,'<code>$1</code>');
-    return t;
-  }
-  function isTableRow(s){ return /^\|.*\|\s*$/.test(s); }
-  function isDivider(s){ return /^\|?[\s:|-]+\|[\s:|-]*$/.test(s) && s.indexOf('-')>=0; }
-  function cells(s){ return s.replace(/^\||\|$/g,'').split('|').map(function(c){return c.trim();}); }
-  for(let i=0;i<lines.length;i++){
-    const ln=lines[i];
-    const t=ln.trim();
-    if(!t){ closeList(); continue; }
-    let m;
-    // Markdown table: header row, |---| divider, then body rows.
-    if(isTableRow(t) && i+1<lines.length && isDivider(lines[i+1].trim())){
-      closeList();
-      const head=cells(t);
-      html+='<div class="ntTableWrap"><table class="ntTable"><thead><tr>'+
-        head.map(function(c){return '<th>'+inline(c)+'</th>';}).join('')+'</tr></thead><tbody>';
-      i+=2;
-      while(i<lines.length && isTableRow(lines[i].trim())){
-        const row=cells(lines[i].trim());
-        html+='<tr>'+head.map(function(_,ci){return '<td>'+inline(row[ci]||'')+'</td>';}).join('')+'</tr>';
-        i++;
-      }
-      i--;
-      html+='</tbody></table></div>';
-      first=false;
-      continue;
-    }
-    if((m=t.match(/^##\s+(.+)$/))){ closeList(); html+='<h2>'+inline(m[1])+'</h2>'; first=false; }
-    else if((m=t.match(/^###\s+(.+)$/))){ closeList(); html+='<h3>'+inline(m[1])+'</h3>'; }
-    else if((m=t.match(/^- \[( |x|X)\]\s+(.+)$/))){
-      closeList();
-      const done=m[1].toLowerCase()==='x';
-      html+='<div class="ntTask'+(done?' done':'')+'"><span class="box">'+
-        '<svg viewBox="0 0 24 24" width="9" height="9" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg>'+
-        '</span><span>'+inline(m[2])+'</span></div>';
-    }
-    else if((m=t.match(/^[-*]\s+(.+)$/))){
-      if(list!=='ul'){ closeList(); html+='<ul>'; list='ul'; }
-      html+='<li>'+inline(m[1])+'</li>';
-    }
-    else if((m=t.match(/^\d+[.)]\s+(.+)$/))){
-      if(list!=='ol'){ closeList(); html+='<ol>'; list='ol'; }
-      html+='<li>'+inline(m[1])+'</li>';
-    }
-    else {
-      closeList();
-      html+= first ? '<p class="ctx">'+inline(t)+'</p>' : '<p>'+inline(t)+'</p>';
-      first=false;
-    }
-  }
-  closeList();
-  return html;
-}
-let NOTES_BUSY=false;
-function renderNotesPage(){
-  document.getElementById('notesRoot').className = (MODE==='notes') ? 'show' : '';
-}
-function notesBack(){ MODE='summary'; renderNotesPage(); renderSummary(); }
-function openNotes(regen){
-  if(!ROW || NOTES_BUSY) return;
-  MODE='notes';
-  renderPerms(); renderPre(); renderLive(); renderSummary(); renderNotesPage();
-  document.getElementById('ntTitle').textContent=(ROW.title||'Meeting')+' — notes';
-  const body=document.getElementById('ntBody'), skel=document.getElementById('ntSkel'),
-        err=document.getElementById('ntErr');
-  err.style.display='none';
-  if(ROW.notes_md && !regen){
-    body.innerHTML=mdRender(ROW.notes_md); skel.style.display='none';
-    return;
-  }
-  body.innerHTML=''; skel.style.display='flex';
-  NOTES_BUSY=true;
-  api('get_meeting_notes', ROW.id, !!regen).then(function(r){
-    NOTES_BUSY=false;
-    skel.style.display='none';
-    if(MODE!=='notes') return;
-    if(r && r.ok){
-      ROW.notes_md=r.notes_md;
-      body.innerHTML=mdRender(r.notes_md);
-    } else {
-      err.textContent=(r&&r.error)||'Could not generate notes — try again.';
-      err.style.display='block';
-    }
-  });
-}
-function notesCopy(btn){
-  if(ROW && ROW.notes_md){ api('copy_text', ROW.notes_md); flashOk(btn); }
-}
-function hnView(v){
-  HNVIEW=v;
-  const tabs=document.querySelectorAll('.hnTab');
-  for(let i=0;i<tabs.length;i++) tabs[i].className='hnTab'+(tabs[i].dataset.hnv===v?' on':'');
-  const l=document.getElementById('hnList'); if(l) l.className='v-'+v;
-}
-function aiToggle(i){
-  const items=ROW&&ROW.action_items||[];
-  if(!items[i]) return;
-  items[i].done=!items[i].done;
-  const r=document.getElementById('aiR'+i);
-  if(r){
-    r.classList.toggle('done', !!items[i].done);
-    const cb=r.querySelector('.aiCb');
-    if(cb) cb.setAttribute('aria-checked', items[i].done?'true':'false');
-  }
-  api('set_action_item_done', ROW.id, i, !!items[i].done);
-}
-function hnRegen(i){
-  const notes=ROW&&ROW.hybrid_notes||[];
-  if(!notes[i]) return;
-  const btn=document.getElementById('hnR'+i);
-  if(btn){ if(btn.classList.contains('busy')) return; btn.classList.add('busy'); }
-  api('regenerate_hybrid', ROW.id, i).then(function(r){
-    if(btn) btn.classList.remove('busy');
-    if(r && r.ok){
-      notes[i].ai_addition=r.ai_addition||'';
-      renderSummary();
-    } else {
-      const a=document.getElementById('hnA'+i);
-      if(a){ a.style.display=''; a.textContent='Could not regenerate — try again.'; }
-    }
-  });
-}
-function aiEdit(i){
-  const items=ROW&&ROW.action_items||[];
-  if(!items[i]) return;
-  const span=document.getElementById('aiTx'+i);
-  if(!span || span.dataset.editing) return;
-  span.dataset.editing='1';
-  const old=items[i].task||'';
-  const inp=document.createElement('input');
-  inp.className='aiEditIn'; inp.value=old;
-  span.replaceWith(inp); inp.focus(); inp.select();
-  inp.addEventListener('keydown', function(ev){
-    ev.stopPropagation();
-    if(ev.key==='Enter'){ commit(inp.value.trim()); }
-    if(ev.key==='Escape'){ commit(null); }
-  });
-  inp.addEventListener('blur', function(){ commit(inp.value.trim()); });
-  function commit(v){
-    if(v!=null && v!=='' && v!==old){
-      items[i].task=v; items[i].edited=true;
-      api('set_action_item_text', ROW.id, i, v);
-    }
-    renderSummary();
-  }
-}
-function aiDel(i){
-  const items=ROW&&ROW.action_items||[];
-  if(i<0||i>=items.length) return;
-  items.splice(i,1);
-  renderSummary();
-  api('delete_action_item', ROW.id, i);
-}
-function toggleBox(id, renderFn){
-  const el=document.getElementById(id);
-  const show=!el.classList.contains('show');
-  el.className='card expandBox'+(show?' show':'');
-  if(show){
-    renderFn();
-    setTimeout(function(){ try{ el.scrollIntoView({behavior:'smooth', block:'start'}); }catch(e){} }, 40);
-  }
-}
-function renderMarksBox(){
-  const el=document.getElementById('marksBox');
-  const ms=ROW&&ROW.marked_moments||[];
-  el.innerHTML='<div class="cardHead"><span class="eyebrow accd">Marked moments</span></div>'+
-    (ms.length?ms.map(function(m,i){
-      return '<div class="mmRow"><div class="mmHead">'+
-        '<span class="star"><svg viewBox="0 0 24 24" width="11" height="11" fill="currentColor" stroke="none"><path d="m12 3 2.7 5.6 6.3.9-4.5 4.3 1 6.2-5.5-3-5.5 3 1-6.2L3 9.5l6.3-.9z"/></svg></span>'+
-        '<span class="mmTs" onclick="playAt('+m.t+',-1)" title="Play from here">'+fmtT(m.t)+'</span></div>'+
-        '<div class="mmEx">'+esc(m.label||'Marked moment')+'</div>'+
-        (m.note
-          ?'<div class="mmNote"><div class="k">Your note</div><p id="mmN'+i+'" title="Click to edit" onclick="mmNote('+i+')">'+esc(m.note)+'</p></div>'
-          :'<span class="mmNoteAdd" id="mmN'+i+'" onclick="mmNote('+i+')">+ Add note</span>')+
-        '<div class="mmActs">'+
-          '<button class="iconbtn" style="width:24px;height:22px" title="Jump to transcript" onclick="mmJump('+m.t+')">'+
-            '<svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4h6v6"/><path d="M20 4 11 13"/><path d="M18 13v6a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V8a1 1 0 0 1 1-1h6"/></svg></button>'+
-          '<button class="iconbtn" style="width:24px;height:22px" title="Delete mark" onclick="mmDel('+i+')">✕</button>'+
-        '</div></div>';
-    }).join(''):'<div class="hnAI">No marks.</div>');
-}
-function mmJump(t){
-  const box=document.getElementById('txBox');
-  if(!box.classList.contains('show')) toggleBox('txBox', renderTxBox);
-  const tx=ROW&&ROW.transcript||[];
-  let best=0;
-  for(let i=0;i<tx.length;i++){ if((tx[i].t0||0)<=t) best=i; }
-  setTimeout(function(){
-    const el=document.getElementById('exU'+best);
-    if(el){ el.scrollIntoView({behavior:'smooth', block:'center'}); markPlaying(best);
-      setTimeout(function(){ markPlaying(-1); }, 2200); }
-  }, 120);
-}
-function mmNote(i){
-  const ms=ROW&&ROW.marked_moments||[];
-  if(!ms[i]) return;
-  const el=document.getElementById('mmN'+i);
-  if(!el || el.dataset.editing) return;
-  el.dataset.editing='1';
-  const old=ms[i].note||'';
-  const ta=document.createElement('textarea');
-  ta.className='mmNoteIn'; ta.value=old;
-  ta.placeholder='Why does this moment matter?';
-  el.replaceWith(ta); ta.focus();
-  ta.addEventListener('keydown', function(ev){
-    ev.stopPropagation();
-    if(ev.key==='Enter' && !ev.shiftKey){ ev.preventDefault(); commit(ta.value); }
-    if(ev.key==='Escape'){ commit(null); }
-  });
-  ta.addEventListener('blur', function(){ commit(ta.value); });
-  function commit(v){
-    if(v!=null && v.trim()!==old){
-      if(v.trim()) ms[i].note=v.trim(); else delete ms[i].note;
-      api('set_mark_note', ROW.id, i, v.trim());
-    }
-    renderMarksBox();
-  }
-}
-function mmDel(i){
-  const ms=ROW&&ROW.marked_moments||[];
-  if(i<0||i>=ms.length) return;
-  ms.splice(i,1);
-  renderMarksBox();
-  document.getElementById('marksTeaseL').textContent=ms.length+' marked moments';
-  api('delete_marked_moment', ROW.id, i);
-}
-function renderTxBox(){
-  const el=document.getElementById('txBox');
-  const tx=ROW&&ROW.transcript||[], spk=ROW&&ROW.speakers||{};
-  el.innerHTML='<div class="cardHead"><span class="eyebrow">Full transcript</span></div>'+
-    (tx.length?tx.map(function(u,i){
-      return '<div class="exUtt" id="exU'+i+'" onclick="playAt('+u.t0+','+i+')">'+
-        '<span class="schip '+chipClass(u.speaker)+'" title="Double-click to rename" '+
-          'ondblclick="event.stopPropagation();sumRename(\''+esc(u.speaker)+'\', this)">'+esc(spk[u.speaker]||u.speaker)+'</span> '+
-        '<span class="mono" style="color:var(--dim);font-size:10px">'+fmtT(u.t0)+'</span> '+
-        '<span id="exTx'+i+'" style="font:400 11.5px Geist;color:var(--tx2)">'+esc(u.text)+'</span>'+
-        (u.edited?'<span class="edTag">edited</span>':'')+
-        '<span class="xr">'+
-          '<button class="iconbtn" title="Copy line" onclick="event.stopPropagation();txCopy('+i+',this)">'+
-            '<svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a1 1 0 0 1 1-1h10"/></svg></button>'+
-          '<button class="iconbtn" title="Edit text" onclick="event.stopPropagation();txEdit('+i+')">'+
-            '<svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3 21 7l-13 13H4v-4z"/><path d="m14 6 4 4"/></svg></button>'+
-        '</span></div>';
-    }).join(''):'<div class="hnAI">Empty transcript.</div>');
-}
-function txCopy(i, btn){
-  const tx=ROW&&ROW.transcript||[];
-  if(!tx[i]) return;
-  api('copy_text', tx[i].text||'');
-  flashOk(btn);
-}
-function txEdit(i){
-  const tx=ROW&&ROW.transcript||[];
-  if(!tx[i]) return;
-  const span=document.getElementById('exTx'+i);
-  if(!span || span.dataset.editing) return;
-  span.dataset.editing='1';
-  const old=tx[i].text||'';
-  const ta=document.createElement('textarea');
-  ta.className='txEditIn'; ta.value=old;
-  span.replaceWith(ta); ta.focus();
-  ta.addEventListener('click', function(ev){ ev.stopPropagation(); });
-  ta.addEventListener('keydown', function(ev){
-    ev.stopPropagation();
-    if(ev.key==='Enter' && (ev.metaKey||ev.ctrlKey)){ commit(ta.value.trim()); }
-    if(ev.key==='Escape'){ commit(null); }
-  });
-  ta.addEventListener('blur', function(){ commit(ta.value.trim()); });
-  function commit(v){
-    if(v!=null && v!=='' && v!==old){
-      tx[i].text=v; tx[i].edited=true;
-      api('set_transcript_text', ROW.id, i, v);
-    }
-    renderTxBox();
-  }
-}
-function playAt(secs, idx){
-  // MER-31: expired audio is a clean no-op, not an error — the banner in
-  // renderSummary() already told the user why; clicking a transcript line
-  // just does nothing rather than surfacing a fetch failure.
-  if(ROW && ROW.audio_expired) return;
-  const a=document.getElementById('sumAudio');
-  function go(){ try{ a.currentTime=Math.max(0,secs); a.play(); markPlaying(idx); }catch(e){} }
-  if(AUDIO_SRC){ go(); return; }
-  api('get_meeting_audio', ROW.id).then(function(r){
-    if(r && r.ok && r.src){ AUDIO_SRC=r.src; a.src=r.src; a.addEventListener('canplay', go, {once:true}); }
-  });
-}
-function markPlaying(idx){
-  if(PLAYING_IDX>=0){ const p=document.getElementById('exU'+PLAYING_IDX); if(p) p.className='exUtt'; }
-  PLAYING_IDX=idx;
-  if(idx>=0){ const el=document.getElementById('exU'+idx); if(el) el.className='exUtt playing'; }
-}
-function flashOk(btn){
-  // clipboard/actions must LOOK like they worked (33f feedback lesson)
-  if(!btn || btn.dataset.flash) return;
-  btn.dataset.flash='1';
-  const orig=btn.innerHTML;
-  btn.innerHTML='<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg>';
-  btn.style.color='var(--ok)';
-  setTimeout(function(){ btn.innerHTML=orig; btn.style.color=''; delete btn.dataset.flash; }, 1400);
-}
-function sumShare(btn){
-  if(!ROW || ROW.status==='processing') return;
-  const parts=['# '+(ROW.title||'Meeting'), '', ROW.summary||''];
-  if((ROW.decisions||[]).length) parts.push('', 'Decisions:', ROW.decisions.map(function(d){return '- '+d;}).join('\n'));
-  if((ROW.action_items||[]).length) parts.push('', 'Action items:',
-    ROW.action_items.map(function(it){
-      const n=it.owner&&ROW.speakers&&ROW.speakers[it.owner]?ROW.speakers[it.owner]+': ':'';
-      return '- '+n+it.task;
-    }).join('\n'));
-  api('copy_text', parts.join('\n'));
-  flashOk(btn);
-}
-function sumExport(fmt){
-  if(!ROW) return;
-  const btn=document.getElementById(fmt==='txt'?'expTxtBtn':'expMdBtn');
-  const orig=btn.textContent;
-  btn.textContent='…';
-  api('export_meeting', ROW.id, fmt).then(function(r){
-    if(r && r.ok){ btn.textContent='Saved ✓'; }
-    else if(r && r.cancelled){ btn.textContent=orig; return; }
-    else { btn.textContent='Failed'; }
-    setTimeout(function(){ btn.textContent=orig; }, 1800);
-  });
-}
-let DEL_ARMED=null;
-function sumDelete(){
-  if(!ROW) return;
-  const btn=document.getElementById('sumDelBtn');
-  if(DEL_ARMED!==ROW.id){
-    // first click arms; second click within 2.5s deletes
-    DEL_ARMED=ROW.id;
-    btn.innerHTML='<span style="font:600 10.5px Geist;color:var(--rec-soft);padding:0 4px">Delete?</span>';
-    btn.style.width='auto'; btn.style.background='var(--rec-subtle)';
-    setTimeout(function(){
-      if(DEL_ARMED===ROW.id){ DEL_ARMED=null; resetDelBtn(btn); }
-    }, 2500);
-    return;
-  }
-  DEL_ARMED=null;
-  btn.innerHTML='<span style="font:600 10.5px Geist;color:var(--rec-soft);padding:0 4px">…</span>';
-  api('delete_meeting', ROW.id).then(function(r){
-    if(r && r.ok){ api('close_meeting_window'); }
-    else { resetDelBtn(btn); }
-  });
-}
-function resetDelBtn(btn){
-  btn.innerHTML='<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16"/><path d="M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/><path d="M6 7l1 13a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-13"/><path d="M10 11v6M14 11v6"/></svg>';
-  btn.style.width=''; btn.style.background='';
-}
-function sumRename(sid, el){
-  if(!ROW || !ROW.speakers) return;
-  if(el.querySelector('input')) return;
-  const old=ROW.speakers[sid]||sid;
-  const target=el.querySelector('.avNm')||el;
-  const inp=document.createElement('input');
-  inp.value=old;
-  inp.style.cssText='width:90px;font:600 11px Geist;color:var(--tx);background:none;'+
-    'border:0;border-bottom:1.5px solid var(--acc);outline:none;caret-color:var(--acc)';
-  target.replaceWith(inp); inp.focus(); inp.select();
-  inp.addEventListener('click', function(ev){ ev.stopPropagation(); });
-  inp.addEventListener('keydown', function(ev){
-    ev.stopPropagation();
-    if(ev.key==='Enter') commit(inp.value.trim());
-    if(ev.key==='Escape') commit(null);
-  });
-  inp.addEventListener('blur', function(){ commit(inp.value.trim()); });
-  function commit(v){
-    if(v && v!==old){
-      ROW.speakers[sid]=v;
-      api('set_speaker_name', ROW.id, sid, v).then(function(r){
-        if(r && r.ok && r.learned) toast('⚡ Voice print saved for', v);
-      });
-    }
-    renderSummary();
-    const tb=document.getElementById('txBox');
-    if(tb && tb.classList.contains('show')) renderTxBox();
-  }
-}
-function sumRegen(){
-  if(!ROW || ROW.status==='processing') return;   // no double-fire while running
-  ROW.status='processing'; renderSummary();
-  api('retry_meeting_summary', ROW.id);
-}
 
 // ── Python → JS events ─────────────────────────────────────────────────────────
 window.VerbalMeeting = function(event, payload){
   try{
-    if(event==='layout'){ LAYOUT=payload.layout||'expanded'; applyLayout(); renderBar(); }
+    if(event==='layout'){ LAYOUT=payload.layout||'expanded'; applyLayout(); renderBar(); renderHandoff(); }
     else if(event==='permissions'){ PERMS=payload; renderPerms(); }
-    else if(event==='mode'){ MODE=payload.mode||'permissions'; renderPerms(); renderPre(); renderLive(); renderSummary(); renderNotesPage(); }
-    else if(event==='openMeeting'){ ROW=payload; renderSummary(); }
-    else if(event==='meeting'){
-      // Unsolicited broadcasts (a session finishing in the background) must
-      // not replace the meeting the user is currently reading.
-      if(MODE==='summary' && ROW && payload && payload.id && ROW.id && payload.id!==ROW.id) return;
-      ROW=payload; renderSummary();
+    else if(event==='mode'){
+      MODE=payload.mode||'permissions';
+      HANDOFF=null;      // the panel is being reused for something new
+      renderPerms(); renderPre(); renderLive(); renderHandoff();
     }
+    // MER-46: the meeting is over — become the handoff bar. The summary itself
+    // is the dashboard's job now, so there is no 'summary' mode to switch to.
+    else if(event==='handoff'){ HANDOFF=payload||null; renderHandoff(); }
     else if(event==='testLevel'){ permLevel(payload.level||0); }
     else if(event==='state'){
       if(payload.id && payload.id!==LIVE_ID){
@@ -1708,8 +1010,9 @@ window.VerbalMeeting = function(event, payload){
       // 'stopping'/'processing' are post-capture (summary shows skeletons) — a
       // summary retry re-emits 'processing' and used to hijack the view into a
       // fake "recording" screen.
-      if(['recording','paused','preparing'].indexOf(payload.state)>=0 && MODE!=='live'){
-        MODE='live'; renderPerms(); renderPre();
+      if(['recording','paused','preparing'].indexOf(payload.state)>=0){
+        if(HANDOFF){ HANDOFF=null; renderHandoff(); }   // a NEW meeting owns the bar
+        if(MODE!=='live'){ MODE='live'; renderPerms(); renderPre(); }
       }
       renderLive(); renderBar();
     }
@@ -1762,8 +1065,8 @@ api('meeting_page_ready');   // handshake: flush events emitted before load
     # ~138) and now also carries the canonical transform/filter — the two rules
     # touch disjoint properties, so they compose rather than conflict.
     pressed = pressed_css([
-        ".btnP", ".btnS", ".iconbtn", ".barBtn", ".toggle", ".aiCb", ".hnTab",
-        ".markpill", ".mmTs", ".aiDel", ".hnRegen", ".dictChip", ".ntBack",
+        ".btnP", ".btnS", ".iconbtn", ".barBtn", ".toggle",
+        ".markpill", ".dictChip",
     ])
     return ("<!doctype html><html><head><meta charset='utf-8'><style>"
             + web_font_css() + _CSS + pressed + "</style></head><body>"

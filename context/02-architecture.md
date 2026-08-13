@@ -59,11 +59,24 @@ separate users purely by `user_id` (the Supabase auth id after sign-in). Details
   | Surface | Controller | HTML generator | Container |
   |---|---|---|---|
   | Dashboard | `flume_web_dashboard.py::FlumeWebDashboard` | `flume_dashboard_html.py::flume_html()` | `NSWindow` |
-  | Menubar popover | `flume_popover.py::FlumePopover` | `flume_popover_html.py::popover_html()` | `NSPopover` |
+  | ~~Menubar popover~~ | **RETIRED (IDI-183)** — the macOS menubar is a native `NSMenu`, see below. `flume_popover_html.py::popover_html()` survives as the **Windows** tray popover's HTML (`win_popover.py`) and for its `_mark_data_uri()` helper, which `flume_dashboard_html.py` imports | | |
   | Recording overlay | `overlay.py::OverlayBar` | `overlay_html.py::overlay_html()` | non-activating `NSPanel` |
   | Auto-learn widget | `autolearn_widget.py::AutoLearnWidget` | inline HTML | non-activating `NSPanel` |
-  | Meeting surface | `meeting_window.py::MeetingWindow` | `meeting_html.py::meeting_html()` | ONE morphing `NSPanel`: ambient **bar** (borderless, non-activating, top-center, 500×54) ⇄ **expanded** window (titled+hidden-titlebar, 880×620, floating level, Stage-Manager opt-out `.auxiliary`+`.canJoinAllApplications`, never activates the app — `orderFrontRegardless` + key-only-if-needed, webview subclass accepts first mouse) via `NSAnimationContext` frame animation + styleMask flip; auto-collapses to the bar on focus loss while recording; close-while-recording collapses instead |
+  | Meeting surface | `meeting_window.py::MeetingWindow` | `meeting_html.py::meeting_html()` | ONE morphing `NSPanel`: ambient **bar** (borderless, non-activating, top-center, 500×54) ⇄ **expanded** window (titled+hidden-titlebar, 880×620, floating level, Stage-Manager opt-out `.auxiliary`+`.canJoinAllApplications`, never activates the app — `orderFrontRegardless` + key-only-if-needed, webview subclass accepts first mouse) via `NSAnimationContext` frame animation + styleMask flip; auto-collapses to the bar on focus loss while recording; close-while-recording collapses instead. **Live-meeting-only** since MER-46 — the post-meeting summary is a dashboard view and the panel collapses to a "Notes ready →" handoff pill |
 
+- **The macOS menubar is the one surface that is NOT a webview** (IDI-183). `menubar_menu.py` builds a real
+  `NSMenu` on top of rumps' items: `build(app)` returns the list `main.py` assigns to `self.menu` and
+  assigns back the item references the callbacks mutate (`record_btn`, `meeting_btn`, `mode_hold`/
+  `mode_toggle`, `model_items`, `autodetect_item`, `sync_item`, `signin_item`). Two pieces make it work:
+  - `MenuController` is the `NSMenuDelegate`. `menuNeedsUpdate:` **rebuilds on open** — titles that carry
+    state ("Recording Mode: Hold", "Whisper Model: base", "Canvas (3)"), the checkmarks, and the Recent /
+    Canvas submenus (built with raw `NSMenu`/`NSMenuItem` + `representedObject`, not rumps items, so
+    duplicate transcript titles can't collide on a dict key). Nothing pushes state INTO the menu, which is
+    why the six `popover._refresh()` call sites in `main.py` are gone.
+  - `_HeaderView` is the single custom-drawn row: mark, status, hotkey hint, mic waveform, meeting timer,
+    words-today. Everything else is a stock item, so appearance/accent/contrast/transparency behaviour is
+    inherited rather than reimplemented. Its animation timer is registered in **both**
+    `NSDefaultRunLoopMode` and `NSEventTrackingRunLoopMode` (see `05-conventions.md`).
 - **JS↔Python bridge** (defined once in `flume_web_dashboard.py`, reused by every surface):
   - `_SHIM` (injected at document start) fakes `window.pywebview.api` as a Proxy — and since IDI-167
     dispatches a synthetic `pywebviewready` at `DOMContentLoaded`, so the dashboard bootstrap is
@@ -74,15 +87,20 @@ separate users purely by `user_id` (the Supabase auth id after sign-in). Details
     (runs `getattr(api, method)(*args)` on a daemon thread), then `_resolve(mid, result)` settles
     the JS promise via `window.__flumeResolve`.
   - **Python→JS events:** `_emit(event, payload)` → `window.VerbalNative(event, payload)`
-    (`recordingState`, `result`, `state`, `selectTab`, `devices`, `canvasRemote`, `notesUpdated`).
+    (`recordingState`, `result`, `state`, `selectTab`, `devices`, `canvasRemote`, `notesUpdated`,
+    `meetingsUpdated`, `openMeeting`). Both dashboards **queue** these until the page's
+    `dashboard_page_ready` handshake and flush on it (MER-46) — an event pushed into a window that was
+    built a moment earlier used to evaporate.
     Overlay uses `window.VerbalOverlay(mode,data)`; the auto-learn widget uses
     `window.VerbalAutolearn(data)` / `VerbalAutolearnHide()`. The meeting window uses
-    `window.VerbalMeeting(event, payload)` (`mode`, `state`, `utterance`, `elapsed`, `moment`,
-    `speakers`, `meeting`, `permissions`, `testLevel`). (The separate meeting HUD —
+    `window.VerbalMeeting(event, payload)` (`mode`, `layout`, `state`, `utterance`, `elapsed`, `moment`,
+    `speakers`, `handoff`, `permissions`, `testLevel`) — `meeting` is **retired** with the panel's summary
+    mode (MER-46). (The separate meeting HUD —
     `meeting_hud*.py`, `VerbalMeetingHud` — was dead code and was DELETED in IDI-179.)
   - **Shared backend for the JS = `shared_dashboard.py::DashboardApi`** — one class serving both the
-    macOS WKWebView controllers and the Windows pywebview dashboard. Popover/overlay/widget
-    controllers **duck-type** the dashboard interface so `main.py`/`DashboardApi` treat them uniformly.
+    macOS WKWebView controllers and the Windows pywebview dashboard. Overlay/widget controllers (and the
+    Windows popover) **duck-type** the dashboard interface so `main.py`/`DashboardApi` treat them
+    uniformly. The macOS menubar menu does not participate — it reads app state directly on open.
   - **Shared *frontend* too (Windows parity):** `flume_dashboard_html.py::flume_html()` is **dual-target**
     — it waits for `pywebviewready` and calls `window.pywebview.api.*` (the shared `DashboardApi`) with
     native events via `window.VerbalNative(event,payload)`. On macOS a `_SHIM` (`flume_web_dashboard.py`)
@@ -121,9 +139,12 @@ bounded `config['meetings']` (`MEETINGS_CAP`). The HUD appears when the meeting 
   `transcribe_with_status`), `ai_cleanup.process_text`, `recordings`, `auth` — imported directly from
   `app.*`, not reimplemented. This is *why* Windows parity work is additive (new shell code) rather than
   a port of the whole app.
-- **`win_overlay.py::WinOverlay`** (378 lines) — the Windows floating recording pill, parallel to macOS
-  `overlay.py::OverlayBar`; renders the shared `overlay_html()` (see the JS↔Python bridge note above —
-  same dual-target `flume_html()`/`overlay_html()`/etc. pattern serves both OSes).
+- **`win_overlay.py::WinOverlay`** (~705 lines) — the Windows floating recording pill, parallel to macOS
+  `overlay.py::OverlayBar` and matching its public interface (`setup`/`show`/`update_status`/
+  `show_briefly`/`hide`/`.visible`). Unlike the dashboard it does **not** render `overlay_html()`: it
+  draws the pill with PIL into a tkinter window keyed by `-transparentcolor` (real per-pixel
+  transparency, which WebView2's DirectComposition surface doesn't survive). So the two pills share the
+  *data* (including `recorder.level` for the waveform) but not the markup.
 - **Dashboard:** `win_dashboard.py` + `shared_dashboard.py::DashboardApi` (the same backend class macOS
   uses) render the identical `flume_dashboard_html.py::flume_html()` via real pywebview (WebView2) instead
   of WKWebView + `_SHIM` — see "Also shared across the two desktops" below.

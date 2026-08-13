@@ -1,4 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as SecureStore from 'expo-secure-store';
 import { supabase } from './supabase';   // no cycle: supabase.ts imports only createClient + AsyncStorage
 
 const KEYS = {
@@ -175,14 +176,37 @@ export async function getDeviceId(): Promise<string> {
   // Stable per-install UUID (IDI-177). The old id derived from
   // deviceName + userId.slice(-6), so RENAMING the device or switching
   // accounts orphaned its `devices` row and (post-IDI-173) changed the canvas
-  // origin id. Minted once; account- and name-independent. The one-time id
-  // change on upgrade just leaves one stale `devices` row, removable via the
-  // new remove-device UI — no correctness issue for own-write filtering.
+  // origin id. Minted once; account- and name-independent.
+  //
+  // Stored in the KEYCHAIN first, AsyncStorage second. AsyncStorage is wiped by
+  // an app reinstall (and by a simulator reset), so a reinstall minted a fresh
+  // identity and orphaned the old `devices` row EVERY time — that is how one
+  // test account reached 14 dead "iPhone" rows, all named the same, none seen in
+  // three weeks. The iOS Keychain / Android keystore survives reinstall, so the
+  // install now keeps its identity across one.
+  try {
+    const secure = await SecureStore.getItemAsync(KEYS.DEVICE_UUID);
+    if (secure) {
+      // Mirror back so the AsyncStorage path stays warm (and readable by any
+      // sync code that reads it directly). Fire-and-forget: never block on it.
+      AsyncStorage.setItem(KEYS.DEVICE_UUID, secure).catch(() => {});
+      return secure;
+    }
+  } catch {
+    // SecureStore unavailable (web, or keychain locked) — fall through to
+    // AsyncStorage rather than minting a duplicate identity.
+  }
   try {
     const existing = await AsyncStorage.getItem(KEYS.DEVICE_UUID);
-    if (existing) return existing;
+    if (existing) {
+      // Promote a pre-Keychain id so it survives the NEXT reinstall. Existing
+      // installs therefore keep the row they already have — no id churn.
+      SecureStore.setItemAsync(KEYS.DEVICE_UUID, existing).catch(() => {});
+      return existing;
+    }
     const minted = `dev_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
     await AsyncStorage.setItem(KEYS.DEVICE_UUID, minted);
+    SecureStore.setItemAsync(KEYS.DEVICE_UUID, minted).catch(() => {});
     return minted;
   } catch {
     // Storage unavailable — fall back to the legacy derived id (stable enough

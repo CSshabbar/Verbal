@@ -122,6 +122,12 @@ def build_prompt(config):
 
 _BIAS_LABELS = ("glossary", "vocabulary", "files")
 _ANY_LABEL_RE = re.compile(r"\b(" + "|".join(_BIAS_LABELS) + r")\b\s*:", re.IGNORECASE)
+# Headings WE invented, which therefore can't be something the user said: a bare
+# "Glossary" chunk is ours whatever punctuation follows it (see strip_prompt_echo's
+# `owned` rule). "Files" is deliberately NOT here — "Files, I need to check them"
+# is a sentence someone really dictates, and that guard is why the comma form was
+# left alone in the first place.
+_OWNED_LABELS = ("glossary", "vocabulary")
 # Chunk on commas/semicolons/newlines and on SENTENCE periods (a period followed
 # by whitespace) so "M.T." and "main.py" survive as single chunks.
 _CHUNK_RE = re.compile(r"(\s*[,;]\s*|\s*\.\s+|\s*\n+\s*)")
@@ -143,10 +149,12 @@ def prompt_labels(prompt):
 
 
 def _label_re(labels):
-    """Matcher for a leading label; group(1) marks the ':' that makes it OURS."""
+    """Matcher for a leading label; group(1) is the label WORD (which decides
+    whether it is one of ours per _OWNED_LABELS) and group(2) marks the ':' that
+    makes it ours regardless."""
     if not labels:
         return None
-    return re.compile(r"^\s*(?:" + "|".join(sorted(labels)) + r")\b\s*(:)?\s*", re.IGNORECASE)
+    return re.compile(r"^\s*(" + "|".join(sorted(labels)) + r")\b\s*(:)?\s*", re.IGNORECASE)
 
 
 def prompt_terms(prompt):
@@ -167,9 +175,12 @@ def strip_prompt_echo(text, prompt):
     Only words we actually SENT as labels count as labels (see prompt_labels).
     Deletes every run of chunks that is the glossary talking back to us:
       - a run introduced by a bias LABEL ('Glossary:', 'Files:') that is either
-        followed by terms we sent, or STANDS ALONE as its own fragment — the
-        model often drops the list and echoes just the heading ('Glossary. So,
-        the thing is…'), which is not something dictation produces; and
+        followed by terms we sent, or STANDS ALONE — as its own fragment
+        ('Glossary. So, the thing is…') or, for a heading we invented
+        (_OWNED_LABELS), on ANY punctuation, which is what catches the dominant
+        real-world form 'Glossary, <real speech>'. The cost of that last rule is
+        that a sentence genuinely opening with the word "glossary" loses it on a
+        run where a glossary was sent; the benefit is that the leak stops; and
       - a bare comma-list of TWO OR MORE consecutive chunks that are each exactly
         a term we sent — real speech is not a list of one's own jargon.
     A lone dictionary term is never dropped: that is just the user saying a word
@@ -200,13 +211,20 @@ def strip_prompt_echo(text, prompt):
             # the fragment — is ours. One that runs on inside its clause
             # ('Files, I need to…') is the user talking.
             ends_fragment = k == n - 1 or "." in seps[k] or "\n" in seps[k]
+            # ...and a bare heading we INVENTED is ours whatever follows it. This
+            # is the common real-world echo: Whisper emits 'Glossary, <speech>'
+            # far more often than 'Glossary. <speech>', and the comma form used to
+            # survive because the separator rules above treat a comma as "the
+            # clause keeps going, so this is speech".
+            owned = bool(m) and m.group(1).lower() in _OWNED_LABELS
             info.append({"label": bool(m), "term": norm in terms, "empty": not norm,
-                         "alone": bool(m) and not norm and (bool(m.group(1)) or ends_fragment)})
+                         "alone": bool(m) and not norm
+                                  and (bool(m.group(2)) or ends_fragment or owned)})
             # A label punctuated like a label ('Glossary:') is ours, never
             # speech — peel the prefix off even if the chunk survives. Without
             # the colon it may well be a word the user said, so the chunk is
             # left intact and only the run rules below can remove it.
-            if m and m.group(1):
+            if m and m.group(2):
                 chunks[k] = c[m.end():]
 
         drop = [False] * n

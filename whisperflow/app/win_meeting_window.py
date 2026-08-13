@@ -152,7 +152,7 @@ class WinMeetingWindow:
             if self._window is None:
                 logger.warning("meeting window: build failed, cannot show")
                 return
-            if mode in ("premeeting", "permissions", "summary"):
+            if mode in ("premeeting", "permissions"):
                 self._layout = "expanded"
             self._position_and_size()
             self._window.show()
@@ -199,8 +199,18 @@ class WinMeetingWindow:
 
     def set_mode(self, mode):
         self.emit("mode", {"mode": mode})
-        if mode in ("premeeting", "permissions", "summary"):
+        if mode in ("premeeting", "permissions"):
             self.set_layout("expanded")
+
+    def set_handoff(self, state, row):
+        """Post-meeting handoff (MER-46) — see MeetingWindow.set_handoff."""
+        try:
+            self.emit("handoff", {"state": state,
+                                  "id": (row or {}).get("id"),
+                                  "title": (row or {}).get("title")})
+            self.set_layout("bar")
+        except Exception as e:
+            logger.debug("meeting handoff failed: %s", e)
 
     # ── JS emit (with pending queue) ────────────────────────────────────
     def _eval(self, js):

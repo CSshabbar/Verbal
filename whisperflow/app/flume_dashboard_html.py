@@ -25,6 +25,10 @@ _PRESSED_SELECTORS = [
     ".mrActs button", ".link", ".chkbox", ".deadbar .dbbtn", ".deadside .dsbtn",
     ".devrm",
     ".sniptable th.th-trig",
+    # meeting detail (MER-46)
+    "#mtgDetail .btnS", "#mtgDetail .iconbtn", "#mtgDetail .aiCb", "#mtgDetail .hnTab",
+    "#mtgDetail .hnRegen", "#mtgDetail .aiDel", "#mtgDetail .mmTs", "#mtgDetail .teaser",
+    "#mtgDetail .mtgBack", "#mtgNotes .btnS", "#mtgNotes .iconbtn", "#mtgNotes .mtgBack",
 ]
 
 # Line-icon SVGs (1.6 stroke), matching the Flume design.
@@ -561,6 +565,9 @@ body{background:var(--bg);font-family:'Geist',-apple-system,system-ui,sans-serif
 #mtgDetail .schip.c3::before,#mtgDetail .schip.self::before{background:var(--sp-ochre)}
 #mtgDetail .schip.unknown{color:var(--tx2)}
 #mtgDetail .schip.unknown::before{background:var(--faint)}
+#mtgDetail .mact{display:flex;gap:7px;align-items:center;flex:none}
+#mtgNotes .ntTitle{font:600 15px 'Geist';letter-spacing:-.01em;color:var(--tx);flex:1;min-width:0;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 /* ── PostMeetingSummary (31e) ── */
 /* The WHOLE page scrolls (header sticky) — inner-only scroll made small
    windows unusable; expanded sections grow naturally into the page. */
@@ -1007,7 +1014,7 @@ function meetingLauncherCard(){
           <button class="btn ghost" style="flex:none" onclick="show('settings')">Settings</button>
         </div></div>
     </div>
-    ${recent?`<div class="sechead"><h2>Recent meetings</h2><span class="link" onclick="show('meetings')">See all →</span></div><div class="rows">${recent}</div>`:''}`;
+    ${recent?`<div class="sechead"><h2>Recent meetings</h2><span class="link" onclick="navTo('meetings')">See all →</span></div><div class="rows">${recent}</div>`:''}`;
 }
 function renderHome(){
   if(!STATE) return;
@@ -1264,6 +1271,10 @@ function meetGroup(m){
   }catch(e){ return 'Earlier'; }
 }
 function renderMeetings(){
+  // The Meetings screen is a two-level route: the list, or ONE meeting's detail
+  // (which itself has a full-notes sub-page). MER-46 — this is where reading a
+  // meeting happens now; the panel keeps only the live meeting.
+  if(MVIEW==='detail' && MROW) return MSUBNOTES ? renderMeetNotes() : renderMeetDetail();
   const all=MEETS.meetings||[];
   const total=all.reduce((a,m)=>a+(m.duration_seconds||0),0);
   const activeBar = MEETS.active_id ? `
@@ -1384,6 +1395,658 @@ function deleteMeeting(id, title, btn){
     if(r && r.busy) return;
     if(r && r.ok){ MEETS.meetings=(MEETS.meetings||[]).filter(m=>m.id!==id); renderActive(); }
     else { toast((r&&r.error)||'Could not delete the meeting.', true); }
+  });
+}
+// ── Meeting detail (31e) — ported from the meeting panel (MER-46) ─────────────
+// The panel is live-meeting-only now, so reading a meeting happens HERE, in the
+// window that already holds the list, the search box and Ask-your-meetings. One
+// panel could only ever hold one mode, which is why a past meeting used to fight
+// the live screen and got yanked back to the ambient bar on every focus change.
+let MVIEW='list';          // Meetings screen: 'list' | 'detail'
+let MROW=null;             // the meeting being read
+let MSUBNOTES=false;       // detail sub-page: the full AI notes
+let HNVIEW='merged';       // hybrid notes view: yours | merged | ai (33i)
+let MAUDIO_SRC=null, MPLAYING=-1, MDEL_ARMED=null, MNOTES_BUSY=false;
+const CHIP_CLASS={self:'self'};
+function chipClass(sid){
+  if(CHIP_CLASS[sid]) return CHIP_CLASS[sid];
+  const n=parseInt(String(sid).replace(/[^0-9]/g,''),10)||1;
+  return 'c'+((n-1)%4);
+}
+// Hours-aware. NOT fmtT(): that one belongs to the history player and is m:ss
+// only, which would print a 75-minute meeting as "75:00".
+function fmtMT(secs){
+  secs=Math.max(0,Math.floor(secs||0));
+  const h=Math.floor(secs/3600), m=Math.floor((secs%3600)/60), s=secs%60;
+  const mm=(h? String(m).padStart(2,'0') : String(m)), ss=String(s).padStart(2,'0');
+  return h? (h+':'+mm+':'+ss) : (mm+':'+ss);
+}
+function relDate(iso){
+  try{
+    const d=new Date(iso), now=new Date();
+    const days=Math.round((now-d)/86400000);
+    const hm=d.toLocaleTimeString([], {hour:'numeric', minute:'2-digit'});
+    if(days<=0) return 'Today '+hm;
+    if(days===1) return 'Yesterday '+hm;
+    return d.toLocaleDateString([], {month:'short', day:'numeric'})+' '+hm;
+  }catch(e){ return ''; }
+}
+// Entry point for the `openMeeting` native event (Python side: open_meeting).
+function openMeetingDetail(row){
+  if(!row || !row.id) return;
+  MROW=row; MVIEW='detail'; MSUBNOTES=false;
+  MAUDIO_SRC=null; MPLAYING=-1; MDEL_ARMED=null;
+  if(ACTIVE!=='meetings') show('meetings');   // show() renders the screen itself
+  else renderMeetings();
+}
+function meetBack(){
+  MVIEW='list'; MROW=null; MSUBNOTES=false;
+  const a=document.getElementById('sumAudio');
+  if(a){ try{ a.pause(); }catch(e){} }
+  renderMeetings();
+  loadMeets();      // pick up edits made in the detail (title, pins, deletes)
+}
+function mtgTitle(v){
+  if(!MROW) return;
+  const t=(v||'').trim();
+  if(!t || t===MROW.title) return;
+  MROW.title=t;
+  (MEETS.meetings||[]).forEach(m=>{ if(m.id===MROW.id) m.title=t; });
+  api('set_meeting_title_by_id', MROW.id, t).then(r=>{
+    if(r && r.ok===false) toast((r.error)||'Could not rename the meeting.', true);
+  });
+}
+// The shell: header + card frames. Content goes in via fillMeetDetail() so a
+// re-render (an edited action item, a renamed speaker) never rebuilds the DOM
+// under an expanded transcript or a focused input.
+function renderMeetDetail(){
+  const box=document.getElementById('meetingsMain'); if(!box) return;
+  box.innerHTML = `
+    <div id="mtgDetail" class="show">
+      <div class="sumHead">
+        <div class="sumHeadL">
+          <button class="mtgBack" onclick="meetBack()">&#8249; All meetings</button>
+          <span class="eyebrow" id="sumEyebrow">Meeting</span>
+          <input class="sumTitle" id="sumTitle" value="" spellcheck="false"
+                 onchange="mtgTitle(this.value)"/>
+          <div class="sumMeta" id="sumMeta"></div>
+        </div>
+        <div class="mact">
+          <button class="btnS mini" id="expTxtBtn" title="Export transcript as .txt" onclick="sumExport('txt')">TXT</button>
+          <button class="btnS mini" id="expMdBtn" title="Export as Markdown" onclick="sumExport('md')">MD</button>
+          <button class="iconbtn" id="sumDelBtn" title="Delete meeting" onclick="sumDelete()">${SVG.trash}</button>
+          <button class="iconbtn" title="Copy summary to clipboard" onclick="sumShare(this)">${SVG.copy}</button>
+          <button class="iconbtn" title="Regenerate summary" onclick="sumRegen()">${SVG_REFRESH}</button>
+        </div>
+      </div>
+      <div class="sumCards">
+        <div class="card" id="sumCard">
+          <div class="cardHead"><span class="eyebrow accd">Summary</span></div>
+          <div id="sumBody"></div>
+        </div>
+        <div class="twoCol">
+          <div class="card colL" id="hnCard">
+            <div class="cardHead"><span class="eyebrow">Notes</span>
+              <span class="hnTabs">
+                <button class="hnTab" data-hnv="yours" onclick="hnView('yours')">Yours</button>
+                <button class="hnTab on" data-hnv="merged" onclick="hnView('merged')">Merged</button>
+                <button class="hnTab" data-hnv="ai" onclick="hnView('ai')">AI</button>
+              </span>
+              <span class="legend"><span class="lu"><i></i>Your notes</span><span class="la"><i></i>AI additions</span></span>
+              <button class="btnS mini" style="margin-left:10px" title="Full AI notes of this meeting" onclick="openNotes()">Open notes &#8599;</button>
+            </div>
+            <div id="hnBody"></div>
+          </div>
+          <div class="colR">
+            <div class="card"><div class="cardHead"><span class="eyebrow accd">Decisions</span></div><div id="decBody"></div></div>
+            <div class="card" style="flex:1"><div class="cardHead"><span class="eyebrow accd">Action items</span></div><div id="aiBody"></div></div>
+          </div>
+        </div>
+        <div class="card expandBox" id="marksBox"></div>
+        <div class="card expandBox" id="txBox"></div>
+      </div>
+      <div class="teasers">
+        <div class="teaser" onclick="toggleBox('marksBox', renderMarksBox)">${SVG.bolt}<span class="tl" id="marksTeaseL">Marked moments</span><span class="eyebrow">Expand</span></div>
+        <div class="teaser" onclick="toggleBox('txBox', renderTxBox)">${SVG.search}<span class="tl" id="txTeaseL">Full transcript</span><span class="eyebrow">Expand</span></div>
+      </div>
+      <audio id="sumAudio"></audio>
+    </div>`;
+  fillMeetDetail();
+}
+function fillMeetDetail(){
+  const ROW=MROW;
+  if(MVIEW!=='detail' || MSUBNOTES || !ROW) return;
+  if(!document.getElementById('sumBody')) return;
+  document.getElementById('sumEyebrow').textContent='Meeting · '+relDate(ROW.started_at);
+  const t=document.getElementById('sumTitle');
+  if(document.activeElement!==t) t.value=ROW.title||'';
+  const spk=ROW.speakers||{};
+  const rec=ROW.recognized||{};
+  document.getElementById('sumMeta').innerHTML=
+    '<span class="mono">'+fmtMT(ROW.duration_seconds)+'</span>'+
+    Object.keys(spk).map(function(sid){
+      // 33d avatar variant: initial disc (self ringed) + fingerprint corner dot
+      const nm=spk[sid]||sid, cls=chipClass(sid);
+      const init=esc((nm||'?').trim().charAt(0).toUpperCase()||'?');
+      return '<span class="avchip" title="Double-click to rename" ondblclick="sumRename(\''+esc(sid)+'\', this)">'+
+        '<span class="av '+cls+'">'+init+'</span>'+
+        (rec[sid]?'<span class="avFp" title="Voice recognized"></span>':'')+
+        '<span class="avNm">'+esc(nm)+'</span></span>';
+    }).join('')+
+    Object.keys(rec).map(function(sid){
+      const r=rec[sid]||{};
+      return '<span class="fpBanner" style="flex-basis:100%">'+
+        '<span class="zap"><svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L4 14h6l-1 8 9-12h-6z"/></svg></span>'+
+        'Voice recognized from '+(r.meetings||1)+' previous meeting'+((r.meetings||1)>1?'s':'')+
+        ' — auto-named <b>'+esc(r.name||'')+'</b><span class="k">FINGERPRINT</span></span>';
+    }).join('')+
+    // MER-31: audio was reaped by the retention policy — transcript/summary/
+    // notes are all still intact, only playback is gone. Never an error state.
+    (ROW.audio_expired ? '<span style="flex-basis:100%;font:400 11.5px \'Geist\';color:var(--mut)">'+
+      'Audio expired — notes and transcript kept</span>' : '');
+  const skel='<div class="skel" style="width:88%"></div><div class="skel" style="width:70%"></div>';
+  const proc = ROW.status==='processing';
+  // Summary card
+  const sb=document.getElementById('sumBody');
+  if(proc) sb.innerHTML=skel;
+  else if(ROW.status==='failed')
+    sb.innerHTML='<div class="sumErr">Summary generation failed — the transcript is saved. '+
+      '<button class="btnS" style="margin-left:8px" onclick="sumRegen()">Retry</button></div>';
+  else sb.innerHTML='<div class="sumBody">'+esc(ROW.summary||'No speech was detected in this meeting.')+'</div>';
+  // Hybrid notes (33i — dot rows, ↳ AI additions, Yours/Merged/AI views)
+  const hn=document.getElementById('hnBody');
+  const hybrid=ROW.hybrid_notes||[];
+  if(proc) hn.innerHTML=skel;
+  else if(!hybrid.length){
+    const pad=(ROW.scratchpad||'').split('\n').filter(function(l){return l.trim();});
+    hn.innerHTML = '<div id="hnList" class="v-'+HNVIEW+'">'+(pad.length
+      ? pad.map(function(l){return '<div class="hnRow"><div class="hnUser">'+esc(l)+'</div></div>';}).join('')
+      : (ROW.notes_md
+          ? '<div class="ntBody" style="margin:4px 0 0;font-size:12.5px">'+mdRender(String(ROW.notes_md).split('\n').slice(0,7).join('\n'))+'</div>'+
+            '<button class="btnS mini" style="margin-top:10px" onclick="openNotes()">Read the full notes &#8599;</button>'
+          : '<div class="hnRow noDot"><div class="hnAI" style="margin-top:0">No notes were taken — open the full AI notes instead.</div></div>'+
+            '<button class="btnS mini" style="margin-top:10px" onclick="openNotes()">Generate meeting notes &#8599;</button>'))+'</div>';
+  } else {
+    hn.innerHTML='<div id="hnList" class="v-'+HNVIEW+'">'+hybrid.map(function(h,i){
+      return '<div class="hnRow"><div class="hnUser">'+esc(h.user_line)+'</div>'+
+        (h.ai_addition?'<div class="hnAI" id="hnA'+i+'">'+esc(h.ai_addition)+'</div>':'<div class="hnAI" id="hnA'+i+'" style="display:none"></div>')+
+        '<button class="hnRegen" id="hnR'+i+'" title="Regenerate AI addition" onclick="hnRegen('+i+')">'+
+        '<svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.6-6.3"/><path d="M21 3v6h-6"/></svg></button>'+
+        '</div>';
+    }).join('')+'</div>';
+  }
+  // Decisions
+  const dec=document.getElementById('decBody');
+  const ds=ROW.decisions||[];
+  dec.innerHTML = proc ? skel : (ds.length
+    ? '<div class="dList">'+ds.map(function(d){return '<div class="dItem">'+esc(d)+'</div>';}).join('')+'</div>'
+    : '<div class="hnAI" style="margin-top:8px">No explicit decisions found.</div>');
+  // Action items (33c — checkbox rows in one card, faint dividers)
+  const ai=document.getElementById('aiBody');
+  const items=ROW.action_items||[];
+  ai.innerHTML = proc ? skel : (items.length
+    ? items.map(function(it, i){
+        const sid=it.owner, name=sid&&spk[sid]?spk[sid]:(sid||null);
+        const chip=name?'<span class="schip '+chipClass(sid)+'">'+esc(name)+'</span>'
+                       :'<span class="schip unknown">Unknown</span>';
+        return '<div class="aiRow'+(it.done?' done':'')+'" id="aiR'+i+'">'+
+          '<button class="aiCb" role="checkbox" aria-checked="'+(it.done?'true':'false')+'"'+
+          ' aria-label="'+esc(it.task)+'" onclick="aiToggle('+i+')">'+
+          '<svg viewBox="0 0 24 24" width="9" height="9" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg>'+
+          '</button>'+chip+
+          '<span class="aiTask" id="aiTx'+i+'" title="Click to edit" onclick="aiEdit('+i+')">'+esc(it.task)+'</span>'+
+          (it.edited?'<span class="edTag">edited</span>':'')+
+          '<span class="aiDue'+(it.due?' near':'')+'">'+(it.due?esc(String(it.due).toUpperCase()):'—')+'</span>'+
+          '<button class="aiDel" title="Remove item (AI got it wrong?)" onclick="aiDel('+i+')">✕</button></div>';
+      }).join('')
+    : '<div class="hnAI" style="margin-top:8px">No action items found.</div>');
+  // Teasers
+  document.getElementById('marksTeaseL').textContent=(ROW.marked_moments||[]).length+' marked moments';
+  document.getElementById('txTeaseL').textContent=(ROW.transcript||[]).length+' transcript segments';
+}
+// ── the full AI notes sub-page (markdown-rendered) ────────────────────────────
+function mdRender(md){
+  const lines=String(md||'').replace(/\r/g,'').split('\n');
+  let html='', list=null, first=true;
+  function closeList(){ if(list){ html+='</'+list+'>'; list=null; } }
+  function inline(t){
+    t=esc(t);
+    t=t.replace(/\*\*([^*]+)\*\*/g,'<b>$1</b>');
+    t=t.replace(/`([^`]+)`/g,'<code>$1</code>');
+    return t;
+  }
+  function isTableRow(s){ return /^\|.*\|\s*$/.test(s); }
+  function isDivider(s){ return /^\|?[\s:|-]+\|[\s:|-]*$/.test(s) && s.indexOf('-')>=0; }
+  function cells(s){ return s.replace(/^\||\|$/g,'').split('|').map(function(c){return c.trim();}); }
+  for(let i=0;i<lines.length;i++){
+    const ln=lines[i];
+    const t=ln.trim();
+    if(!t){ closeList(); continue; }
+    let m;
+    // Markdown table: header row, |---| divider, then body rows.
+    if(isTableRow(t) && i+1<lines.length && isDivider(lines[i+1].trim())){
+      closeList();
+      const head=cells(t);
+      html+='<div class="ntTableWrap"><table class="ntTable"><thead><tr>'+
+        head.map(function(c){return '<th>'+inline(c)+'</th>';}).join('')+'</tr></thead><tbody>';
+      i+=2;
+      while(i<lines.length && isTableRow(lines[i].trim())){
+        const row=cells(lines[i].trim());
+        html+='<tr>'+head.map(function(_,ci){return '<td>'+inline(row[ci]||'')+'</td>';}).join('')+'</tr>';
+        i++;
+      }
+      i--;
+      html+='</tbody></table></div>';
+      first=false;
+      continue;
+    }
+    if((m=t.match(/^##\s+(.+)$/))){ closeList(); html+='<h2>'+inline(m[1])+'</h2>'; first=false; }
+    else if((m=t.match(/^###\s+(.+)$/))){ closeList(); html+='<h3>'+inline(m[1])+'</h3>'; }
+    else if((m=t.match(/^- \[( |x|X)\]\s+(.+)$/))){
+      closeList();
+      const done=m[1].toLowerCase()==='x';
+      html+='<div class="ntTask'+(done?' done':'')+'"><span class="box">'+
+        '<svg viewBox="0 0 24 24" width="9" height="9" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg>'+
+        '</span><span>'+inline(m[2])+'</span></div>';
+    }
+    else if((m=t.match(/^[-*]\s+(.+)$/))){
+      if(list!=='ul'){ closeList(); html+='<ul>'; list='ul'; }
+      html+='<li>'+inline(m[1])+'</li>';
+    }
+    else if((m=t.match(/^\d+[.)]\s+(.+)$/))){
+      if(list!=='ol'){ closeList(); html+='<ol>'; list='ol'; }
+      html+='<li>'+inline(m[1])+'</li>';
+    }
+    else {
+      closeList();
+      html+= first ? '<p class="ctx">'+inline(t)+'</p>' : '<p>'+inline(t)+'</p>';
+      first=false;
+    }
+  }
+  closeList();
+  return html;
+}
+function renderMeetNotes(){
+  const box=document.getElementById('meetingsMain'); if(!box || !MROW) return;
+  box.innerHTML = `
+    <div id="mtgDetail" class="show">
+      <div id="mtgNotes" class="show">
+        <div class="ntHead">
+          <button class="mtgBack" onclick="notesBack()">&#8249; Summary</button>
+          <span class="ntTitle" id="ntTitle">${esc((MROW.title||'Meeting')+' — notes')}</span>
+          <button class="btnS mini" title="Copy notes as Markdown" onclick="notesCopy(this)">Copy</button>
+          <button class="iconbtn" title="Regenerate notes" onclick="openNotes(true)">${SVG_REFRESH}</button>
+        </div>
+        <div class="ntSkel" id="ntSkel" style="display:none"><i style="width:38%"></i><i style="width:92%"></i><i style="width:85%"></i><i style="width:60%"></i><i style="width:88%"></i><i style="width:74%"></i></div>
+        <div class="ntErr" id="ntErr" style="display:none"></div>
+        <div class="ntBody" id="ntBody"></div>
+      </div>
+    </div>`;
+}
+function notesBack(){ MSUBNOTES=false; renderMeetings(); }
+function openNotes(regen){
+  if(!MROW || MNOTES_BUSY) return;
+  const ROW=MROW;
+  MSUBNOTES=true;
+  renderMeetNotes();
+  const body=document.getElementById('ntBody'), skel=document.getElementById('ntSkel'),
+        err=document.getElementById('ntErr');
+  if(!body) return;
+  err.style.display='none';
+  if(ROW.notes_md && !regen){
+    body.innerHTML=mdRender(ROW.notes_md); skel.style.display='none';
+    return;
+  }
+  body.innerHTML=''; skel.style.display='flex';
+  MNOTES_BUSY=true;
+  api('get_meeting_notes', ROW.id, !!regen).then(function(r){
+    MNOTES_BUSY=false;
+    const sk=document.getElementById('ntSkel');
+    if(sk) sk.style.display='none';
+    if(!MSUBNOTES || MROW!==ROW) return;
+    const b=document.getElementById('ntBody'), e=document.getElementById('ntErr');
+    if(!b) return;
+    if(r && r.ok){
+      ROW.notes_md=r.notes_md;
+      b.innerHTML=mdRender(r.notes_md);
+    } else {
+      e.textContent=(r&&r.error)||'Could not generate notes — try again.';
+      e.style.display='block';
+    }
+  });
+}
+function notesCopy(btn){
+  if(MROW && MROW.notes_md){ api('copy_text', MROW.notes_md); flashOk(btn); }
+}
+function hnView(v){
+  HNVIEW=v;
+  const tabs=document.querySelectorAll('#mtgDetail .hnTab');
+  for(let i=0;i<tabs.length;i++) tabs[i].className='hnTab'+(tabs[i].dataset.hnv===v?' on':'');
+  const l=document.getElementById('hnList'); if(l) l.className='v-'+v;
+}
+function aiToggle(i){
+  const items=MROW&&MROW.action_items||[];
+  if(!items[i]) return;
+  items[i].done=!items[i].done;
+  const r=document.getElementById('aiR'+i);
+  if(r){
+    r.classList.toggle('done', !!items[i].done);
+    const cb=r.querySelector('.aiCb');
+    if(cb) cb.setAttribute('aria-checked', items[i].done?'true':'false');
+  }
+  api('set_action_item_done', MROW.id, i, !!items[i].done);
+}
+function hnRegen(i){
+  const notes=MROW&&MROW.hybrid_notes||[];
+  if(!notes[i]) return;
+  const btn=document.getElementById('hnR'+i);
+  if(btn){ if(btn.classList.contains('busy')) return; btn.classList.add('busy'); }
+  api('regenerate_hybrid', MROW.id, i).then(function(r){
+    const b=document.getElementById('hnR'+i);
+    if(b) b.classList.remove('busy');
+    if(r && r.ok){
+      notes[i].ai_addition=r.ai_addition||'';
+      fillMeetDetail();
+    } else {
+      const a=document.getElementById('hnA'+i);
+      if(a){ a.style.display=''; a.textContent='Could not regenerate — try again.'; }
+    }
+  });
+}
+function aiEdit(i){
+  const items=MROW&&MROW.action_items||[];
+  if(!items[i]) return;
+  const span=document.getElementById('aiTx'+i);
+  if(!span || span.dataset.editing) return;
+  span.dataset.editing='1';
+  const old=items[i].task||'';
+  const inp=document.createElement('input');
+  inp.className='aiEditIn'; inp.value=old;
+  span.replaceWith(inp); inp.focus(); inp.select();
+  inp.addEventListener('keydown', function(ev){
+    ev.stopPropagation();
+    if(ev.key==='Enter'){ commit(inp.value.trim()); }
+    if(ev.key==='Escape'){ commit(null); }
+  });
+  inp.addEventListener('blur', function(){ commit(inp.value.trim()); });
+  function commit(v){
+    if(v!=null && v!=='' && v!==old){
+      items[i].task=v; items[i].edited=true;
+      api('set_action_item_text', MROW.id, i, v);
+    }
+    fillMeetDetail();
+  }
+}
+function aiDel(i){
+  const items=MROW&&MROW.action_items||[];
+  if(i<0||i>=items.length) return;
+  items.splice(i,1);
+  fillMeetDetail();
+  api('delete_action_item', MROW.id, i);
+}
+function toggleBox(id, renderFn){
+  const el=document.getElementById(id);
+  if(!el) return;
+  const show=!el.classList.contains('show');
+  el.className='card expandBox'+(show?' show':'');
+  if(show){
+    renderFn();
+    setTimeout(function(){ try{ el.scrollIntoView({behavior:'smooth', block:'start'}); }catch(e){} }, 40);
+  }
+}
+function renderMarksBox(){
+  const el=document.getElementById('marksBox');
+  if(!el) return;
+  const ms=MROW&&MROW.marked_moments||[];
+  el.innerHTML='<div class="cardHead"><span class="eyebrow accd">Marked moments</span></div>'+
+    (ms.length?ms.map(function(m,i){
+      return '<div class="mmRow"><div class="mmHead">'+
+        '<span class="star"><svg viewBox="0 0 24 24" width="11" height="11" fill="currentColor" stroke="none"><path d="m12 3 2.7 5.6 6.3.9-4.5 4.3 1 6.2-5.5-3-5.5 3 1-6.2L3 9.5l6.3-.9z"/></svg></span>'+
+        '<span class="mmTs" onclick="playAt('+m.t+',-1)" title="Play from here">'+fmtMT(m.t)+'</span></div>'+
+        '<div class="mmEx">'+esc(m.label||'Marked moment')+'</div>'+
+        (m.note
+          ?'<div class="mmNote"><div class="k">Your note</div><p id="mmN'+i+'" title="Click to edit" onclick="mmNote('+i+')">'+esc(m.note)+'</p></div>'
+          :'<span class="mmNoteAdd" id="mmN'+i+'" onclick="mmNote('+i+')">+ Add note</span>')+
+        '<div class="mmActs">'+
+          '<button class="iconbtn" style="width:24px;height:22px" title="Jump to transcript" onclick="mmJump('+m.t+')">'+
+            '<svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4h6v6"/><path d="M20 4 11 13"/><path d="M18 13v6a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V8a1 1 0 0 1 1-1h6"/></svg></button>'+
+          '<button class="iconbtn" style="width:24px;height:22px" title="Delete mark" onclick="mmDel('+i+')">✕</button>'+
+        '</div></div>';
+    }).join(''):'<div class="hnAI">No marks.</div>');
+}
+function mmJump(t){
+  const box=document.getElementById('txBox');
+  if(!box) return;
+  if(!box.classList.contains('show')) toggleBox('txBox', renderTxBox);
+  const tx=MROW&&MROW.transcript||[];
+  let best=0;
+  for(let i=0;i<tx.length;i++){ if((tx[i].t0||0)<=t) best=i; }
+  setTimeout(function(){
+    const el=document.getElementById('exU'+best);
+    if(el){ el.scrollIntoView({behavior:'smooth', block:'center'}); markPlaying(best);
+      setTimeout(function(){ markPlaying(-1); }, 2200); }
+  }, 120);
+}
+function mmNote(i){
+  const ms=MROW&&MROW.marked_moments||[];
+  if(!ms[i]) return;
+  const el=document.getElementById('mmN'+i);
+  if(!el || el.dataset.editing) return;
+  el.dataset.editing='1';
+  const old=ms[i].note||'';
+  const ta=document.createElement('textarea');
+  ta.className='mmNoteIn'; ta.value=old;
+  ta.placeholder='Why does this moment matter?';
+  el.replaceWith(ta); ta.focus();
+  ta.addEventListener('keydown', function(ev){
+    ev.stopPropagation();
+    if(ev.key==='Enter' && !ev.shiftKey){ ev.preventDefault(); commit(ta.value); }
+    if(ev.key==='Escape'){ commit(null); }
+  });
+  ta.addEventListener('blur', function(){ commit(ta.value); });
+  function commit(v){
+    if(v!=null && v.trim()!==old){
+      if(v.trim()) ms[i].note=v.trim(); else delete ms[i].note;
+      api('set_mark_note', MROW.id, i, v.trim());
+    }
+    renderMarksBox();
+  }
+}
+function mmDel(i){
+  const ms=MROW&&MROW.marked_moments||[];
+  if(i<0||i>=ms.length) return;
+  ms.splice(i,1);
+  renderMarksBox();
+  const lb=document.getElementById('marksTeaseL');
+  if(lb) lb.textContent=ms.length+' marked moments';
+  api('delete_marked_moment', MROW.id, i);
+}
+function renderTxBox(){
+  const el=document.getElementById('txBox');
+  if(!el) return;
+  const tx=MROW&&MROW.transcript||[], spk=MROW&&MROW.speakers||{};
+  el.innerHTML='<div class="cardHead"><span class="eyebrow">Full transcript</span></div>'+
+    (tx.length?tx.map(function(u,i){
+      return '<div class="exUtt" id="exU'+i+'" onclick="playAt('+u.t0+','+i+')">'+
+        '<span class="schip '+chipClass(u.speaker)+'" title="Double-click to rename" '+
+          'ondblclick="event.stopPropagation();sumRename(\''+esc(u.speaker)+'\', this)">'+esc(spk[u.speaker]||u.speaker)+'</span> '+
+        '<span class="mono" style="color:var(--dim);font-size:10px">'+fmtMT(u.t0)+'</span> '+
+        '<span id="exTx'+i+'" style="font:400 11.5px Geist;color:var(--tx2)">'+esc(u.text)+'</span>'+
+        (u.edited?'<span class="edTag">edited</span>':'')+
+        '<span class="xr">'+
+          '<button class="iconbtn" title="Copy line" onclick="event.stopPropagation();txCopy('+i+',this)">'+
+            '<svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a1 1 0 0 1 1-1h10"/></svg></button>'+
+          '<button class="iconbtn" title="Edit text" onclick="event.stopPropagation();txEdit('+i+')">'+
+            '<svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3 21 7l-13 13H4v-4z"/><path d="m14 6 4 4"/></svg></button>'+
+        '</span></div>';
+    }).join(''):'<div class="hnAI">Empty transcript.</div>');
+}
+function txCopy(i, btn){
+  const tx=MROW&&MROW.transcript||[];
+  if(!tx[i]) return;
+  api('copy_text', tx[i].text||'');
+  flashOk(btn);
+}
+function txEdit(i){
+  const tx=MROW&&MROW.transcript||[];
+  if(!tx[i]) return;
+  const span=document.getElementById('exTx'+i);
+  if(!span || span.dataset.editing) return;
+  span.dataset.editing='1';
+  const old=tx[i].text||'';
+  const ta=document.createElement('textarea');
+  ta.className='txEditIn'; ta.value=old;
+  span.replaceWith(ta); ta.focus();
+  ta.addEventListener('click', function(ev){ ev.stopPropagation(); });
+  ta.addEventListener('keydown', function(ev){
+    ev.stopPropagation();
+    if(ev.key==='Enter' && (ev.metaKey||ev.ctrlKey)){ commit(ta.value.trim()); }
+    if(ev.key==='Escape'){ commit(null); }
+  });
+  ta.addEventListener('blur', function(){ commit(ta.value.trim()); });
+  function commit(v){
+    if(v!=null && v!=='' && v!==old){
+      tx[i].text=v; tx[i].edited=true;
+      api('set_transcript_text', MROW.id, i, v);
+    }
+    renderTxBox();
+  }
+}
+function playAt(secs, idx){
+  // MER-31: expired audio is a clean no-op, not an error — the banner in
+  // fillMeetDetail() already told the user why; clicking a transcript line
+  // just does nothing rather than surfacing a fetch failure.
+  if(MROW && MROW.audio_expired) return;
+  const a=document.getElementById('sumAudio');
+  if(!a) return;
+  function go(){ try{ a.currentTime=Math.max(0,secs); a.play(); markPlaying(idx); }catch(e){} }
+  if(MAUDIO_SRC){ go(); return; }
+  api('get_meeting_audio', MROW.id).then(function(r){
+    if(r && r.ok && r.src){ MAUDIO_SRC=r.src; a.src=r.src; a.addEventListener('canplay', go, {once:true}); }
+    else if(r && r.ok===false) toast((r.error)||'Could not load the recording.', true);
+  });
+}
+function markPlaying(idx){
+  if(MPLAYING>=0){ const p=document.getElementById('exU'+MPLAYING); if(p) p.className='exUtt'; }
+  MPLAYING=idx;
+  if(idx>=0){ const el=document.getElementById('exU'+idx); if(el) el.className='exUtt playing'; }
+}
+function flashOk(btn){
+  // clipboard/actions must LOOK like they worked (33f feedback lesson)
+  if(!btn || btn.dataset.flash) return;
+  btn.dataset.flash='1';
+  const orig=btn.innerHTML;
+  btn.innerHTML='<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg>';
+  btn.style.color='var(--on)';
+  setTimeout(function(){ btn.innerHTML=orig; btn.style.color=''; delete btn.dataset.flash; }, 1400);
+}
+function sumShare(btn){
+  const ROW=MROW;
+  if(!ROW || ROW.status==='processing') return;
+  const parts=['# '+(ROW.title||'Meeting'), '', ROW.summary||''];
+  if((ROW.decisions||[]).length) parts.push('', 'Decisions:', ROW.decisions.map(function(d){return '- '+d;}).join('\n'));
+  if((ROW.action_items||[]).length) parts.push('', 'Action items:',
+    ROW.action_items.map(function(it){
+      const n=it.owner&&ROW.speakers&&ROW.speakers[it.owner]?ROW.speakers[it.owner]+': ':'';
+      return '- '+n+it.task;
+    }).join('\n'));
+  api('copy_text', parts.join('\n'));
+  flashOk(btn);
+}
+function sumExport(fmt){
+  if(!MROW) return;
+  const btn=document.getElementById(fmt==='txt'?'expTxtBtn':'expMdBtn');
+  const orig=btn.textContent;
+  btn.textContent='…';
+  api('export_meeting', MROW.id, fmt).then(function(r){
+    if(r && r.ok){ btn.textContent='Saved ✓'; }
+    else if(r && r.cancelled){ btn.textContent=orig; return; }
+    else { btn.textContent='Failed'; }
+    setTimeout(function(){ btn.textContent=orig; }, 1800);
+  });
+}
+function sumDelete(){
+  if(!MROW) return;
+  const id=MROW.id;
+  const btn=document.getElementById('sumDelBtn');
+  if(MDEL_ARMED!==id){
+    // first click arms; second click within 2.5s deletes
+    MDEL_ARMED=id;
+    btn.innerHTML='<span style="font:600 10.5px Geist;color:var(--rec-soft);padding:0 4px">Delete?</span>';
+    btn.style.width='auto'; btn.style.background='var(--acc-softer)';
+    setTimeout(function(){
+      if(MDEL_ARMED===id){ MDEL_ARMED=null; resetDelBtn(); }
+    }, 2500);
+    return;
+  }
+  MDEL_ARMED=null;
+  btn.innerHTML='<span style="font:600 10.5px Geist;color:var(--rec-soft);padding:0 4px">…</span>';
+  api('delete_meeting', id).then(function(r){
+    if(r && r.ok){
+      MEETS.meetings=(MEETS.meetings||[]).filter(function(m){return m.id!==id;});
+      meetBack();
+    } else {
+      resetDelBtn();
+      toast((r&&r.error)||'Could not delete the meeting.', true);
+    }
+  });
+}
+function resetDelBtn(){
+  const btn=document.getElementById('sumDelBtn');
+  if(!btn) return;
+  btn.innerHTML=SVG.trash;
+  btn.style.width=''; btn.style.background='';
+}
+function sumRename(sid, el){
+  const ROW=MROW;
+  if(!ROW || !ROW.speakers) return;
+  if(el.querySelector('input')) return;
+  const old=ROW.speakers[sid]||sid;
+  const target=el.querySelector('.avNm')||el;
+  const inp=document.createElement('input');
+  inp.value=old;
+  inp.style.cssText='width:90px;font:600 11px Geist;color:var(--tx);background:none;'+
+    'border:0;border-bottom:1.5px solid var(--acc);outline:none;caret-color:var(--acc)';
+  target.replaceWith(inp); inp.focus(); inp.select();
+  inp.addEventListener('click', function(ev){ ev.stopPropagation(); });
+  inp.addEventListener('keydown', function(ev){
+    ev.stopPropagation();
+    if(ev.key==='Enter') commit(inp.value.trim());
+    if(ev.key==='Escape') commit(null);
+  });
+  inp.addEventListener('blur', function(){ commit(inp.value.trim()); });
+  function commit(v){
+    if(v && v!==old){
+      ROW.speakers[sid]=v;
+      api('set_speaker_name', ROW.id, sid, v).then(function(r){
+        if(r && r.ok && r.learned) toast('⚡ Voice print saved for '+v);
+      });
+    }
+    fillMeetDetail();
+    const tb=document.getElementById('txBox');
+    if(tb && tb.classList.contains('show')) renderTxBox();
+  }
+}
+function sumRegen(){
+  if(!MROW || MROW.status==='processing') return;   // no double-fire while running
+  MROW.status='processing'; fillMeetDetail();
+  api('retry_meeting_summary', MROW.id);
+}
+// A meeting that finishes (or is edited elsewhere) while its detail is open must
+// refresh IN PLACE — the list-level `meetingsUpdated` event is not enough.
+function refreshOpenMeeting(id, deleted){
+  if(MVIEW!=='detail' || !MROW) return;
+  if(deleted && deleted===MROW.id){ meetBack(); return; }   // deleted from the list
+  if(id && id!==MROW.id) return;
+  api('get_meeting', MROW.id).then(function(r){
+    if(MVIEW!=='detail' || !MROW) return;
+    if(r && r.ok && r.meeting && r.meeting.id===MROW.id){
+      MROW=r.meeting;
+      if(MSUBNOTES) return;      // don't yank the notes page out from under them
+      fillMeetDetail();
+    } else if(r && r.error==='not found'){
+      meetBack();                // gone (deleted on another device) — only this
+    }                            // exact error, never a transient fetch failure
   });
 }
 // List column only — re-rendered on every keystroke so the search input keeps focus.
@@ -2498,7 +3161,12 @@ window.VerbalNative = function(event, payload){
   else if(event==='selectTab'){ if(payload && payload.tab) show(payload.tab); }
   else if(event==='result'){ load(); }
   else if(event==='canvasRemote'){ CANVAS={content:payload.content||'', image_url:payload.image_url||null, from:payload.device_name}; if(ACTIVE==='canvas')renderCanvas(); }
-  else if(event==='meetingsUpdated'){ loadMeets(); }
+  else if(event==='meetingsUpdated'){ loadMeets();
+    refreshOpenMeeting(payload && payload.id, payload && payload.deleted); }
+  // MER-46: open_meeting hands the row straight to the detail view. Buffered on
+  // the Python side until `dashboard_page_ready`, so this also works when the
+  // window was built by this very click (the meeting bar's handoff).
+  else if(event==='openMeeting'){ openMeetingDetail(payload); }
 };
 document.addEventListener('paste', function(e){
   if(ACTIVE!=='canvas') return;
@@ -2650,13 +3318,26 @@ function renderWizard(){
 let LOAD_STARTED=false;
 async function load(){
   LOAD_STARTED=true;
+  // MER-46 handshake. VerbalNative is installed by now (it is assigned at parse
+  // time) and the bridge is live (pywebviewready fired, or the backstop ran), so
+  // Python can flush the events it queued while the page loaded — that is how an
+  // `openMeeting` survives being pushed into a window built a moment earlier.
+  // Deliberately BEFORE the awaits: the flush must not wait on get_state.
+  api('dashboard_page_ready');
   const r = await api('get_state');
   if(r && r.ok){ STATE=r; applyAuthGate(); renderSidebar(); }
   await new Promise(res=>{ api('fetch_notes').then(rn=>{ if(rn&&rn.ok)NOTES=rn.notes||rn.data||[]; res(); }); });
   loadCanvas();
   renderActive();
 }
-document.querySelectorAll('[data-screen]').forEach(n=>n.onclick=()=>show(n.dataset.screen));
+// Explicit navigation always lands on a screen's TOP level: clicking Meetings
+// while reading one meeting goes back to the list (MER-46), where an
+// openMeeting event (which sets the sub-route first) must not be reset.
+function navTo(id){
+  if(id==='meetings'){ MVIEW='list'; MROW=null; MSUBNOTES=false; }
+  show(id);
+}
+document.querySelectorAll('[data-screen]').forEach(n=>n.onclick=()=>navTo(n.dataset.screen));
 // The macOS bridge shim now dispatches a REAL pywebviewready at document-start
 // (flume_web_dashboard._SHIM), so this is the normal path on both platforms.
 window.addEventListener('pywebviewready', load);

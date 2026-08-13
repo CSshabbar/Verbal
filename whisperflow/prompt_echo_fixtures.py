@@ -104,6 +104,36 @@ check("a heading we never sent is left alone (no file list in this prompt)",
       == "Files. I need to check them before the demo.")
 check("a lone 'Files' is speech when no file list was sent", scrub("Files") == "Files")
 
+# The form that actually leaked in production for weeks (2026-08): Whisper ends
+# the heading with a COMMA and carries straight on into real speech. The
+# separator rules read a comma as "the clause continues, so this is the user
+# talking", so every one of these was injected verbatim — 'Glossary, Right now,'
+# went into VS Code. A heading WE invented (_OWNED_LABELS) is now ours whatever
+# punctuation follows it.
+print("\n== bare heading + COMMA, then real speech (the production leak) ==")
+check("'Glossary, <speech>' -> only the speech survives",
+      scrub("Glossary, Right now, I am looking at the sync code.")
+      == "Right now, I am looking at the sync code.")
+check("comma heading before a clause with no comma of its own",
+      scrub("Glossary, So the thing is,") == "So the thing is,")
+check("comma heading before a sentence that opens with 'No'",
+      scrub("Glossary, No, I don't understand what you meant.")
+      == "No, I don't understand what you meant.")
+check("comma heading before a snippet trigger",
+      scrub("Glossary, Paste My Work Password.") == "Paste My Work Password.")
+check("comma heading mid-transcript",
+      scrub("That is the plan. Glossary, then we ship.")
+      == "That is the plan. then we ship.")
+check("'Files' is NOT owned — the comma form stays speech even when sent",
+      scrub("Files, I need to check them before the demo.", PROMPT_WITH_FILES)
+      == "Files, I need to check them before the demo.")
+check("an owned heading that runs on into its own clause is still speech",
+      scrub("Glossary entries keep getting lost, as you know.")
+      == "Glossary entries keep getting lost, as you know.")
+check("the owned rule only applies to a label we actually SENT",
+      dictionary.strip_prompt_echo("Vocabulary, so I was thinking about it.", PROMPT)
+      == "Vocabulary, so I was thinking about it.")
+
 print("\n== real dictation is never damaged ==")
 check("a single vocabulary word said on its own is kept", scrub("Flume") == "Flume")
 check("a vocabulary word addressed to a person is kept",

@@ -24,6 +24,8 @@ Fail-closed: setup() is wrapped by the caller; if the tkinter window can't
 build, the recording pipeline runs without a visible overlay.
 """
 
+import ctypes
+import ctypes.wintypes as wintypes
 import logging
 import math
 import re
@@ -35,30 +37,94 @@ from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageTk
 
 logger = logging.getLogger("verbal.overlay")
 
-# ── Layout ──────────────────────────────────────────────────────────────
-PILL_W = 470
-PILL_H = 44
-RADIUS = 22
-PANEL_W = PILL_W                # window IS the pill — no surrounding canvas
-PANEL_H = PILL_H
-PADDING_LEFT  = 12
-PADDING_RIGHT = 10
+# ── DPI scaling ─────────────────────────────────────────────────────────
+# This process runs DPI-AWARE: pywebview flips it to per-monitor awareness
+# when WebView2 creates its first window, so tkinter geometry and PIL drawing
+# are in real device pixels. An unscaled 470x44 pill therefore renders at half
+# its intended physical size on a 200%-scaled display (and a third at 300%).
+# Every layout value below is a 96-DPI design number; `_apply_scale()` restates
+# them in device pixels once the primary monitor's DPI is known.
+SCALE = 1.0
 
-BAR_COUNT   = 10
-BAR_W       = 2.5
-BAR_GAP     = 3.0
-BAR_MAX_H   = 22
+# 96-DPI design values — the source of truth for the pill's proportions.
+# Capsule (IDI-184). The WINDOW stays at PILL_W — wide enough for the widest
+# state — but the pill is now drawn only as wide as the current state needs,
+# centred inside it. Everything outside the drawn pill is CHROMA_TK, which
+# tkinter masks out AND which is click-through, so the surplus window costs
+# nothing. Doing it this way avoids resizing the window on hover, which would
+# make Enter/Leave flap as the frame moved out from under the cursor.
+_DESIGN = {
+    "PILL_W": 340, "PILL_H": 40, "RADIUS": 20, "BOTTOM_MARGIN": 40,
+    "PADDING_LEFT": 12, "PADDING_RIGHT": 10,
+    "BAR_W": 2.5, "BAR_GAP": 3.0, "BAR_MAX_H": 18,
+    "BTN_R": 10, "BTN_GAP": 6,
+    "FONT_UI": 12, "FONT_NUM": 12,
+    # Per-state pill widths: (resting, revealed). Resting carries only what is
+    # live; the control cluster appears on hover, as on the Mac.
+    "W_REC": 150, "W_REC_OPEN": 250,
+    "W_TRANS": 175, "W_TRANS_OPEN": 215,
+    "W_DONE": 235, "W_DONE_OPEN": 250,
+}
 
-# Button geometry (recording-mode right cluster).
-BTN_R       = 11                # ctrl-button radius
-BTN_GAP     = 6                 # spacing between buttons
+# Taste multiplier applied on top of the DPI scale. 1.0 is exact Mac parity;
+# lower values shrink the whole pill (proportions, fonts and hit-boxes together).
+# Tune this rather than editing _DESIGN, which mirrors the Mac pill.
+USER_SCALE = 0.85
+
+BAR_COUNT = 11                  # a count, never scaled (matches the Mac capsule)
+
+
+def _s(v):
+    """Scale a 96-DPI design length to device pixels (float)."""
+    return v * SCALE
+
+
+def _i(v):
+    """Scale a 96-DPI stroke width / small offset to whole device pixels."""
+    return max(1, int(round(v * SCALE)))
+
+
+def _apply_scale(scale):
+    """Restate every layout constant in device pixels for `scale`."""
+    global SCALE, PILL_W, PILL_H, RADIUS, PANEL_W, PANEL_H, BOTTOM_MARGIN
+    global PADDING_LEFT, PADDING_RIGHT, BAR_W, BAR_GAP, BAR_MAX_H
+    global W_REC, W_REC_OPEN, W_TRANS, W_TRANS_OPEN, W_DONE, W_DONE_OPEN
+    global BTN_R, BTN_GAP, FONT_UI, FONT_NUM
+    SCALE = scale
+    d = _DESIGN
+    PILL_W = int(round(d["PILL_W"] * scale))
+    PILL_H = int(round(d["PILL_H"] * scale))
+    RADIUS = int(round(d["RADIUS"] * scale))
+    PANEL_W = PILL_W            # window IS the pill — no surrounding canvas
+    PANEL_H = PILL_H
+    BOTTOM_MARGIN = int(round(d["BOTTOM_MARGIN"] * scale))
+    PADDING_LEFT = int(round(d["PADDING_LEFT"] * scale))
+    PADDING_RIGHT = int(round(d["PADDING_RIGHT"] * scale))
+    W_REC = int(round(d["W_REC"] * scale))
+    W_REC_OPEN = int(round(d["W_REC_OPEN"] * scale))
+    W_TRANS = int(round(d["W_TRANS"] * scale))
+    W_TRANS_OPEN = int(round(d["W_TRANS_OPEN"] * scale))
+    W_DONE = int(round(d["W_DONE"] * scale))
+    W_DONE_OPEN = int(round(d["W_DONE_OPEN"] * scale))
+    BAR_W = d["BAR_W"] * scale
+    BAR_GAP = d["BAR_GAP"] * scale
+    BAR_MAX_H = d["BAR_MAX_H"] * scale
+    BTN_R = int(round(d["BTN_R"] * scale))
+    BTN_GAP = int(round(d["BTN_GAP"] * scale))
+    FONT_UI = max(1, int(round(d["FONT_UI"] * scale)))
+    FONT_NUM = max(1, int(round(d["FONT_NUM"] * scale)))
+
+
+_apply_scale(1.0)               # sane defaults before setup() probes the DPI
 
 # ── Colors (mirroring overlay_html.py CSS vars) ─────────────────────────
 BG_RGB     = (26, 25, 23)             # --pill (rgba(22,20,18,.96) opaqued)
 BORDER_RGB = (60, 55, 50)             # --bd
 TEXT_RGB   = (240, 240, 240)          # --tx
 MUTED_RGB  = (140, 140, 140)          # --mut
-ACC_RGB    = (232, 82, 42)            # --acc (orange)
+ACC_RGB    = (200, 90, 62)            # --acc #C85A3E terracotta. NOT #E8522A
+                                      # (232,82,42) — that orange is retired,
+                                      # 05-conventions Rule #16. Found during IDI-184.
 BLUE_RGB   = (74, 144, 226)
 GREEN_RGB  = (74, 209, 90)            # --green
 
@@ -96,8 +162,16 @@ class WinOverlay:
         self._mode = "hidden"          # 'recording' | 'transcribing' | 'done' | 'hidden'
 
         self._t0 = 0.0                 # record start
-        self._phase = 0.0              # waveform animation phase
-        self._paused = False           # local paused-state hint for the icon
+        self._phase = 0.0              # spinner / fallback-waveform phase
+        # Live waveform: a scrolling history of the recorder's 0..1 mic level,
+        # newest sample at the right. Empty until the first level is sampled,
+        # which is what makes the fallback sine kick in (see _draw_recording).
+        self._wave = []
+        self._wave_step = 0
+        self._paused = False
+        self._hover = False          # pointer over the drawn pill (Capsule)
+        self._px0 = 0                # drawn pill's left/right edges, set by
+        self._px1 = PANEL_W          # _render, used for hit-testing
         self._active = False
         self._visible = False
         self._alpha = 0.0
@@ -134,8 +208,34 @@ class WinOverlay:
         t = threading.Thread(target=self._run_tk, name="overlay-tk", daemon=True)
         t.start()
 
+    def _probe_scale(self):
+        """Device pixels per 96-DPI unit on the primary monitor.
+
+        Returns 1.0 when the process is DPI-unaware (Windows then scales our
+        output itself), so this is self-adjusting rather than double-scaling.
+        """
+        try:
+            dpi = ctypes.windll.user32.GetDpiForSystem()
+        except AttributeError:                      # pre-1607 fallback
+            try:
+                hdc = ctypes.windll.user32.GetDC(0)
+                dpi = ctypes.windll.gdi32.GetDeviceCaps(hdc, 88)  # LOGPIXELSX
+                ctypes.windll.user32.ReleaseDC(0, hdc)
+            except Exception as e:
+                logger.debug("overlay dpi probe failed: %s", e)
+                return 1.0
+        except Exception as e:
+            logger.debug("overlay dpi probe failed: %s", e)
+            return 1.0
+        return (dpi / 96.0) if dpi else 1.0
+
     def _run_tk(self):
         try:
+            dpi_scale = self._probe_scale()
+            scale = dpi_scale * USER_SCALE
+            _apply_scale(scale)
+            logger.info("overlay: dpi=%.2f user=%.2f -> scale=%.2f pill=%dx%d",
+                        dpi_scale, USER_SCALE, scale, PANEL_W, PANEL_H)
             self._root = tk.Tk()
             self._root.overrideredirect(True)                     # no titlebar/frame
             self._root.attributes("-topmost", True)               # float above apps
@@ -144,12 +244,7 @@ class WinOverlay:
             self._root.configure(bg=CHROMA_TK)
             self._root.withdraw()
 
-            # Bottom-center of the primary work area — matches Mac overlay.py.
-            screen_w = self._root.winfo_screenwidth()
-            screen_h = self._root.winfo_screenheight()
-            x = (screen_w - PANEL_W) // 2
-            y = screen_h - PANEL_H - 100
-            self._root.geometry(f"{PANEL_W}x{PANEL_H}+{x}+{y}")
+            self._reposition()
 
             self._canvas = tk.Canvas(
                 self._root,
@@ -161,12 +256,54 @@ class WinOverlay:
             )
             self._canvas.pack()
             self._canvas.bind("<Button-1>", self._on_click)
+            # Hover reveal. <Enter>/<Leave> fire for the whole WINDOW, most of
+            # which is masked-out chroma, so <Motion> does the precise work:
+            # only a pointer actually over the drawn pill counts.
+            self._canvas.bind("<Motion>", self._on_motion)
+            self._canvas.bind("<Leave>", self._on_leave)
 
             self._load_fonts()
 
             self._root.mainloop()
         except Exception as e:
             logger.error("overlay tk thread crashed: %s", e, exc_info=True)
+
+    # ── geometry ────────────────────────────────────────────────────────
+    def _work_area(self):
+        """Primary monitor's work area (screen minus taskbar), or None."""
+        try:
+            r = wintypes.RECT()
+            # SPI_GETWORKAREA = 0x0030
+            if ctypes.windll.user32.SystemParametersInfoW(0x0030, 0, ctypes.byref(r), 0):
+                return (r.left, r.top, r.right, r.bottom)
+        except Exception as e:
+            logger.debug("overlay work-area probe failed: %s", e)
+        return None
+
+    def _reposition(self):
+        """Park the pill bottom-center of the work area.
+
+        Recomputed on every show, not only at setup: the desktop can be
+        resized under a running app (VM/RDP auto-fit, docking, a resolution
+        change), and a y computed once at startup then strands the pill
+        mid-screen. Uses the work area so we sit above the taskbar rather
+        than behind it — `winfo_screenheight()` doesn't know about it.
+        """
+        if self._root is None:
+            return
+        try:
+            wa = self._work_area()
+            if wa:
+                left, top, right, bottom = wa
+            else:
+                left, top = 0, 0
+                right = self._root.winfo_screenwidth()
+                bottom = self._root.winfo_screenheight()
+            x = left + (right - left - PANEL_W) // 2
+            y = bottom - PANEL_H - BOTTOM_MARGIN
+            self._root.geometry(f"{PANEL_W}x{PANEL_H}+{x}+{y}")
+        except Exception as e:
+            logger.debug("overlay reposition failed: %s", e)
 
     def _load_fonts(self):
         # Try Windows-native fonts; fall back to defaults if the font files
@@ -175,13 +312,13 @@ class WinOverlay:
         self._font_num = None
         for face in ("segoeui.ttf", "arial.ttf"):
             try:
-                self._font_ui = ImageFont.truetype(face, 12)
+                self._font_ui = ImageFont.truetype(face, FONT_UI)
                 break
             except Exception:
                 continue
         for face in ("Consola.ttf", "consola.ttf", "cour.ttf"):
             try:
-                self._font_num = ImageFont.truetype(face, 13)
+                self._font_num = ImageFont.truetype(face, FONT_NUM)
                 break
             except Exception:
                 continue
@@ -208,6 +345,7 @@ class WinOverlay:
         self._mode = "recording"
         self._t0 = time.time()
         self._paused = False
+        self._hover = False   # a stale hover must not open the new capsule
         self._active = True
         self._show_time = time.time()
         self._safe(self._show_internal)
@@ -265,6 +403,7 @@ class WinOverlay:
         self._cancel_hide()
         if self._root is None:
             return
+        self._reposition()
         if self._alpha < 0.3:
             self._alpha = 0.0
             self._root.deiconify()
@@ -315,8 +454,36 @@ class WinOverlay:
             self._anim_timer = None
             return
         self._phase += 0.10
+        self._sample_level()
+        self._poll_hover()      # before _render, so this frame shows the result
         self._render()
         self._anim_timer = self._root.after(33, self._start_animation_loop)
+
+    def _sample_level(self):
+        """Scroll one mic-level sample into the waveform history (~15 Hz).
+
+        Every other 33 ms frame, so the 10 bars span ~0.7 s of audio — slow
+        enough to read as speech, fast enough to feel immediate. The history
+        stays empty (→ fallback sine) if the recorder can't be reached.
+        """
+        if self._mode != "recording":
+            self._wave = []
+            return
+        self._wave_step += 1
+        if self._wave_step % 2:
+            return
+        try:
+            rec = getattr(self.app, "recorder", None) if self.app else None
+            if rec is None:
+                return
+            lvl = float(getattr(rec, "level", 0.0) or 0.0)
+        except Exception:
+            return
+        lvl = min(1.0, max(0.0, lvl))
+        if not self._wave:
+            self._wave = [0.0] * BAR_COUNT
+        self._wave.append(lvl)
+        del self._wave[:-BAR_COUNT]
 
     # ── rendering ───────────────────────────────────────────────────────
     def _render(self):
@@ -329,15 +496,21 @@ class WinOverlay:
                             _hex_to_rgba(CHROMA_TK))
             draw = ImageDraw.Draw(img)
 
-            # Pill background — a filled rounded rectangle covering the
-            # whole window minus 1px so the border reads crisp.
+            # Pill background — content-sized and centred, not the whole window.
+            # `_px0`/`_px1` are the drawn pill's edges; every draw helper and the
+            # hover hit-test works off them.
+            pw = self._pill_width()
+            self._px0 = max(0, (PANEL_W - pw) // 2)
+            self._px1 = self._px0 + pw
             border_color = ACC_RGB if self._mode == "recording" else BORDER_RGB
+            if self._mode == "recording" and self._paused:
+                border_color = BORDER_RGB
             draw.rounded_rectangle(
-                (0, 0, PANEL_W - 1, PANEL_H - 1),
+                (self._px0, 0, self._px1 - _i(1), PANEL_H - _i(1)),
                 radius=RADIUS,
                 fill=BG_RGB + (255,),
                 outline=border_color + (200,),
-                width=1,
+                width=_i(1),
             )
 
             if self._mode == "recording":
@@ -359,50 +532,58 @@ class WinOverlay:
 
     def _draw_recording(self, draw, img):
         cy = PANEL_H // 2
-        x = PADDING_LEFT
+        x = self._px0 + PADDING_LEFT
         self._hits = []
+        # The old left-hand "mute" disc is gone: nothing in the app ever set a
+        # mute state, so it was decoration occupying the pill's most valuable
+        # position. Same for the device tag that used to sit before the buttons —
+        # the Done pill already names where the text landed.
 
-        # Left "mute" glyph — small circle with accent ring and minus mark.
-        r = 9
-        draw.ellipse((x, cy - r, x + 2 * r, cy + r),
-                     outline=ACC_RGB + (255,), width=2)
-        draw.line((x + 5, cy, x + 2 * r - 5, cy),
-                  fill=ACC_RGB + (255,), width=2)
-        x += 2 * r + 8
-
-        # Timer (MM:SS) in a numeric-monospace font.
-        secs = int(max(0, time.time() - self._t0)) if self._t0 else 0
-        timer_text = f"{secs // 60:02d}:{secs % 60:02d}"
-        tw = _text_width(draw, timer_text, self._font_num)
-        draw.text((x, cy - 8), timer_text, fill=TEXT_RGB + (255,),
-                  font=self._font_num)
-        x += tw + 10
-
-        # Vertical separator bar.
-        draw.line((x, cy - 8, x, cy + 8), fill=(80, 80, 80, 255), width=1)
-        x += 8
-
-        # Waveform bars — animated sine over time.
+        # Waveform bars — driven by the real mic level, scrolling left. Falls
+        # back to the old sine animation whenever no level history exists (the
+        # recorder isn't reachable), so the pill is never blank.
         for i in range(BAR_COUNT):
             frac = 1.0 - abs(i - (BAR_COUNT - 1) / 2.0) / ((BAR_COUNT - 1) / 2.0)
-            wave = abs(math.sin(self._phase * 3.0 + i * 0.6))
-            bh = max(3, BAR_MAX_H * (0.35 + 0.65 * frac) * wave)
+            if self._wave:
+                lvl = self._wave[i]
+                # A little level-scaled shimmer so a steady tone still breathes
+                # while silence stays flat.
+                lvl *= 1.0 + 0.12 * math.sin(self._phase * 3.0 + i * 1.7) * min(1.0, self._wave[i] * 3.0)
+                bh = max(3, BAR_MAX_H * min(1.0, lvl))
+            else:
+                wave = abs(math.sin(self._phase * 3.0 + i * 0.6))
+                bh = max(3, BAR_MAX_H * (0.35 + 0.65 * frac) * wave)
             bx = x + i * (BAR_W + BAR_GAP)
-            draw.rounded_rectangle(
+            # Plain rectangle, NOT rounded_rectangle: Pillow derives its own
+            # inner radius and builds (y0 + r + 1 .. y1 - r - 1), which inverts
+            # and raises ValueError for a band of short bars (3.5-4.4px fail
+            # while 3.0 and 4.4 pass — it isn't monotonic, and clamping the
+            # radius we pass doesn't avoid it). That hit ~2.6% of animation
+            # frames, and since _render wraps the whole repaint in try/except,
+            # one bad bar dropped the entire pill frame. Corner rounding on a
+            # 2.5px-wide bar is invisible anyway.
+            draw.rectangle(
                 (bx, cy - bh / 2, bx + BAR_W, cy + bh / 2),
-                radius=BAR_W / 2,
                 fill=TEXT_RGB + (int(180 + 60 * frac),),
             )
-        x += int(BAR_COUNT * (BAR_W + BAR_GAP)) + 10
+        x += int(BAR_COUNT * (BAR_W + BAR_GAP)) + _s(9)
 
-        # Device name (uppercase, muted).
-        dev_text = (self._device or "WIN").upper()
-        draw.text((x, cy - 7), dev_text, fill=MUTED_RGB + (255,),
-                  font=self._font_ui)
+        # Timer (MM:SS) in a numeric-monospace font — the second and last thing
+        # in the resting capsule.
+        secs = int(max(0, time.time() - self._t0)) if self._t0 else 0
+        timer_text = f"{secs // 60:02d}:{secs % 60:02d}"
+        draw.text((x, cy - _s(7)), timer_text, fill=TEXT_RGB + (255,),
+                  font=self._font_num)
+
+        # Everything below is the revealed cluster. Collapsed, it is not drawn
+        # and registers no hit-boxes, so a click on the resting capsule can only
+        # expand it (see _on_click) — it can never hit an invisible button.
+        if not self._revealed():
+            return
 
         # Right-cluster: pause, cancel, stop. Laid out right-to-left so the
         # stop button always sits at the pill's tail.
-        rx = PANEL_W - PADDING_RIGHT - BTN_R
+        rx = self._px1 - PADDING_RIGHT - BTN_R
         # Stop button (orange with white square) — ends recording.
         self._draw_stop(draw, rx, cy)
         rx -= 2 * BTN_R + BTN_GAP
@@ -417,34 +598,34 @@ class WinOverlay:
         r = BTN_R
         draw.ellipse((cx - r, cy - r, cx + r, cy + r),
                      fill=ACC_RGB + (255,))
-        sq = 5
+        sq = _s(5)
         draw.rounded_rectangle(
             (cx - sq, cy - sq, cx + sq, cy + sq),
-            radius=2, fill=(255, 255, 255, 255))
+            radius=_s(2), fill=(255, 255, 255, 255))
         self._hits.append((cx - r, cy - r, cx + r, cy + r, "overlay_stop"))
 
     def _draw_ctrl(self, draw, cx, cy, glyph):
         r = BTN_R
         # Dark filled circle with faint outline (subtle button chip).
         draw.ellipse((cx - r, cy - r, cx + r, cy + r),
-                     fill=(240, 240, 240, 24),
-                     outline=(240, 240, 240, 40), width=1)
+                     fill=_over(TEXT_RGB, 24) + (255,),
+                     outline=_over(TEXT_RGB, 40) + (255,), width=_i(1))
         col = TEXT_RGB + (230,)
         if glyph == "x":
             # X marks — two crossing lines.
-            k = 4
-            draw.line((cx - k, cy - k, cx + k, cy + k), fill=col, width=2)
-            draw.line((cx - k, cy + k, cx + k, cy - k), fill=col, width=2)
+            k = _s(4)
+            draw.line((cx - k, cy - k, cx + k, cy + k), fill=col, width=_i(2))
+            draw.line((cx - k, cy + k, cx + k, cy - k), fill=col, width=_i(2))
             action = "overlay_cancel"
         elif glyph == "pause":
             # Two vertical bars.
-            draw.rectangle((cx - 3, cy - 4, cx - 1, cy + 4), fill=col)
-            draw.rectangle((cx + 1, cy - 4, cx + 3, cy + 4), fill=col)
+            draw.rectangle((cx - _s(3), cy - _s(4), cx - _s(1), cy + _s(4)), fill=col)
+            draw.rectangle((cx + _s(1), cy - _s(4), cx + _s(3), cy + _s(4)), fill=col)
             action = "overlay_pause"
         elif glyph == "play":
             # Filled right-pointing triangle (paused → resume).
             draw.polygon(
-                [(cx - 3, cy - 5), (cx - 3, cy + 5), (cx + 4, cy)],
+                [(cx - _s(3), cy - _s(5)), (cx - _s(3), cy + _s(5)), (cx + _s(4), cy)],
                 fill=col)
             action = "overlay_pause"
         else:
@@ -454,41 +635,105 @@ class WinOverlay:
 
     def _draw_transcribing(self, draw, img):
         cy = PANEL_H // 2
-        x = PADDING_LEFT
+        x = self._px0 + PADDING_LEFT
+        self._hits = []
 
         # Spinner: an accent arc that rotates with self._phase.
-        r = 9
+        r = _s(9)
         start = int((self._phase * 90) % 360)
         end = (start + 270) % 360
         draw.arc((x, cy - r, x + 2 * r, cy + r),
                  start=start, end=end,
-                 fill=ACC_RGB + (255,), width=2)
-        x += 2 * r + 10
+                 fill=ACC_RGB + (255,), width=_i(2))
+        x += 2 * r + _s(10)
 
         # Elapsed seconds since the start of recording (same clock as
         # the recording pill so the number carries over smoothly).
         secs = int(max(0, time.time() - self._t0)) if self._t0 else 0
         label = f"Transcribing {secs}s"
-        draw.text((x, cy - 8), label, fill=TEXT_RGB + (255,),
+        draw.text((x, cy - _s(8)), label, fill=TEXT_RGB + (255,),
                   font=self._font_ui)
         tw = _text_width(draw, label, self._font_ui)
-        x += tw + 12
+        x += tw + _s(12)
 
-        # Route: SRC → DST in muted small text, right-aligned to available
-        # room.
-        route = f"{(self._src or 'WIN').upper()}  →  {(self._dst or 'WIN').upper()}"
-        route_w = _text_width(draw, route, self._font_ui)
-        rx = PANEL_W - PADDING_RIGHT - route_w
-        if rx > x:
-            draw.text((rx, cy - 7), route, fill=MUTED_RGB + (255,),
-                      font=self._font_ui)
+        # The SRC → DST route used to sit here. It is dropped for the same
+        # reason as the recording device tag: the Done pill states the
+        # destination, which is the moment it is news. Cancel appears on hover.
+        if not self._revealed():
+            return
+        rx = self._px1 - PADDING_RIGHT - BTN_R
+        self._draw_ctrl(draw, rx, cy, glyph="x")
+
+    # ── capsule geometry / hover ─────────────────────────────────────────
+    def _revealed(self):
+        """True when the control cluster should be drawn.
+
+        Hover reveals it; a paused recording forces it, because with no state
+        caption the resume button is the only thing that says "paused" — it must
+        not be hidden behind a hover.
+        """
+        if self._mode == "recording" and self._paused:
+            return True
+        return bool(getattr(self, "_hover", False))
+
+    def _pill_width(self):
+        """Width of the drawn pill for the current mode + reveal state."""
+        try:
+            if self._mode == "recording":
+                return W_REC_OPEN if self._revealed() else W_REC
+            if self._mode == "transcribing":
+                return W_TRANS_OPEN if self._revealed() else W_TRANS
+            if self._mode == "done":
+                return W_DONE_OPEN if self._revealed() else W_DONE
+        except Exception:
+            pass
+        return PANEL_W
+
+    def _poll_hover(self):
+        """Derive hover from where the pointer IS, not from <Motion> events.
+
+        Events are the wrong foundation here. The window is colour-keyed, so most
+        of it is masked and click-through, and it never holds focus — <Motion>
+        arrives only over live pixels of a window taking input, which is exactly
+        the case we cannot rely on. Polling the pointer against the drawn pill's
+        rect always works, and it is free: this runs inside the 33 ms loop that
+        already repaints the waveform.
+        """
+        try:
+            if self._root is None:
+                return
+            px = self._root.winfo_pointerx() - self._root.winfo_rootx()
+            py = self._root.winfo_pointery() - self._root.winfo_rooty()
+            inside = (self._px0 <= px <= self._px1) and (0 <= py <= PANEL_H)
+            self._hover = bool(inside)
+        except Exception:
+            pass    # a hover glitch must never disturb the pill
+
+    def _on_motion(self, event):
+        """Accelerator only — _poll_hover is the real mechanism, but reacting to
+        a Motion event we DO get removes up to 33 ms of lag."""
+        inside = (getattr(self, "_px0", 0) <= event.x <= getattr(self, "_px1", PANEL_W))
+        if inside != bool(getattr(self, "_hover", False)):
+            self._hover = inside
+            self._safe(self._render)
+
+    def _on_leave(self, event=None):
+        # Also just an accelerator; the poll would catch it on the next frame.
+        if getattr(self, "_hover", False):
+            self._hover = False
+            self._safe(self._render)
 
     # ── click dispatch ──────────────────────────────────────────────────
     def _on_click(self, event):
-        # Only recording mode currently has interactive buttons.
-        if self._mode != "recording":
-            return
         x, y = event.x, event.y
+        # Collapsed, there are no hit-boxes: a click on the capsule reveals the
+        # controls instead of guessing at an invisible one. (Also the only way in
+        # for a touchscreen, which never hovers.)
+        if not self._revealed():
+            if getattr(self, "_px0", 0) <= x <= getattr(self, "_px1", PANEL_W):
+                self._hover = True
+                self._safe(self._render)
+            return
         for (x1, y1, x2, y2, action) in self._hits:
             if x1 <= x <= x2 and y1 <= y <= y2:
                 self._action(action)
@@ -518,24 +763,43 @@ class WinOverlay:
 
     def _draw_done(self, draw, img):
         cy = PANEL_H // 2
-        x = PADDING_LEFT
+        x = self._px0 + PADDING_LEFT
+        self._hits = []
 
         # Green check dot on the left.
-        r = 6
+        r = _s(6)
         draw.ellipse((x, cy - r, x + 2 * r, cy + r),
                      fill=GREEN_RGB + (255,))
-        x += 2 * r + 10
+        x += 2 * r + _s(10)
 
         # Label + meta.
         label = self._done_label or "Done"
-        draw.text((x, cy - 8), label, fill=TEXT_RGB + (255,),
+        draw.text((x, cy - _s(8)), label, fill=TEXT_RGB + (255,),
                   font=self._font_ui)
 
         if self._done_meta:
             meta_w = _text_width(draw, self._done_meta, self._font_ui)
-            mx = PANEL_W - PADDING_RIGHT - meta_w
-            draw.text((mx, cy - 7), self._done_meta,
+            mx = self._px1 - PADDING_RIGHT - meta_w
+            if self._revealed():
+                mx -= 2 * BTN_R + BTN_GAP
+            draw.text((mx, cy - _s(7)), self._done_meta,
                       fill=MUTED_RGB + (255,), font=self._font_ui)
+        if self._revealed():
+            rx = self._px1 - PADDING_RIGHT - BTN_R
+            self._draw_ctrl(draw, rx, cy, glyph="x")
+
+
+def _over(fg, alpha, bg=None):
+    """fg over bg at `alpha` (0-255), returned opaque.
+
+    Needed because ImageDraw writes pixels verbatim — it never blends — and the
+    layered window keys on colour, not alpha. Anything that wanted to be a faint
+    tint has to be pre-composited here or it lands at full strength.
+    """
+    if bg is None:
+        bg = BG_RGB
+    a = max(0.0, min(1.0, alpha / 255.0))
+    return tuple(int(round(f * a + b * (1.0 - a))) for f, b in zip(fg, bg))
 
 
 def _hex_to_rgba(hexstr):

@@ -34,20 +34,31 @@ def _headers(config: dict, json: bool = False) -> dict:
     return h
 
 
+_MIME = {".flac": "audio/flac", ".wav": "audio/wav", ".ogg": "audio/ogg",
+         ".mp3": "audio/mpeg", ".m4a": "audio/mp4", ".webm": "audio/webm"}
+
+
 def transcribe_via_proxy(wav_path: str, config: dict, prompt: str | None = None,
                          timeout: float = 30.0, language: str | None = "en",
                          model: str | None = None) -> str | None:
-    """Transcribe a WAV via the proxy (multipart → Groq /audio/transcriptions).
-    language=None → Whisper auto-detects; the proxy forwards the form as-is."""
+    """Transcribe an audio file via the proxy (multipart → Groq /audio/transcriptions).
+    language=None → Whisper auto-detects; the proxy forwards the form as-is.
+
+    The upload filename/mime are derived from `wav_path` rather than hardcoded:
+    Groq identifies the container from the multipart filename, so sending FLAC
+    bytes labelled `audio.wav` is rejected."""
     try:
+        import os
         import httpx
         data = {"model": model or "whisper-large-v3-turbo", "temperature": "0"}
         if language:
             data["language"] = language
         if prompt:
             data["prompt"] = prompt
+        ext = os.path.splitext(wav_path)[1].lower()
+        name, mime = "audio" + (ext or ".wav"), _MIME.get(ext, "audio/wav")
         with open(wav_path, "rb") as f:
-            files = {"file": ("audio.wav", f, "audio/wav")}
+            files = {"file": (name, f, mime)}
             resp = httpx.post(_endpoint(), headers=_headers(config), data=data,
                               files=files, timeout=timeout)
         if resp.status_code != 200:

@@ -381,8 +381,24 @@ class MeetingWindow:
 
     def set_mode(self, mode):
         self.emit("mode", {"mode": mode})
-        if mode in ("premeeting", "permissions", "summary"):
+        if mode in ("premeeting", "permissions"):
             self.set_layout("expanded")
+
+    def set_handoff(self, state, row):
+        """Post-meeting handoff (MER-46).
+
+        The panel no longer renders summaries — it collapses to the ambient bar
+        ("Finishing notes…" while the summary generates, then "Notes ready →")
+        and clicking that bar opens the meeting in the dashboard's detail view.
+        Emit BEFORE the morph so the pill paints its handoff content during the
+        frame animation rather than flashing the live layout."""
+        try:
+            self.emit("handoff", {"state": state,
+                                  "id": (row or {}).get("id"),
+                                  "title": (row or {}).get("title")})
+            self.set_layout("bar")
+        except Exception as e:
+            logger.debug("meeting handoff failed: %s", e)
 
     def _eval_now(self, js):
         try:
