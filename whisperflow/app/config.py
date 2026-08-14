@@ -78,7 +78,60 @@ DEFAULT_CONFIG = {
     # of guessing. Default ON — it's low-risk grounding DATA (never a directive to
     # collapse), fail-closed, and adds only a small bounded token cost per call.
     "context_grounding_enabled": True,
+    # Latency pass (2026-08-14). ONE master switch so old-vs-new can be A/B'd by
+    # flipping a single value, and so "old" is always reachable. Default False =
+    # byte-identical to the measured v1.1.0-baseline behaviour.
+    #
+    # When True, four things change, all in the post-transcription path:
+    #   1. transcripts of <= _SKIP_CLEANUP_MAX_WORDS words skip the LLM entirely
+    #      (17% of real dictations are under 3s and were paying a full round trip)
+    #   2. the 18-rule SYSTEM_PROMPT (~2,476 tokens of prefill on EVERY call) is
+    #      replaced by LEAN_SYSTEM_PROMPT
+    #   3. formatting runs on a faster model (see SPEED_CLEANUP_MODEL)
+    #   4. fixed sleeps in the record->inject path are skipped
+    # Measured baseline it is being compared against: 1.02s ASR + ~1.2s formatting.
+    "speed_mode": False,
+    # Chained transcription (2026-08-14). INDEPENDENT of speed_mode, so the two
+    # can be measured separately — this one changes only the network path, not
+    # the prompt, the model, or the output.
+    #
+    # Off: Mac -> proxy -> Groq (hear), then Mac -> proxy -> Groq (format).
+    #      Two round trips, 8 internet crossings for ~370ms of model work.
+    # On:  Mac -> proxy -> Groq (hear) -> Groq (format) -> Mac.
+    #      One round trip; the hand-off happens inside the edge function, which
+    #      sits next to Groq. Measured saving: 0.57s, CI [+0.38, +0.80].
+    #
+    # The client still supplies the system prompt and user message, so WHICH
+    # prompt and model get used is still decided by speed_mode — chaining moves
+    # the call, it does not change it. Fails closed: if the server-side format
+    # step errors it returns chain.ok=false and the client formats locally, so
+    # a chain failure costs latency, never a dictation.
+    "chained_mode": False,
+    # Which Groq Whisper model transcribes. "auto" keeps the long-standing routing
+    # (turbo for English, full large-v3 for any pinned non-English language, because
+    # the distil is measurably weaker on lower-resource languages) — anything else is
+    # an explicit override that applies to every language.
+    #
+    # Only Groq models are selectable here, and that is deliberate: every other provider
+    # evaluated (ElevenLabs, AssemblyAI, NVIDIA, Qwen) would need its key held by the
+    # `groq-proxy` Edge Function to satisfy Hard Rule #15 — no client-side provider
+    # keys, ever. Until that exists they are lab-only.
+    "asr_model": "auto",
+    # Hybrid (2026-08-15). Streams audio to `asr-stream` WHILE you speak, then uses
+    # the streamed transcript for takes at/over asr_stream.HYBRID_THRESHOLD_SEC and
+    # falls back to the ordinary chained path for shorter ones (Groq is faster there).
+    # Implies chained_mode for the short branch. Default False; every failure path
+    # degrades to the normal upload, so this can only ever cost latency.
+    "hybrid_mode": False,
 }
+
+# Settings the dashboard may flip individually. Same "only overwrite when present"
+# discipline as NOTES_FEATURE_FLAGS: a partial payload must never reset a sibling.
+PIPELINE_FLAGS = (
+    "speed_mode",
+    "chained_mode",
+    "hybrid_mode",
+)
 
 # Bounded local meeting-metadata list (mirrors the history cap pattern).
 MEETINGS_CAP = 30

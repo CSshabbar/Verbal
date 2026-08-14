@@ -96,6 +96,106 @@ Each feature: **what it does · desktop impl · mobile impl · backend · status
   checklist/structure-detection and `TITLE:` rules only when those flags are on (see §Notes).
   `format_note(text, cfg, …)` returns `{title, formatted_content}`; `_parse_note_response` peels a leading
   `TITLE:` line.
+- **Latency: `speed_mode` (2026-08-14, desktop, default OFF).** One master switch in `DEFAULT_CONFIG` so
+  the pre-tuning behaviour stays reachable for A/B. When on: transcripts of **≤ 8 words**
+  (`ai_cleanup._SKIP_CLEANUP_MAX_WORDS`) skip the LLM entirely; `SYSTEM_PROMPT` (~2,428 tokens) is replaced
+  by `LEAN_SYSTEM_PROMPT` (~677); formatting runs on `SPEED_CLEANUP_MODEL` (`llama-3.1-8b-instant`) instead
+  of `llama-3.3-70b-versatile`. Measured: prompt size has **~zero** latency effect — the win comes from the
+  skip rule and the smaller model, not from the shorter prompt.
+- **Settings → Dictation → "Speed & pipeline" (2026-08-15).** A radio group exposing the three real
+  pipelines, plus a **Transcription model** select (`asr_model`: `auto` | `whisper-large-v3-turbo` |
+  `whisper-large-v3`; `auto` keeps the language-based routing at `transcriber.py`, an explicit pick applies
+  to every language, and an unrecognised value falls back to `auto` rather than reaching Groq).
+  The radio is **DERIVED from `speed_mode` + `chained_mode`, never stored separately** — those two are what
+  the dictation path reads, so a third key would be a copy free to disagree with what actually runs:
+  `Original` = both off · `Two round trips` = speed only · `One round trip` = both on.
+  Saving goes through `DashboardApi.save_settings`, which honours `PIPELINE_FLAGS` with the same
+  "only overwrite when present" rule as `NOTES_FEATURE_FLAGS` and validates `asr_model` against the allowed
+  set. `get_state()` now returns `speed_mode`/`chained_mode`/`asr_model` so the pane renders real state.
+  **`settingsBase()` in the dashboard JS must NOT send `recording_mode`** — it is absent from
+  `STATE.settings`, and `save_settings` only preserves the stored value when the field is MISSING, so
+  sending a default would flip a hold-to-talk user to toggle on every pipeline change.
+  **Alternate ASR providers are LIVE (2026-08-15).** `transcriber.ASR_CHOICES` is the single table mapping
+  each `asr_model` value to a `{provider, model, bias}` triple, so the UI, the validator
+  (`save_settings`) and the request builder cannot drift: `auto` / `whisper-large-v3-turbo` /
+  `whisper-large-v3` (Groq), `eleven-scribe-v1`, `aai-universal-2`, `aai-universal-3-5-pro`.
+  Non-Groq choices send `asr_provider` + `asr_alt_model` multipart fields; `groq-proxy` holds
+  `ELEVENLABS_API_KEY` / `ASSEMBLYAI_API_KEY` as **function secrets** (Hard Rule #15 — no provider key ever
+  reaches a client) and normalizes every reply to Groq's `{text}` shape, so no client needs per-provider
+  response handling and `chain=1` still works on top of any of them. Three rules that matter:
+  - **Fails closed to Groq.** A provider that is unconfigured, down or out of credit returns 502 and
+    `transcribe_with_status` immediately retries on Groq for that dictation. The provider is a preference,
+    never a dependency.
+  - **`bias: False` on non-Whisper providers.** Only Whisper accepts a glossary, so `dictionary.build_prompt`
+    output is not sent to them — and `finalize(..., biased=False)` then skips `strip_prompt_echo`, whose
+    heuristics would otherwise hunt an echo that cannot exist and could clip real words. The user's
+    replacement rules still apply afterwards.
+  - **They are slower**, and the UI says so per option: Groq ~1.0s, ElevenLabs ~1.75s, AssemblyAI ~5s
+    (upload-then-poll). They buy accuracy, not speed.
+- **Hybrid pipeline — BUILT (2026-08-15, `hybrid_mode`, default OFF).** Streams mic audio to the new
+  `asr-stream` Edge Function *while you speak*, then uses the streamed transcript for takes at/over
+  `asr_stream.HYBRID_THRESHOLD_SEC` (8.0s, the measured crossover) and falls back to the ordinary chained
+  path below it, because Groq is genuinely faster on short takes. Selecting it in Settings writes
+  `speed_mode=True, chained_mode=True, hybrid_mode=True`; every other pipeline explicitly writes
+  `hybrid_mode=False`, so switching away can never leave it silently streaming.
+  - `app/asr_stream.py` — `AsrStream` opens the socket at record-start; `Recorder.set_tap()` feeds it each
+    block. **The tap runs on the PortAudio realtime thread**, so it only decimates to 16 kHz and puts bytes
+    on a bounded queue; a separate pump thread does all I/O. `_audio_callback` wraps the tap and drops it
+    permanently on its first exception — losing the stream costs latency, losing the callback costs the
+    dictation. `Recorder.stop()` clears the tap after its settle so no stale tap survives into the next take.
+  - Frames are a fixed 100 ms with the remainder carried; AssemblyAI closes the session on any frame under
+    50 ms (this is the bug that broke the playground — see 05 §Hard rules).
+  - **AssemblyAI only.** Deno's `WebSocket` cannot set request headers, so a vendor must accept a credential
+    in the URL; AssemblyAI mints one (`GET /v3/token`, verified working) while ElevenLabs' realtime API
+    documents only an `xi-api-key` header and returns 404 on every token path probed. Not guessed at.
+  - **The streamed transcript bypasses `transcriber.finalize()`**, so `main.py` applies
+    `dictionary.apply_replacements` to it explicitly — otherwise the dictionary would silently stop working
+    on exactly the long dictations this path serves. No prompt-echo scrub (no glossary is sent).
+  - **Caveat surfaced in the UI:** the streaming engine writes Roman-Urdu in Devanagari, so hybrid is the
+    wrong choice for long code-switched dictation. Payoff over one-round-trip is 0.24–0.37s, above 8s only.
+  - Fails closed at every step (no socket, dropped blocks, no final, any exception) → ordinary upload path.
+- **Latency: `chained_mode` (2026-08-14, desktop, default OFF).** INDEPENDENT of `speed_mode` and composes
+  with it: it changes only the **network path**, never the prompt, model, or output. Off, dictation costs two
+  client round trips (transcribe, then format) — 8 internet crossings for ~370 ms of model work. On,
+  `ai_cleanup.build_chain_spec()` builds `{system, user, model, replace}` (the `user` wrapper carries
+  `{{TEXT}}` as the transcript slot), `groq_proxy.transcribe_via_proxy(chain=…, sidecar=…)` sends it as
+  `chain=1` multipart fields, and `groq-proxy` (edge fn **v10**) transcribes then formats server-side,
+  returning `chain:{formatted, ok, asr_ms, fmt_ms}`. The client hands that to
+  `process_text(…, chained_result=…)`, which still applies every rule around the formatting (local cleanup,
+  the `speed_mode` skip, the 429 fallback) — only the second network call is skipped.
+  **Measured: 6/6 clips byte-identical output and identical accuracy to the two-trip path, median +0.59 s
+  faster (2.0 s → 1.2 s).** Wired on both `main.py` and `win_main.py`. Fails closed at every layer: no chain
+  spec, a non-Groq fallback provider, or `chain.ok=false` all fall through to the ordinary two-trip path, so
+  the fast path being unavailable costs latency and never a dictation. Two ordering rules make chained output
+  identical rather than merely similar — see 05 §Hard rules #40.
+- **Streaming ASR — MEASURED AND DEFERRED (2026-08-14).** The remaining gap to Wispr Flow is that Verbal
+  sends nothing until you stop speaking. Groq **cannot** close it: its audio API is file-only (no
+  WebSocket), and its **10-second minimum billed duration** makes client-side chunking cost multiples of
+  the real audio on a 28,800 audio-sec/day free tier. ElevenLabs `scribe_v2_realtime` (WebSocket, own key,
+  ~$0.39/hr) can, and was measured over the 20 own-voice clips:
+  - **Tail after you stop speaking is FLAT ~0.32 s** at every length (2.4 s of speech and 65 s both ~0.3 s)
+    — the work happens during speech. Groq's wait grows with length (0.72 s → 1.16 s → 1.29 s).
+  - **But formatting still needs its own round trip (~0.75 s)**, which streaming cannot chain away, so the
+    end-to-end win is only **0.24–0.37 s** and only above ~8 s of speech. **The two curves cross at ~8 s**
+    — that is where a length-based router would switch, derived from the data, not chosen.
+  - **Accuracy is a wash, not a win**: realtime scored 93.3% vs Groq's 92.9% on plain English and **80.0%
+    vs 81.3% on Roman-Urdu code-switching**, where it fails badly (clip `s07`: 38.9% vs Groq's 77.8%,
+    "matlab it's not working" → "but love, it's not working"). Note the 95.7% figure belongs to
+    ElevenLabs' *file* model; the realtime model is weaker. Given this user code-switches routinely, the
+    speed win costs accuracy exactly where it hurts. **Not implemented in the product** — it is selectable
+    in the out-of-repo eval platform (`~/.verbal-eval/collect/`, `live.py`, `/playground`) as the
+    `stream_el` / `hybrid_el` versions so the trade can be felt before anything is built.
+  - **AssemblyAI universal streaming v3** (`wss://streaming.assemblyai.com/v3/ws`, `Authorization: <key>`
+    with NO Bearer prefix, raw binary PCM frames, `{"type":"Terminate"}` to flush) was added as a second
+    realtime engine (`stream_aai` / `hybrid_aai`). **Spot-checked on 4 clips only** — not swept, to save
+    credits — and on those it beat ElevenLabs realtime on both axes: tail **0.0 s** (it finalises a turn off
+    trailing silence, so the transcript can be ready *before* the speaker stops) vs 0.285 s, and it got
+    `Supabase` where ElevenLabs produced `Superbase`. On `s05` it scored **100%** where Groq scored 80%.
+    Batch rows also exist for the models table (`aai-universal-3-5-pro`, `aai-universal-2`); note
+    `speech_model` is rejected as deprecated — the field is now the **list** `speech_models`. Universal-3.5
+    Pro transcribed the Roman-Urdu clip `s07` into **Devanagari script** despite `language_code: "en"`
+    (scored 0% — right meaning, useless for dictation into English), while Universal-2 handled the same clip
+    best of any model tested at 83.3%. So model choice there is not a simple "newer is better".
 - **Mobile:** `lib/groq.ts::formatText` (same `llama-3.3-70b-versatile`) — used on **retry** and where
   screens call it. Brought to full **logic parity** with desktop's self-correction rule in MER-43 (same
   cue families, 4-part test, anti-cues, and-carve-out, asymmetry, punctuation-invariance, directionality —

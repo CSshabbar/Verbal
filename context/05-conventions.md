@@ -962,6 +962,53 @@
       elapsed seconds for the transcribing state — pushing them for the recording state too is the fix if
       anyone reports a wrong duration.
 
+40. **If you move a pipeline stage across the client/server boundary, move the ORDER with it.** `chained_mode`
+    (2026-08-14) makes `groq-proxy` transcribe *and* format in one round trip. That is purely a network
+    change on paper, yet the first two cuts produced *different text* than the two-trip path — both times
+    because a step that runs before formatting on the client no longer did on the server. Both are now
+    fixed in edge fn **v10**; both cost a full measure-and-diagnose cycle, so treat them as the template
+    for any future stage that migrates server-side:
+    - **Whisper's transcript has a LEADING SPACE, and every client strips it.** `groq_proxy.py` and
+      `lib/groq.ts` both `.strip()`. `chainFormat` did not, so the formatter received one extra leading
+      token, which re-tokenizes the first line. Measured: the chained path lost the `Subhan`→`Siobhan`
+      grounding fix **3/3** runs that the local path made **3/3** runs, on a byte-identical prompt. Never
+      hand a raw upstream transcript to a second model without the same normalization the client applies.
+    - **The dictionary must be applied BEFORE the formatter, so the RULES have to cross the wire.**
+      `dictionary.apply_replacements()` runs inside `transcriber.finalize()`, i.e. before `process_text`
+      ever sees the text. Chained, the server holds the transcript first — so the formatter read the
+      uncorrected word and then "corrected" the grammar around it: `so ideas needs a new one` came back as
+      `so ideas need a new one`, and applying `ideas`→`Idiaz` to the *output* could not restore `needs`.
+      Fix: `build_chain_spec()` ships the `{from,to}` rules as `chain_replace`, and the edge function's
+      `applyReplacements()` mirrors the Python semantics (word-boundary, case-insensitive) before
+      formatting. **Only the rules cross; the dictionary itself stays on the client.** The dictionary
+      rewrites **4 of 20** of this user's own clips, so this was a 20% exposure, not an edge case.
+      Parity between the two implementations is pinned by comparing outputs on real rules — do that again
+      if either side changes. Note the JS side replaces via a **function** (`() => r.to`) so `$1`/`$&` in a
+      user-typed word can never be read as a backreference; Python's `re.sub` template would.
+    - **Corollary for measurement:** when comparing arms, pass the *same* `active_app`. The eval harness's
+      `new` arm calls `process_text(text, cfg)` with none, so a chained arm passing one adds an
+      `Active app:` line to the grounding block and the comparison silently measures the prompt difference
+      instead of the round trip.
+
+41. **A flat `time.sleep()` on the dictation path is a latency bug, not a safety margin.** Three of them
+    shipped, each waiting for something the code could simply observe. The pattern is always the same:
+    replace the sleep with a wait on the real signal, keeping the old duration as the CEILING — that makes
+    the change strictly non-regressive (never slower than before) while removing the cost in the common case.
+    - `recorder.start()` — `sleep(0.3)` guessing when CoreAudio would deliver audio → `_first_block` Event
+      set by the audio callback, ceiling 0.6s. Measured first-buffer arrival: median 230ms.
+    - `injector.inject_text()` — `sleep(0.05)` after `pyperclip.copy` and `sleep(0.2)` after
+      `restore_focused_app()`, i.e. **250ms on every dictation, after the transcript was already in hand**.
+      Now `_await_clipboard` (poll the pasteboard, ceiling 50ms — measured 0.14ms median, 8.4ms worst) and
+      `_await_focus` (poll `NSWorkspace.frontmostApplication()` until the target pid is frontmost, ceiling
+      200ms). `activateWithOptions_` is **asynchronous**, which is what that 200ms was blindly covering;
+      pasting before focus lands sends Cmd-V to the wrong app, so the wait is real — it just should end
+      when focus actually arrives. Both log their real wait so production reveals the true numbers.
+    - `main.py` `_ui_timer` — every main-thread hop goes through `_ui_queue`, so the timer interval is the
+      floor on any UI hop the dictation path *waits* for (it waits for exactly one: hiding the pill before
+      focus restore). Dropped 0.1s → **0.04s**, turning a 0-100ms wait into 0-40ms for 25 wakeups/sec.
+    The remaining fixed sleep in `recorder.stop()` (0.1s, letting in-flight callbacks land) is deliberate and
+    is NOT on the perceived path — it runs before transcription, not after.
+
 ## Design system (Flume)
 
 Single source: desktop `app/theme.py` + `app/fonts_css.py`; mobile `flume-ui/theme/`. Also

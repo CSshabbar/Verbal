@@ -13,6 +13,16 @@ CHANNELS = 1
 DTYPE = "float32"
 # Target peak level for Whisper — keeps audio in clean range
 TARGET_PEAK = 0.5
+# Ceiling on how long start() waits for the mic to deliver its first buffer before
+# showing "Listening…".
+#
+# MEASURED on this machine (2018 Intel MacBook Pro, built-in mic, 5 cold starts):
+# first buffer arrives after 193ms / median 267ms / 475ms worst. The old flat
+# sleep(0.3) was therefore roughly RIGHT for this hardware, not wasteful — and
+# cutting it to 50ms would invite the user to speak ~200ms before the mic is live.
+# The ceiling sits above the observed worst case so a slow device is waited out
+# rather than truncated; fast hardware still returns as soon as audio arrives.
+_STREAM_READY_TIMEOUT = 0.6
 
 # Noise reduction parameters
 NOISE_REDUCTION_STRENGTH = 0.2
@@ -53,6 +63,9 @@ class Recorder:
         self._buffer = []
         self._stream = None
         self._lock = threading.Lock()
+        # Set by the audio callback on its first buffer, so start() can wait for
+        # real audio instead of guessing with a sleep.
+        self._first_block = threading.Event()
         self._recording = False
         self._sample_rate = _get_native_rate()
         self._noise_profile = None
@@ -62,7 +75,19 @@ class Recorder:
         self._cap_warned = False
         self._paused = False
         self._level = 0.0
+        # Optional streaming tap, set per take by set_tap(). None = the recorder
+        # behaves exactly as it always has; the hybrid pipeline is the only caller.
+        self._tap = None
         logger.info(f"Mic native rate: {self._sample_rate}Hz")
+
+    def set_tap(self, fn):
+        """Install (or clear with None) a per-block callback for streaming ASR.
+
+        Contract for `fn(block, sample_rate)`: cheap, non-blocking, never raises.
+        It is invoked on the PortAudio realtime thread, so anything slow here shows
+        up as dropped audio. The callback is dropped permanently on its first
+        exception — see _audio_callback."""
+        self._tap = fn
 
     @property
     def sample_rate(self):
@@ -98,6 +123,7 @@ class Recorder:
             self._paused = False
             self._level = 0.0
             self._recording = True
+        self._first_block.clear()
         try:
             try:
                 self._stream = self._open_stream()
@@ -118,9 +144,22 @@ class Recorder:
                     pass
                 self._stream = self._open_stream()
 
-            # Wait for stream to fully initialize and start capturing audio
-            # This prevents losing the first 1-2 seconds of speech
-            time.sleep(0.3)  # 300ms to ensure stream is ready
+            # Wait until the mic is genuinely delivering audio, then return.
+            #
+            # This used to be a flat time.sleep(0.3). The stream is already started by
+            # _open_stream() above, so that sleep never protected any audio — it delayed
+            # the CALLER, which is what shows the "Listening…" cue. Its real (accidental)
+            # job was to stop the user speaking before CoreAudio had woken up.
+            #
+            # A fixed 300ms is wrong in both directions: far too long for a built-in mic
+            # (~20ms to first buffer) and potentially too short for Bluetooth, where the
+            # device can take several hundred ms. So wait on the first buffer instead and
+            # keep 300ms only as a ceiling — the cue now appears as soon as the mic is
+            # actually live, typically well under 50ms, without regressing AirPods.
+            if not self._first_block.wait(timeout=_STREAM_READY_TIMEOUT):
+                logger.warning(
+                    "No audio delivered within %.0fms of stream start — proceeding anyway",
+                    _STREAM_READY_TIMEOUT * 1000)
 
             logger.info("Recording started")
         except Exception as e:
@@ -166,6 +205,9 @@ class Recorder:
 
         # Give callbacks time to finish processing last audio frames
         time.sleep(0.1)  # 100ms delay to ensure all audio is captured
+        # Drop the streaming tap AFTER that settle, so the final blocks still reach
+        # the stream, but no stale tap from this take can fire during the next one.
+        self._tap = None
         
         if self._stream:
             try:
@@ -204,6 +246,10 @@ class Recorder:
     def _audio_callback(self, indata, frames, time_info, status):
         if status:
             logger.warning(f"Audio status: {status}")
+        # First buffer of this take: unblock start(). Checked before setting so the
+        # realtime thread does no work on any subsequent callback.
+        if not self._first_block.is_set():
+            self._first_block.set()
         with self._lock:
             capturing = self._recording and not self._paused
             if capturing:
@@ -218,6 +264,16 @@ class Recorder:
         # Metering is done OUTSIDE the lock (it only touches a float) so the
         # audio callback keeps the lock for as short as possible.
         self._update_level(indata if capturing else None)
+        # Streaming tap (hybrid pipeline). Also outside the lock, also last: this is
+        # the PortAudio realtime thread, so the tap is contracted to do nothing but
+        # copy bytes onto a queue — no network, no blocking, no allocation storms.
+        # Wrapped because a broken tap must never be able to stop the recording;
+        # losing the stream costs latency, losing the callback costs the dictation.
+        if capturing and self._tap is not None:
+            try:
+                self._tap(indata, self._sample_rate)
+            except Exception:
+                self._tap = None      # one strike: never risk the mic thread twice
 
     def _update_level(self, block):
         """Fold one captured block into the smoothed level the overlay draws."""

@@ -13,6 +13,28 @@ logger = logging.getLogger("verbal.transcriber")
 # Groq call and fails transcription. Keep the combined prompt safely under it.
 _GROQ_PROMPT_CHAR_CAP = 850
 
+# Settings → Transcription model. One table so the UI, the validator and the request
+# builder cannot drift. `provider` is what groq-proxy dispatches on; `model` is the id
+# that provider wants. Measured on the user's own 20 clips (see context/03-features.md):
+# Groq ~1.0s, ElevenLabs ~1.75s, AssemblyAI ~5s (upload-then-poll) — the alternatives
+# buy accuracy, not speed, and `bias` records whether a Whisper-style prompt applies
+# (only Whisper takes one; sending the glossary elsewhere is meaningless or harmful).
+ASR_CHOICES = {
+    "auto":                    {"provider": "groq",     "model": None,               "bias": True},
+    "whisper-large-v3-turbo":  {"provider": "groq",     "model": "whisper-large-v3-turbo", "bias": True},
+    "whisper-large-v3":        {"provider": "groq",     "model": "whisper-large-v3", "bias": True},
+    "eleven-scribe-v1":        {"provider": "eleven",   "model": "scribe_v1",        "bias": False},
+    "aai-universal-2":         {"provider": "assembly", "model": "universal-2",      "bias": False},
+    "aai-universal-3-5-pro":   {"provider": "assembly", "model": "universal-3-5-pro", "bias": False},
+}
+
+
+def asr_choice(config: dict) -> dict:
+    """Resolve `asr_model` to a provider/model pair, falling back to auto on anything
+    unrecognised rather than forwarding a bad id that would fail every dictation."""
+    return ASR_CHOICES.get(str(config.get("asr_model") or "auto").strip(),
+                           ASR_CHOICES["auto"])
+
 
 def transcribe(audio: np.ndarray, config: dict, sample_rate: int = 48000) -> str:
     """Transcribe audio. Priority: Groq -> Gemini -> Local Whisper.
@@ -28,7 +50,8 @@ def resolve_language(config: dict, override: str | None = None) -> str | None:
 
 
 def transcribe_with_status(audio: np.ndarray, config: dict, sample_rate: int = 48000,
-                           language: str | None = None):
+                           language: str | None = None,
+                           chain: dict | None = None, sidecar: dict | None = None):
     """Like transcribe() but returns (text, status) where status is:
       'ok'      — got a transcription
       'silent'  — audio was empty/near-silent (no speech; not an error)
@@ -37,6 +60,17 @@ def transcribe_with_status(audio: np.ndarray, config: dict, sample_rate: int = 4
     `language`: ISO code or 'auto' — overrides config['spoken_language'] (used by
     the per-meeting language picker). Whisper is natively multilingual; English
     was previously hard-pinned here, which silently broke every other language.
+
+    `chain` / `sidecar` (`chained_mode`, opt-in): ask the proxy to also run the
+    formatting completion inside this same round trip. Build `chain` with
+    ai_cleanup.build_chain_spec() at the call site, which is where the active app
+    is known. The formatted text comes back in `sidecar["formatted"]`, already put
+    through finalize() so it gets the same prompt-echo scrub, dictionary
+    replacements and file tagging as the unchained path.
+
+    Only the Groq-proxy branch chains. Every fallback (local Groq key, Gemini,
+    local Whisper) leaves the sidecar empty, so the caller formats locally exactly
+    as it does today — the fast path being unavailable never costs a dictation.
     """
     start = time.time()
 
@@ -195,11 +229,53 @@ def transcribe_with_status(audio: np.ndarray, config: dict, sample_rate: int = 4
         # Non-English pinned languages route to full large-v3 — the turbo distil
         # is noticeably weaker on lower-resource languages.
         from app.groq_proxy import transcribe_via_proxy
-        _model_id = "whisper-large-v3" if lang not in (None, "en") else "whisper-large-v3-turbo"
-        proxy_text = transcribe_via_proxy(tmp, config, prompt=prompt,
-                                          language=lang, model=_model_id)
+        # "auto" (the default) keeps the original routing; an explicit choice from
+        # Settings wins for every language.
+        _ch = asr_choice(config)
+        _alt = _ch["provider"] != "groq"
+        _model_id = _ch["model"] or (
+            "whisper-large-v3" if lang not in (None, "en") else "whisper-large-v3-turbo")
+        # A Whisper bias prompt means nothing to ElevenLabs/AssemblyAI, and Whisper's
+        # prompt-echo failure mode is Whisper-specific — so the glossary is only sent
+        # to Groq, and finalize() is told not to look for an echo that cannot happen.
+        _prompt_for_call = prompt if _ch["bias"] else None
+        proxy_text = transcribe_via_proxy(
+            tmp, config, prompt=_prompt_for_call, language=lang,
+            model=(None if _alt else _model_id),
+            provider=(_ch["provider"] if _alt else None),
+            alt_model=(_ch["model"] if _alt else None),
+            chain=chain, sidecar=sidecar)
+        # FAIL CLOSED: an alternate provider that is unconfigured, down or out of
+        # credit must never cost a dictation, so fall straight back to Groq — the
+        # provider is a preference, not a dependency.
+        if _alt and not proxy_text:
+            logger.warning("[%s] unavailable — falling back to Groq for this dictation",
+                           _ch["provider"])
+            if sidecar is not None:
+                sidecar.clear()
+            _model_id = ("whisper-large-v3" if lang not in (None, "en")
+                         else "whisper-large-v3-turbo")
+            _alt, _prompt_for_call = False, prompt
+            proxy_text = transcribe_via_proxy(tmp, config, prompt=prompt, language=lang,
+                                              model=_model_id, chain=chain, sidecar=sidecar)
         if proxy_text and proxy_text not in (".", "...", "uh", "um", "ah", "hm"):
-            proxy_text = finalize(proxy_text)
+            # The chain formatted the RAW ASR output, so its result has not been
+            # through finalize() yet. Run it through the same scrub the unchained
+            # text gets — the one ordering difference being that dictionary
+            # replacements now land AFTER formatting instead of before. The
+            # grounding block already lists those terms to the formatter, so the
+            # model still prefers the user's spelling; this is the safety net.
+            # biased=False when no glossary was actually sent (alternate providers get
+            # none): strip_prompt_echo would then be hunting an echo that cannot exist,
+            # and its heuristics could clip legitimate words instead.
+            _biased = _prompt_for_call is not None
+            if sidecar is not None and sidecar.get("formatted"):
+                try:
+                    sidecar["formatted"] = finalize(sidecar["formatted"], biased=_biased) or None
+                except Exception as e:
+                    logger.debug("chained finalize failed — formatting locally: %s", e)
+                    sidecar["formatted"], sidecar["chain_ok"] = None, False
+            proxy_text = finalize(proxy_text, biased=_biased)
             if not proxy_text:
                 # The model heard no speech and parroted our glossary back. That
                 # is silence, not a failure — do NOT fall through to the other

@@ -19,6 +19,7 @@ import pyperclip
 from app.config import (
     APP_VERSION,
     NOTES_FEATURE_FLAGS,
+    PIPELINE_FLAGS,
     _entry_app,
     _entry_text,
     feature_flag,
@@ -628,6 +629,14 @@ class DashboardApi:
                 "notes_autotitle_enabled": feature_flag(cfg, "notes_autotitle_enabled"),
                 "notes_structure_detection_enabled": feature_flag(cfg, "notes_structure_detection_enabled"),
                 "notes_audio_linkage_enabled": feature_flag(cfg, "notes_audio_linkage_enabled"),
+                # Pipeline + model choice, so Settings can render the CURRENT state
+                # instead of guessing. These default False/"auto", and the Settings
+                # pipeline radio is DERIVED from the two flags rather than stored
+                # separately — one source of truth, read by the dictation path itself.
+                "speed_mode": feature_flag(cfg, "speed_mode", False),
+                "chained_mode": feature_flag(cfg, "chained_mode", False),
+                "hybrid_mode": feature_flag(cfg, "hybrid_mode", False),
+                "asr_model": cfg.get("asr_model", "auto"),
             },
             sync_connected=bool(self.app._sync and self.app._sync.connected),
             devices=self.dashboard._known_devices,
@@ -1992,6 +2001,17 @@ class DashboardApi:
         for flag in NOTES_FEATURE_FLAGS:
             if flag in settings:
                 cfg[flag] = bool(settings[flag])
+        # Pipeline flags (speed_mode / chained_mode) — same "only when present" rule,
+        # so switching pipeline can never silently reset an unrelated toggle.
+        for flag in PIPELINE_FLAGS:
+            if flag in settings:
+                cfg[flag] = bool(settings[flag])
+        # ASR model: validated against the allowed set here rather than trusted, so a
+        # bad value from anywhere can't reach Groq and 400 every dictation.
+        if "asr_model" in settings:
+            from app.transcriber import ASR_CHOICES
+            _m = str(settings.get("asr_model") or "auto").strip()
+            cfg["asr_model"] = _m if _m in ASR_CHOICES else "auto"
         save_config(cfg)
         self.app.config = cfg
         self.app._mode = cfg["recording_mode"]

@@ -40,13 +40,33 @@ _MIME = {".flac": "audio/flac", ".wav": "audio/wav", ".ogg": "audio/ogg",
 
 def transcribe_via_proxy(wav_path: str, config: dict, prompt: str | None = None,
                          timeout: float = 30.0, language: str | None = "en",
-                         model: str | None = None) -> str | None:
+                         model: str | None = None,
+                         chain: dict | None = None,
+                         sidecar: dict | None = None,
+                         provider: str | None = None,
+                         alt_model: str | None = None) -> str | None:
     """Transcribe an audio file via the proxy (multipart → Groq /audio/transcriptions).
     language=None → Whisper auto-detects; the proxy forwards the form as-is.
 
     The upload filename/mime are derived from `wav_path` rather than hardcoded:
     Groq identifies the container from the multipart filename, so sending FLAC
-    bytes labelled `audio.wav` is rejected."""
+    bytes labelled `audio.wav` is rejected.
+
+    `chain` (opt-in, `chained_mode`) asks the Edge Function to ALSO run the
+    formatting completion server-side and return it in the same response, so the
+    Mac pays one round trip instead of two. Shape:
+        {"system": <system prompt>, "user": <user message with {{TEXT}}>,
+         "model": <chat model id>}
+    `{{TEXT}}` in `user` is substituted server-side with the ASR output. The
+    prompt and model still come from the client, so chaining changes only WHERE
+    the second call is made — not what it asks for.
+
+    `sidecar` (opt-in out-param) receives the chain outcome without changing this
+    function's return type, which several callers depend on:
+        {"formatted": str|None, "chain_ok": bool, "asr_ms": int, "fmt_ms": int}
+    A chain that errors server-side leaves formatted=None and chain_ok=False; the
+    transcription itself is unaffected, so the caller just formats locally.
+    """
     try:
         import os
         import httpx
@@ -55,6 +75,28 @@ def transcribe_via_proxy(wav_path: str, config: dict, prompt: str | None = None,
             data["language"] = language
         if prompt:
             data["prompt"] = prompt
+        # Alternate ASR provider (Settings → Transcription model). The proxy holds the
+        # provider key and normalizes the reply to Groq's `{text}` shape, so nothing
+        # below this line changes per provider. `model` is still sent and simply
+        # ignored server-side on these branches.
+        if provider and provider != "groq":
+            data["asr_provider"] = provider
+            if alt_model:
+                data["asr_alt_model"] = alt_model
+        # The server only chains when it is sent a system prompt (see index.ts
+        # `wantChain && chainSystem`), so an empty/malformed chain dict degrades
+        # to a plain transcription rather than to an error.
+        if chain and chain.get("system"):
+            data["chain"] = "1"
+            data["chain_system"] = chain["system"]
+            data["chain_user"] = chain.get("user") or "{{TEXT}}"
+            if chain.get("model"):
+                data["chain_model"] = chain["model"]
+            # Dictionary find->replace rules, applied server-side BEFORE formatting so
+            # the formatter reads the same corrected text it would read unchained.
+            if chain.get("replace"):
+                import json as _json
+                data["chain_replace"] = _json.dumps(chain["replace"])
         ext = os.path.splitext(wav_path)[1].lower()
         name, mime = "audio" + (ext or ".wav"), _MIME.get(ext, "audio/wav")
         with open(wav_path, "rb") as f:
@@ -64,7 +106,18 @@ def transcribe_via_proxy(wav_path: str, config: dict, prompt: str | None = None,
         if resp.status_code != 200:
             logger.warning("groq-proxy transcription %s: %s", resp.status_code, resp.text[:200])
             return None
-        return (resp.json().get("text") or "").strip() or None
+        body = resp.json()
+        if sidecar is not None:
+            _c = body.get("chain") or {}
+            _fmt = (_c.get("formatted") or "").strip()
+            sidecar["chain_ok"] = bool(_c.get("ok")) and bool(_fmt)
+            sidecar["formatted"] = _fmt or None
+            sidecar["asr_ms"] = _c.get("asr_ms")
+            sidecar["fmt_ms"] = _c.get("fmt_ms")
+            if chain and not sidecar["chain_ok"]:
+                logger.warning("chained_mode: server-side format unavailable "
+                               "(%s) — formatting locally", _c.get("error") or "no chain in response")
+        return (body.get("text") or "").strip() or None
     except Exception as e:
         logger.warning("groq-proxy transcription failed: %s", e)
         return None

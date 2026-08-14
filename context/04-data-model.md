@@ -272,6 +272,35 @@ columns it isn't changing (text edits never null the image); a clear is an expli
   Mobile `NoteEntry` adds `source:'local'|'remote'` and an index signature so **unknown/newer-client
   fields are preserved verbatim** (forward-compat). Mobile UI `Note` maps these to camelCase
   (`rawContent`, `audioSegments`, `conflict`, `conflictOf`).
+- **Latency flags** (`config.py::DEFAULT_CONFIG`, desktop-only, both **default `False`** so an existing
+  install behaves exactly as before the 2026-08-14 latency pass; picked up by the `setdefault` backfill):
+  `speed_mode` (skip the LLM under 8 words + lean prompt + `llama-3.1-8b-instant`) and `chained_mode`
+  (transcribe+format in ONE round trip via `groq-proxy` v10). Independent and composable — see
+  03 §Models pane. Read through `config.feature_flag()`, never `config.get()` directly. Both are listed in
+  `config.PIPELINE_FLAGS` and are the ONLY store for the Settings pipeline radio, which derives its
+  position from them. Also `asr_model` (`"auto"` default; validated in `save_settings`).
+- **`chain_*` multipart fields** (desktop → `groq-proxy`, only when `chained_mode` is on):
+  `chain="1"`, `chain_model`, `chain_system`, `chain_user` (contains `{{TEXT}}`, the transcript slot),
+  `chain_replace` (JSON `[{from,to}]`, the dictionary rules — applied server-side BEFORE formatting; capped
+  at 500 rules server-side). All are deleted from the form before it is forwarded to Groq, which rejects
+  unknown fields. Response gains `chain:{ok, formatted, model, fmt_ms, asr_ms, usage, error?}`.
+- **`asr_provider` / `asr_alt_model`** (desktop → `groq-proxy`, only when `asr_model` picks a non-Groq
+  model): `asr_provider` is `eleven` | `assembly`, `asr_alt_model` the provider's own model id
+  (`scribe_v1`, `universal-2`, `universal-3-5-pro`). Also deleted before forwarding. The reply is
+  normalized to `{text, provider, asr_ms}` — deliberately Groq's shape, so no client branches per provider
+  and `chain=1` composes on top. On failure the function returns **502**, never 200-with-empty-text, which
+  the client would misread as silence; the desktop then retries on Groq.
+- **`asr-stream` Edge Function** (2026-08-15, **`verify_jwt: false`**) — the websocket relay for
+  `hybrid_mode`. Connect to `wss://<proj>/functions/v1/asr-stream?provider=assembly&apikey=<anon>&device=<id>`.
+  verify_jwt must be off because a WS upgrade cannot carry an Authorization header, so **the function checks
+  the key itself** and refuses anything that is neither the anon key nor a `eyJ…` JWT — otherwise it is an
+  open relay spending the account's ASR credit. That relaxation is quarantined in this function precisely so
+  `groq-proxy` can keep verify_jwt on. Wire protocol: client sends binary PCM16 @16 kHz and
+  `{"type":"done"}`; server sends `{"type":"ready"|"partial"|"final"|"error"}`. Needs `ASSEMBLYAI_API_KEY`.
+- **`groq-proxy` function secrets:** `GROQ_API_KEY`, `OLLAMA_API_KEY`, plus (2026-08-15)
+  `ELEVENLABS_API_KEY` and `ASSEMBLYAI_API_KEY`. Set with `supabase secrets set` — there is **no MCP tool
+  for secrets**. Without them the provider branch 502s naming the missing secret and dictation falls back
+  to Groq, so a half-configured deploy degrades instead of breaking.
 - **Device**: `{user_id, device_id, device_name, device_type, last_seen}`.
 - **Canvas** (mobile UI item): `{id, state:'draft'|'sent', kind:'text'|'link'|'image', …}` → collapsed to the
   single shared `{content, image_url}` row on save.

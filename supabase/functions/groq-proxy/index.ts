@@ -38,6 +38,8 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 const GROQ_BASE = "https://api.groq.com/openai/v1";
 const OLLAMA_CHAT = "https://ollama.com/v1/chat/completions";
 const DEFAULT_TRANSCRIBE_MODEL = "whisper-large-v3-turbo";
+const ELEVEN_STT = "https://api.elevenlabs.io/v1/speech-to-text";
+const AAI_BASE = "https://api.assemblyai.com/v2";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -113,12 +115,12 @@ const WINDOW_SECONDS = 60;
 // parsed (transcription's real cost isn't token-shaped; chat's default
 // max_tokens is 2048 across every caller in this codebase — see groq_proxy.py /
 // lib/groq.ts / the keyboard extensions).
-const TOKEN_ESTIMATE: Record<string, number> = { transcription: 500, chat: 2048 };
+const TOKEN_ESTIMATE: Record<string, number> = { transcription: 500, chat: 2048, chained: 2548 };
 
 // Returns null if the request is allowed, or the seconds the caller should wait
 // before retrying. Never throws — any internal error (network, DB, bad response)
 // fails OPEN (returns null) so the limiter itself can never take the pipeline down.
-async function checkRateLimit(identity: string, kindGuess: "transcription" | "chat"): Promise<number | null> {
+async function checkRateLimit(identity: string, kindGuess: "transcription" | "chat" | "chained"): Promise<number | null> {
   try {
     const url = Deno.env.get("SUPABASE_URL");
     const svc = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
@@ -143,6 +145,148 @@ async function checkRateLimit(identity: string, kindGuess: "transcription" | "ch
   } catch (e) {
     console.warn("groq-proxy rate limiter error (failing open):", e);
     return null;
+  }
+}
+
+// ── Chained transcribe -> format (2026-08-14) ────────────────────────────────
+// Dictation used to cost the client TWO round trips: one to transcribe, one to format.
+// Measurement showed each round trip is a ~0.5-0.9s FIXED cost regardless of payload
+// (a 12-token prompt is no faster than a 677-token one), so halving the number of trips
+// is the only lever that actually moves total latency. Chaining them here means the
+// second hop is edge->Groq instead of client->edge->Groq.
+//
+// Strictly OPT-IN: activated only by a `chain=1` field in the multipart form. Every
+// existing client (desktop groq_proxy.py, mobile lib/groq.ts, both keyboard extensions)
+// sends no such field and takes the untouched streaming path below.
+//
+// FAILS CLOSED: any error formatting returns the transcription anyway with
+// chain.ok=false, so the client can format locally and dictation is never lost to this.
+// ── Alternate ASR providers (2026-08-15) ─────────────────────────────────────
+// Settings can pick a non-Groq transcription model. Their keys live HERE as function
+// secrets (ELEVENLABS_API_KEY / ASSEMBLYAI_API_KEY) for the same reason the Groq key
+// does — Hard Rule #15, no provider key ever reaches a client.
+//
+// Both return the SAME `{text}` shape Groq does, so the desktop/mobile clients need no
+// per-provider response handling; only the request grows one field. Both fail with a
+// non-200 so the caller can retry on Groq — a provider being down or unpaid must never
+// cost a dictation.
+//
+// Honest expectation: these are BATCH APIs and are slower than Groq on this audio
+// (measured on the user's own clips: Groq ~1.0s, ElevenLabs ~1.75s, AssemblyAI ~5s
+// because it is upload-then-poll). They are offered for accuracy, not speed.
+async function transcribeEleven(file: File, language: string): Promise<Record<string, unknown>> {
+  const key = Deno.env.get("ELEVENLABS_API_KEY");
+  if (!key) return { ok: false, error: "ELEVENLABS_API_KEY secret not set on the function" };
+  const fd = new FormData();
+  fd.set("file", file);
+  fd.set("model_id", "scribe_v1");
+  // ElevenLabs wants ISO-639-3 ("eng"), not the ISO-639-1 the rest of the app speaks.
+  if (language) fd.set("language_code", language === "en" ? "eng" : language);
+  const r = await fetch(ELEVEN_STT, { method: "POST", headers: { "xi-api-key": key }, body: fd });
+  if (!r.ok) return { ok: false, error: `eleven ${r.status}: ${(await r.text()).slice(0, 200)}` };
+  const j = await r.json();
+  return { ok: true, text: String(j?.text ?? "").trim() };
+}
+
+async function transcribeAssembly(
+  file: File, language: string, model: string,
+): Promise<Record<string, unknown>> {
+  const key = Deno.env.get("ASSEMBLYAI_API_KEY");
+  if (!key) return { ok: false, error: "ASSEMBLYAI_API_KEY secret not set on the function" };
+  const h = { Authorization: key };            // no Bearer prefix
+  const up = await fetch(`${AAI_BASE}/upload`, {
+    method: "POST", headers: h, body: await file.arrayBuffer(),
+  });
+  if (!up.ok) return { ok: false, error: `aai upload ${up.status}: ${(await up.text()).slice(0, 160)}` };
+  const uploadUrl = (await up.json())?.upload_url;
+  // `speech_models` is a LIST; the singular `speech_model` is rejected as deprecated.
+  // One entry pins the model instead of letting the service walk its default priority
+  // list and silently transcribe with something else.
+  const sub = await fetch(`${AAI_BASE}/transcript`, {
+    method: "POST", headers: { ...h, "Content-Type": "application/json" },
+    body: JSON.stringify({ audio_url: uploadUrl, speech_models: [model],
+                           language_code: language || "en" }),
+  });
+  if (!sub.ok) return { ok: false, error: `aai submit ${sub.status}: ${(await sub.text()).slice(0, 160)}` };
+  const id = (await sub.json())?.id;
+  const deadline = Date.now() + 60_000;
+  while (Date.now() < deadline) {
+    const g = await fetch(`${AAI_BASE}/transcript/${id}`, { headers: h });
+    const j = await g.json();
+    if (j?.status === "completed") return { ok: true, text: String(j?.text ?? "").trim() };
+    if (j?.status === "error") return { ok: false, error: `aai: ${String(j?.error).slice(0, 160)}` };
+    await new Promise((r) => setTimeout(r, 400));
+  }
+  return { ok: false, error: "aai timed out waiting for completion" };
+}
+
+// Mirror of dictionary.apply_replacements() (whisperflow/app/dictionary.py): the
+// user's find->replace rules, word-boundary and case-insensitive.
+//
+// This has to run HERE, before the formatter, not on its output. Unchained, the
+// client applies these in transcriber.finalize() before it ever calls the formatter.
+// Chained, the server holds the transcript first — so skipping this let the model
+// read an uncorrected word and then "fix" the grammar around it: "so ideas needs a
+// new one" came back as "so ideas need a new one", and correcting ideas->Idiaz
+// afterwards could not restore "needs".
+//
+// Only the RULES cross the wire (the dictionary itself stays on the client). The
+// replacement is passed as a function so `to` is always literal — $1/$& in a
+// user-typed word can never be read as a backreference.
+function applyReplacements(text: string, rules: Array<{ from: string; to: string }>): string {
+  let out = text;
+  for (const r of rules) {
+    if (!r?.from || typeof r.to !== "string") continue;
+    try {
+      const esc = r.from.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      out = out.replace(new RegExp(`\\b${esc}\\b`, "gi"), () => r.to);
+    } catch {
+      // A rule that will not compile is skipped, never fatal — same posture as the
+      // Python side, which falls back rather than raising.
+    }
+  }
+  return out;
+}
+
+async function chainFormat(
+  groqKey: string,
+  transcript: string,
+  model: string,
+  systemPrompt: string,
+  userTemplate: string,
+  replaceRules: Array<{ from: string; to: string }> = [],
+): Promise<Record<string, unknown>> {
+  const t0 = Date.now();
+  try {
+    if (!transcript.trim()) return { ok: false, error: "empty transcript", fmt_ms: 0 };
+    if (replaceRules.length) transcript = applyReplacements(transcript, replaceRules);
+    // The client supplies the prompt so prompt logic stays versioned with the app and
+    // never drifts between here and ai_cleanup.py. {{TEXT}} is the transcript slot.
+    const userMsg = userTemplate.includes("{{TEXT}}")
+      ? userTemplate.replace("{{TEXT}}", transcript)
+      : `${userTemplate}\n\n${transcript}`;
+    const r = await fetch(`${GROQ_BASE}/chat/completions`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${groqKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model,
+        temperature: 0,
+        max_tokens: 2048,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userMsg },
+        ],
+      }),
+    });
+    const fmt_ms = Date.now() - t0;
+    if (!r.ok) {
+      return { ok: false, error: `chat ${r.status}: ${(await r.text()).slice(0, 200)}`, fmt_ms };
+    }
+    const j = await r.json();
+    const formatted = j?.choices?.[0]?.message?.content ?? null;
+    return { ok: !!formatted, formatted, model, fmt_ms, usage: j?.usage ?? null };
+  } catch (e) {
+    return { ok: false, error: String(e).slice(0, 200), fmt_ms: Date.now() - t0 };
   }
 }
 
@@ -176,11 +320,106 @@ Deno.serve(async (req) => {
       kind = "transcription";
       const form = await req.formData();
       if (!form.get("model")) form.set("model", DEFAULT_TRANSCRIBE_MODEL);
+      // Pull the chain fields out BEFORE forwarding — Groq would reject unknown fields.
+      const wantChain = String(form.get("chain") ?? "") === "1";
+      const chainModel = String(form.get("chain_model") ?? "llama-3.1-8b-instant");
+      const chainSystem = String(form.get("chain_system") ?? "");
+      const chainUser = String(form.get("chain_user") ?? "{{TEXT}}");
+      // Dictionary rules as JSON. Malformed -> no rules, never an error: losing a
+      // name correction is bad, failing the dictation is worse.
+      let chainReplace: Array<{ from: string; to: string }> = [];
+      try {
+        const rawRules = String(form.get("chain_replace") ?? "");
+        if (rawRules) {
+          const parsed = JSON.parse(rawRules);
+          if (Array.isArray(parsed)) chainReplace = parsed.slice(0, 500);
+        }
+      } catch {
+        chainReplace = [];
+      }
+      // Alternate ASR provider (Settings → Transcription model). Pulled out and
+      // deleted before forwarding, like the chain fields — Groq rejects unknown fields.
+      const asrProvider = String(form.get("asr_provider") ?? "groq");
+      const asrAltModel = String(form.get("asr_alt_model") ?? "universal-2");
+      for (const k of ["chain", "chain_model", "chain_system", "chain_user", "chain_replace",
+                       "asr_provider", "asr_alt_model"]) {
+        form.delete(k);
+      }
+
+      if (asrProvider === "eleven" || asrProvider === "assembly") {
+        kind = `transcription-${asrProvider}`;
+        const file = form.get("file");
+        if (!(file instanceof File)) {
+          return json({ error: { message: "no audio file in request" } }, 400);
+        }
+        const language = String(form.get("language") ?? "");
+        const t_alt = Date.now();
+        let res: Record<string, unknown>;
+        try {
+          res = asrProvider === "eleven"
+            ? await transcribeEleven(file, language)
+            : await transcribeAssembly(file, language, asrAltModel);
+        } catch (e) {
+          res = { ok: false, error: `${asrProvider}: ${String(e).slice(0, 180)}` };
+        }
+        const asr_ms = Date.now() - t_alt;
+        logUsage(identity, userId, kind).catch(() => {});
+        if (!res.ok || !res.text) {
+          // 502 (not 200-with-empty-text) so the client can tell "provider broke" from
+          // "you said nothing" and retry on Groq instead of treating it as silence.
+          return json({ error: { message: String(res.error ?? "no transcript") },
+                        provider: asrProvider }, 502);
+        }
+        // Same `{text}` shape as Groq, so the chain below and every client are unchanged.
+        const alt: Record<string, unknown> = { text: res.text, provider: asrProvider, asr_ms };
+        if (wantChain && chainSystem) {
+          const chain = await chainFormat(
+            groqKey, String(res.text).trim(), chainModel, chainSystem, chainUser, chainReplace,
+          );
+          return json({ ...alt, chain: { ...chain, asr_ms } });
+        }
+        return json(alt);
+      }
+
+      const t_asr = Date.now();
       resp = await fetch(`${GROQ_BASE}/audio/transcriptions`, {
         method: "POST",
         headers: { Authorization: `Bearer ${groqKey}` },
         body: form,
       });
+      if (wantChain && chainSystem) {
+        kind = "chained";
+        // Buffer instead of streaming — we need the transcript to feed the second hop.
+        const asrBody = await resp.text();
+        const asr_ms = Date.now() - t_asr;
+        if (!resp.ok) {
+          logUsage(identity, userId, kind).catch(() => {});
+          return new Response(asrBody, {
+            status: resp.status,
+            headers: { ...CORS, "Content-Type": "application/json" },
+          });
+        }
+        let asrJson: Record<string, unknown> = {};
+        try {
+          asrJson = JSON.parse(asrBody);
+        } catch {
+          asrJson = { text: "" };
+        }
+        // .trim() is REQUIRED, not cosmetic. Whisper always returns its transcript
+        // with a leading space, and every client strips it before formatting
+        // (groq_proxy.py, lib/groq.ts). Passing the untrimmed string here fed the
+        // formatter one extra leading token, which re-tokenizes the first line and
+        // deterministically changed the output — measured: the chained path lost a
+        // dictionary name fix ("Subhan" -> "Siobhan") 3/3 times that the local path
+        // made 3/3 times, on a byte-identical prompt. Trimming makes chained and
+        // unchained formatting see exactly the same input.
+        const chain = await chainFormat(
+          groqKey, String(asrJson.text ?? "").trim(), chainModel, chainSystem, chainUser,
+          chainReplace,
+        );
+        logUsage(identity, userId, kind).catch(() => {});
+        return json({ ...asrJson, chain: { ...chain, asr_ms } });
+      }
     } else {
       const payload = await req.json();
       const provider = payload.provider;

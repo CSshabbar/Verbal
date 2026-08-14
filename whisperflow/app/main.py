@@ -201,7 +201,14 @@ class VerbalApp(rumps.App):
         self._md_scanning = False         # a background window scan is in flight
         self._meeting_detect_timer = rumps.Timer(self._detect_meeting_tick, 5.0)
 
-        self._ui_timer = rumps.Timer(self._drain_ui_queue, 0.1)
+        # 0.04s, not 0.1s. Everything main-thread goes through this queue, so its
+        # tick is the floor on any UI hop the dictation path WAITS for — and it waits
+        # for exactly one: hiding the pill before focus is restored (main.py, the
+        # `_hidden` event). At 0.1s that hop cost 0-100ms, ~50ms on average, on every
+        # dictation. At 0.04s it costs ~20ms. The price is 25 wakeups/sec doing one
+        # `get_nowait` on an empty queue, which is negligible next to the audio and
+        # webview timers this app already runs.
+        self._ui_timer = rumps.Timer(self._drain_ui_queue, 0.04)
 
     def _on_hotkey_toggle(self):
         """Called by HotkeyListener when the toggle key is pressed."""
@@ -1147,6 +1154,25 @@ class VerbalApp(rumps.App):
             else:
                 self._meeting_mic_tap = None
                 self.recorder.start()
+            # Hybrid pipeline: open the streaming socket NOW and tap the mic, so that
+            # by the time the user stops, transcription is already essentially done.
+            # Fully guarded — if anything here fails the tap is never installed and
+            # this take transcribes the ordinary way, one dictation slower at worst.
+            self._stream = None
+            try:
+                from app import asr_stream as _as
+                _prov = _as.should_stream(self.config)
+                if _prov:
+                    _s = _as.AsrStream(_prov, self.config)
+                    if _s.start():
+                        self._stream = _s
+                        self.recorder.set_tap(_s.feed)
+                        logger.info("[hybrid] streaming to %s", _prov)
+                    else:
+                        logger.warning("[hybrid] stream unavailable (%s) — normal path", _s.error)
+            except Exception as e:
+                logger.warning("[hybrid] setup skipped: %s", e)
+                self._stream = None
             play_start()
 
             if os.path.exists(ICON_ACTIVE_PATH):
@@ -1215,14 +1241,22 @@ class VerbalApp(rumps.App):
         play_stop()
         self._reset_to_ready()
 
-    def _transcribe_with_retry(self, audio, attempts=3):
+    def _transcribe_with_retry(self, audio, attempts=3, chain=None, sidecar=None):
         """Transcribe, auto-retrying on 'failed' (transient network/API) with a
-        short backoff. Returns (text, status). Silence returns immediately."""
+        short backoff. Returns (text, status). Silence returns immediately.
+
+        `chain`/`sidecar` carry chained_mode through to the proxy — see
+        transcriber.transcribe_with_status(). The sidecar is reset before each
+        attempt so a partial result from a failed try can never be mistaken for
+        this attempt's formatting."""
         text, status = "", "failed"
         for i in range(attempts):
             if self._cancel_flag.is_set():
                 return "", "silent"
-            text, status = transcribe_with_status(audio, self.config, self.recorder.sample_rate)
+            if sidecar is not None:
+                sidecar.clear()
+            text, status = transcribe_with_status(audio, self.config, self.recorder.sample_rate,
+                                                  chain=chain, sidecar=sidecar)
             if status in ("ok", "silent"):
                 return text, status
             if i < attempts - 1:
@@ -1298,7 +1332,62 @@ class VerbalApp(rumps.App):
             if self._cancel_flag.is_set():
                 return
 
-            text, status = self._transcribe_with_retry(audio)
+            # chained_mode: ask the Edge Function to format inside the same round
+            # trip. The spec is built HERE because it needs the dictation target
+            # app, and it must be read before injection moves focus. None when the
+            # flag is off, which leaves the two-round-trip path untouched.
+            _chain, _side = None, {}
+            try:
+                from app.ai_cleanup import build_chain_spec
+                _chain = build_chain_spec(self.config, active_app=get_focused_app_name())
+            except Exception as e:
+                logger.debug("chained_mode setup skipped: %s", e)
+
+            # Hybrid: if this take was long enough, the streamed transcript is already
+            # waiting and skips the whole upload+ASR leg. Short takes deliberately do
+            # NOT use it — Groq's one round trip is faster below the measured ~8s
+            # crossover, because streaming still owes its own formatting trip.
+            text, status = None, None
+            _st, self._stream = getattr(self, "_stream", None), None
+            if _st is not None:
+                try:
+                    from app import asr_stream as _as
+                    _secs = len(audio) / float(self.recorder.sample_rate or 16000)
+                    if _secs >= _as.HYBRID_THRESHOLD_SEC:
+                        _streamed = _st.finish()
+                        if _streamed:
+                            # A streamed transcript never passes through
+                            # transcriber.finalize(), so the dictionary would silently
+                            # stop applying on exactly the long dictations this path
+                            # handles. Apply the replacement rules here. (No
+                            # prompt-echo scrub: AssemblyAI is sent no glossary, so
+                            # there is no echo to strip.)
+                            try:
+                                from app import dictionary as _d
+                                _streamed = _d.apply_replacements(_streamed, self.config)
+                            except Exception as e:
+                                logger.debug("[hybrid] dictionary pass skipped: %s", e)
+                            logger.info("[hybrid] used streamed transcript (%.1fs speech, "
+                                        "%.2fs tail)", _secs, _st.wait_after_stop() or -1)
+                            text, status = _streamed, "ok"
+                        else:
+                            logger.warning("[hybrid] no streamed transcript (%s) — "
+                                           "transcribing normally", _st.error)
+                    else:
+                        logger.info("[hybrid] %.1fs < %.0fs — using Groq",
+                                    _secs, _as.HYBRID_THRESHOLD_SEC)
+                        _st.finish(timeout=0.1)     # close the socket, ignore its text
+                except Exception as e:
+                    logger.warning("[hybrid] falling back: %s", e)
+                    text, status = None, None
+
+            if text is None:
+                text, status = self._transcribe_with_retry(audio, chain=_chain, sidecar=_side)
+            elif _chain is not None:
+                # A streamed transcript never went through the proxy, so nothing was
+                # formatted server-side. Clear the sidecar so process_text does the
+                # formatting itself instead of reusing a stale chain result.
+                _side.clear()
 
             if self._cancel_flag.is_set():
                 return
@@ -1355,7 +1444,11 @@ class VerbalApp(rumps.App):
             if result is None:
                 # Phase-0 context grounding (MER-44): pass the target app so the
                 # cleanup LLM grounds on it + the user's dictionary terms.
-                result = process_text(text, self.config, active_app=get_focused_app_name())
+                # chained_result is the formatting the proxy already did in the
+                # transcription round trip (chained_mode); process_text still owns
+                # every decision around it and ignores it when its own rules say to.
+                result = process_text(text, self.config, active_app=get_focused_app_name(),
+                                      chained_result=_side.get("formatted"))
             if self._cancel_flag.is_set():
                 return
 

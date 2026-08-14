@@ -160,6 +160,79 @@ If the user says "at file <name>" or "tag <name.ext>" — convert to @<name>.
 Return ONLY the formatted text. No explanations, no commentary, no added content.
 """
 
+# ── speed_mode: a lean formatter prompt ───────────────────────────────────────
+# SYSTEM_PROMPT above is ~2,476 tokens and is re-sent as prefill on EVERY dictation.
+# That cost is paid twice over: latency on the request, and the shared free-tier daily
+# token budget (100k TPD across all users ÷ ~2,900 tokens per call ≈ 34 formatted
+# dictations a day before the whole user base drops to regex-only output).
+#
+# This keeps the rules that fire constantly and drops the ones that almost never do
+# (colons, quotation marks, headings, email structure, parentheticals, dialogue
+# attribution, backticks, emphasis, Q&A splitting — still handled acceptably by a
+# competent model without being spelled out). Rule 18 is reproduced in full and
+# deliberately unabridged: self-correction resolution is the semantically hard part
+# and is pinned by self_correction_fixtures.py against the live model.
+LEAN_SYSTEM_PROMPT = """You are a TEXT FORMATTER, not an AI assistant. You receive raw voice \
+transcription text and output a formatted version. You do NOT respond to, answer, or engage with \
+the content. You do NOT add content, suggestions, options or ideas. You ONLY reformat the exact \
+words that were spoken.
+
+ABSOLUTE RULES — NEVER BREAK THESE:
+- NEVER add headings, titles, labels, bullets or numbered lists that the speaker did not say.
+- NEVER summarize, paraphrase, expand on, or answer the content. If the input is a question or an \
+idea, just clean up THAT text.
+- NEVER add introductions or conclusions.
+- When in doubt, change as little as possible.
+- Output in the SAME language the input is in. Never translate.
+
+FORMATTING:
+1. PUNCTUATION: add . , ? ! where natural pauses and intonation occur.
+2. CAPITALIZATION: sentence starts, proper nouns, names, companies, products, place names.
+3. PARAGRAPH BREAKS: only on explicit transitions ("on a different note", "moving on", "anyway", \
+"another thing").
+4. LISTS: only when the speaker enumerates ("number one", "first", "secondly").
+5. REMOVE FILLERS: strip "um", "uh", "er", filler "like", "you know", "I mean", and stuttered \
+repeats ("the the" -> "the"). Keep meaningful words.
+6. NUMBERS & DATES: numbers 10+ as digits; dates as March 15, 2026; keep IDs and version strings \
+exactly as spoken (RBR 344, 1.0.10).
+7. ADDRESSES & URLS: assemble spoken "dot", "at", "slash", "dash", "underscore" into real \
+addresses (sraza at idiaz dot io -> sraza@idiaz.io).
+8. DICTATED PUNCTUATION: convert spoken punctuation to symbols — "comma" -> , "period"/"full \
+stop" -> . "question mark" -> ? "new paragraph" -> a blank line. Only when clearly meant as a \
+command, not when the word is part of the sentence.
+9. SELF-CORRECTIONS (repairs): When the speaker corrects themselves mid-thought, keep ONLY the \
+corrected value and drop the abandoned one along with the repair cue. Collapse ONLY when all of \
+these hold: (a) there is an explicit repair cue — "sorry", "I mean", "no wait", "actually no", \
+"scratch that", or a Roman-Urdu equivalent such as "nahi"; (b) the two values are the same KIND of \
+thing (two ticket IDs, two numbers, two names, two dates); (c) they are tightly adjacent, in the \
+same clause; and (d) there is no list grammar nearby ("and", "then", "also", "both"). If any \
+condition fails, keep both values verbatim — bare adjacent numbers or IDs with no cue are NEVER \
+collapsed. Example: "ticket RBR 343, sorry, RBR 344" -> "ticket RBR 344". Counter-example: \
+"tickets RBR 343 and RBR 344" -> unchanged. Judge this BEFORE removing fillers, so the repair cue \
+is still visible when you decide.
+
+Return ONLY the formatted text. No explanations, no commentary, no added content.
+"""
+
+# Formatting model used when speed_mode is on.
+#
+# Measured on this exact task (lean prompt, one real transcript, via the proxy):
+#   llama-3.1-8b-instant     0.82s   51 output tokens
+#   llama-3.3-70b-versatile  1.13s   50 output tokens
+#   openai/gpt-oss-20b       1.54s  430 output tokens + 1,679 chars of reasoning
+#
+# gpt-oss-20b was the obvious pick on paper (1000 tok/s vs 280) and is the WRONG pick in
+# practice: it is a reasoning model, so it burns hundreds of hidden thinking tokens before
+# answering a purely mechanical formatting request. Throughput does not save you when you
+# emit 8x the tokens. 8b-instant also carries 500k tokens/day on the free tier against the
+# 70B's 100k, which combined with the lean prompt is the difference between ~34 and ~590
+# formatted dictations a day.
+SPEED_CLEANUP_MODEL = "llama-3.1-8b-instant"
+# At or below this many words, speed_mode skips the LLM entirely and ships the
+# regex-cleaned text. clean_raw_transcript already capitalizes and adds terminal
+# punctuation, which is essentially all a short command needs.
+_SKIP_CLEANUP_MAX_WORDS = 8
+
 COMMAND_KEYWORDS = [
     "make", "fix", "convert", "formal", "casual", "bullet",
     "summarize", "rephrase", "translate", "shorter", "longer"
@@ -347,7 +420,63 @@ def build_dictation_user_message(text: str, context: str = "") -> str:
     )
 
 
-def process_text(text: str, config: dict, active_app: str | None = None) -> str:
+def build_chain_spec(config: dict, active_app: str | None = None) -> dict | None:
+    """The `chained_mode` payload for transcribe_via_proxy: exactly the system
+    prompt, user wrapper and model that process_text() would otherwise send on its
+    own round trip, with `{{TEXT}}` standing in for the transcript the Edge
+    Function substitutes server-side.
+
+    Sending the SAME prompt and model process_text picks is the entire point —
+    it makes chained-vs-unchained a measurement of the network path alone, with
+    the formatting request held constant. Which prompt/model that is still
+    depends on speed_mode, so the two flags compose without interfering.
+
+    Returns None when chaining is off or anything is unavailable; the caller then
+    takes the ordinary two-round-trip path, so this is fail-closed by
+    construction and can never break dictation."""
+    try:
+        from app.config import feature_flag
+        if not feature_flag(config, "chained_mode", False):
+            return None
+        fast = feature_flag(config, "speed_mode", False)
+        # Grounding is built here, before the audio is even sent — it depends only
+        # on the dictionary and the active app, neither of which needs the transcript.
+        context = build_context_block(config, active_app=active_app)
+        # The user's find->replace RULES travel with the request, because ordering
+        # matters and only the server has the transcript in time.
+        #
+        # Unchained, dictionary.apply_replacements() runs in transcriber.finalize()
+        # BEFORE the formatter ever sees the text. Chained, the server has the
+        # transcript first, so without this the formatter reads the uncorrected
+        # words — and then "corrects" the grammar around them, which applying the
+        # dictionary to its OUTPUT cannot undo. Measured: "so ideas needs a new one"
+        # became "so ideas need a new one", and the later ideas->Idiaz fix was
+        # powerless to restore "needs". The dictionary rewrites 4 of 20 of this
+        # user's clips, so this is a 20% exposure, not an edge case.
+        #
+        # Only the DATA crosses; the substitution itself is mechanical (word-boundary,
+        # case-insensitive) and mirrored in the Edge Function.
+        rules = []
+        try:
+            from app import dictionary as _d
+            rules = [{"from": r["from"], "to": r["to"]}
+                     for r in _d.get(config)["replacements"]
+                     if r.get("from") and r.get("to")]
+        except Exception as e:
+            logger.debug("chain replacements unavailable: %s", e)
+        return {
+            "system": LEAN_SYSTEM_PROMPT if fast else SYSTEM_PROMPT,
+            "user": build_dictation_user_message("{{TEXT}}", context),
+            "model": SPEED_CLEANUP_MODEL if fast else "llama-3.3-70b-versatile",
+            "replace": rules,
+        }
+    except Exception as e:
+        logger.debug("chain spec unavailable — formatting locally: %s", e)
+        return None
+
+
+def process_text(text: str, config: dict, active_app: str | None = None,
+                 chained_result: str | None = None) -> str:
     """
     Full processing pipeline:
     1. Local cleanup (always) — remove hallucinations, fillers, repeats
@@ -362,6 +491,13 @@ def process_text(text: str, config: dict, active_app: str | None = None) -> str:
     user's dictionary terms; None (notes/retry paths) still gets known-terms
     grounding, just no app hint.
 
+    `chained_result` (optional, `chained_mode`) — formatting the Edge Function
+    already performed inside the transcription round trip, using the spec from
+    build_chain_spec(). It is threaded in HERE rather than short-circuiting at the
+    call site so every rule below still gets to decide: the local cleanup runs,
+    the speed_mode short-transcript skip still wins over it, and an empty
+    transcript is still an empty transcript. Only the network call is skipped.
+
     NOTE: file @mention tagging is handled earlier, in transcriber.finalize()
     via the guarded app.filetags module (toggle-gated, IDE-aware, only tags
     files actually open in the editor). The old unconditional apply_file_tags()
@@ -375,21 +511,45 @@ def process_text(text: str, config: dict, active_app: str | None = None) -> str:
     if not text:
         return text
 
+    # speed_mode (default OFF → everything below is baseline behaviour).
+    from app.config import feature_flag
+    fast = feature_flag(config, "speed_mode", False)
+
+    # Short transcripts skip the LLM round trip altogether. clean_raw_transcript has
+    # already capitalized and punctuated; a 4-word command does not need a 70B model,
+    # and this is where the largest proportional latency win is.
+    if fast:
+        words = len(text.split())
+        if words <= _SKIP_CLEANUP_MAX_WORDS:
+            logger.info(f"speed_mode: {words}w <= {_SKIP_CLEANUP_MAX_WORDS} — skipped LLM formatting")
+            return text
+
+    # chained_mode: the formatting already happened inside the transcription round
+    # trip. Everything above still ran (local cleanup, the short-transcript skip),
+    # so this only replaces the second network call — not the decisions around it.
+    if chained_result:
+        logger.info("chained_mode: using server-side formatting — second round trip skipped")
+        return chained_result
+
     # Phase-0 grounding preamble (fail-closed → "" on any issue).
     context = build_context_block(config, active_app=active_app)
 
     # Step 2: Groq LLaMA formatting via the Supabase proxy (key held server-side)
     user_message = build_dictation_user_message(text, context)
+    _prompt = LEAN_SYSTEM_PROMPT if fast else SYSTEM_PROMPT
+    _model = SPEED_CLEANUP_MODEL if fast else "llama-3.3-70b-versatile"
     messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": _prompt},
         {"role": "user",   "content": user_message},
     ]
     try:
         from app.groq_proxy import chat_via_proxy
         start = time.time()
-        result = chat_via_proxy(messages, config, model="llama-3.3-70b-versatile", max_tokens=2048, timeout=10)
+        result = chat_via_proxy(messages, config, model=_model, max_tokens=2048, timeout=10)
         if result:
-            logger.info(f"Groq LLaMA formatting (proxy) took {time.time()-start:.2f}s")
+            logger.info(f"{'speed_mode' if fast else 'Groq LLaMA'} formatting (proxy) "
+                        f"took {time.time()-start:.2f}s [{_model}, "
+                        f"{len(_prompt)//4} prompt tokens approx]")
             return result
     except Exception as e:
         logger.warning(f"Groq proxy formatting failed: {e}")

@@ -374,6 +374,24 @@ body{background:var(--bg);font-family:'Geist',-apple-system,system-ui,sans-serif
 .field select{-webkit-appearance:none;appearance:none;cursor:pointer;padding-right:34px;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23f2f2f2' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 12px center}
 .field select option{background:#17191c;color:#f2f2f2}
 .saverow{display:flex;align-items:center;gap:12px;margin-top:6px}
+/* Models pane. A plain settings list: name, one line, the wait. You glance down it
+   and pick. It was a spec sheet with diagrams and legends for one iteration; that
+   read as homework, not a setting. */
+.scard.tight{padding:4px 6px;gap:0}
+.prow{display:flex;align-items:center;gap:12px;padding:10px 10px;border-radius:8px;
+  cursor:pointer;border:1px solid transparent}
+.prow:hover{background:rgba(244,243,241,.035)}
+.prow.on{background:rgba(200,90,62,.09);border-color:rgba(200,90,62,.4)}
+.prow input{accent-color:var(--accent);flex:none;margin:0}
+.pr-tx{display:flex;flex-direction:column;gap:2px;min-width:0;flex:1}
+.pr-tx b{font:600 13px Geist;color:var(--ink)}
+.pr-tx em{font:500 9px "JetBrains Mono",monospace;letter-spacing:.09em;text-transform:uppercase;
+  font-style:normal;color:var(--accent);margin-left:7px}
+.pr-tx i{font:400 12px Geist;font-style:normal;color:var(--ink3);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pr-n{font:500 11px "JetBrains Mono",monospace;color:var(--ink3);flex:none;
+  font-variant-numeric:tabular-nums}
+.prow.on .pr-n{color:var(--ink2)}
 .hotcard .hotrow{display:flex;align-items:center;justify-content:space-between;padding:14px 4px;border-bottom:1px solid var(--bd)}.hotcard .hotrow:last-child{border-bottom:0}
 .kbs{display:flex;gap:6px}kbd{font:500 10.5px 'JetBrains Mono';background:rgba(240,240,240,.05);border:1px solid var(--bd2);border-radius:6px;padding:5px 9px;min-width:26px;text-align:center}
 .toggle{width:40px;height:22px;border-radius:11px;background:rgba(240,240,240,.12);position:relative;cursor:pointer;border:0}
@@ -2523,7 +2541,7 @@ function stopPairing(){
 // this screen every ~30s and must not throw you back to the first group.
 const SETTINGS_GROUPS=[
   {id:'account',    label:'Account',     lede:'Who you are signed in as — and what leaving takes with it.'},
-  {id:'dictation',  label:'Dictation',   lede:'How Flume hears you, and what it does with the words.'},
+  {id:'models',     label:'Models',      lede:'Which engine hears you, and how many trips it takes to get the words back.'},
   {id:'dictionary', label:'Dictionary',  lede:'Teach Flume names and terms so they transcribe correctly.'},
   {id:'transform',  label:'Transform',   lede:''},
   {id:'notes',      label:'Notes',       lede:'Individual Notes enhancements. Each is on by default.'},
@@ -2532,6 +2550,101 @@ const SETTINGS_GROUPS=[
   {id:'data',       label:'Data & sync', lede:'Where your dictations live, and how to clear them.'},
 ];
 let SETTINGS_GROUP='account';
+
+// ── Pipeline / model choices ────────────────────────────────────────────────
+// The pipeline is NOT stored as its own key. It is derived from the two flags the
+// dictation code actually reads (speed_mode, chained_mode), so there is one source
+// of truth and a stale third copy can never disagree with what runs.
+// Numbers in the copy are measured, not estimated — see context/03-features.md.
+// Pipeline choices. One line each: what it does for you, and what you wait.
+// Deliberately NOT a spec sheet — this is a settings row you glance at and pick.
+const PIPELINES=[
+  {id:'hybrid', label:'Hybrid',          desc:'Starts working while you talk.',       wait:'1.0s'},
+  {id:'one',    label:'One round trip',  desc:'Best all-round. Same words, sooner.',  wait:'1.3s', tag:'recommended'},
+  {id:'two',    label:'Two round trips', desc:'The older, slower route.',             wait:'1.9s'},
+  {id:'old',    label:'Original',        desc:'How Flume used to sound.',             wait:''},
+];
+
+// Models. Vendor + one honest line + the wait. Everything else lives in the docs.
+const ASR_MODELS=[
+  {id:'auto',                   vendor:'Groq',       name:'Automatic',
+   desc:'Fast and good at everything.', wait:'1.0s', tag:'recommended'},
+  {id:'whisper-large-v3-turbo', vendor:'Groq',       name:'Whisper turbo',
+   desc:'Always the fast one, any language.', wait:'1.0s'},
+  {id:'whisper-large-v3',       vendor:'Groq',       name:'Whisper large',
+   desc:'Better for languages other than English.', wait:'1.1s'},
+  {id:'eleven-scribe-v1',       vendor:'ElevenLabs', name:'Scribe',
+   desc:'Most accurate on your voice.', wait:'1.8s'},
+  {id:'aai-universal-2',        vendor:'AssemblyAI', name:'Universal-2',
+   desc:'Best with Urdu mixed into English.', wait:'5s'},
+  {id:'aai-universal-3-5-pro',  vendor:'AssemblyAI', name:'Universal-3.5',
+   desc:'Strong English. Struggles with Urdu.', wait:'5s'},
+];
+
+function pickRow(o, group, current, onchange){
+  const on = current===o.id;
+  return `<label class="prow${on?' on':''}">
+    <input type="radio" name="${group}" value="${o.id}" ${on?'checked':''} onchange="${onchange}('${o.id}')">
+    <span class="pr-tx"><b>${esc(o.name||o.label)}</b>${o.tag?`<em>${esc(o.tag)}</em>`:''}
+      <i>${esc(o.desc)}${o.vendor?' · '+esc(o.vendor):''}</i></span>
+    <span class="pr-n">${esc(o.wait||'')}</span>
+  </label>`;
+}
+
+function currentPipeline(){
+  const s=(STATE&&STATE.settings)||{};
+  if(s.hybrid_mode) return 'hybrid';          // implies speed+chained for its short branch
+  if(!s.speed_mode) return 'old';
+  return s.chained_mode ? 'one' : 'two';
+}
+function currentAsrModel(){
+  const s=(STATE&&STATE.settings)||{};
+  const m=s.asr_model||'auto';
+  // ASR_MODELS holds objects keyed by .id (it was [value,label] pairs before the
+  // card rewrite; probing o[0] here silently pinned every card to "auto").
+  return ASR_MODELS.some(o=>o.id===m) ? m : 'auto';
+}
+// (asrModelNote/ASR_NOTES removed with the dropdown — each model card carries its
+// own note now, so the caveat is visible on every option instead of only the picked one.)
+
+// The base payload save_settings expects. It overwrites keys/model/sync fields
+// unconditionally, so a partial save must resend them or they get wiped.
+//
+// recording_mode is deliberately NOT sent. It is absent from STATE.settings, so any
+// value here would be a guess — and save_settings only falls back to the stored value
+// when the field is MISSING. Sending 'toggle' as a default would silently flip a
+// hold-to-talk user to toggle every time they changed pipeline. Omitting it is what
+// toggleNoteFlag already does, for the same reason.
+function settingsBase(){
+  const s=(STATE&&STATE.settings)||{};
+  return {
+    groq_api_keys:s.groq_api_keys||[], gemini_api_keys:s.gemini_api_keys||[],
+    whisper_model:(STATE&&STATE.model)||'base',
+    sync_enabled:!!s.sync_enabled, sync_user_id:s.sync_user_id||'',
+    sync_device_name:s.sync_device_name||'',
+  };
+}
+
+function setPipeline(id){
+  // hybrid_mode is written on EVERY choice, not just when turning it on — otherwise
+  // switching away from hybrid would leave it set and silently keep streaming.
+  const flags = id==='old'    ? {speed_mode:false, chained_mode:false, hybrid_mode:false}
+              : id==='two'    ? {speed_mode:true,  chained_mode:false, hybrid_mode:false}
+              : id==='hybrid' ? {speed_mode:true,  chained_mode:true,  hybrid_mode:true}
+              :                 {speed_mode:true,  chained_mode:true,  hybrid_mode:false};
+  if(STATE&&STATE.settings) Object.assign(STATE.settings, flags);
+  api('save_settings', Object.assign(settingsBase(), flags));
+  renderSettings();
+  const m=document.getElementById('pipeMsg');
+  if(m){ const p=PIPELINES.find(x=>x.id===id);
+         m.textContent='Saved — now using “'+(p?p.label:id)+'”. Takes effect on your next dictation.'; }
+}
+
+function setAsrModel(v){
+  if(STATE&&STATE.settings) STATE.settings.asr_model=v;
+  api('save_settings', Object.assign(settingsBase(), {asr_model:v}));
+  renderSettings();
+}
 
 function setSettingsGroup(id){
   if(SETTINGS_GROUP===id) return;
@@ -2626,13 +2739,23 @@ function settingsPane(id){
         </div></div>`;
   }
 
-  if(id==='dictation') return `
-    <div class="ssection"><h3>Transcription</h3><p class="ssub">Transcription and formatting are provided by Flume — no API key needed.</p>
+  if(id==='models') return `
+    <div class="ssection"><h3>Speed</h3>
+      <div class="scard tight">${PIPELINES.map(p=>pickRow(p,'pipe',currentPipeline(),'setPipeline')).join('')}</div>
+      <div class="ssub" id="pipeMsg" style="margin:8px 0 0"></div>
+    </div>
+
+    <div class="ssection"><h3>Transcription model</h3>
+      <div class="scard tight">${ASR_MODELS.map(m=>pickRow(m,'asrm',currentAsrModel(),'setAsrModel')).join('')}</div>
+    </div>
+
+    <div class="ssection"><h3>Language</h3>
       <div class="scard">
         <div class="field"><label>SPOKEN LANGUAGE</label><select id="spokenLang" onchange="setSpokenLang(this.value)">
           ${(LANGS.options||[["en","English"]]).map(o=>`<option value="${o[0]}" ${LANGS.value===o[0]?'selected':''}>${o[1]}</option>`).join('')}
-        </select><span class="ssub" style="margin:4px 0 0">Applies to dictation and meetings. A pinned language is steadier than auto-detect.</span></div>
-        <div class="field"><label>OFFLINE WHISPER MODEL</label><select id="model">${['tiny','base','small','medium'].map(m=>`<option ${model===m?'selected':''}>${m}</option>`).join('')}</select></div>
+        </select></div>
+        <div class="field"><label>OFFLINE MODEL</label><select id="model">${['tiny','base','small','medium'].map(m=>`<option ${model===m?'selected':''}>${m}</option>`).join('')}</select>
+          <span class="ssub" style="margin:4px 0 0">Used only when you're offline.</span></div>
         <button class="btn primary" style="flex:none;width:130px" onclick="saveSettings()">Save</button>
       </div></div>
     <div class="ssection"><h3>Auto-learn from corrections</h3>

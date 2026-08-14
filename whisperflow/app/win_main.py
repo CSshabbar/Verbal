@@ -950,7 +950,7 @@ class VerbalWinApp:
         _play_sound("stop")
         self._reset_to_ready()
 
-    def _transcribe_with_retry(self, audio, attempts=3):
+    def _transcribe_with_retry(self, audio, attempts=3, chain=None, sidecar=None):
         """Transcribe, auto-retrying on 'failed' (transient network/API) with a
         short backoff. Returns (text, status). Silence returns immediately.
         Mirrors main.py:_transcribe_with_retry."""
@@ -959,8 +959,11 @@ class VerbalWinApp:
             if self._cancel_flag.is_set():
                 return "", "silent"
             try:
+                if sidecar is not None:
+                    sidecar.clear()
                 text, status = transcribe_with_status(
-                    audio, self.config, self.recorder.sample_rate)
+                    audio, self.config, self.recorder.sample_rate,
+                    chain=chain, sidecar=sidecar)
             except Exception as e:
                 logger.error(f"Transcription attempt {i+1} raised: {e}")
                 text, status = "", "failed"
@@ -1043,7 +1046,16 @@ class VerbalWinApp:
 
             from app.win_injector import get_focused_app_name
 
-            text, status = self._transcribe_with_retry(audio)
+            # chained_mode: format inside the transcription round trip. Mirrors
+            # main.py — see build_chain_spec(). None when the flag is off.
+            _chain, _side = None, {}
+            try:
+                from app.ai_cleanup import build_chain_spec
+                _chain = build_chain_spec(self.config, active_app=get_focused_app_name())
+            except Exception as e:
+                logger.debug("chained_mode setup skipped: %s", e)
+
+            text, status = self._transcribe_with_retry(audio, chain=_chain, sidecar=_side)
             if self._cancel_flag.is_set():
                 return
 
@@ -1112,7 +1124,8 @@ class VerbalWinApp:
                 # user's dictionary terms. Only the formatting path takes it — a
                 # Transform rewrite carries its own instruction.
                 result = process_text(text, self.config,
-                                      active_app=get_focused_app_name())
+                                      active_app=get_focused_app_name(),
+                                      chained_result=_side.get("formatted"))
             if self._cancel_flag.is_set():
                 return
 
