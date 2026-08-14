@@ -582,6 +582,28 @@ class DashboardApi:
     def app(self):
         return self.dashboard.app
 
+    def get_insights(self):
+        """Insights payload from the local ledger + cached cloud aggregate —
+        instant, no network. See app/insights.py for the data model."""
+        try:
+            from app import insights
+            cfg = self.app.config = load_config()
+            return _ok(**insights.compute(cfg))
+        except Exception as e:
+            return _err(str(e))
+
+    def refresh_insights(self):
+        """Fold any new cloud `transcriptions` rows into the stats cache
+        (network — the bridge already runs api methods on a worker thread),
+        then return the recomputed payload."""
+        try:
+            from app import insights
+            cfg = self.app.config = load_config()
+            insights.refresh_cloud(cfg, save_config)
+            return _ok(**insights.compute(cfg))
+        except Exception as e:
+            return _err(str(e))
+
     def get_state(self):
         cfg = self.app.config = load_config()
         history = cfg.get("history", [])
@@ -1694,6 +1716,11 @@ class DashboardApi:
         # Explicit caller intent to (re)format now. Reformat and the initial dictated
         # save set this; typed edits leave it off. Control field — never stored.
         run_cleanup = bool(note.get("run_cleanup"))
+        # Explicit caller intent to NOT format (Notes v3): editing the original
+        # transcript of a format-failed note must never fire a surprise LLM call
+        # (its raw is set, content still empty — exactly the initial-dictated
+        # shape). Control field — never stored.
+        no_cleanup = bool(note.get("no_cleanup"))
         incoming_segments = note.get("audio_segments")
         if not isinstance(incoming_segments, list):
             incoming_segments = None
@@ -1708,7 +1735,7 @@ class DashboardApi:
         raw_str = (raw_content or "").strip()
         existing_content = (existing.get("content", "") if existing else "") or ""
         is_initial_dictated = bool(raw_str) and not content.strip() and not existing_content.strip()
-        if raw_str and (run_cleanup or is_initial_dictated):
+        if raw_str and not no_cleanup and (run_cleanup or is_initial_dictated):
             try:
                 from app.ai_cleanup import format_note
                 structure_on = feature_flag(cfg, "notes_structure_detection_enabled")
@@ -1786,6 +1813,82 @@ class DashboardApi:
         r = _ok(notes=notes)
         r["id"] = nid
         return r
+
+    def set_note_pinned(self, note_id, pinned):
+        """Pin/unpin a note (Notes v3). Local-first; the cloud PATCH is
+        best-effort. Deliberately does NOT bump updated_at — pinning is a
+        preference, not an edit, so it must not reorder the recency-sorted
+        list or mint a conflict pair (Apple Notes behaves the same way)."""
+        on = bool(pinned)
+        notes = list(self._local_notes())
+        found = False
+        for n in notes:
+            if n.get("id") == note_id:
+                n["is_pinned"] = on
+                found = True
+                break
+        if not found:
+            return _err("note not found")
+        self._save_local_notes(notes)
+        if self._sync_on() and "::conflict::" not in str(note_id):
+            try:
+                import httpx
+                from app.sync import SUPABASE_URL
+                from app.auth import auth_header
+                httpx.patch(
+                    f"{SUPABASE_URL}/rest/v1/notes?id=eq.{note_id}",
+                    headers={**auth_header(self.app.config, json=True),
+                             "Prefer": "return=minimal"},
+                    json={"is_pinned": on},
+                    timeout=8,
+                )
+            except Exception as e:
+                logger.debug(f"Note pin cloud sync failed: {e}")
+        return _ok(notes=notes, pinned=on)
+
+    def export_note_text(self, title, content, fmt="md"):
+        """Export one note via a native save panel (fallback ~/Downloads),
+        mirroring export_meeting. The DASHBOARD builds the content — it owns
+        the markdown-vs-HTML distinction — so this is a plain save-text-file
+        primitive and never touches the note store."""
+        try:
+            import os
+            import re as _re
+            import threading
+            fmt = "txt" if str(fmt).lower() == "txt" else "md"
+            safe = _re.sub(r"[^\w\s\-–—]", "", title or "Note").strip()[:60] or "Note"
+            fname = f"{safe}.{fmt}"
+
+            box = {}
+            done = threading.Event()
+
+            def run():
+                try:
+                    from AppKit import NSSavePanel
+                    panel = NSSavePanel.savePanel()
+                    panel.setNameFieldStringValue_(fname)
+                    panel.setCanCreateDirectories_(True)
+                    if int(panel.runModal()) == 1:      # NSModalResponseOK
+                        box["path"] = panel.URL().path()
+                    else:
+                        box["cancelled"] = True
+                except Exception as e:
+                    box["error"] = str(e)
+                finally:
+                    done.set()
+
+            self.app._on_main(run)
+            done.wait(180)
+            if box.get("cancelled"):
+                return {"ok": False, "cancelled": True}
+            path = box.get("path")
+            if not path:                                 # panel failed → Downloads
+                path = os.path.expanduser(f"~/Downloads/{fname}")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(content or "")
+            return _ok(path=path)
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
 
     def delete_note(self, note_id):
         # Cloud side FIRST (IDI-158), and it's a TOMBSTONE (deleted_at + content
@@ -1957,20 +2060,26 @@ class DashboardApi:
         matched.sort(key=rank)
         return _ok(notes=matched, query=query or "")
 
-    def format_note_with_ai(self, text):
+    def format_note_with_ai(self, text, style="structured"):
         """Explicit Reformat (Decision 2): (re)format `text` in ONE LLM call and
         return {title, formatted_content} (also `content` for the existing UI).
-        Structure detection and auto-title follow their feature flags. On failure
-        returns _err so the caller keeps the current content unchanged."""
+        Structure detection and auto-title follow their feature flags. `style`
+        (Notes v3) picks the output shape — structured | prose | transcript —
+        and only ever arrives from an explicit user pick. On failure returns
+        _err so the caller keeps the current content unchanged."""
+        # NOTE: no local-key gate here — clients hold no Groq key since IDI-178;
+        # format_note goes through the groq-proxy first and local keys are only
+        # a silent fallback inside it.
         cfg = self.app.config
-        if not (cfg.get("groq_api_keys") or []):
-            return _err("No Groq API key configured")
         try:
-            from app.ai_cleanup import format_note
+            from app.ai_cleanup import format_note, NOTE_STYLES
+            if style not in NOTE_STYLES:
+                style = "structured"
             result = format_note(
                 text, cfg,
                 structure_detection=feature_flag(cfg, "notes_structure_detection_enabled"),
                 autotitle=feature_flag(cfg, "notes_autotitle_enabled"),
+                style=style,
             )
             if not result:
                 return _err("AI format failed")
@@ -1979,6 +2088,71 @@ class DashboardApi:
                        formatted_content=content)
         except Exception as e:
             logger.error(f"AI note format failed: {e}")
+            return _err(str(e))
+
+    def ask_notes(self, question):
+        """Ask-your-notes (Notes v3, mirrors meetings.ask_meetings): rank local
+        notes by token overlap, feed the top few to ONE LLM call, return
+        {'ok','answer','sources'}. Explicit user action only (Enter/Ask in the
+        notes search box) — never fires automatically. Fails closed."""
+        try:
+            import re as _re
+            q = (question or "").strip()
+            if not q:
+                return _err("Empty question.")
+
+            def plain(n):
+                c = n.get("content") or ""
+                c = _re.sub(r"<[^>]+>", " ", c)
+                c = c.replace("&nbsp;", " ").replace("&amp;", "&")
+                return _re.sub(r"\s+", " ", c).strip()
+
+            notes = [n for n in self._local_notes()
+                     if "::conflict::" not in (n.get("id") or "")]
+            rows = [(n, plain(n)) for n in notes]
+            rows = [(n, p) for (n, p) in rows
+                    if p or (n.get("title") or "").strip()]
+            if not rows:
+                return _err("No notes yet — create one first.")
+
+            q_tokens = {t for t in _re.findall(r"[a-z0-9]+", q.lower())
+                        if len(t) > 2}
+
+            def score(item):
+                n, p = item
+                title = (n.get("title") or "").lower()
+                body = p.lower()
+                s = 0
+                for t in q_tokens:
+                    if t in title:
+                        s += 3
+                    if t in body:
+                        s += 1
+                return s
+
+            ranked = sorted(rows, key=score, reverse=True)[:6]
+            ctx = "\n\n---\n\n".join(
+                f"NOTE: {n.get('title') or 'Untitled'}"
+                f" ({(n.get('updated_at') or '')[:10]})\n{p[:2000]}"
+                for n, p in ranked)
+            from app.groq_proxy import chat_via_proxy
+            system = ("You answer questions from the user's personal notes. "
+                      "Use ONLY the notes provided below. Be concise and direct "
+                      "— a short paragraph or a few bullets. If the notes don't "
+                      "contain the answer, say so plainly. Never invent facts. "
+                      "Answer in the language of the question.")
+            messages = [{"role": "system", "content": system},
+                        {"role": "user",
+                         "content": f"NOTES:\n\n{ctx}\n\nQUESTION: {q}"}]
+            answer = chat_via_proxy(messages, self.app.config,
+                                    max_tokens=768, timeout=30.0)
+            if not answer:
+                return _err("The model didn't answer — try again.")
+            return _ok(answer=answer,
+                       sources=[n.get("title") or "Untitled"
+                                for n, _ in ranked[:3] if score((n, _)) > 0])
+        except Exception as e:
+            logger.error(f"ask_notes failed: {e}")
             return _err(str(e))
 
     def save_settings(self, settings):

@@ -41,6 +41,7 @@ export type Note = {
   preview: string;
   dateLabel: string;       // "Today · 9:24 AM" | "Yesterday" | "Mon · 2:08 PM"
   isVoice: boolean;
+  isPinned: boolean;       // Notes v3 — synced `is_pinned` column
   createdAt: number;
   updatedAt: number;
   // Notes v2 (see NOTES_ENHANCEMENT_SWARM.md). Absent/null on pre-existing notes.
@@ -84,6 +85,7 @@ function toNote(entry: NoteEntry, isVoice = false): Note {
     preview: (entry.content || '').slice(0, 140),
     dateLabel: dateLabelFor(updatedAt),
     isVoice: isVoice || !!entry.raw_content || (entry.audio_segments?.length ?? 0) > 0,
+    isPinned: !!entry.is_pinned,
     createdAt,
     updatedAt,
     rawContent: entry.raw_content ?? null,
@@ -104,7 +106,9 @@ function toEntry(note: Note, deviceName: string): NoteEntry {
     title: note.title,
     content: note.body,
     folder: '',
-    is_pinned: false,
+    // Carry the REAL pin — a hard-coded false here used to clobber a pin set on
+    // another device the moment this device saved a typed edit (Notes v3).
+    is_pinned: !!note.isPinned,
     device_name: deviceName,
     created_at: new Date(note.createdAt).toISOString(),
     updated_at: new Date(note.updatedAt).toISOString(),
@@ -378,6 +382,7 @@ export function createNote(data: Partial<Note>): Note {
     preview: (data.body ?? '').slice(0, 140),
     dateLabel: dateLabelFor(now),
     isVoice: data.isVoice ?? false,
+    isPinned: false,
     createdAt: now,
     updatedAt: now,
   };
@@ -449,7 +454,7 @@ export function updateNote(id: string, patch: Partial<Note>): void {
           ? toNote(existing)
           : {
               id, title: '', body: '', preview: '', dateLabel: dateLabelFor(now),
-              isVoice: false, createdAt: now, updatedAt: now,
+              isVoice: false, isPinned: false, createdAt: now, updatedAt: now,
             };
         target = {
           ...base, ...patch,
@@ -626,7 +631,9 @@ export async function saveDictation(
  * never had one). Only fills the title when it is still empty — never
  * overwrites a manually-set title.
  */
-export async function reformatNote(id: string): Promise<Note | null> {
+export async function reformatNote(
+  id: string, style: 'structured' | 'prose' | 'transcript' = 'structured',
+): Promise<Note | null> {
   const cached = await getCachedNotes();
   const existing = cached.find((n) => n.id === id);
   if (!existing) return null;
@@ -642,6 +649,7 @@ export async function reformatNote(id: string): Promise<Note | null> {
     timeoutMs: 8000,
     detectStructure: f.structure,
     withTitle: f.autotitle && titleIsEmpty,
+    style,
   });
 
   const content = result.content || source;
@@ -657,6 +665,40 @@ export async function reformatNote(id: string): Promise<Note | null> {
   return commitEntryChanges(id, existing, changes, {
     title, content, raw_content, updated_at: nowIso,
   });
+}
+
+/**
+ * setPinned — pin/unpin a note (Notes v3). Deliberately does NOT bump
+ * updated_at: pinning is a preference, not an edit, so it must not reorder the
+ * recency-sorted list or mint a conflict pair (desktop set_note_pinned agrees).
+ * Cloud write is best-effort; local state applies immediately.
+ */
+export async function setPinned(id: string, pinned: boolean): Promise<void> {
+  patchNoteState(id, { isPinned: pinned });
+  try {
+    await updateCachedNote(id, { is_pinned: pinned });
+    if (await syncStore.getSyncEnabled()) {
+      const userId = await getUserId();
+      await supabase.from('notes').update({ is_pinned: pinned })
+        .eq('id', id).eq('user_id', userId);
+    }
+  } catch (err) {
+    console.error('setPinned failed:', err);
+  }
+}
+
+/**
+ * updateRawContent — persist an edited ORIGINAL transcript (Notes v3, the
+ * Cleft edit-then-regenerate pattern). Never triggers cleanup — pair it with
+ * reformatNote when the user explicitly asks.
+ */
+export async function updateRawContent(id: string, raw: string): Promise<Note | null> {
+  const cached = await getCachedNotes();
+  const existing = cached.find((n) => n.id === id);
+  if (!existing) return null;
+  const nowIso = new Date().toISOString();
+  const changes: Partial<NoteEntry> = { raw_content: raw, updated_at: nowIso };
+  return commitEntryChanges(id, existing, changes, { raw_content: raw, updated_at: nowIso });
 }
 
 /**

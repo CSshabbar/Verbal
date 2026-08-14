@@ -7,8 +7,8 @@
  *
  * Contract (consumed by NotesListScreen / NoteEditorScreen):
  *   { notes, flags, reloadFlags, reload, getNote, createNote, updateNote,
- *     removeNote, removeNotes, saveDictation, reformatNote, addAudioSegment,
- *     resolveConflict }
+ *     removeNote, removeNotes, saveDictation, reformatNote, setPinned,
+ *     updateRawContent, addAudioSegment, resolveConflict }
  *
  * NOTE: `isVoice` is DERIVED, not stored — a note counts as voice when it has a
  * raw transcript or at least one audio segment (both of which do persist), so it
@@ -56,6 +56,8 @@ export function useNotes() {
     removeNotes: store.removeNotes,
     saveDictation: store.saveDictation,
     reformatNote: store.reformatNote,
+    setPinned: store.setPinned,
+    updateRawContent: store.updateRawContent,
     addAudioSegment: store.addAudioSegment,
     resolveConflict: store.resolveConflict,
   };

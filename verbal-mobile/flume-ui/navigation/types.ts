@@ -61,4 +61,5 @@ export type MenuStackParamList = {
   Devices: undefined;
   PairDevice: undefined;
   Snippets: undefined;
+  Models: undefined;
 };

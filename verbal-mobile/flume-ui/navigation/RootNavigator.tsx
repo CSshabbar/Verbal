@@ -19,6 +19,7 @@ import {
   PairDeviceScreen,
   DevicesScreen,
   SnippetsScreen,
+  ModelsScreen,
   NotesListScreen,
   NoteEditorScreen,
   MeetingListScreen,
@@ -215,6 +216,7 @@ function MenuNavigator() {
           <SettingsScreen
             onOpenDevices={() => navigation.navigate('Devices')}
             onOpenSnippets={() => navigation.navigate('Snippets')}
+            onOpenModels={() => navigation.navigate('Models')}
           />
         )}
       </MenuStack.Screen>
@@ -226,6 +228,11 @@ function MenuNavigator() {
       <MenuStack.Screen name="Snippets">
         {({ navigation }) => (
           <SnippetsScreen onBack={() => navigation.goBack()} />
+        )}
+      </MenuStack.Screen>
+      <MenuStack.Screen name="Models">
+        {({ navigation }) => (
+          <ModelsScreen onBack={() => navigation.goBack()} />
         )}
       </MenuStack.Screen>
       <MenuStack.Screen name="Devices">

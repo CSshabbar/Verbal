@@ -671,13 +671,48 @@ The title must be plain text — no markdown, no surrounding quotes, no trailing
 punctuation. Derive it ONLY from what was said; never invent a topic."""
 
 
+# ── Notes v3: named styles (research: AudioPen "Writing Styles"/"Rewriting
+# Intensity", Cleft's Structured / Structured Prose / Clean Transcript,
+# Superwhisper modes — the single most-praised feature family in voice-first
+# note apps). A style is chosen explicitly per (re)format call and NEVER runs
+# automatically, so Hard Rule #12's cost control is untouched.
+NOTES_STYLE_PROSE_RULES = """
+STYLE OVERRIDE — FLOWING PROSE:
+The user asked for this note as prose. Output 1–4 well-formed paragraphs in the
+speaker's voice. NO bullets, NO checklists, NO headings, NO tables — connected
+sentences only. All other rules (completeness, no invention, keep the speaker's
+language) still apply."""
+
+# "Clean transcript" is a different CONTRACT (keep every word), so it replaces
+# the note-maker prompt instead of extending it.
+NOTES_STYLE_TRANSCRIPT_PROMPT = """You are a TRANSCRIPT CLEANER, not a writer.
+Return the text with ONLY these changes:
+- Fix capitalization and add correct punctuation and paragraph breaks.
+- Remove pure filler (um/uh, stutters, immediately-doubled words).
+- Resolve explicit self-corrections to the final value.
+Keep EVERY other word, in the speaker's order, voice and language. Do NOT
+summarize, restructure, retitle sections, add markdown scaffolding, or reword.
+Return plain text only (paragraph breaks allowed)."""
+
+NOTE_STYLES = ("structured", "prose", "transcript")
+
+
 def build_notes_system_prompt(structure_detection: bool = True,
-                              autotitle: bool = True) -> str:
+                              autotitle: bool = True,
+                              style: str = "structured") -> str:
     """Assemble the notes-formatter system prompt, appending the structure-detection
-    rules and/or the auto-title instruction only when their feature flags are on."""
-    prompt = NOTES_FORMATTER_SYSTEM_PROMPT
-    if structure_detection:
-        prompt += "\n\n" + NOTES_STRUCTURE_DETECTION_RULES
+    rules and/or the auto-title instruction only when their feature flags are on.
+    `style` (Notes v3) picks the output shape: "structured" (default, unchanged),
+    "prose" (paragraphs, no scaffolding), "transcript" (clean-up only, keep every
+    word). Unknown styles fall back to structured."""
+    if style == "transcript":
+        prompt = NOTES_STYLE_TRANSCRIPT_PROMPT
+    elif style == "prose":
+        prompt = NOTES_FORMATTER_SYSTEM_PROMPT + "\n\n" + NOTES_STYLE_PROSE_RULES
+    else:
+        prompt = NOTES_FORMATTER_SYSTEM_PROMPT
+        if structure_detection:
+            prompt += "\n\n" + NOTES_STRUCTURE_DETECTION_RULES
     if autotitle:
         prompt += "\n\n" + NOTES_TITLE_INSTRUCTION
     return prompt
@@ -699,12 +734,15 @@ def _parse_note_response(raw: str, autotitle: bool) -> dict:
 
 
 def format_note(text: str, config: dict, *, structure_detection: bool = True,
-                autotitle: bool = True, timeout: float = 8.0) -> dict | None:
+                autotitle: bool = True, timeout: float = 8.0,
+                style: str = "structured") -> dict | None:
     """Format a note with the LLM in ONE call, returning
     ``{"title": str, "formatted_content": str}``.
 
     - Runs the notes formatter (markdown structuring), plus structure-detection
       (checklists) and auto-title generation gated by the passed flags.
+    - `style` (Notes v3): "structured" | "prose" | "transcript" — explicit
+      restyles only; every automatic call keeps the default.
     - Hard timeout (default 8s, Decision 9). On timeout / any failure / no keys,
       returns ``None`` so the caller falls back to saving the raw transcript only
       and surfacing a "Retry formatting" affordance. Never raises.
@@ -712,7 +750,8 @@ def format_note(text: str, config: dict, *, structure_detection: bool = True,
     if not text or not text.strip():
         return None
 
-    system_prompt = build_notes_system_prompt(structure_detection, autotitle)
+    system_prompt = build_notes_system_prompt(structure_detection, autotitle,
+                                              style=style)
     user_message = (
         "NOTES TO FORMAT:\n"
         "```\n"

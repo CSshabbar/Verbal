@@ -1511,6 +1511,17 @@ class VerbalApp(rumps.App):
             self._total_words += word_count
             self.config = update_daily_words(self.config, word_count)
 
+            # Insights ledger (peripheral, fail-closed — insights.py owns the
+            # guarantees). Runs after the paste like the other persistence.
+            try:
+                from app import insights as _ins
+                _secs = len(audio) / float(self.recorder.sample_rate or 16000)
+                _ins.record_dictation(self.config, save_config, word_count,
+                                      seconds=_secs, app_name=target_app,
+                                      fx_words=_ins.polish_delta(text, result))
+            except Exception as e:
+                logger.debug("insights record skipped: %s", e)
+
             # Show the split (TRANSFORM_SWARM.md P1.3): surface what was read as
             # the instruction so a wrong split is catchable + retryable.
             if transform_note:

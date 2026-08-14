@@ -23,13 +23,14 @@ import {
   getTransformEnabled, setTransformEnabled,
 } from '../../lib/storage';
 
-type Props = { onOpenDevices: () => void; onOpenSnippets: () => void };
+type Props = { onOpenDevices: () => void; onOpenSnippets: () => void;
+               onOpenModels: () => void };
 
 /**
  * Settings — keys & preferences, in the Flume visual language.
  * Reads/writes the local settings store directly (lib/storage).
  */
-export const SettingsScreen: React.FC<Props> = ({ onOpenDevices, onOpenSnippets }) => {
+export const SettingsScreen: React.FC<Props> = ({ onOpenDevices, onOpenSnippets, onOpenModels }) => {
   const insets = useSafeAreaInsets();
   const { user, signOut, deleteAccount } = useAuth();
   const [deletingAccount, setDeletingAccount] = useState(false);
@@ -245,6 +246,15 @@ export const SettingsScreen: React.FC<Props> = ({ onOpenDevices, onOpenSnippets 
 
         {/* Voice — spoken language + snippets (spoken phrase → full text) */}
         <Section label="VOICE">
+          {/* Models — pipeline + transcription engine. Its own screen because the
+              choice has real consequences (speed vs accuracy vs dictionary biasing)
+              and does not belong inline with the language chips. */}
+          <ListRow
+            icon="layers-outline"
+            title="Models"
+            subtitle="Speed and transcription engine"
+            onPress={onOpenModels}
+          />
           {/* Whisper language hint (IDI-180). Applies to in-app dictation AND the
               native keyboards (the value ships in the keyboard config snapshot).
               A wrapping chip row, matching the dictionary's vocabulary chips —

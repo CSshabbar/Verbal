@@ -17,6 +17,61 @@ TEXT_LIGHT = "#F2EFE9"
 MUTED = "#7A7570"
 ACCENT = "#E05A2B"
 
+# Pipeline + model choices, mirroring the macOS Settings pane. Kept as plain tables so
+# both platforms offer exactly the same options in the same order.
+WIN_PIPELINES = [
+    ("hybrid", "Hybrid",          "starts working while you talk"),
+    ("one",    "One round trip",  "best all-round, same words sooner"),
+    ("two",    "Two round trips", "the older, slower route"),
+    ("old",    "Original",        "how Verbal used to sound"),
+]
+# (config value, label). Labels are what the combobox shows and are mapped back on save.
+WIN_ASR_MODELS = [
+    ("auto",                   "Automatic — fast, good at everything (Groq)"),
+    ("whisper-large-v3-turbo", "Whisper turbo — always the fast one (Groq)"),
+    ("whisper-large-v3",       "Whisper large — better for other languages (Groq)"),
+    ("eleven-scribe-v1",       "Scribe — most accurate on your voice (ElevenLabs)"),
+    ("aai-universal-2",        "Universal-2 — best with Urdu mixed in (AssemblyAI)"),
+    ("aai-universal-3-5-pro",  "Universal-3.5 — strong English, weak Urdu (AssemblyAI)"),
+]
+
+
+def _derive_pipeline(config):
+    """Which pipeline the three flags currently describe. Derived, never stored — the
+    dictation path reads the flags, so a separate key could disagree with what runs."""
+    if config.get("hybrid_mode"):
+        return "hybrid"
+    if not config.get("speed_mode"):
+        return "old"
+    return "one" if config.get("chained_mode") else "two"
+
+
+def _pipeline_flags(pid):
+    """hybrid_mode is written on EVERY choice, not only when enabling it — otherwise
+    switching away from Hybrid would leave it set and silently keep streaming."""
+    if pid == "old":
+        return {"speed_mode": False, "chained_mode": False, "hybrid_mode": False}
+    if pid == "two":
+        return {"speed_mode": True, "chained_mode": False, "hybrid_mode": False}
+    if pid == "hybrid":
+        return {"speed_mode": True, "chained_mode": True, "hybrid_mode": True}
+    return {"speed_mode": True, "chained_mode": True, "hybrid_mode": False}
+
+
+def _win_asr_label(config):
+    cur = str(config.get("asr_model") or "auto")
+    for val, lbl in WIN_ASR_MODELS:
+        if val == cur:
+            return lbl
+    return WIN_ASR_MODELS[0][1]
+
+
+def _win_asr_value(label):
+    for val, lbl in WIN_ASR_MODELS:
+        if lbl == label:
+            return val
+    return "auto"
+
 
 class WinDashboard:
     def __init__(self, app):
@@ -233,6 +288,28 @@ class WinDashboard:
                      values=["tiny", "base", "small", "medium"],
                      state="readonly", width=20, font=("Segoe UI", 11)).pack(**pad, anchor="w")
 
+        # Speed / pipeline. Same three flags the macOS Settings pane writes, and the
+        # same derivation — the radio position is READ from speed_mode/chained_mode/
+        # hybrid_mode rather than stored separately, so the two platforms can never
+        # disagree about which pipeline is active.
+        tk.Label(scroll_frame, text="SPEED", font=("Segoe UI", 9, "bold"),
+                 fg=MUTED, bg=SHEET_BG).pack(**pad, anchor="w")
+        pipe_var = tk.StringVar(value=_derive_pipeline(config))
+        for pid, plabel, pdesc in WIN_PIPELINES:
+            tk.Radiobutton(
+                scroll_frame, text=f"{plabel} — {pdesc}", value=pid, variable=pipe_var,
+                bg=SHEET_BG, fg=TEXT_DARK, selectcolor=CARD_BG, activebackground=SHEET_BG,
+                anchor="w", justify="left", font=("Segoe UI", 10),
+            ).pack(padx=20, anchor="w")
+
+        # Transcription model
+        tk.Label(scroll_frame, text="TRANSCRIPTION MODEL", font=("Segoe UI", 9, "bold"),
+                 fg=MUTED, bg=SHEET_BG).pack(**pad, anchor="w")
+        asr_var = tk.StringVar(value=_win_asr_label(config))
+        ttk.Combobox(scroll_frame, textvariable=asr_var,
+                     values=[lbl for _, lbl in WIN_ASR_MODELS],
+                     state="readonly", width=44, font=("Segoe UI", 10)).pack(**pad, anchor="w")
+
         # Recording mode
         tk.Label(scroll_frame, text="RECORDING MODE", font=("Segoe UI", 9, "bold"),
                  fg=MUTED, bg=SHEET_BG).pack(**pad, anchor="w")
@@ -283,7 +360,8 @@ class WinDashboard:
             bg=ACCENT, fg="white", activebackground="#C04A22", relief="flat",
             cursor="hand2", padx=20, pady=8,
             command=lambda: self._save_settings(
-                groq_var, gemini_var, model_var, mode_var, sync_var, uid_var, dn_var
+                groq_var, gemini_var, model_var, mode_var, sync_var, uid_var, dn_var,
+                pipe_var, asr_var
             ),
         ).pack(pady=20)
 
@@ -292,7 +370,7 @@ class WinDashboard:
                  font=("Segoe UI", 9), fg=MUTED, bg=SHEET_BG).pack(pady=(0, 20))
 
     def _save_settings(self, groq_var, gemini_var, model_var, mode_var,
-                       sync_var, uid_var, dn_var):
+                       sync_var, uid_var, dn_var, pipe_var=None, asr_var=None):
         config = load_config()
         gk = groq_var.get().strip()
         if gk:
@@ -305,6 +383,14 @@ class WinDashboard:
         config["sync_enabled"] = sync_var.get()
         config["sync_user_id"] = uid_var.get().strip()
         config["sync_device_name"] = dn_var.get().strip() or "Windows"
+        # Pipeline + model. Validated here rather than trusted: a bad asr_model would
+        # be forwarded to the proxy and fail every dictation.
+        if pipe_var is not None:
+            config.update(_pipeline_flags(pipe_var.get()))
+        if asr_var is not None:
+            from app.transcriber import ASR_CHOICES
+            _m = _win_asr_value(asr_var.get())
+            config["asr_model"] = _m if _m in ASR_CHOICES else "auto"
         save_config(config)
         self.app.config = config
         messagebox.showinfo("Settings", "Saved")

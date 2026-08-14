@@ -132,6 +132,26 @@ Each feature: **what it does · desktop impl · mobile impl · backend · status
     replacement rules still apply afterwards.
   - **They are slower**, and the UI says so per option: Groq ~1.0s, ElevenLabs ~1.75s, AssemblyAI ~5s
     (upload-then-poll). They buy accuracy, not speed.
+- **Platform parity for pipeline + model (2026-08-15).** All three clients offer the SAME option ids in
+  the SAME order, so the product describes one thing:
+  - **macOS** `flume_dashboard_html.py` — Settings group renamed `dictation` -> `models`. Pipeline and
+    model are plain rows (name, one line, the wait) above a **canvas blueprint**: a rotating wireframe of
+    the route, drawn from the selected pipeline's own topology (`bpScene`), with packets animating along
+    the real lanes and a waveform at YOU for hybrid. Hand-rolled projection, no library. It must be
+    stopped when its pane unmounts — `renderSettings()` calls `bpMount()`/`bpUnmount()`, and `renderActive()`
+    calls `bpUnmount()` when leaving Settings, or a rAF loop keeps drawing into a detached canvas.
+    Honours `prefers-reduced-motion` by drawing one static frame.
+  - **Windows** `win_dashboard.py` — same four pipelines as radios + the six models as a combobox.
+    `_derive_pipeline`/`_pipeline_flags`/`_win_asr_value` mirror the macOS derivation exactly, including
+    writing `hybrid_mode` on EVERY choice so switching away cannot leave it streaming. `win_main.py` has
+    the same hybrid start/consume blocks as `main.py` (the `Recorder` and its tap are shared code).
+  - **Mobile** `flume-ui/screens/ModelsScreen.tsx` (new, reached from Settings -> Voice -> Models, route
+    `Models` on `MenuStack`). Tables live in `lib/groq.ts` (`PIPELINES`, `ASR_MODELS`) and the prefs are
+    local AsyncStorage (`flume_pipeline`, `flume_asr_model`) — a per-device speed/accuracy trade, not
+    account state. `transcribeAudio` sends `asr_provider`/`asr_alt_model` for non-Groq picks, skips the
+    glossary and the echo scrub for them, and **retries once on Groq** if the provider call fails.
+    **`hybrid` is deliberately absent on mobile** — it streams while you speak and mobile records to a file
+    then uploads, so it would be a switch that does nothing.
 - **Hybrid pipeline — BUILT (2026-08-15, `hybrid_mode`, default OFF).** Streams mic audio to the new
   `asr-stream` Edge Function *while you speak*, then uses the streamed transcript for takes at/over
   `asr_stream.HYBRID_THRESHOLD_SEC` (8.0s, the measured crossover) and falls back to the ordinary chained

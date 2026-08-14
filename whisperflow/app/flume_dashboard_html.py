@@ -23,7 +23,7 @@ _PRESSED_SELECTORS = [
     ".toggle", ".tgtpill", ".dchip button", ".reprow button", ".sndots",
     ".snmenu button", ".snx", ".sndel", ".siGoogle", ".siCancel",
     ".mrActs button", ".link", ".chkbox", ".deadbar .dbbtn", ".deadside .dsbtn",
-    ".devrm",
+    ".devrm", ".npin", ".nmenu button", ".askNote .ax",
     ".sniptable th.th-trig",
     # meeting detail (MER-46)
     "#mtgDetail .btnS", "#mtgDetail .iconbtn", "#mtgDetail .aiCb", "#mtgDetail .hnTab",
@@ -54,6 +54,8 @@ _IC = {
     "trash":  '<path d="M4 7h16"/><path d="M9.5 7V5.2A1.2 1.2 0 0 1 10.7 4h2.6a1.2 1.2 0 0 1 1.2 1.2V7"/><path d="M6.5 7l.9 12.1A1.6 1.6 0 0 0 9 20.6h6a1.6 1.6 0 0 0 1.6-1.5L17.5 7"/>',
     "meet":   '<circle cx="9" cy="8" r="3.2"/><path d="M3.5 19c.7-3 2.9-4.5 5.5-4.5s4.8 1.5 5.5 4.5"/><circle cx="17" cy="9" r="2.6"/><path d="M15.8 14.7c2.2.3 3.9 1.6 4.7 4.3"/>',
     "dots":   '<circle cx="5" cy="12" r=".9"/><circle cx="12" cy="12" r=".9"/><circle cx="19" cy="12" r=".9"/>',
+    # Insights: a dictation pulse.
+    "pulse":  '<path d="M3 12h3.5l2.5-6 4 12 2.5-6H21"/>',
 }
 
 
@@ -185,6 +187,58 @@ body{background:var(--bg);font-family:'Geist',-apple-system,system-ui,sans-serif
 .disc{width:38px;height:38px;border-radius:50%;background:#1a1512;color:#EADFCE;display:flex;align-items:center;justify-content:center;margin-bottom:auto}
 .fcard.sage .disc{background:#1e2418;color:#DDE4D3}.fcard.plum .disc{background:#221820;color:#e6dae4}.disc svg{width:16px;height:16px}
 .fnum{font:600 24px 'Geist';letter-spacing:-.02em;margin-top:20px}.flabel{font:600 14px 'Geist';margin-top:6px}.fsub{font:400 12px 'Geist';opacity:.62;margin-top:3px}
+/* ── Insights ─────────────────────────────────────────────────────────────── */
+.inshero{position:relative;background:var(--card);border:1px solid var(--bd);border-radius:20px;padding:24px 20px 20px;display:flex;flex-direction:column;align-items:center;margin-bottom:14px}
+.inshero .hnum{font:600 62px 'Geist';letter-spacing:-.04em;line-height:1;margin-top:-78px}
+.inshero .hnum.na{font-size:44px;color:var(--mut);margin-top:-66px}
+.inshero .hunit{font:500 10.5px 'JetBrains Mono';letter-spacing:.2em;color:var(--mut);margin-top:5px}
+.inshero .hbadge{margin-top:13px;font:600 12px 'Geist';color:#0e1012;background:#f2f2f2;border-radius:999px;padding:7px 16px}
+.inshero .hsub{font:400 13px 'Geist';color:var(--tx2);margin-top:11px;text-align:center}
+.inshero .hsub b{color:var(--tx)}
+.insband{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:14px;margin-bottom:14px}
+.itile{background:var(--card);border:1px solid var(--bd);border-radius:18px;padding:15px 17px;min-height:118px;display:flex;flex-direction:column;justify-content:flex-end}
+.itile.cream{background:#EADFCE;border:0;color:#2a1f18}
+.itile.sage{background:#DDE4D3;border:0;color:#1e2418}
+.itile.plum{background:#e6dae4;border:0;color:#221820}
+.itile .tk{font:500 9.5px 'JetBrains Mono';letter-spacing:.14em;text-transform:uppercase;color:var(--mut);margin-bottom:auto}
+.itile.cream .tk{color:rgba(42,31,24,.55)}.itile.sage .tk{color:rgba(30,36,24,.55)}.itile.plum .tk{color:rgba(34,24,32,.55)}
+.itile .tv{font:600 24px 'Geist';letter-spacing:-.03em;margin-top:16px}
+.itile .ts{font:400 11px 'Geist';color:var(--sub);margin-top:4px}
+.itile.cream .ts{color:rgba(42,31,24,.6)}.itile.sage .ts{color:rgba(30,36,24,.6)}.itile.plum .ts{color:rgba(34,24,32,.6)}
+.itile .up{font:600 10.5px 'JetBrains Mono';margin-left:7px;vertical-align:3px;color:inherit;opacity:.7}
+.inscard{background:var(--card);border:1px solid var(--bd);border-radius:18px;padding:18px 20px;margin-bottom:14px}
+.inscard .chd{font:500 9.5px 'JetBrains Mono';letter-spacing:.16em;color:var(--mut);text-transform:uppercase;margin-bottom:14px;display:flex;justify-content:space-between}
+.inscard .chd .csub{letter-spacing:.02em;color:var(--sub);text-transform:none}
+.inshm{display:grid;grid-auto-flow:column;gap:3px;justify-content:start}
+.inshm i{border-radius:3px;background:#1f2225}
+.inshm i.gl{box-shadow:0 0 6px rgba(200,90,62,.55)}
+.inshmfoot{display:flex;justify-content:space-between;margin-top:12px;font:400 11px 'Geist';color:var(--sub)}
+.inshmfoot b{color:var(--tx);font-weight:600}
+.inshmleg{display:flex;align-items:center;gap:4px}
+.inshmleg i{width:9px;height:9px;border-radius:2.5px;display:inline-block}
+.inssplit{display:grid;grid-template-columns:1fr 1fr;gap:0;padding:18px 0}
+.inssplit>div{padding:0 20px;min-width:0}
+.inssplit>div:first-child{border-right:1px solid var(--bd-faint)}
+.inssub{font:500 9.5px 'JetBrains Mono';letter-spacing:.16em;color:var(--mut);text-transform:uppercase;margin-bottom:12px}
+.insabar{margin-bottom:10px}
+.insabar .arow{display:flex;justify-content:space-between;font:500 12px 'Geist';margin-bottom:5px;gap:10px}
+.insabar .arow .an{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.insabar .arow .av{font:500 11px 'JetBrains Mono';color:var(--mut);flex:none}
+.insabar .atr{height:7px;border-radius:4px;background:rgba(240,240,240,.05)}
+.insabar .atr i{display:block;height:100%;border-radius:4px}
+.inshours{display:flex;align-items:flex-end;gap:3px;height:64px}
+.inshours i{flex:1;background:rgba(240,240,240,.14);border-radius:3px 3px 0 0;min-height:2px}
+.inshours i.pk{background:var(--acc)}
+.inshfoot{display:flex;justify-content:space-between;font:400 10px 'JetBrains Mono';color:var(--sub);margin-top:6px;letter-spacing:.06em}
+.inspeak{font:400 11.5px 'Geist';color:var(--sub);margin-top:10px}
+.inspeak b{color:var(--tx);font-weight:600}
+.insempty{display:flex;flex-direction:column;align-items:center;justify-content:center;padding:80px 20px;text-align:center}
+.insempty .bigmic{width:64px;height:64px;border-radius:50%;background:var(--acc-soft);border:1px solid var(--acc-bd);display:flex;align-items:center;justify-content:center;color:var(--acc);margin-bottom:18px}
+.insempty .bigmic svg{width:26px;height:26px}
+.insempty h2{font:700 20px 'Geist';letter-spacing:-.01em;margin-bottom:8px}
+.insempty p{font:400 13px/1.55 'Geist';color:var(--mut);max-width:380px}
+#insTip{position:fixed;z-index:80;pointer-events:none;background:#26282b;border:1px solid var(--bd2);border-radius:8px;padding:6px 9px;font:500 11px 'Geist';color:var(--tx);display:none;white-space:nowrap;box-shadow:0 6px 18px rgba(0,0,0,.4)}
+#insTip .tmut{color:var(--mut)}
 .sechead{display:flex;align-items:baseline;justify-content:space-between;margin-bottom:14px}.sechead h2{font:600 15px 'Geist'}
 .link{font:500 12.5px 'Geist';color:var(--mut);cursor:pointer}
 .rows{display:flex;flex-direction:column;gap:10px}
@@ -390,8 +444,37 @@ body{background:var(--bg);font-family:'Geist',-apple-system,system-ui,sans-serif
 .pr-tx i{font:400 12px Geist;font-style:normal;color:var(--ink3);
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .pr-n{font:500 11px "JetBrains Mono",monospace;color:var(--ink3);flex:none;
-  font-variant-numeric:tabular-nums}
-.prow.on .pr-n{color:var(--ink2)}
+  font-variant-numeric:tabular-nums;min-width:34px;text-align:right}
+.prow.on .pr-n{color:var(--accent)}
+/* Instrument-panel details: a rail that lights on selection, and the vendor as a
+   micro-tag rather than more sentence. Adds finish, not information. */
+.prow{position:relative;overflow:hidden}
+.pr-rail{position:absolute;left:0;top:50%;transform:translateY(-50%);width:2px;height:0;
+  border-radius:2px;background:var(--accent);transition:height .18s ease}
+.prow.on .pr-rail{height:62%}
+.prow.on b{letter-spacing:-.005em}
+.pr-v{font:500 8.5px "JetBrains Mono",monospace;letter-spacing:.12em;text-transform:uppercase;
+  color:var(--ink3);border:1px solid var(--hair2);border-radius:3px;padding:2px 5px;flex:none}
+.prow.on .pr-v{color:var(--ink2);border-color:rgba(200,90,62,.35)}
+/* Blueprint frame. The canvas draws the route; everything here is the instrument
+   housing around it — grid, corner ticks, a horizon glow. Deliberately quiet so the
+   moving parts are the only thing that reads as alive. */
+.bpwrap{position:relative;height:190px;margin:2px 0 12px;border-radius:12px;overflow:hidden;
+  border:1px solid var(--hair);
+  background:
+    radial-gradient(120% 90% at 50% 108%, rgba(200,90,62,.16), transparent 62%),
+    linear-gradient(rgba(244,243,241,.028) 1px, transparent 1px) 0 0/100% 22px,
+    linear-gradient(90deg, rgba(244,243,241,.028) 1px, transparent 1px) 0 0/22px 100%,
+    var(--sunken)}
+.bpcanvas{position:absolute;inset:0;width:100%;height:100%;display:block}
+.bptick{position:absolute;width:9px;height:9px;border-color:rgba(200,90,62,.55);border-style:solid;
+  border-width:0}
+.bptick.tl{top:8px;left:8px;border-top-width:1px;border-left-width:1px}
+.bptick.tr{top:8px;right:8px;border-top-width:1px;border-right-width:1px}
+.bptick.bl{bottom:8px;left:8px;border-bottom-width:1px;border-left-width:1px}
+.bptick.br{bottom:8px;right:8px;border-bottom-width:1px;border-right-width:1px}
+.bpmeta{position:absolute;top:10px;left:22px;font:500 9px "JetBrains Mono",monospace;
+  letter-spacing:.16em;text-transform:uppercase;color:var(--ink3)}
 .hotcard .hotrow{display:flex;align-items:center;justify-content:space-between;padding:14px 4px;border-bottom:1px solid var(--bd)}.hotcard .hotrow:last-child{border-bottom:0}
 .kbs{display:flex;gap:6px}kbd{font:500 10.5px 'JetBrains Mono';background:rgba(240,240,240,.05);border:1px solid var(--bd2);border-radius:6px;padding:5px 9px;min-width:26px;text-align:center}
 .toggle{width:40px;height:22px;border-radius:11px;background:rgba(240,240,240,.12);position:relative;cursor:pointer;border:0}
@@ -464,7 +547,45 @@ body{background:var(--bg);font-family:'Geist',-apple-system,system-ui,sans-serif
 .segbtn svg{width:14px;height:14px}
 .fmtbtn.ftxt{width:auto;padding:0 10px;font:600 11.5px 'Geist'}
 .fmtbtn.retry{color:var(--acc);border-color:var(--acc-bd)}
+.fmtbtn.pinned{color:var(--acc);border-color:var(--acc-bd)}
 .nflags .saverow{margin:0 0 12px}.nflags .saverow:last-child{margin-bottom:0}
+/* ── notes v3: pins, grouped list, overflow menu, ask, styles ── */
+.ngroup{font:500 9.5px 'JetBrains Mono';letter-spacing:.16em;color:var(--sub);text-transform:uppercase;margin:16px 2px 8px}
+.ngroup:first-child{margin-top:2px}
+.ncard{position:relative}
+.ncard .nctitle{padding-right:24px}
+.npin{position:absolute;top:8px;right:8px;width:26px;height:26px;border-radius:8px;border:0;background:none;color:var(--sub);cursor:pointer;display:none;align-items:center;justify-content:center;font-size:13px;line-height:1}
+.ncard:hover .npin{display:flex}
+.npin:hover{color:var(--acc);background:rgba(240,240,240,.07)}
+.npin.on{display:flex;color:var(--acc)}
+.ncmeta{display:flex;align-items:center;gap:10px}
+.ncprog{color:var(--acc);letter-spacing:.04em}
+.ncprog.alldone{color:var(--on)}
+mark.hl{background:rgba(200,90,62,.32);color:inherit;border-radius:3px;padding:0 1px}
+.notemeta{font:500 10px 'JetBrains Mono';color:var(--sub);letter-spacing:.07em;margin:-6px 0 14px;min-height:12px}
+.nmenuwrap{position:relative;display:inline-flex}
+.nmenu{position:absolute;top:36px;right:0;z-index:30;min-width:200px;background:#1b1e22;border:1px solid var(--bd2);border-radius:12px;padding:6px;box-shadow:0 14px 36px rgba(0,0,0,.55)}
+.nmenu[hidden]{display:none}
+.nmenu button{display:flex;width:100%;align-items:center;gap:9px;padding:8px 10px;border:0;background:none;color:var(--tx);font:500 12px 'Geist';border-radius:8px;cursor:pointer;text-align:left}
+.nmenu button:hover{background:rgba(240,240,240,.06)}
+.nmenu button.danger{color:#f0b39a}
+.nmenu button svg{width:13px;height:13px;flex:none;opacity:.7}
+.nmenu .nmsep{height:1px;background:var(--bd);margin:5px 4px}
+.nmenu .nmhead{font:500 9px 'JetBrains Mono';letter-spacing:.14em;color:var(--sub);text-transform:uppercase;padding:6px 10px 4px}
+.notebody ul.chk li.done .chktext{color:var(--sub);text-decoration:line-through}
+.nempty{display:flex;flex-direction:column;align-items:center;gap:10px;padding:40px 12px;text-align:center}
+.nempty .disc{width:46px;height:46px;border-radius:50%;background:var(--acc-soft);color:var(--acc);display:flex;align-items:center;justify-content:center}
+.nempty .disc svg{width:20px;height:20px}
+.nempty .t{font:600 14px 'Geist'}
+.nempty .s{font:400 12px/1.6 'Geist';color:var(--mut);max-width:270px}
+.noteorig[contenteditable]{cursor:text}
+.noteorig:focus{border-color:var(--acc-bd);outline:0}
+.askNote{border:1px solid var(--acc-bd);background:var(--acc-softer);border-radius:12px;padding:12px 14px;margin:0 0 14px;position:relative}
+.askNote .aq{font:600 11px 'JetBrains Mono';letter-spacing:.06em;color:var(--acc-txt);margin-bottom:6px;padding-right:20px}
+.askNote .aa{font:400 12.5px/1.65 'Geist';color:var(--tx);white-space:pre-wrap}
+.askNote .asrc{font:500 9.5px 'JetBrains Mono';letter-spacing:.08em;color:var(--sub);margin-top:8px}
+.askNote .ax{position:absolute;top:8px;right:8px;width:22px;height:22px;border:0;background:none;color:var(--sub);cursor:pointer;font-size:13px;border-radius:6px}
+.askNote .ax:hover{color:var(--tx);background:rgba(240,240,240,.07)}
 /* ── Meetings (31a launcher card · 31f folder tabs) ── */
 .mcard{display:flex;align-items:center;gap:14px;margin:18px 0 6px;padding:16px 18px;border-radius:12px;
   background:linear-gradient(160deg,#17191c,#1c1e22);border:1px solid var(--bd)}
@@ -804,6 +925,7 @@ def flume_html() -> str:
         {_nav("grid","Canvas","canvas", badge="")}
         {_nav("lines","Notes","notes")}
         {_nav("meet","Meetings","meetings")}
+        {_nav("pulse","Insights","insights")}
         {_nav("book","Dictionary","dictionary")}
         {_nav("bolt","Snippets","snippets")}
       </nav>
@@ -850,6 +972,7 @@ def flume_html() -> str:
       <section class="screen" id="scr-canvas" hidden><div class="main" id="canvasMain"></div></section>
       <section class="screen" id="scr-notes" hidden><div class="threepane" id="notesMain"></div></section>
       <section class="screen" id="scr-meetings" hidden><div class="main" id="meetingsMain"></div></section>
+      <section class="screen" id="scr-insights" hidden><div class="main" id="insightsMain"></div></section>
       <section class="screen" id="scr-dictionary" hidden><div class="main" id="dictionaryMain"></div></section>
       <section class="screen" id="scr-snippets" hidden><div class="main" id="snippetsMain"></div></section>
       <section class="screen" id="scr-devices" hidden><div class="main" id="devicesMain"></div></section>
@@ -909,6 +1032,7 @@ function show(id){
   // Meetings finish in a separate window — refresh the list whenever the user
   // lands somewhere that displays it (stale-list bug).
   if(id==='meetings' || id==='home') loadMeets();
+  if(id==='insights') loadInsights();
 }
 function renderActive(){
   try {
@@ -917,10 +1041,14 @@ function renderActive(){
     else if(ACTIVE==='canvas') renderCanvas();
     else if(ACTIVE==='notes') renderNotes();
     else if(ACTIVE==='meetings') renderMeetings();
+    else if(ACTIVE==='insights') renderInsights();
     else if(ACTIVE==='dictionary') renderDictionary();
     else if(ACTIVE==='snippets') renderSnippets();
     else if(ACTIVE==='devices') renderDevices();
     else if(ACTIVE==='settings') renderSettings();
+    // Leaving Settings never calls renderSettings(), so the blueprint's rAF loop
+    // has to be stopped from here or it keeps drawing into a detached canvas.
+    if(ACTIVE!=='settings') bpUnmount();
   } catch(e){
     const box = document.querySelector('#scr-'+ACTIVE+' .main') || document.querySelector('#scr-'+ACTIVE+' .threepane') || document.body;
     if(box) box.innerHTML = '<div class="main"><div class="empty">Could not render '+ACTIVE+': '+esc(e && (e.message||e.stack||String(e)))+'</div></div>';
@@ -1047,14 +1175,205 @@ function renderHome(){
   document.getElementById('homeMain').innerHTML = `
     <div class="mhead"><div><div class="eyebrow">Welcome back</div><h1 class="title">${esc(name)}</h1></div>${statusPill()}</div>
     <div class="features">
-      <div class="fcard cream"><div class="disc">${SVG.mic}</div><div class="fnum">${STATE.daily_words||0}</div><div class="flabel">Words today</div><div class="fsub">${STATE.total_transcriptions||0} all time</div></div>
+      <div class="fcard cream" style="cursor:pointer" onclick="show('insights')"><div class="disc">${SVG.mic}</div><div class="fnum">${STATE.daily_words||0}</div><div class="flabel">Words today</div><div class="fsub">${STATE.total_transcriptions||0} all time &middot; Insights &rarr;</div></div>
       <div class="fcard sage"><div class="disc">${SVG.grid}</div><div class="fnum">Canvas</div><div class="flabel">Shared clipboard</div><div class="fsub">${STATE.sync_connected?'Synced':'Local only'}</div></div>
-      <div class="fcard plum"><div class="disc">${SVG.lines}</div><div class="fnum">${NOTES.length}</div><div class="flabel">Notes synced</div><div class="fsub">${STATE.total_words||0} words total</div></div>
+      <div class="fcard plum"><div class="disc">${SVG.lines}</div><div class="fnum">${realNotes().length}</div><div class="flabel">Notes synced</div><div class="fsub">${STATE.total_words||0} words total</div></div>
     </div>
     ${meetingLauncherCard()}
     <div class="sechead"><h2>Recent</h2><span class="link" onclick="show('history')">Open history →</span></div>
     <div class="rows">${rows}</div>`;
   if(!MEETS_LOADED){ MEETS_LOADED=true; loadMeets(); }
+}
+
+// ── Insights ──────────────────────────────────────────────────────────────────
+let INS=null, INS_REFRESHED=false;
+const fmtN = n => (n==null?'—':Number(n).toLocaleString('en-US'));
+const fmtK = n => n>=10000 ? (Math.round(n/100)/10)+'K' : fmtN(n);
+function fmtMin(min){
+  if(min==null) return '—';
+  const h=Math.floor(min/60), m=Math.round(min%60);
+  return h>0 ? h+'h '+String(m).padStart(2,'0')+'m' : m+'m';
+}
+function fmtHour(h){
+  if(h==null) return '—';
+  const ap=h<12?'AM':'PM'; const v=h%12===0?12:h%12;
+  return v+' '+ap;
+}
+function fmtPct(p){
+  if(p==null) return '';
+  return p>=10 ? String(Math.round(p)) : String(p);
+}
+function loadInsights(){
+  api('get_insights').then(r=>{
+    if(r && r.ok){ INS=r; if(ACTIVE==='insights') renderInsights(); }
+    // One cloud fold-in per dashboard session — incremental after the first.
+    if(!INS_REFRESHED){
+      INS_REFRESHED=true;
+      api('refresh_insights').then(r2=>{
+        if(r2 && r2.ok){ INS=r2; if(ACTIVE==='insights') renderInsights(); }
+      });
+    }
+  });
+}
+function insTip(el, html){
+  let tip=document.getElementById('insTip');
+  if(!tip){ tip=document.createElement('div'); tip.id='insTip'; document.body.appendChild(tip); }
+  if(!html){ tip.style.display='none'; return; }
+  tip.innerHTML=html;
+  const r=el.getBoundingClientRect();
+  tip.style.display='block';
+  const tw=tip.offsetWidth;
+  tip.style.left=Math.max(6,Math.min(window.innerWidth-tw-6, r.left+r.width/2-tw/2))+'px';
+  tip.style.top=Math.max(6,(r.top-tip.offsetHeight-8))+'px';
+}
+function copyRecap(btn){
+  if(!INS) return;
+  const L=[];
+  L.push('My Verbal insights —');
+  L.push(fmtN(INS.total_words)+' words dictated ('+fmtN(INS.total_dictations)+' dictations)');
+  if(INS.wpm) L.push(INS.wpm+' words/min — top '+fmtPct(INS.wpm_percentile)+'% of typists');
+  if(INS.saved_month_min) L.push(fmtMin(INS.saved_month_min)+' saved this month vs typing');
+  if(INS.current_streak) L.push(INS.current_streak+'-day streak (best '+INS.best_streak+')');
+  if(INS.apps && INS.apps.length) L.push('Most dictated into: '+INS.apps[0].name);
+  busyGuard(btn||'copyRecap', ()=>api('copy_text', L.join('\n'))).then(()=>toast('Recap copied'));
+}
+function insGauge(wpm){
+  // Semicircular gauge, 0..200 wpm, typist marker at 52.
+  const W=260,H=138,cx=130,cy=128,r=104,sw=13;
+  const P=(a)=>({x:cx+Math.cos(a)*r, y:cy+Math.sin(a)*r});
+  const arc=(a0,a1,col)=>{
+    const p0=P(a0),p1=P(a1);
+    return '<path d="M '+p0.x+' '+p0.y+' A '+r+' '+r+' 0 '+((a1-a0)>Math.PI?1:0)+' 1 '+p1.x+' '+p1.y+'" stroke="'+col+'" stroke-width="'+sw+'" fill="none" stroke-linecap="round"/>';
+  };
+  let s='<svg width="'+W+'" height="'+H+'" viewBox="0 0 '+W+' '+H+'">';
+  s+=arc(Math.PI, 2*Math.PI, 'rgba(240,240,240,.08)');
+  if(wpm){
+    s+=arc(Math.PI, Math.PI+Math.PI*Math.min(1,wpm/200), '#C85A3E');
+    const t=P(Math.PI+Math.PI*(52/200));
+    s+='<circle cx="'+t.x+'" cy="'+t.y+'" r="4" fill="#0e1012" stroke="rgba(240,240,240,.6)" stroke-width="1.5"><title>Average typist - 52 wpm</title></circle>';
+  }
+  return s+'</svg>';
+}
+function insHeatmap(){
+  const box=document.getElementById('insHm');
+  if(!box || !INS || !INS.series) return;
+  const series=INS.series;
+  // Pad so columns are real weeks (rows Sun..Sat).
+  const first=new Date(series[0][0]+'T00:00:00');
+  const pad=first.getDay();
+  const cells=[]; for(let i=0;i<pad;i++) cells.push(null);
+  series.forEach(d=>cells.push(d));
+  // Size cells to fill the card width; drop the oldest weeks if they can't fit.
+  const gap=3, avail=box.clientWidth||900;
+  let weeks=Math.ceil(cells.length/7);
+  let cell=Math.floor((avail-(weeks-1)*gap)/weeks);
+  if(cell<10){ cell=10; const fitWeeks=Math.floor((avail+gap)/(cell+gap));
+    const drop=(weeks-fitWeeks)*7; if(drop>0) cells.splice(0,drop); weeks=fitWeeks; }
+  if(cell>16) cell=16;
+  box.style.gridTemplateRows='repeat(7,'+cell+'px)';
+  const mx=Math.max(1, ...cells.map(c=>c?c[1]:0));
+  const steps=['#1f2225','#4a2d24','#7a4030','#a84b33','#C85A3E','#E88D6A'];
+  const streak=INS.current_streak||0;
+  const todayIdx=cells.length-1;
+  let html='';
+  cells.forEach((c,i)=>{
+    if(!c){ html+='<i style="width:'+cell+'px;height:'+cell+'px;visibility:hidden"></i>'; return; }
+    const w=c[1];
+    let idx=0;
+    if(w>0){ const f=w/mx; idx=f<.15?1:f<.35?2:f<.6?3:f<.85?4:5; }
+    const inStreak=streak>1 && i>todayIdx-streak;
+    const col=(inStreak && idx===0)?steps[1]:steps[idx];
+    html+='<i style="width:'+cell+'px;height:'+cell+'px;background:'+col+'"'
+        +(inStreak?' class="gl"':'')
+        +' onmouseenter="insTip(this,\''+c[0]+' <span class=tmut>&middot;</span> '+fmtN(w)+' words\')"'
+        +' onmouseleave="insTip(null)"></i>';
+  });
+  box.innerHTML=html;
+}
+function renderInsights(){
+  const M=document.getElementById('insightsMain');
+  if(!INS){ M.innerHTML='<div class="mhead"><div><div class="eyebrow">Insights</div><h1 class="title">How you flow</h1></div></div><div class="empty">Crunching your numbers…</div>'; return; }
+  if(INS.empty){
+    M.innerHTML=`
+      <div class="mhead"><div><div class="eyebrow">Insights</div><h1 class="title">How you flow</h1></div></div>
+      <div class="inscard insempty">
+        <div class="bigmic">${SVG.mic}</div>
+        <h2>Your story starts with a sentence</h2>
+        <p>Hold your hotkey and dictate anything. Words, speed, streaks and the apps you speak into all start counting from your first take.</p>
+      </div>`;
+    return;
+  }
+  const wpm=INS.wpm;
+  const speedX = wpm ? (Math.round(wpm/INS.typing_wpm*10)/10) : null;
+  const novels = INS.total_words>=40000 ? (Math.round(INS.total_words/80000*10)/10) : null;
+  const delta = INS.month_delta_pct;
+  const deltaTag = (delta==null||delta===0) ? '' :
+    `<span class="up">${delta>0?'&#9650;':'&#9660;'}${Math.abs(delta)}%</span>`;
+  const savedAll = INS.saved_all_min ? ` &middot; ${fmtMin(INS.saved_all_min)} all time` : '';
+  const apps=(INS.apps||[]);
+  const appsTotal=apps.reduce((a,b)=>a+b.words,0)||1;
+  const cols=['#C85A3E','#a84b33','#a84b33','#7a4030','#7a4030','#7a4030'];
+  const appsHtml = apps.length ? apps.map((a,i)=>`
+      <div class="insabar"><div class="arow"><span class="an">${esc(a.name)}</span><span class="av">${fmtK(a.words)} &middot; ${a.pct}%</span></div>
+      <div class="atr"><i style="width:${Math.max(1,Math.round(a.words/appsTotal*100))}%;background:${cols[i]||cols[5]}"></i></div></div>`).join('')
+    : '<div class="empty" style="padding:18px 0">App breakdown builds as you dictate on this device.</div>';
+  const hrs=INS.hours||[]; const hmx=Math.max(1,...hrs);
+  const hoursHtml=hrs.map((v,i)=>
+    `<i style="height:${Math.max(3,Math.round(v/hmx*100))}%" class="${i===INS.peak_hour?'pk':''}"`
+    +` onmouseenter="insTip(this,'${fmtHour(i)} <span class=tmut>&middot;</span> ${fmtN(v)} words')" onmouseleave="insTip(null)"></i>`).join('');
+  const busiest=INS.busiest_day;
+  const streakBits=[];
+  if(INS.current_streak>1) streakBits.push(`&#128293; <b>${INS.current_streak}-day</b> streak`);
+  if(busiest) streakBits.push(`busiest day <b>${esc(busiest[0])}</b> (<b>${fmtN(busiest[1].w)}</b> words)`);
+  M.innerHTML=`
+    <div class="mhead"><div><div class="eyebrow">Insights</div><h1 class="title">How you flow</h1></div>
+      <button class="btn ghost" style="flex:none" onclick="copyRecap(this)">${SVG.copy}Copy recap</button></div>
+    <div class="inshero">
+      ${insGauge(wpm)}
+      <div class="hnum${wpm?'':' na'}">${wpm?wpm:'&mdash;'}</div>
+      <div class="hunit">WORDS PER MINUTE</div>
+      ${wpm&&INS.wpm_percentile!=null?`<div class="hbadge">Top ${fmtPct(INS.wpm_percentile)}% of typists</div>`:''}
+      <div class="hsub">${wpm
+        ? `You speak <b>${speedX}&times;</b> faster than the average typist writes.`
+        : 'A few more dictations and we&rsquo;ll clock your speaking speed.'}</div>
+    </div>
+    <div class="insband">
+      <div class="itile cream"><div class="tk">Words dictated</div>
+        <div class="tv">${fmtN(INS.total_words)}${deltaTag}</div>
+        <div class="ts">${fmtN(INS.today_words)} today${novels?` &middot; &asymp; ${novels} novels`:` &middot; ${fmtN(INS.total_dictations)} dictations`}</div></div>
+      <div class="itile sage"><div class="tk">Time saved</div>
+        <div class="tv">${fmtMin(INS.saved_month_min)}</div>
+        <div class="ts">last 30 days &middot; vs ${INS.typing_wpm} wpm typing${savedAll}</div></div>
+      <div class="itile plum"><div class="tk">Streak</div>
+        <div class="tv">${INS.current_streak} day${INS.current_streak===1?'':'s'}</div>
+        <div class="ts">best ever &middot; ${INS.best_streak} days</div></div>
+      <div class="itile"><div class="tk">Polished for you</div>
+        <div class="tv">${fmtN(INS.polished_words)}</div>
+        <div class="ts">words fixed &middot; ${INS.dict_rules} dictionary rule${INS.dict_rules===1?'':'s'}${INS.auto_rules?` (${INS.auto_rules} auto-learned)`:''}</div></div>
+    </div>
+    <div class="inscard">
+      <div class="chd">Activity <span class="csub">day by day</span></div>
+      <div class="inshm" id="insHm"></div>
+      <div class="inshmfoot">
+        <span>${streakBits.join(' &mdash; ')||'Every square is a day you dictated.'}</span>
+        <span class="inshmleg">less <i style="background:#1f2225"></i><i style="background:#4a2d24"></i><i style="background:#7a4030"></i><i style="background:#a84b33"></i><i style="background:#C85A3E"></i><i style="background:#E88D6A"></i> more</span>
+      </div>
+    </div>
+    <div class="inscard inssplit">
+      <div>
+        <div class="inssub">Where you dictate <span style="float:right;letter-spacing:.02em;text-transform:none;color:rgba(240,240,240,.42)">last 30 days</span></div>
+        ${appsHtml}
+      </div>
+      <div>
+        <div class="inssub">Your rhythm</div>
+        <div class="inshours">${hoursHtml}</div>
+        <div class="inshfoot"><span>12AM</span><span>6</span><span>NOON</span><span>6</span><span>11PM</span></div>
+        <div class="inspeak">${INS.peak_hour!=null
+          ? `Peak hour <b>${fmtHour(INS.peak_hour)}</b>${INS.morning_share!=null?` &mdash; mornings carry <b>${INS.morning_share}%</b> of your words`:''}`
+          : 'Your daily pattern appears here as you dictate.'}</div>
+      </div>
+    </div>`;
+  insHeatmap();
 }
 
 function renderHistory(){
@@ -1237,12 +1556,74 @@ function applyCanvasImage(r){
 // JS clipboard path (works on some WKWebView builds); native pasteCanvasImage is the reliable fallback.
 function sendCanvasImage(dataUri){ const txt=canvasText(); api('save_canvas_image_data', dataUri, txt).then(applyCanvasImage); }
 
-let NOTE_REC=false, _noteTimer=null, NOTE_QUERY='', SHOW_ORIG=false, NOTE_SEG_ID=null;
-function notePreview(n){ return (n.content||'').replace(/<[^>]*>/g,' ').replace(/&nbsp;/g,' ').replace(/\[( |x|X)\]/g,'').replace(/[*#`>]/g,'').replace(/\s+/g,' ').trim().slice(0,80); }
+let NOTE_REC=false, _noteTimer=null, _rawTimer=null, NOTE_QUERY='', SHOW_ORIG=false, NOTE_SEG_ID=null;
+let NOTE_ASK=null;   // {q, answer, sources} | {q, busy:true} | null — the ask-your-notes card
+function strippedNote(n){ return (n.content||'').replace(/<[^>]*>/g,' ').replace(/&nbsp;/g,' ').replace(/\[( |x|X)\]/g,'').replace(/(^|\n)\s*(?:[-*]|\d+\.)\s+/g,'$1').replace(/[*#`>☑☐]/g,'').replace(/\s+/g,' ').trim(); }
+function notePreview(n){ return strippedNote(n).slice(0,80); }
+// When searching, center the preview on the first match so the hit is visible
+// even deep inside a long note (Notes v3).
+function noteSnippet(n,q){
+  const s=strippedNote(n);
+  if(!q) return s.slice(0,80);
+  const j=s.toLowerCase().indexOf(q.toLowerCase());
+  if(j<0) return s.slice(0,80);
+  const st=Math.max(0, j-28);
+  return (st>0?'…':'')+s.slice(st, st+90);
+}
+// Escape + wrap every match of q in <mark class="hl"> (Notes v3 search highlight).
+function hlText(s,q){
+  s=String(s==null?'':s);
+  if(!q) return esc(s);
+  const lc=s.toLowerCase(), ql=q.toLowerCase();
+  let out='', i=0;
+  for(;;){
+    const j=lc.indexOf(ql,i);
+    if(j<0){ out+=esc(s.slice(i)); break; }
+    out+=esc(s.slice(i,j))+'<mark class="hl">'+esc(s.slice(j,j+q.length))+'</mark>';
+    i=j+q.length;
+  }
+  return out;
+}
+function noteDateLabel(iso){
+  try{
+    const d=new Date(iso), now=new Date();
+    const day=x=>new Date(x.getFullYear(),x.getMonth(),x.getDate()).getTime();
+    const diff=Math.round((day(now)-day(d))/86400000);
+    if(diff<=0) return d.toLocaleTimeString([], {hour:'numeric', minute:'2-digit'});
+    if(diff===1) return 'Yesterday';
+    if(diff<7) return d.toLocaleDateString([], {weekday:'short'});
+    return d.toLocaleDateString([], {month:'short', day:'numeric'});
+  }catch(e){ return (iso||'').slice(0,10); }
+}
+function noteGroup(n){
+  try{
+    const d=new Date(n.updated_at), now=new Date();
+    const day=x=>new Date(x.getFullYear(),x.getMonth(),x.getDate()).getTime();
+    const diff=Math.round((day(now)-day(d))/86400000);
+    if(diff<=0) return 'Today';
+    if(diff<7) return 'This week';
+    return 'Earlier';
+  }catch(e){ return 'Earlier'; }
+}
+// Checklist progress {done,total} from either storage form (markdown task list
+// or the rendered chkbox HTML) — null when the note has no checklist.
+function chkProgress(n){
+  const c=n.content||'';
+  let total=0, done=0;
+  if(isHtmlContent(c)){
+    const m=c.match(/data-checked="[01]"/g)||[];
+    total=m.length; done=m.filter(x=>x.indexOf('"1"')>=0).length;
+  } else {
+    const m=c.match(/^\s*[-*]\s+\[( |x|X)\]/gm)||[];
+    total=m.length; done=m.filter(x=>/[xX]/.test(x)).length;
+  }
+  return total ? {done:done, total:total} : null;
+}
 function curNote(){ return NOTES.find(x=>x.id===SELN) || filteredNotes()[0] || NOTES[0] || null; }
 function notesFlag(name){ return !(STATE&&STATE.settings) || STATE.settings[name]!==false; }
 function isHtmlContent(s){ return /<(\w|\/)/.test(s||''); }
 function noteBodyHtml(n){ const c=n.content||''; if(!c.trim()) return ''; return isHtmlContent(c) ? c : mdToHtml(c); }
+function realNotes(){ return NOTES.filter(n=>String(n.id||'').indexOf('::conflict::')<0); }
 function rankNote(n,q){
   if((n.title||'').toLowerCase().includes(q)) return 0;
   if((n.content||'').toLowerCase().includes(q) || (n.raw_content||'').toLowerCase().includes(q)) return 1;
@@ -1250,7 +1631,7 @@ function rankNote(n,q){
 }
 function filteredNotes(){
   // Conflict copies are internal; never surface them in the notes list.
-  let arr=NOTES.filter(n=>String(n.id||'').indexOf('::conflict::')<0);
+  let arr=realNotes();
   const q=(NOTE_QUERY||'').trim().toLowerCase();
   if(!q || !notesFlag('notes_search_enabled')) return arr;
   // Mirrors search_notes ranking (Agent A): title>content/raw, recency tiebreak.
@@ -1263,16 +1644,24 @@ function filteredNotes(){
 function renderNotes(){
   const n = curNote();
   const searchBox = notesFlag('notes_search_enabled') ? `
-      <div class="searchbox">${SVG.search}<input id="noteSearch" type="search" aria-label="Search notes" placeholder="Search notes…" value="${esc(NOTE_QUERY)}" oninput="noteSearchInput(this.value)"/></div>
-      <div class="notecount" id="noteCount" role="status" aria-live="polite"></div>` : '';
+      <div class="searchbox">${SVG.search}<input id="noteSearch" type="search" aria-label="Search notes" placeholder="Search or ask your notes…" value="${esc(NOTE_QUERY)}" oninput="noteSearchInput(this.value)" onkeydown="if(event.key==='Enter')askNotes()"/></div>
+      <div class="notecount" id="noteCount" role="status" aria-live="polite"></div>
+      <div id="noteAsk"></div>` : '';
   const editor = n ? noteEditorHtml(n) : '<div class="empty">Select or create a note.</div>';
+  const all=realNotes();
+  const weekAgo=Date.now()-7*86400000;
+  const wk=all.filter(x=>{ const t=Date.parse(x.updated_at||''); return t && t>=weekAgo; }).length;
   document.getElementById('notesMain').innerHTML = `
-    <div class="listcol"><div class="mhead"><div><div class="eyebrow">${NOTES.length} notes</div><h1 class="title">Notes</h1></div>
-      <button class="roundbtn" aria-label="New note" onclick="newNote()">${SVG.plus}</button></div>
+    <div class="listcol"><div class="mhead"><div><div class="eyebrow">${all.length} notes${wk?` · ${wk} this week`:''}</div><h1 class="title">Notes</h1></div>
+      <div style="display:flex;gap:8px">
+        <button class="roundbtn" aria-label="Dictate a new note" title="Dictate a new note" onclick="dictateNewNote()">${SVG.mic}</button>
+        <button class="roundbtn" aria-label="New note" title="New note" onclick="newNote()">${SVG.plus}</button>
+      </div></div>
       ${searchBox}
       <div id="noteList"></div></div>
     <div class="editor">${editor}</div>`;
   renderNoteList();
+  renderNoteAsk();
   if(n && !SHOW_ORIG){ const b=document.getElementById('noteBody'); if(b) b.innerHTML=noteBodyHtml(n); updateDictateBtn(); }
   updateSegIcons();
 }
@@ -2068,42 +2457,159 @@ function refreshOpenMeeting(id, deleted){
   });
 }
 // List column only — re-rendered on every keystroke so the search input keeps focus.
+function noteMetaBits(n,q){
+  const bits=[`<span>${esc(noteDateLabel(n.updated_at))}</span>`];
+  const prog=chkProgress(n);
+  if(prog) bits.push(`<span class="ncprog${prog.done===prog.total?' alldone':''}" title="Checklist progress">&#9745; ${prog.done}/${prog.total}</span>`);
+  const audio=(n.audio_segments||[]).length;
+  if(audio) bits.push(`<span class="ncaudio" title="${audio} recording${audio===1?'':'s'}">${SVG.mic}${audio>1?' '+audio:''}</span>`);
+  return bits.join('');
+}
+function noteRowHtml(n,q){
+  return `<div class="ncard${(SELN===n.id)?' active':''}" onclick="selectNote(${esc(JSON.stringify(n.id))})">
+    <button class="npin${n.is_pinned?' on':''}" title="${n.is_pinned?'Unpin':'Pin'}" aria-label="${n.is_pinned?'Unpin note':'Pin note'}" aria-pressed="${n.is_pinned?'true':'false'}" onclick="event.stopPropagation();togglePin(${esc(JSON.stringify(n.id))})">${n.is_pinned?'★':'☆'}</button>
+    <div class="nctitle">${hlText(n.title||'Untitled',q)}</div>
+    <div class="ncprev">${hlText(noteSnippet(n,q),q)||'Empty note'}</div>
+    <div class="ncmeta">${noteMetaBits(n,q)}</div></div>`;
+}
 function renderNoteList(){
   const flist=filteredNotes();
   const q=(NOTE_QUERY||'').trim();
   const cnt=document.getElementById('noteCount');
-  if(cnt) cnt.textContent = q ? (flist.length+' result'+(flist.length===1?'':'s')) : '';
+  if(cnt) cnt.textContent = q ? (flist.length+' result'+(flist.length===1?'':'s')+' · Enter asks AI') : '';
   const listEl=document.getElementById('noteList'); if(!listEl) return;
   if(!flist.length){
-    listEl.innerHTML = q
-      ? `<div class="empty">No notes match “${esc(q)}”. <span class="link" onclick="clearNoteSearch()">Clear search</span></div>`
-      : (NOTES.length ? '<div class="empty">No notes match.</div>'
-                      : '<div class="empty">No notes yet — dictate one to get started.</div>');
+    if(q){
+      listEl.innerHTML = `<div class="nempty">
+        <div class="t">No notes match “${esc(q)}”</div>
+        <div class="s">Start a note with this as its title, or ask AI across all your notes.</div>
+        <button class="btn primary" style="width:auto" onclick="newNoteFromSearch()">Create “${esc(q.slice(0,40))}”</button>
+        <span class="link" onclick="askNotes()">Ask AI</span>
+        <span class="link" onclick="clearNoteSearch()">Clear search</span></div>`;
+    } else if(realNotes().length){
+      listEl.innerHTML = '<div class="empty">No notes match.</div>';
+    } else {
+      listEl.innerHTML = `<div class="nempty">
+        <div class="disc">${SVG.mic}</div>
+        <div class="t">Speak your first note</div>
+        <div class="s">Dictate a thought and Verbal turns it into a clean, titled note — checklists included.</div>
+        <button class="btn primary" style="width:auto" onclick="dictateNewNote()">Dictate a note</button>
+        <span class="link" onclick="newNote()">or start typing</span></div>`;
+    }
     return;
   }
-  listEl.innerHTML = flist.map(n=>{
-    const audio=(n.audio_segments&&n.audio_segments.length)?` <span class="ncaudio" title="Has recording">${SVG.mic}</span>`:'';
-    return `<div class="ncard${(SELN===n.id)?' active':''}" onclick="selectNote(${esc(JSON.stringify(n.id))})">
-      <div class="nctitle">${esc(n.title||'Untitled')}</div>
-      <div class="ncprev">${esc(notePreview(n))||'Empty note'}</div>
-      <div class="ncmeta">${esc((n.updated_at||'').slice(0,10))}${audio}</div></div>`;
-  }).join('');
+  // Searching → flat ranked results. Browsing → PINNED, then date groups.
+  let html='';
+  if(q){
+    html=flist.map(n=>noteRowHtml(n,q)).join('');
+  } else {
+    const pinned=flist.filter(n=>n.is_pinned), rest=flist.filter(n=>!n.is_pinned);
+    if(pinned.length) html+='<div class="ngroup">Pinned</div>'+pinned.map(n=>noteRowHtml(n,'')).join('');
+    let last='';
+    rest.forEach(n=>{
+      const g=noteGroup(n);
+      if(g!==last){ html+=`<div class="ngroup">${g}</div>`; last=g; }
+      html+=noteRowHtml(n,'');
+    });
+  }
+  listEl.innerHTML=html;
 }
-function noteSearchInput(v){ NOTE_QUERY=v; renderNoteList(); }
-function clearNoteSearch(){ NOTE_QUERY=''; const i=document.getElementById('noteSearch'); if(i) i.value=''; renderNoteList(); const j=document.getElementById('noteSearch'); if(j) j.focus(); }
+function noteSearchInput(v){ NOTE_QUERY=v; if(NOTE_ASK && !NOTE_ASK.busy){ NOTE_ASK=null; renderNoteAsk(); } renderNoteList(); }
+function clearNoteSearch(){ NOTE_QUERY=''; NOTE_ASK=null; renderNoteAsk(); const i=document.getElementById('noteSearch'); if(i) i.value=''; renderNoteList(); const j=document.getElementById('noteSearch'); if(j) j.focus(); }
+function togglePin(id){
+  const n=NOTES.find(x=>x.id===id); if(!n) return;
+  const on=!n.is_pinned;
+  n.is_pinned=on;
+  renderNoteList();
+  const pb=document.getElementById('notePinBtn');
+  const cur=curNote();
+  if(pb && cur && cur.id===id){ pb.className='fmtbtn'+(on?' pinned':''); pb.title=on?'Unpin note':'Pin note'; pb.textContent=on?'★':'☆'; }
+  api('set_note_pinned', id, on).then(r=>{
+    if(!(r&&r.ok)){ n.is_pinned=!on; renderNoteList(); toast('Could not update the pin.', true); }
+  });
+}
+// ── Ask your notes (Notes v3) — Enter in the search box or the Ask link ──────
+function renderNoteAsk(){
+  const box=document.getElementById('noteAsk'); if(!box) return;
+  if(!NOTE_ASK){ box.innerHTML=''; return; }
+  if(NOTE_ASK.busy){
+    box.innerHTML=`<div class="askNote"><div class="aq">${esc(NOTE_ASK.q)}</div><div class="aa" style="color:var(--mut)">Thinking…</div></div>`;
+    return;
+  }
+  const src=(NOTE_ASK.sources||[]).length?`<div class="asrc">FROM: ${esc(NOTE_ASK.sources.join(' · '))}</div>`:'';
+  box.innerHTML=`<div class="askNote" role="status">
+    <button class="ax" aria-label="Dismiss answer" onclick="NOTE_ASK=null;renderNoteAsk()">✕</button>
+    <div class="aq">${esc(NOTE_ASK.q)}</div>
+    <div class="aa">${esc(NOTE_ASK.answer||'')}</div>${src}</div>`;
+}
+function askNotes(){
+  const q=(NOTE_QUERY||'').trim();
+  if(!q || (NOTE_ASK&&NOTE_ASK.busy)) return;
+  NOTE_ASK={q:q, busy:true};
+  renderNoteAsk();
+  busyGuard('asknotes', ()=>api('ask_notes', q)).then(r=>{
+    if(r && r.busy) return;
+    if(r && r.ok) NOTE_ASK={q:q, answer:r.answer, sources:r.sources||[]};
+    else NOTE_ASK={q:q, answer:(r&&r.error)||'Could not get an answer — try again.', sources:[]};
+    renderNoteAsk();
+  });
+}
 
+function noteMetaText(n, plainOverride){
+  const plain = (plainOverride!=null) ? plainOverride : strippedNote(n);
+  const w = words(plain);
+  const segs=(n.audio_segments||[]).length;
+  const parts=[];
+  try{
+    const d=new Date(n.created_at||n.updated_at);
+    if(!isNaN(d.getTime())){
+      const opts={month:'short', day:'numeric'};
+      if(d.getFullYear()!==new Date().getFullYear()) opts.year='numeric';
+      parts.push('Created '+d.toLocaleDateString([], opts));
+    }
+  }catch(e){}
+  parts.push(w+' word'+(w===1?'':'s'));
+  if(segs) parts.push(segs+' recording'+(segs===1?'':'s'));
+  return parts.join(' · ').toUpperCase();
+}
 function noteEditorHtml(n){
   const hasRaw = (n.raw_content!=null) && String(n.raw_content).trim()!=='';
   const failed = hasRaw && !String(n.content||'').trim();   // dictated but no formatted content yet
   const origBtn = hasRaw
     ? `<button class="fmtbtn ftxt" title="${SHOW_ORIG?'Show formatted note':'Show original transcript'}" onclick="toggleShowOrig()">${SHOW_ORIG?'Formatted':'Original'}</button>` : '';
-  const retryBtn = failed
+  // In the transcript view the raw text is EDITABLE (fix a misheard word), and
+  // one button re-runs the AI over the corrected transcript (Notes v3 — the
+  // Cleft edit-then-regenerate pattern).
+  const refmtOrig = (SHOW_ORIG && hasRaw)
+    ? `<button class="fmtbtn ftxt retry" title="Run AI formatting over this transcript" onclick="retryFormatting()">Reformat from transcript</button>` : '';
+  const retryBtn = (failed && !SHOW_ORIG)
     ? `<button class="fmtbtn ftxt retry" title="Retry AI formatting" onclick="retryFormatting()">Retry formatting</button>` : '';
   const body = SHOW_ORIG
-    ? `<div class="noteorig" id="noteOrig" aria-label="Original transcript">${esc(n.raw_content||'')}</div>`
+    ? `<div class="noteorig" id="noteOrig" contenteditable="plaintext-only" role="textbox" aria-multiline="true" aria-label="Original transcript (editable)" oninput="rawChanged()">${esc(n.raw_content||'')}</div>`
     : `<div class="notebody" id="noteBody" contenteditable="true" role="textbox" aria-multiline="true" aria-label="Note content" data-ph="Tap Dictate to speak, or start typing…" oninput="noteChanged()"></div>`;
+  const styleMenu = `
+      <span class="nmenuwrap">
+        <button class="fmtbtn" title="Reformat with AI" aria-haspopup="true" onclick="toggleNoteMenu(event,'noteStyleMenu')">&#10024;</button>
+        <div class="nmenu" id="noteStyleMenu" hidden>
+          <div class="nmhead">Reformat with AI</div>
+          <button onclick="formatNoteStyled('structured')">Auto-structure</button>
+          <button onclick="formatNoteStyled('prose')">Flowing prose</button>
+          <button onclick="formatNoteStyled('transcript')">Clean transcript only</button>
+        </div></span>`;
+  const moreMenu = `
+      <span class="nmenuwrap">
+        <button class="fmtbtn" title="More actions" aria-haspopup="true" onclick="toggleNoteMenu(event,'noteMoreMenu')">${SVG.dots}</button>
+        <div class="nmenu" id="noteMoreMenu" hidden>
+          <button onclick="noteCopy('txt')">${SVG.copy}Copy as text</button>
+          <button onclick="noteCopy('md')">${SVG.copy}Copy as Markdown</button>
+          <button onclick="noteExport('md')">Export as .md…</button>
+          <button onclick="noteExport('txt')">Export as .txt…</button>
+          <div class="nmsep"></div>
+          <button class="danger" onclick="delNote(null)">${SVG.trash}Delete note</button>
+        </div></span>`;
   return `
       <input class="edtitle" id="noteTitle" value="${esc(n.title||'')}" placeholder="Untitled note" aria-label="Note title" oninput="noteChanged()"/>
+      <div class="notemeta" id="noteMeta">${esc(noteMetaText(n))}</div>
       ${noteSegBar(n)}
       <div class="notetoolbar">
         <button class="fmtbtn" title="Bold" onmousedown="fmt(event,'bold')"><b>B</b></button>
@@ -2111,14 +2617,26 @@ function noteEditorHtml(n){
         <button class="fmtbtn" title="Underline" onmousedown="fmt(event,'underline')"><u>U</u></button>
         <span class="fmtsep"></span>
         <button class="fmtbtn" title="Bullet list" onmousedown="fmt(event,'insertUnorderedList')">&bull;</button>
-        <button class="fmtbtn" title="Clean up with AI" onmousedown="event.preventDefault();formatNote()">&#10024;</button>
-        ${origBtn}${retryBtn}
+        ${styleMenu}
+        ${origBtn}${refmtOrig}${retryBtn}
+        <button class="fmtbtn${n.is_pinned?' pinned':''}" id="notePinBtn" title="${n.is_pinned?'Unpin note':'Pin note'}" aria-pressed="${n.is_pinned?'true':'false'}" onclick="togglePin(${esc(JSON.stringify(n.id))})">${n.is_pinned?'★':'☆'}</button>
+        ${moreMenu}
         <button class="dictate" id="dictateBtn" onclick="toggleDictate()">${SVG.mic}Dictate</button>
         <span class="notesave" id="noteSaveState"></span>
       </div>
-      ${body}
-      <div class="pvactions" style="margin-top:12px">
-        <button class="btn ghost" style="flex:none;color:#f0b39a" onclick="delNote(this)">Delete note</button></div>`;
+      ${body}`;
+}
+// Close any open note menu on an outside click (registered ONCE — this script
+// runs a single time; the open buttons stopPropagation so they don't self-close).
+document.addEventListener('click', ()=>{
+  document.querySelectorAll('.nmenu').forEach(m=>{ if(!m.hidden) m.hidden=true; });
+});
+function toggleNoteMenu(ev, id){
+  ev.stopPropagation();
+  const m=document.getElementById(id); if(!m) return;
+  const was=m.hidden;
+  document.querySelectorAll('.nmenu').forEach(x=>{ x.hidden=true; });
+  m.hidden=!was;
 }
 // Per-segment playback control at the top of a note (Feature 4). No control at all
 // when the note has no audio segments (Decision 6).
@@ -2161,15 +2679,52 @@ function noteSegPlay(btn){
 }
 function stopNoteAudio(){ const a=document.getElementById('noteAudio'); if(a){ try{a.pause();}catch(e){} } NOTE_SEG_ID=null; }
 
-function selectNote(id){ flushNoteSave(); stopNoteAudio(); SELN=id; NOTE_REC=false; SHOW_ORIG=false; renderNotes(); }
-function newNote(){
-  flushNoteSave(); stopNoteAudio(); NOTE_QUERY=''; SHOW_ORIG=false;
-  api('save_note', {title:'', content:''}).then(r=>{
+function selectNote(id){ flushNoteSave(); flushRawSave(); stopNoteAudio(); SELN=id; NOTE_REC=false; SHOW_ORIG=false; renderNotes(); }
+function newNote(title){
+  flushNoteSave(); flushRawSave(); stopNoteAudio(); NOTE_QUERY=''; NOTE_ASK=null; SHOW_ORIG=false;
+  return api('save_note', {title:(typeof title==='string')?title:'', content:''}).then(r=>{
     if(r&&r.ok){ NOTES=r.notes||NOTES; SELN=r.id||SELN; renderNotes();
       const b=document.getElementById('noteBody'); if(b) b.focus(); }
+    return r;
   });
 }
-function toggleShowOrig(){ SHOW_ORIG=!SHOW_ORIG; renderNotes(); }
+// Sub-second voice capture (Notes v3): ONE click from "I have a thought" to a
+// recording note — create, select, start dictating.
+function dictateNewNote(){
+  newNote('').then(r=>{
+    if(r&&r.ok&&!NOTE_REC) toggleDictate();
+  });
+}
+// Empty search results offer "Create '<query>'" — the query becomes the title.
+function newNoteFromSearch(){
+  const t=(NOTE_QUERY||'').trim().slice(0,80);
+  newNote(t);
+}
+function toggleShowOrig(){ flushNoteSave(); flushRawSave(); SHOW_ORIG=!SHOW_ORIG; renderNotes(); }
+// ── editable original transcript (Notes v3) ──────────────────────────────────
+// Typing in the transcript view persists raw_content (debounced) with
+// no_cleanup so a format-failed note can never fire a surprise LLM call.
+function rawChanged(){
+  const n=curNote(); const o=document.getElementById('noteOrig');
+  if(!n||!o) return;
+  n.raw_content=o.innerText;
+  setSaveState('Saving…');
+  if(_rawTimer) clearTimeout(_rawTimer);
+  _rawTimer=setTimeout(()=>{ _rawTimer=null; saveRawNow(n); }, 700);
+}
+function saveRawNow(n){
+  const payload={id:n.id, title:n.title||'', content:n.content||'',
+                 audio_segments:n.audio_segments||[], no_cleanup:true,
+                 raw_content:n.raw_content!=null?n.raw_content:''};
+  api('save_note', payload).then(r=>{
+    if(r&&r.ok){ if(r.notes) NOTES=r.notes; setSaveState('Saved'); }
+    else setSaveState('');
+  });
+}
+function flushRawSave(){
+  if(_rawTimer){ clearTimeout(_rawTimer); _rawTimer=null;
+    const n=curNote(); if(n) saveRawNow(n); }
+}
 function fmt(ev, cmd){ ev.preventDefault(); if(SHOW_ORIG) return; const b=document.getElementById('noteBody'); if(b) b.focus(); document.execCommand(cmd,false,null); noteChanged(); }
 
 // Interactive checklist checkbox (Decision 8): toggles the item and persists.
@@ -2180,11 +2735,20 @@ function toggleChk(ev, el){
   el.setAttribute('aria-checked', on?'true':'false');
   el.classList.toggle('on', on);
   el.textContent = on?'☑':'☐';
+  const li=el.closest('li'); if(li) li.classList.toggle('done', on);
   noteChanged();
 }
 function chkKey(ev, el){ if(ev.key===' '||ev.key==='Enter'){ toggleChk(ev, el); } }
 
-function noteChanged(){ if(SHOW_ORIG) return; setSaveState('Saving…'); if(_noteTimer) clearTimeout(_noteTimer); _noteTimer=setTimeout(saveCurrentNote, 700); }
+function noteChanged(){
+  if(SHOW_ORIG) return;
+  setSaveState('Saving…');
+  // Live word count in the editor meta line.
+  const n=curNote(), m=document.getElementById('noteMeta'), b=document.getElementById('noteBody');
+  if(n&&m&&b) m.textContent=noteMetaText(n, b.innerText);
+  if(_noteTimer) clearTimeout(_noteTimer);
+  _noteTimer=setTimeout(saveCurrentNote, 700);
+}
 function setSaveState(s){ const el=document.getElementById('noteSaveState'); if(el) el.textContent=s; }
 function saveCurrentNote(){
   _noteTimer=null;
@@ -2203,14 +2767,16 @@ function saveCurrentNote(){
 function flushNoteSave(){ if(_noteTimer){ clearTimeout(_noteTimer); _noteTimer=null; saveCurrentNote(); } }
 function updateListCard(n){
   const card=document.querySelector('#notesMain .ncard.active'); if(!card) return;
-  const t=card.querySelector('.nctitle'), p=card.querySelector('.ncprev');
+  const t=card.querySelector('.nctitle'), p=card.querySelector('.ncprev'), m=card.querySelector('.ncmeta');
   if(t) t.textContent=n.title||'Untitled';
   if(p) p.textContent=notePreview(n)||'Empty note';
+  if(m) m.innerHTML=noteMetaBits(n,'');
 }
 function delNote(btn){
   const n=curNote(); if(!n) return;
   if(!confirm('Delete “'+(n.title||'Untitled')+'”?\n\nThe note and its linked recordings are permanently removed. This cannot be undone.')) return;
   if(_noteTimer){ clearTimeout(_noteTimer); _noteTimer=null; }
+  if(_rawTimer){ clearTimeout(_rawTimer); _rawTimer=null; }
   stopNoteAudio();
   busyGuard(btn || ('delnote:'+n.id), ()=>api('delete_note', n.id)).then(r=>{
     if(r && r.busy) return;
@@ -2298,7 +2864,7 @@ function mdToHtml(md){
     let m;
     if(m=ln.match(/^\s*[-*]\s+\[( |x|X)\]\s+(.*)/)){ if(list!=='ul'){closeList();out.push('<ul class="chk">');list='ul';}
       const on=m[1].toLowerCase()==='x'; const lbl=attr(m[2].replace(/[*`]/g,''));
-      out.push('<li><span class="chkbox'+(on?' on':'')+'" role="checkbox" aria-checked="'+(on?'true':'false')+'" aria-label="'+lbl+'" tabindex="0" contenteditable="false" data-checked="'+(on?'1':'0')+'" onclick="toggleChk(event,this)" onkeydown="chkKey(event,this)">'+(on?'☑':'☐')+'</span> <span class="chktext">'+inl(m[2])+'</span></li>'); continue; }
+      out.push('<li'+(on?' class="done"':'')+'><span class="chkbox'+(on?' on':'')+'" role="checkbox" aria-checked="'+(on?'true':'false')+'" aria-label="'+lbl+'" tabindex="0" contenteditable="false" data-checked="'+(on?'1':'0')+'" onclick="toggleChk(event,this)" onkeydown="chkKey(event,this)">'+(on?'☑':'☐')+'</span> <span class="chktext">'+inl(m[2])+'</span></li>'); continue; }
     if(m=ln.match(/^\s*[-*]\s+(.*)/)){ if(list!=='ul'){closeList();out.push('<ul>');list='ul';} out.push('<li>'+inl(m[1])+'</li>'); continue; }
     if(m=ln.match(/^\s*\d+\.\s+(.*)/)){ if(list!=='ol'){closeList();out.push('<ol>');list='ol';} out.push('<li>'+inl(m[1])+'</li>'); continue; }
     closeList();
@@ -2308,35 +2874,122 @@ function mdToHtml(md){
   if(inCode) out.push('</pre>'); closeList();
   return out.join('');
 }
-// Explicit Reformat (the ✨ toolbar button) — Decision 2: re-run cleanup on demand.
-function formatNote(){
-  if(SHOW_ORIG) return;
-  const n=curNote(); const b=document.getElementById('noteBody'); if(!n||!b) return;
-  const plain=b.innerText.trim(); if(!plain){ return; }
+// Explicit Reformat with a named style (Notes v3, replaces the bare ✨ button) —
+// Decision 2 still holds: an LLM call happens ONLY on this explicit pick.
+// Source: the raw transcript when one exists (the true source — a restyle
+// should not compound earlier formatting), else the visible text.
+function formatNoteStyled(style){
+  const n=curNote(); if(!n) return;
+  let source='';
+  if((n.raw_content!=null) && String(n.raw_content).trim()!=='') source=String(n.raw_content);
+  else { const b=document.getElementById('noteBody'); source=b?b.innerText:strippedNote(n); }
+  if(!source.trim()) return;
   setSaveState('Formatting…');
-  api('format_note_with_ai', plain).then(r=>{
+  busyGuard('notefmt', ()=>api('format_note_with_ai', source, style||'structured')).then(r=>{
+    if(r&&r.busy) return;
     if(r&&r.ok&&r.content){
-      b.innerHTML=mdToHtml(r.content);
-      if(r.title && !String(n.title||'').trim()){ const t=document.getElementById('noteTitle'); if(t) t.value=r.title; }
-      noteChanged();
-    } else setSaveState((r&&r.error)||'');
-  });
-}
-// Retry formatting after a failed/absent cleanup (Decision 6): re-run over the raw
-// transcript, filling in title + formatted content, then persist.
-function retryFormatting(){
-  const n=curNote(); if(!n || !String(n.raw_content||'').trim()) return;
-  setSaveState('Formatting…'); SHOW_ORIG=false;
-  api('format_note_with_ai', n.raw_content).then(r=>{
-    if(r&&r.ok&&r.content){
-      n.content=mdToHtml(r.content);
+      SHOW_ORIG=false;
+      // Store MARKDOWN, not rendered HTML — mobile renders markdown natively,
+      // and noteBodyHtml() converts for this editor anyway.
+      n.content=r.content;
       if(r.title && !String(n.title||'').trim()) n.title=r.title;
-      api('save_note', {id:n.id, title:n.title||'', content:n.content, raw_content:n.raw_content,
-                        audio_segments:n.audio_segments||[]}).then(r2=>{
-        if(r2&&r2.ok){ if(r2.notes) NOTES=r2.notes; renderNotes(); setSaveState('Saved'); }
-        else { renderNotes(); setSaveState(''); }
+      const payload={id:n.id, title:n.title||'', content:n.content,
+                     audio_segments:n.audio_segments||[], no_cleanup:true};
+      if(n.raw_content!=null) payload.raw_content=n.raw_content;
+      api('save_note', payload).then(r2=>{
+        if(r2&&r2.ok&&r2.notes) NOTES=r2.notes;
+        renderNotes(); setSaveState('Saved');
       });
     } else setSaveState((r&&r.error)||'Format failed');
+  });
+}
+// Retry formatting after a failed/absent cleanup (Decision 6), and "Reformat
+// from transcript" in the editable-original view — both re-run the default
+// style over raw_content and persist.
+function retryFormatting(){
+  const n=curNote(); if(!n || !String(n.raw_content||'').trim()) return;
+  if(_rawTimer){ clearTimeout(_rawTimer); _rawTimer=null; }   // raw edits ride along below
+  formatNoteStyled('structured');
+}
+// ── copy / export (Notes v3 — "export = trust") ───────────────────────────────
+// The stored content is EITHER markdown (dictated/AI-formatted) or HTML (typed
+// rich-text edits). htmlToMd walks the rendered DOM back to markdown so both
+// forms export the same way.
+function htmlToMd(html){
+  const root=document.createElement('div'); root.innerHTML=html;
+  const out=[];
+  function inline(node){
+    let s='';
+    node.childNodes.forEach(ch=>{
+      if(ch.nodeType===3){ s+=ch.textContent; return; }
+      if(ch.nodeType!==1){ return; }
+      const tag=ch.tagName.toLowerCase();
+      if(tag==='b'||tag==='strong') s+='**'+inline(ch)+'**';
+      else if(tag==='i'||tag==='em') s+='*'+inline(ch)+'*';
+      else if(tag==='code') s+='`'+inline(ch)+'`';
+      else if(tag==='br') s+='\n';
+      else s+=inline(ch);
+    });
+    return s;
+  }
+  function block(node){
+    node.childNodes.forEach(ch=>{
+      if(ch.nodeType===3){ const t=ch.textContent.trim(); if(t) out.push(t); return; }
+      if(ch.nodeType!==1){ return; }
+      const tag=ch.tagName.toLowerCase();
+      if(tag==='h3') out.push('# '+inline(ch).trim());
+      else if(tag==='h4') out.push('## '+inline(ch).trim());
+      else if(tag==='h5'||tag==='h6') out.push('### '+inline(ch).trim());
+      else if(tag==='pre') out.push('```\n'+ch.innerText.replace(/\n+$/,'')+'\n```');
+      else if(tag==='ul'||tag==='ol'){
+        let i=1;
+        ch.querySelectorAll(':scope > li').forEach(li=>{
+          const box=li.querySelector('.chkbox');
+          if(box){
+            const on=box.getAttribute('data-checked')==='1';
+            const txt=li.querySelector('.chktext');
+            out.push('- ['+(on?'x':' ')+'] '+inline(txt||li).trim());
+          }
+          else if(tag==='ol') out.push((i++)+'. '+inline(li).trim());
+          else out.push('- '+inline(li).trim());
+        });
+      }
+      else if(tag==='div'||tag==='p') out.push(inline(ch).trim());
+      else if(tag==='br') out.push('');
+      else { const s=inline(ch).trim(); if(s) out.push(s); }
+    });
+  }
+  block(root);
+  return out.join('\n').replace(/\n{3,}/g,'\n\n').trim();
+}
+function noteAsMarkdown(n){
+  const c=n.content||'';
+  const body=isHtmlContent(c) ? htmlToMd(c) : c.trim();
+  const title=(n.title||'').trim();
+  return (title?('# '+title+'\n\n'):'')+body+'\n';
+}
+function noteAsText(n){
+  const d=document.createElement('div'); d.innerHTML=noteBodyHtml(n);
+  const title=(n.title||'').trim();
+  const body=(d.innerText||'').replace(/☑|☐/g, m=>m==='☑'?'[x]':'[ ]').trim();
+  return (title?title+'\n\n':'')+body+'\n';
+}
+function noteCopy(fmt){
+  const n=curNote(); if(!n) return;
+  api('copy_text', fmt==='md'?noteAsMarkdown(n):noteAsText(n));
+  setSaveState('Copied');
+  setTimeout(()=>setSaveState(''), 1400);
+}
+function noteExport(fmt){
+  const n=curNote(); if(!n) return;
+  const content=fmt==='md'?noteAsMarkdown(n):noteAsText(n);
+  setSaveState('Exporting…');
+  busyGuard('noteexp', ()=>api('export_note_text', n.title||'Note', content, fmt)).then(r=>{
+    if(r&&r.busy) return;
+    if(r&&r.ok) setSaveState('Saved to file');
+    else if(r&&r.cancelled) setSaveState('');
+    else setSaveState('Export failed');
+    setTimeout(()=>setSaveState(''), 1800);
   });
 }
 function loadNotes(){ api('fetch_notes').then(r=>{ if(r&&r.ok){ NOTES=r.notes||r.data||[]; if(ACTIVE==='notes')renderNotes(); if(ACTIVE==='home')renderHome(); } }); }
@@ -2581,12 +3234,164 @@ const ASR_MODELS=[
    desc:'Strong English. Struggles with Urdu.', wait:'5s'},
 ];
 
+// ── Pipeline blueprint ───────────────────────────────────────────────────────
+// A rotating wireframe of the route your words actually take, drawn from the same
+// data the picker uses, so it is a diagram of the real thing rather than decoration:
+// the node count, the lanes and the direction of travel all come from the selected
+// pipeline. Hand-rolled projection on a 2D canvas — no library, nothing loaded.
+const BP={raf:0,last:0,rot:0,t:0,cv:null,cx:null,pipe:null,packets:[]};
+const BP_NODES={you:[-1.5,0,0], edge:[0,0,0], eng:[1.5,0,0]};
+const BP_LABEL={you:'YOU', edge:'FLUME', eng:'ENGINE'};
+
+function bpScene(id){
+  const up=[['you','edge'],['edge','eng']], down=[['eng','edge'],['edge','you']];
+  if(id==='hybrid') return {stream:true, lanes:[
+    {route:up,   y: 0.30, hue:'good', speed:0.95, n:4},
+    {route:down, y:-0.30, hue:'warm', speed:0.75, n:1}]};
+  if(id==='one')    return {lanes:[{route:up.concat(down), y:0, hue:'warm', speed:0.42, n:1}]};
+  return {lanes:[                                   // two trips = two staggered laps
+    {route:up.concat(down), y: 0.26, hue:'warm', speed:0.40, n:1},
+    {route:up.concat(down), y:-0.26, hue:'dim',  speed:0.40, n:1, phase:0.5}]};
+}
+
+// Rotate about X (fixed tilt) then Y (animated), then perspective-divide.
+function bpProject(p, rot, w, h){
+  const tilt=0.40, ct=Math.cos(tilt), st=Math.sin(tilt);
+  let x=p[0], y=p[1]*ct - p[2]*st, z=p[1]*st + p[2]*ct;
+  const c=Math.cos(rot), s=Math.sin(rot);
+  const X=x*c - z*s, Z=x*s + z*c;
+  const d=4.4, k=d/(d+Z);
+  return [w/2 + X*k*w*0.255, h/2 - y*k*h*0.34 + Z*k*6, k];
+}
+
+function bpColor(hue, a){
+  if(hue==='good') return `rgba(143,169,123,${a})`;
+  if(hue==='dim')  return `rgba(141,130,121,${a})`;
+  return `rgba(200,90,62,${a})`;
+}
+
+function bpDraw(dt){
+  const cv=BP.cv, cx=BP.cx; if(!cv||!cx) return;
+  const dpr=Math.min(2, window.devicePixelRatio||1);
+  const w=cv.clientWidth, h=cv.clientHeight;
+  if(cv.width!==w*dpr||cv.height!==h*dpr){ cv.width=w*dpr; cv.height=h*dpr; }
+  cx.setTransform(dpr,0,0,dpr,0,0);
+  cx.clearRect(0,0,w,h);
+  const sc=bpScene(BP.pipe||'one');
+  const P=k=>bpProject(BP_NODES[k], BP.rot, w, h);
+
+  // Ground grid — the blueprint floor. Gives the rotation something to read against.
+  cx.lineWidth=1;
+  for(let i=-4;i<=4;i++){
+    const a=bpProject([i*0.5,-0.62,-2], BP.rot,w,h), b=bpProject([i*0.5,-0.62,2], BP.rot,w,h);
+    const c=bpProject([-2,-0.62,i*0.5], BP.rot,w,h), d=bpProject([2,-0.62,i*0.5], BP.rot,w,h);
+    cx.strokeStyle='rgba(244,243,241,0.055)';
+    cx.beginPath(); cx.moveTo(a[0],a[1]); cx.lineTo(b[0],b[1]); cx.stroke();
+    cx.beginPath(); cx.moveTo(c[0],c[1]); cx.lineTo(d[0],d[1]); cx.stroke();
+  }
+
+  // Lanes: the path itself, faint, so the route is legible even between packets.
+  for(const ln of sc.lanes){
+    cx.strokeStyle=bpColor(ln.hue,0.22); cx.lineWidth=1.2;
+    cx.beginPath();
+    ln.route.forEach((seg,i)=>{
+      const a=bpProject([BP_NODES[seg[0]][0],ln.y,0], BP.rot,w,h);
+      const b=bpProject([BP_NODES[seg[1]][0],ln.y,0], BP.rot,w,h);
+      if(i===0) cx.moveTo(a[0],a[1]);
+      cx.lineTo(b[0],b[1]);
+    });
+    cx.stroke();
+  }
+
+  // Pillars + node rings.
+  for(const k of ['you','edge','eng']){
+    const base=bpProject([BP_NODES[k][0],-0.62,0], BP.rot,w,h);
+    const top =bpProject([BP_NODES[k][0], 0.46,0], BP.rot,w,h);
+    cx.strokeStyle='rgba(244,243,241,0.13)'; cx.lineWidth=1;
+    cx.beginPath(); cx.moveTo(base[0],base[1]); cx.lineTo(top[0],top[1]); cx.stroke();
+    const n=P(k), r=Math.max(5, 13*n[2]);
+    const accent = k==='edge';
+    cx.strokeStyle = accent?'rgba(200,90,62,0.85)':'rgba(244,243,241,0.42)';
+    cx.lineWidth = accent?1.8:1.2;
+    cx.beginPath(); cx.ellipse(n[0],n[1],r,r*0.36,0,0,Math.PI*2); cx.stroke();
+    if(accent){
+      cx.fillStyle='rgba(200,90,62,0.16)'; cx.fill();
+      cx.beginPath(); cx.ellipse(n[0],n[1],r*1.7,r*0.61,0,0,Math.PI*2);
+      cx.strokeStyle='rgba(200,90,62,0.22)'; cx.lineWidth=1; cx.stroke();
+    }
+    cx.fillStyle='rgba(244,243,241,0.5)';
+    cx.font='500 9px "JetBrains Mono", monospace';
+    cx.textAlign='center';
+    cx.fillText(BP_LABEL[k], n[0], n[1]+r*0.36+15);
+  }
+
+  // Packets. Position is a normalized walk along the lane's segment list.
+  for(const ln of sc.lanes){
+    for(let i=0;i<ln.n;i++){
+      const ph=((BP.t*ln.speed)+(ln.phase||0)+i/ln.n)%1;
+      const fs=ph*ln.route.length, si=Math.floor(fs), f=fs-si;
+      const seg=ln.route[Math.min(si,ln.route.length-1)];
+      const x=BP_NODES[seg[0]][0]+(BP_NODES[seg[1]][0]-BP_NODES[seg[0]][0])*f;
+      const p=bpProject([x,ln.y,0], BP.rot,w,h);
+      const rr=Math.max(1.6,3.1*p[2]);
+      const g=cx.createRadialGradient(p[0],p[1],0,p[0],p[1],rr*4);
+      g.addColorStop(0,bpColor(ln.hue,0.95)); g.addColorStop(1,bpColor(ln.hue,0));
+      cx.fillStyle=g; cx.beginPath(); cx.arc(p[0],p[1],rr*4,0,Math.PI*2); cx.fill();
+      cx.fillStyle=bpColor(ln.hue,1); cx.beginPath(); cx.arc(p[0],p[1],rr,0,Math.PI*2); cx.fill();
+    }
+  }
+
+  // Hybrid only: a live waveform at YOU, because "it starts while you talk" is the
+  // entire difference and it should be visible without reading anything.
+  if(sc.stream){
+    const n=P('you');
+    cx.strokeStyle=bpColor('good',0.75); cx.lineWidth=1.4;
+    cx.beginPath();
+    for(let i=0;i<26;i++){
+      const x=n[0]-26+i*2.1;
+      const amp=(Math.sin(BP.t*7+i*0.55)*0.5+Math.sin(BP.t*11+i*0.9)*0.5)*7*Math.min(1,p2(i));
+      if(i===0) cx.moveTo(x,n[1]-30+amp); else cx.lineTo(x,n[1]-30+amp);
+    }
+    cx.stroke();
+  }
+}
+function p2(i){ return 1-Math.abs(i-12.5)/13; }
+
+function bpTick(ts){
+  const dt=Math.min(0.05,(ts-(BP.last||ts))/1000); BP.last=ts;
+  BP.t+=dt; BP.rot+=dt*0.30;
+  bpDraw(dt);
+  BP.raf=requestAnimationFrame(bpTick);
+}
+
+function bpMount(){
+  const cv=document.getElementById('bpCanvas');
+  if(!cv){ bpUnmount(); return; }
+  BP.cv=cv; BP.cx=cv.getContext('2d'); BP.pipe=currentPipeline();
+  const meta=document.getElementById('bpMeta');
+  if(meta){
+    const p=PIPELINES.find(x=>x.id===BP.pipe);
+    meta.textContent='route · '+((p&&p.label)||BP.pipe);
+  }
+  if(BP.raf) return;                       // already running; keep the phase
+  // Honour reduced-motion by drawing one frame and stopping, never by removing it.
+  const still=window.matchMedia&&window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if(still){ BP.rot=0.5; bpDraw(0); return; }
+  BP.last=0; BP.raf=requestAnimationFrame(bpTick);
+}
+function bpUnmount(){
+  if(BP.raf) cancelAnimationFrame(BP.raf);
+  BP.raf=0; BP.cv=null; BP.cx=null;
+}
+
 function pickRow(o, group, current, onchange){
   const on = current===o.id;
   return `<label class="prow${on?' on':''}">
     <input type="radio" name="${group}" value="${o.id}" ${on?'checked':''} onchange="${onchange}('${o.id}')">
+    <span class="pr-rail"></span>
     <span class="pr-tx"><b>${esc(o.name||o.label)}</b>${o.tag?`<em>${esc(o.tag)}</em>`:''}
-      <i>${esc(o.desc)}${o.vendor?' · '+esc(o.vendor):''}</i></span>
+      <i>${esc(o.desc)}</i></span>
+    ${o.vendor?`<span class="pr-v">${esc(o.vendor)}</span>`:''}
     <span class="pr-n">${esc(o.wait||'')}</span>
   </label>`;
 }
@@ -2700,6 +3505,10 @@ function renderSettings(){
   // Fill the async panes from cache synchronously so the pane is full height
   // before scrollTop is restored (they no-op when their group isn't mounted).
   renderMeetSettings(); renderTfSettings(); fillHotkeyLabels();
+  // The blueprint animates, so it must stop the moment its pane is gone — every
+  // settings render replaces innerHTML, which would otherwise leave a rAF loop
+  // drawing into a detached canvas forever.
+  if(SETTINGS_GROUP==='models') bpMount(); else bpUnmount();
   const p2=document.getElementById('setPane');
   if(p2 && keepScroll) p2.scrollTop=keepScroll;
 }
@@ -2741,6 +3550,12 @@ function settingsPane(id){
 
   if(id==='models') return `
     <div class="ssection"><h3>Speed</h3>
+      <div class="bpwrap">
+        <canvas id="bpCanvas" class="bpcanvas" aria-hidden="true"></canvas>
+        <span class="bptick tl"></span><span class="bptick tr"></span>
+        <span class="bptick bl"></span><span class="bptick br"></span>
+        <span class="bpmeta" id="bpMeta"></span>
+      </div>
       <div class="scard tight">${PIPELINES.map(p=>pickRow(p,'pipe',currentPipeline(),'setPipeline')).join('')}</div>
       <div class="ssub" id="pipeMsg" style="margin:8px 0 0"></div>
     </div>

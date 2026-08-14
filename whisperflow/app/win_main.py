@@ -914,6 +914,24 @@ class VerbalWinApp:
         except Exception as e:
             logger.error(f"Failed to start recording: {e}", exc_info=True)
             return
+        # Hybrid pipeline: open the streaming socket and tap the mic, so a long
+        # dictation is transcribed by the time you stop. Mirrors main.py; fully
+        # guarded, so a failure here just means this take goes the ordinary way.
+        self._stream = None
+        try:
+            from app import asr_stream as _as
+            _prov = _as.should_stream(self.config)
+            if _prov:
+                _s = _as.AsrStream(_prov, self.config)
+                if _s.start():
+                    self._stream = _s
+                    self.recorder.set_tap(_s.feed)
+                    logger.info("[hybrid] streaming to %s", _prov)
+                else:
+                    logger.warning("[hybrid] stream unavailable (%s) — normal path", _s.error)
+        except Exception as e:
+            logger.warning("[hybrid] setup skipped: %s", e)
+            self._stream = None
         self._is_recording = True
         _play_sound("start")
         self._update_tray_icon(True)
@@ -1055,7 +1073,45 @@ class VerbalWinApp:
             except Exception as e:
                 logger.debug("chained_mode setup skipped: %s", e)
 
-            text, status = self._transcribe_with_retry(audio, chain=_chain, sidecar=_side)
+            # Hybrid: a long take is already transcribed, so skip the upload+ASR leg.
+            # Short takes deliberately do NOT use it — Groq's one round trip is faster
+            # below the measured ~8s crossover. Mirrors main.py.
+            text, status = None, None
+            _st, self._stream = getattr(self, "_stream", None), None
+            if _st is not None:
+                try:
+                    from app import asr_stream as _as
+                    _secs = len(audio) / float(self.recorder.sample_rate or 16000)
+                    if _secs >= _as.HYBRID_THRESHOLD_SEC:
+                        _streamed = _st.finish()
+                        if _streamed:
+                            # Never went through transcriber.finalize(), so the
+                            # dictionary must be applied here or it silently stops
+                            # working on exactly the long dictations this path serves.
+                            try:
+                                from app import dictionary as _d
+                                _streamed = _d.apply_replacements(_streamed, self.config)
+                            except Exception as e:
+                                logger.debug("[hybrid] dictionary pass skipped: %s", e)
+                            logger.info("[hybrid] used streamed transcript (%.1fs speech)", _secs)
+                            text, status = _streamed, "ok"
+                        else:
+                            logger.warning("[hybrid] no streamed transcript (%s) — "
+                                           "transcribing normally", _st.error)
+                    else:
+                        logger.info("[hybrid] %.1fs < %.0fs — using Groq",
+                                    _secs, _as.HYBRID_THRESHOLD_SEC)
+                        _st.finish(timeout=0.1)
+                except Exception as e:
+                    logger.warning("[hybrid] falling back: %s", e)
+                    text, status = None, None
+
+            if text is None:
+                text, status = self._transcribe_with_retry(audio, chain=_chain, sidecar=_side)
+            elif _chain is not None:
+                # A streamed transcript never hit the proxy, so nothing was formatted
+                # server-side; clear the sidecar so process_text formats it itself.
+                _side.clear()
             if self._cancel_flag.is_set():
                 return
 
@@ -1177,6 +1233,17 @@ class VerbalWinApp:
             except Exception:
                 pass
             self._update_tray_menu()
+
+            # Insights ledger (peripheral, fail-closed — insights.py owns the
+            # guarantees). Same post-paste slot as macOS.
+            try:
+                from app import insights as _ins
+                _secs = len(audio) / float(self.recorder.sample_rate or 16000)
+                _ins.record_dictation(self.config, save_config, word_count,
+                                      seconds=_secs, app_name=target_app,
+                                      fx_words=_ins.polish_delta(text, result))
+            except Exception as e:
+                logger.debug(f"insights record skipped: {e}")
 
             # Show the split (TRANSFORM_SWARM.md P1.3): surface what was
             # read as the instruction so a wrong split is catchable and

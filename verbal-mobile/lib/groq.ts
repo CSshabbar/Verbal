@@ -46,6 +46,72 @@ export async function getSpokenLanguage(): Promise<string> {
   }
 }
 
+// ── Pipeline + transcription model (mirrors desktop config) ──────────────────
+// Desktop stores three booleans (speed_mode / chained_mode / hybrid_mode) and derives
+// the pipeline from them. Mobile stores the derived id directly because it has no
+// dictation path reading the flags — but the ids, order and meaning are identical, so
+// the two platforms describe the same thing.
+//
+// `hybrid` is deliberately ABSENT here: it streams audio while you speak, and mobile
+// records to a file and uploads afterwards. Offering it would be a switch that does
+// nothing.
+const PIPELINE_KEY = 'flume_pipeline';
+const ASR_MODEL_KEY = 'flume_asr_model';
+
+export type PipelineId = 'one' | 'two' | 'old';
+export const PIPELINES: { id: PipelineId; label: string; desc: string; wait: string }[] = [
+  { id: 'one', label: 'One round trip',  desc: 'Best all-round. Same words, sooner.', wait: '1.3s' },
+  { id: 'two', label: 'Two round trips', desc: 'The older, slower route.',            wait: '1.9s' },
+  { id: 'old', label: 'Original',        desc: 'How Flume used to sound.',            wait: '' },
+];
+
+/** Same table desktop keeps in transcriber.ASR_CHOICES. `bias` = accepts a Whisper
+ *  glossary; only Whisper does, so on the others the dictionary is applied AFTER
+ *  transcription instead of biasing it. */
+export const ASR_MODELS: {
+  id: string; name: string; vendor: string; desc: string; wait: string;
+  provider?: 'eleven' | 'assembly'; altModel?: string; bias: boolean;
+}[] = [
+  { id: 'auto', name: 'Automatic', vendor: 'Groq', bias: true,
+    desc: 'Fast and good at everything.', wait: '1.0s' },
+  { id: 'whisper-large-v3-turbo', name: 'Whisper turbo', vendor: 'Groq', bias: true,
+    desc: 'Always the fast one, any language.', wait: '1.0s' },
+  { id: 'whisper-large-v3', name: 'Whisper large', vendor: 'Groq', bias: true,
+    desc: 'Better for languages other than English.', wait: '1.1s' },
+  { id: 'eleven-scribe-v1', name: 'Scribe', vendor: 'ElevenLabs', bias: false,
+    provider: 'eleven', altModel: 'scribe_v1',
+    desc: 'Most accurate on your voice.', wait: '1.8s' },
+  { id: 'aai-universal-2', name: 'Universal-2', vendor: 'AssemblyAI', bias: false,
+    provider: 'assembly', altModel: 'universal-2',
+    desc: 'Best with Urdu mixed into English.', wait: '5s' },
+  { id: 'aai-universal-3-5-pro', name: 'Universal-3.5', vendor: 'AssemblyAI', bias: false,
+    provider: 'assembly', altModel: 'universal-3-5-pro',
+    desc: 'Strong English. Struggles with Urdu.', wait: '5s' },
+];
+
+export async function getPipeline(): Promise<PipelineId> {
+  try {
+    const v = await AsyncStorage.getItem(PIPELINE_KEY);
+    return (PIPELINES.some(p => p.id === v) ? v : 'one') as PipelineId;
+  } catch {
+    return 'one';
+  }
+}
+export async function setPipeline(id: PipelineId): Promise<void> {
+  try { await AsyncStorage.setItem(PIPELINE_KEY, id); } catch { /* local pref only */ }
+}
+export async function getAsrModel(): Promise<string> {
+  try {
+    const v = await AsyncStorage.getItem(ASR_MODEL_KEY);
+    return ASR_MODELS.some(m => m.id === v) ? (v as string) : 'auto';
+  } catch {
+    return 'auto';
+  }
+}
+export async function setAsrModel(id: string): Promise<void> {
+  try { await AsyncStorage.setItem(ASR_MODEL_KEY, id); } catch { /* local pref only */ }
+}
+
 /** The picker's options (IDI-180). 'auto' = let Whisper detect — transcribeAudio
  *  omits the `language` param, and both natives omit it too (keyboardBridge ships
  *  the value as `spokenLanguage`). Mirrors desktop's `spoken_language` config. */
@@ -156,6 +222,28 @@ export const NOTES_NO_STRUCTURE_RULES = `
 Do NOT convert prose into task-list checkboxes ("- [ ]"); use plain bullets ("- ")
 for any lists instead.`;
 
+// Notes v3 named styles — mirrors desktop ai_cleanup.NOTES_STYLE_PROSE_RULES /
+// NOTES_STYLE_TRANSCRIPT_PROMPT (edit one, edit both). A style only ever
+// arrives from an explicit user pick, so Hard Rule #12's cost control holds.
+export const NOTES_STYLE_PROSE_RULES = `
+
+STYLE OVERRIDE — FLOWING PROSE:
+The user asked for this note as prose. Output 1–4 well-formed paragraphs in the
+speaker's voice. NO bullets, NO checklists, NO headings, NO tables — connected
+sentences only. All other rules (completeness, no invention, keep the speaker's
+language) still apply.`;
+
+export const NOTES_STYLE_TRANSCRIPT_PROMPT = `You are a TRANSCRIPT CLEANER, not a writer.
+Return the text with ONLY these changes:
+- Fix capitalization and add correct punctuation and paragraph breaks.
+- Remove pure filler (um/uh, stutters, immediately-doubled words).
+- Resolve explicit self-corrections to the final value.
+Keep EVERY other word, in the speaker's order, voice and language. Do NOT
+summarize, restructure, retitle sections, add markdown scaffolding, or reword.
+Return plain text only (paragraph breaks allowed).`;
+
+export type NoteStyle = 'structured' | 'prose' | 'transcript';
+
 export interface NoteFormatResult {
   /** false = LLM timed out / errored and we fell back to raw text. */
   ok: boolean;
@@ -188,13 +276,20 @@ function extractJsonObject(s: string): any | null {
 export async function formatNoteWithTitle(
   text: string,
   _apiKey?: string,
-  opts: { timeoutMs?: number; detectStructure?: boolean; withTitle?: boolean } = {},
+  opts: { timeoutMs?: number; detectStructure?: boolean; withTitle?: boolean; style?: NoteStyle } = {},
 ): Promise<NoteFormatResult> {
-  const { timeoutMs = 8000, detectStructure = true, withTitle = true } = opts;
+  const { timeoutMs = 8000, detectStructure = true, withTitle = true, style = 'structured' } = opts;
   const raw = (text ?? '').trim();
   if (!raw) return { ok: false, title: null, content: text };
 
-  const system = NOTES_FORMATTER_PROMPT + (detectStructure ? NOTES_STRUCTURE_RULES : NOTES_NO_STRUCTURE_RULES);
+  // Style selection mirrors desktop build_notes_system_prompt: "transcript" is
+  // a different contract (keep every word) so it REPLACES the note-maker prompt;
+  // "prose" extends it and suppresses checklists.
+  const system = style === 'transcript'
+    ? NOTES_STYLE_TRANSCRIPT_PROMPT
+    : style === 'prose'
+      ? NOTES_FORMATTER_PROMPT + NOTES_STYLE_PROSE_RULES
+      : NOTES_FORMATTER_PROMPT + (detectStructure ? NOTES_STRUCTURE_RULES : NOTES_NO_STRUCTURE_RULES);
   const user = withTitle
     ? `NOTES TO FORMAT:\n\`\`\`\n${raw}\n\`\`\`\n\nRespond with ONLY a JSON object of the form {"title": "<a concise title, 6 words max>", "content": "<the formatted markdown>"}. Do not wrap it in code fences.`
     : `NOTES TO FORMAT:\n\`\`\`\n${raw}\n\`\`\`\n\nOutput the formatted markdown only.`;
@@ -239,6 +334,56 @@ export async function formatNoteWithTitle(
   }
 }
 
+/**
+ * askNotes — Ask-your-notes (Notes v3, mirrors desktop DashboardApi.ask_notes).
+ * The caller ranks + trims the context notes (token overlap, top ~6); this
+ * makes ONE proxy chat call and fails closed to ok:false. Explicit user action
+ * only — never fired automatically.
+ */
+export async function askNotes(
+  question: string,
+  contextNotes: Array<{ title: string; content: string; updatedAt?: string }>,
+  opts: { timeoutMs?: number } = {},
+): Promise<{ ok: boolean; answer: string }> {
+  const q = (question || '').trim();
+  if (!q || contextNotes.length === 0) return { ok: false, answer: '' };
+  const ctx = contextNotes
+    .map((n) => `NOTE: ${n.title || 'Untitled'}${n.updatedAt ? ` (${n.updatedAt.slice(0, 10)})` : ''}\n${(n.content || '').slice(0, 2000)}`)
+    .join('\n\n---\n\n');
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), opts.timeoutMs ?? 30_000);
+  try {
+    const res = await fetch(PROXY_URL, {
+      method: 'POST',
+      headers: await proxyHeaders(true),
+      body: JSON.stringify({
+        model: 'llama-3.3-70b-versatile',
+        messages: [
+          {
+            role: 'system',
+            content: 'You answer questions from the user\'s personal notes. '
+              + 'Use ONLY the notes provided below. Be concise and direct — a short '
+              + 'paragraph or a few bullets. If the notes don\'t contain the answer, '
+              + 'say so plainly. Never invent facts. Answer in the language of the question.',
+          },
+          { role: 'user', content: `NOTES:\n\n${ctx}\n\nQUESTION: ${q}` },
+        ],
+        temperature: 0,
+        max_tokens: 768,
+      }),
+      signal: controller.signal,
+    });
+    if (!res.ok) return { ok: false, answer: '' };
+    const data = await res.json();
+    const out = (data.choices?.[0]?.message?.content ?? '').trim();
+    return out ? { ok: true, answer: out } : { ok: false, answer: '' };
+  } catch {
+    return { ok: false, answer: '' };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export async function transcribeAudio(
   audioUri: string,
   _apiKey?: string,
@@ -249,25 +394,55 @@ export async function transcribeAudio(
     type: 'audio/m4a',
     name: 'recording.m4a',
   } as any);
-  formData.append('model', 'whisper-large-v3-turbo');
+  // Transcription model (Settings → Models). Mirrors desktop transcriber.asr_choice:
+  // 'auto' keeps the historical turbo default; a non-Groq pick sends asr_provider so
+  // the proxy routes it and normalizes the reply back to Groq's `{text}` shape.
+  const chosenId = await getAsrModel();
+  const choice = ASR_MODELS.find(m => m.id === chosenId) ?? ASR_MODELS[0];
+  const alt = !!choice.provider;
+  formData.append('model', (!alt && choice.id !== 'auto')
+    ? choice.id : 'whisper-large-v3-turbo');
+  if (alt) {
+    formData.append('asr_provider', choice.provider as string);
+    if (choice.altModel) formData.append('asr_alt_model', choice.altModel);
+  }
   // Spoken language: 'auto' → omit (Whisper detects); else pin the ISO code.
   // Mirrors desktop config['spoken_language']; stored via flume_spoken_language.
   const lang = await getSpokenLanguage();
   if (lang && lang !== 'auto') formData.append('language', lang);
   formData.append('temperature', '0');
 
-  // Custom dictionary: bias Whisper toward the user's vocabulary.
+  // Custom dictionary: bias Whisper toward the user's vocabulary. Only Whisper takes
+  // a glossary, so non-Groq providers are sent none — and the echo scrub below is
+  // skipped for them too, since it would be hunting an echo that cannot exist.
   const dict = await getDictionary();
-  const prompt = buildPrompt(dict);
+  const prompt = choice.bias ? buildPrompt(dict) : '';
   if (prompt) formData.append('prompt', prompt);
 
   // multipart → proxy routes to /audio/transcriptions. Do NOT set Content-Type
   // (fetch adds the multipart boundary itself).
-  const res = await fetch(PROXY_URL, {
-    method: 'POST',
-    headers: await proxyHeaders(false),
-    body: formData,
-  });
+  const headers = await proxyHeaders(false);
+  const post = (body: FormData) => fetch(PROXY_URL, { method: 'POST', headers, body });
+  let res = await post(formData);
+
+  // FAIL CLOSED: an alternate provider that is unconfigured, down or out of credit
+  // must never cost a dictation, so retry once on Groq. The provider is a
+  // preference, not a dependency — same rule the desktop path follows.
+  if (!res.ok && alt) {
+    const retry = new FormData();
+    retry.append('file', { uri: audioUri, type: 'audio/m4a', name: 'recording.m4a' } as any);
+    retry.append('model', 'whisper-large-v3-turbo');
+    if (lang && lang !== 'auto') retry.append('language', lang);
+    retry.append('temperature', '0');
+    const groqPrompt = buildPrompt(dict);
+    if (groqPrompt) retry.append('prompt', groqPrompt);
+    res = await post(retry);
+    if (res.ok) {
+      const d = await res.json();
+      const s = stripPromptEcho(d.text?.trim() ?? '', groqPrompt);
+      return s ? applyReplacements(s, dict) : '';
+    }
+  }
 
   if (!res.ok) {
     const err = await res.text();
