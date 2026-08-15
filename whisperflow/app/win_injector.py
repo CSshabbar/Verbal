@@ -189,15 +189,63 @@ def get_focused_app_bundle() -> str:
     return _previous_app_exe
 
 
+def _await_foreground(hwnd, timeout=0.2, poll=0.005) -> float:
+    """Block until `hwnd` is actually the foreground window. Returns seconds waited.
+
+    SetForegroundWindow is ASYNCHRONOUS — it asks the window manager to switch and
+    returns immediately, which is why this used to be a flat `time.sleep(0.2)`: a
+    guess at how long the switch takes, paid in full on every dictation even when it
+    landed in 20ms. Pasting before focus arrives sends Ctrl+V to the wrong window, so
+    the wait is real; it should just end when focus actually arrives. The timeout
+    keeps the old 200ms as a ceiling, so this is never slower than before.
+
+    Mirrors injector._await_focus on macOS (which polls NSWorkspace instead).
+    """
+    if not hwnd:
+        return 0.0
+    t0 = time.time()
+    try:
+        while time.time() - t0 < timeout:
+            if user32.GetForegroundWindow() == hwnd:
+                return time.time() - t0
+            time.sleep(poll)
+    except Exception as e:
+        logger.debug("foreground probe failed (%s) — using the fixed wait", e)
+        remaining = timeout - (time.time() - t0)
+        if remaining > 0:
+            time.sleep(remaining)
+    return time.time() - t0
+
+
+def _await_clipboard(text, timeout=0.05, poll=0.002) -> float:
+    """Block until the clipboard actually reports `text`. Returns seconds waited.
+
+    Measured on macOS: readable in 0.7ms median, 8.4ms worst over 30 trials, so the
+    old flat 50ms was ~7x the worst case and pure latency on every dictation. Same
+    ceiling as before if the clipboard stalls.
+    """
+    t0 = time.time()
+    try:
+        while time.time() - t0 < timeout:
+            if pyperclip.paste() == text:
+                return time.time() - t0
+            time.sleep(poll)
+    except Exception:
+        pass
+    return time.time() - t0
+
+
 def restore_focused_app():
-    """Bring the previously focused HWND back to the foreground."""
+    """Bring the previously focused HWND back to the foreground, and wait until it
+    really is foreground (both call sites need that guarantee, so it lives here)."""
     global _previous_hwnd
     if _previous_hwnd is None:
         return
     try:
         user32.SetForegroundWindow(_previous_hwnd)
-        time.sleep(0.2)
-        logger.info(f"Restored focus to hwnd {_previous_hwnd}")
+        waited = _await_foreground(_previous_hwnd) * 1000
+        logger.info("Restored focus to hwnd %s in %.0fms (was a flat 200ms)",
+                    _previous_hwnd, waited)
     except Exception as e:
         logger.warning(f"Could not restore focused app: {e}")
 
@@ -309,13 +357,17 @@ def inject_text(text: str, allow_mentions: bool = False) -> bool:
                     f"Mention injection failed, falling back to paste: {e}")
 
     try:
+        # Both waits were flat sleeps (50ms + 150ms, on top of the 200ms inside
+        # restore_focused_app — ~400ms on EVERY dictation, after the transcript was
+        # already in hand). They are now event-driven with the old values as
+        # ceilings, so this path can only be faster, never slower.
         pyperclip.copy(text)
-        time.sleep(0.05)
-        restore_focused_app()
-        time.sleep(0.15)
+        _clip_ms = _await_clipboard(text) * 1000
+        restore_focused_app()          # now returns once focus has actually landed
         import pyautogui
         pyautogui.hotkey("ctrl", "v")
-        logger.info(f"Pasted: '{text[:40]}...'")
+        logger.info("Pasted: '%s...' (clipboard %.0fms, was a flat 50ms + 150ms)",
+                    text[:40], _clip_ms)
         return True
     except Exception as e:
         logger.error(f"Paste failed: {e}")
