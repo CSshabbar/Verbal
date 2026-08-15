@@ -909,10 +909,23 @@ class VerbalWinApp:
         except Exception as e:
             logger.debug(f"filetag harvest kickoff skipped: {e}")
         self._cancel_flag.clear()
+        # Acknowledge the keypress BEFORE opening the mic. recorder.start() waits for
+        # the first audio buffer (~275ms of device warm-up, measured), and showing the
+        # pill after that made the warm-up read as app lag. The label stays "Starting"
+        # until audio is actually flowing — saying "Listening" early would invite the
+        # user to speak into a mic that is not live yet. Mirrors main.py.
+        try:
+            self.overlay.show("Starting...")
+        except Exception:
+            pass
         try:
             self.recorder.start()
         except Exception as e:
             logger.error(f"Failed to start recording: {e}", exc_info=True)
+            try:
+                self.overlay.hide()      # never leave "Starting..." stranded
+            except Exception:
+                pass
             return
         # Hybrid pipeline: open the streaming socket and tap the mic, so a long
         # dictation is transcribed by the time you stop. Mirrors main.py; fully

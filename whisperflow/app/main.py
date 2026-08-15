@@ -1142,6 +1142,16 @@ class VerbalApp(rumps.App):
                     logger.debug(f"filetag harvest kickoff skipped: {e}")
             self._is_recording = True
             self._cancel_flag.clear()
+            # Acknowledge the keypress IMMEDIATELY, before the microphone is opened.
+            #
+            # recorder.start() waits for CoreAudio's first buffer — measured 275ms
+            # median on this machine (209-449ms), essentially all of it device warm-up
+            # that no amount of our code can remove. Showing the pill after that wait
+            # made the whole warm-up read as app lag. Showing it before makes the app
+            # feel instant, and the two-state label is the honest part: it does NOT
+            # say "Listening" until audio is actually flowing, because speaking into
+            # a mic that is not live yet loses those words for real.
+            self.overlay.show("Starting…")
             # During a meeting, dictation SHARES the meeting's mic stream via a
             # tap — opening a second InputStream on the same device makes
             # CoreAudio drop one of them, and a failed second open used to nuke
@@ -1181,10 +1191,18 @@ class VerbalApp(rumps.App):
             self._rec_started_at = time.time()
             self._status_note("")
             self.record_btn.title = "Stop Recording"
+            # Audio is live now (recorder.start() only returns once the first buffer
+            # has landed), so it is finally true to say so.
             self.overlay.show("Listening…")
             self.dashboard.update_recording_state(True)
         except Exception as e:
             self._is_recording = False
+            # The pill was shown before the mic was opened, so a failure here has to
+            # take it down — otherwise "Starting…" hangs on screen forever.
+            try:
+                self.overlay.hide()
+            except Exception:
+                pass
             logger.error(f"Record start failed: {e}\n{traceback.format_exc()}")
 
     def _detach_meeting_tap(self):
