@@ -428,53 +428,40 @@ body{background:var(--bg);font-family:'Geist',-apple-system,system-ui,sans-serif
 .field select{-webkit-appearance:none;appearance:none;cursor:pointer;padding-right:34px;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23f2f2f2' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 12px center}
 .field select option{background:#17191c;color:#f2f2f2}
 .saverow{display:flex;align-items:center;gap:12px;margin-top:6px}
-/* Models pane. A plain settings list: name, one line, the wait. You glance down it
-   and pick. It was a spec sheet with diagrams and legends for one iteration; that
-   read as homework, not a setting. */
-.scard.tight{padding:4px 6px;gap:0}
-.prow{display:flex;align-items:center;gap:12px;padding:10px 10px;border-radius:8px;
-  cursor:pointer;border:1px solid transparent}
+/* Models pane. A grouped selection list — one card, hairline dividers, a real
+   selection mark. Two earlier drafts were wrong in opposite directions: a spec sheet
+   with diagrams and legends (read as homework), then a rotating canvas blueprint
+   (read as a screensaver). What is left is the thing itself, made well. */
+.scard.tight{padding:0;gap:0;overflow:hidden}
+.prow{position:relative;display:flex;align-items:center;gap:13px;padding:13px 15px;
+  cursor:pointer;border-bottom:1px solid var(--hair);transition:background .12s}
+.prow:last-child{border-bottom:none}
 .prow:hover{background:rgba(244,243,241,.035)}
-.prow.on{background:rgba(200,90,62,.09);border-color:rgba(200,90,62,.4)}
-.prow input{accent-color:var(--accent);flex:none;margin:0}
+.prow.on{background:linear-gradient(90deg, rgba(200,90,62,.13), rgba(200,90,62,.05) 62%, transparent)}
+.prow input{position:absolute;opacity:0;pointer-events:none}
+/* The selection mark: an empty ring that fills and takes a tick. Clearer down a long
+   list than a tinted background alone, and it survives the accent being subtle. */
+.pr-mark{flex:none;width:17px;height:17px;border-radius:50%;border:1.5px solid var(--hair2);
+  position:relative;transition:border-color .12s,background .12s}
+.prow:hover .pr-mark{border-color:var(--ink3)}
+.prow.on .pr-mark{border-color:var(--accent);background:var(--accent)}
+.prow.on .pr-mark::after{content:"";position:absolute;left:5px;top:2px;width:4px;height:8px;
+  border:solid #fff;border-width:0 1.6px 1.6px 0;transform:rotate(43deg)}
 .pr-tx{display:flex;flex-direction:column;gap:2px;min-width:0;flex:1}
-.pr-tx b{font:600 13px Geist;color:var(--ink)}
+.pr-h{display:flex;align-items:baseline;gap:0}
+.pr-tx b{font:600 13.5px Geist;color:var(--ink2);letter-spacing:-.005em}
+.prow.on .pr-tx b{color:var(--ink)}
 .pr-tx em{font:500 9px "JetBrains Mono",monospace;letter-spacing:.09em;text-transform:uppercase;
-  font-style:normal;color:var(--accent);margin-left:7px}
+  font-style:normal;color:var(--accent);margin-left:8px}
 .pr-tx i{font:400 12px Geist;font-style:normal;color:var(--ink3);
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.pr-n{font:500 11px "JetBrains Mono",monospace;color:var(--ink3);flex:none;
-  font-variant-numeric:tabular-nums;min-width:34px;text-align:right}
-.prow.on .pr-n{color:var(--accent)}
-/* Instrument-panel details: a rail that lights on selection, and the vendor as a
-   micro-tag rather than more sentence. Adds finish, not information. */
-.prow{position:relative;overflow:hidden}
-.pr-rail{position:absolute;left:0;top:50%;transform:translateY(-50%);width:2px;height:0;
-  border-radius:2px;background:var(--accent);transition:height .18s ease}
-.prow.on .pr-rail{height:62%}
-.prow.on b{letter-spacing:-.005em}
 .pr-v{font:500 8.5px "JetBrains Mono",monospace;letter-spacing:.12em;text-transform:uppercase;
-  color:var(--ink3);border:1px solid var(--hair2);border-radius:3px;padding:2px 5px;flex:none}
-.prow.on .pr-v{color:var(--ink2);border-color:rgba(200,90,62,.35)}
-/* Blueprint frame. The canvas draws the route; everything here is the instrument
-   housing around it — grid, corner ticks, a horizon glow. Deliberately quiet so the
-   moving parts are the only thing that reads as alive. */
-.bpwrap{position:relative;height:190px;margin:2px 0 12px;border-radius:12px;overflow:hidden;
-  border:1px solid var(--hair);
-  background:
-    radial-gradient(120% 90% at 50% 108%, rgba(200,90,62,.16), transparent 62%),
-    linear-gradient(rgba(244,243,241,.028) 1px, transparent 1px) 0 0/100% 22px,
-    linear-gradient(90deg, rgba(244,243,241,.028) 1px, transparent 1px) 0 0/22px 100%,
-    var(--sunken)}
-.bpcanvas{position:absolute;inset:0;width:100%;height:100%;display:block}
-.bptick{position:absolute;width:9px;height:9px;border-color:rgba(200,90,62,.55);border-style:solid;
-  border-width:0}
-.bptick.tl{top:8px;left:8px;border-top-width:1px;border-left-width:1px}
-.bptick.tr{top:8px;right:8px;border-top-width:1px;border-right-width:1px}
-.bptick.bl{bottom:8px;left:8px;border-bottom-width:1px;border-left-width:1px}
-.bptick.br{bottom:8px;right:8px;border-bottom-width:1px;border-right-width:1px}
-.bpmeta{position:absolute;top:10px;left:22px;font:500 9px "JetBrains Mono",monospace;
-  letter-spacing:.16em;text-transform:uppercase;color:var(--ink3)}
+  color:var(--ink3);border:1px solid var(--hair2);border-radius:4px;padding:2.5px 6px;flex:none}
+.prow.on .pr-v{color:var(--ink2);border-color:rgba(200,90,62,.4)}
+.pr-n{font:500 11px "JetBrains Mono",monospace;color:var(--ink3);flex:none;
+  font-variant-numeric:tabular-nums;min-width:36px;text-align:right}
+.prow.on .pr-n{color:var(--accent)}
+
 .hotcard .hotrow{display:flex;align-items:center;justify-content:space-between;padding:14px 4px;border-bottom:1px solid var(--bd)}.hotcard .hotrow:last-child{border-bottom:0}
 .kbs{display:flex;gap:6px}kbd{font:500 10.5px 'JetBrains Mono';background:rgba(240,240,240,.05);border:1px solid var(--bd2);border-radius:6px;padding:5px 9px;min-width:26px;text-align:center}
 .toggle{width:40px;height:22px;border-radius:11px;background:rgba(240,240,240,.12);position:relative;cursor:pointer;border:0}
@@ -1046,9 +1033,6 @@ function renderActive(){
     else if(ACTIVE==='snippets') renderSnippets();
     else if(ACTIVE==='devices') renderDevices();
     else if(ACTIVE==='settings') renderSettings();
-    // Leaving Settings never calls renderSettings(), so the blueprint's rAF loop
-    // has to be stopped from here or it keeps drawing into a detached canvas.
-    if(ACTIVE!=='settings') bpUnmount();
   } catch(e){
     const box = document.querySelector('#scr-'+ACTIVE+' .main') || document.querySelector('#scr-'+ACTIVE+' .threepane') || document.body;
     if(box) box.innerHTML = '<div class="main"><div class="empty">Could not render '+ACTIVE+': '+esc(e && (e.message||e.stack||String(e)))+'</div></div>';
@@ -3234,162 +3218,12 @@ const ASR_MODELS=[
    desc:'Strong English. Struggles with Urdu.', wait:'5s'},
 ];
 
-// ── Pipeline blueprint ───────────────────────────────────────────────────────
-// A rotating wireframe of the route your words actually take, drawn from the same
-// data the picker uses, so it is a diagram of the real thing rather than decoration:
-// the node count, the lanes and the direction of travel all come from the selected
-// pipeline. Hand-rolled projection on a 2D canvas — no library, nothing loaded.
-const BP={raf:0,last:0,rot:0,t:0,cv:null,cx:null,pipe:null,packets:[]};
-const BP_NODES={you:[-1.5,0,0], edge:[0,0,0], eng:[1.5,0,0]};
-const BP_LABEL={you:'YOU', edge:'FLUME', eng:'ENGINE'};
-
-function bpScene(id){
-  const up=[['you','edge'],['edge','eng']], down=[['eng','edge'],['edge','you']];
-  if(id==='hybrid') return {stream:true, lanes:[
-    {route:up,   y: 0.30, hue:'good', speed:0.95, n:4},
-    {route:down, y:-0.30, hue:'warm', speed:0.75, n:1}]};
-  if(id==='one')    return {lanes:[{route:up.concat(down), y:0, hue:'warm', speed:0.42, n:1}]};
-  return {lanes:[                                   // two trips = two staggered laps
-    {route:up.concat(down), y: 0.26, hue:'warm', speed:0.40, n:1},
-    {route:up.concat(down), y:-0.26, hue:'dim',  speed:0.40, n:1, phase:0.5}]};
-}
-
-// Rotate about X (fixed tilt) then Y (animated), then perspective-divide.
-function bpProject(p, rot, w, h){
-  const tilt=0.40, ct=Math.cos(tilt), st=Math.sin(tilt);
-  let x=p[0], y=p[1]*ct - p[2]*st, z=p[1]*st + p[2]*ct;
-  const c=Math.cos(rot), s=Math.sin(rot);
-  const X=x*c - z*s, Z=x*s + z*c;
-  const d=4.4, k=d/(d+Z);
-  return [w/2 + X*k*w*0.255, h/2 - y*k*h*0.34 + Z*k*6, k];
-}
-
-function bpColor(hue, a){
-  if(hue==='good') return `rgba(143,169,123,${a})`;
-  if(hue==='dim')  return `rgba(141,130,121,${a})`;
-  return `rgba(200,90,62,${a})`;
-}
-
-function bpDraw(dt){
-  const cv=BP.cv, cx=BP.cx; if(!cv||!cx) return;
-  const dpr=Math.min(2, window.devicePixelRatio||1);
-  const w=cv.clientWidth, h=cv.clientHeight;
-  if(cv.width!==w*dpr||cv.height!==h*dpr){ cv.width=w*dpr; cv.height=h*dpr; }
-  cx.setTransform(dpr,0,0,dpr,0,0);
-  cx.clearRect(0,0,w,h);
-  const sc=bpScene(BP.pipe||'one');
-  const P=k=>bpProject(BP_NODES[k], BP.rot, w, h);
-
-  // Ground grid — the blueprint floor. Gives the rotation something to read against.
-  cx.lineWidth=1;
-  for(let i=-4;i<=4;i++){
-    const a=bpProject([i*0.5,-0.62,-2], BP.rot,w,h), b=bpProject([i*0.5,-0.62,2], BP.rot,w,h);
-    const c=bpProject([-2,-0.62,i*0.5], BP.rot,w,h), d=bpProject([2,-0.62,i*0.5], BP.rot,w,h);
-    cx.strokeStyle='rgba(244,243,241,0.055)';
-    cx.beginPath(); cx.moveTo(a[0],a[1]); cx.lineTo(b[0],b[1]); cx.stroke();
-    cx.beginPath(); cx.moveTo(c[0],c[1]); cx.lineTo(d[0],d[1]); cx.stroke();
-  }
-
-  // Lanes: the path itself, faint, so the route is legible even between packets.
-  for(const ln of sc.lanes){
-    cx.strokeStyle=bpColor(ln.hue,0.22); cx.lineWidth=1.2;
-    cx.beginPath();
-    ln.route.forEach((seg,i)=>{
-      const a=bpProject([BP_NODES[seg[0]][0],ln.y,0], BP.rot,w,h);
-      const b=bpProject([BP_NODES[seg[1]][0],ln.y,0], BP.rot,w,h);
-      if(i===0) cx.moveTo(a[0],a[1]);
-      cx.lineTo(b[0],b[1]);
-    });
-    cx.stroke();
-  }
-
-  // Pillars + node rings.
-  for(const k of ['you','edge','eng']){
-    const base=bpProject([BP_NODES[k][0],-0.62,0], BP.rot,w,h);
-    const top =bpProject([BP_NODES[k][0], 0.46,0], BP.rot,w,h);
-    cx.strokeStyle='rgba(244,243,241,0.13)'; cx.lineWidth=1;
-    cx.beginPath(); cx.moveTo(base[0],base[1]); cx.lineTo(top[0],top[1]); cx.stroke();
-    const n=P(k), r=Math.max(5, 13*n[2]);
-    const accent = k==='edge';
-    cx.strokeStyle = accent?'rgba(200,90,62,0.85)':'rgba(244,243,241,0.42)';
-    cx.lineWidth = accent?1.8:1.2;
-    cx.beginPath(); cx.ellipse(n[0],n[1],r,r*0.36,0,0,Math.PI*2); cx.stroke();
-    if(accent){
-      cx.fillStyle='rgba(200,90,62,0.16)'; cx.fill();
-      cx.beginPath(); cx.ellipse(n[0],n[1],r*1.7,r*0.61,0,0,Math.PI*2);
-      cx.strokeStyle='rgba(200,90,62,0.22)'; cx.lineWidth=1; cx.stroke();
-    }
-    cx.fillStyle='rgba(244,243,241,0.5)';
-    cx.font='500 9px "JetBrains Mono", monospace';
-    cx.textAlign='center';
-    cx.fillText(BP_LABEL[k], n[0], n[1]+r*0.36+15);
-  }
-
-  // Packets. Position is a normalized walk along the lane's segment list.
-  for(const ln of sc.lanes){
-    for(let i=0;i<ln.n;i++){
-      const ph=((BP.t*ln.speed)+(ln.phase||0)+i/ln.n)%1;
-      const fs=ph*ln.route.length, si=Math.floor(fs), f=fs-si;
-      const seg=ln.route[Math.min(si,ln.route.length-1)];
-      const x=BP_NODES[seg[0]][0]+(BP_NODES[seg[1]][0]-BP_NODES[seg[0]][0])*f;
-      const p=bpProject([x,ln.y,0], BP.rot,w,h);
-      const rr=Math.max(1.6,3.1*p[2]);
-      const g=cx.createRadialGradient(p[0],p[1],0,p[0],p[1],rr*4);
-      g.addColorStop(0,bpColor(ln.hue,0.95)); g.addColorStop(1,bpColor(ln.hue,0));
-      cx.fillStyle=g; cx.beginPath(); cx.arc(p[0],p[1],rr*4,0,Math.PI*2); cx.fill();
-      cx.fillStyle=bpColor(ln.hue,1); cx.beginPath(); cx.arc(p[0],p[1],rr,0,Math.PI*2); cx.fill();
-    }
-  }
-
-  // Hybrid only: a live waveform at YOU, because "it starts while you talk" is the
-  // entire difference and it should be visible without reading anything.
-  if(sc.stream){
-    const n=P('you');
-    cx.strokeStyle=bpColor('good',0.75); cx.lineWidth=1.4;
-    cx.beginPath();
-    for(let i=0;i<26;i++){
-      const x=n[0]-26+i*2.1;
-      const amp=(Math.sin(BP.t*7+i*0.55)*0.5+Math.sin(BP.t*11+i*0.9)*0.5)*7*Math.min(1,p2(i));
-      if(i===0) cx.moveTo(x,n[1]-30+amp); else cx.lineTo(x,n[1]-30+amp);
-    }
-    cx.stroke();
-  }
-}
-function p2(i){ return 1-Math.abs(i-12.5)/13; }
-
-function bpTick(ts){
-  const dt=Math.min(0.05,(ts-(BP.last||ts))/1000); BP.last=ts;
-  BP.t+=dt; BP.rot+=dt*0.30;
-  bpDraw(dt);
-  BP.raf=requestAnimationFrame(bpTick);
-}
-
-function bpMount(){
-  const cv=document.getElementById('bpCanvas');
-  if(!cv){ bpUnmount(); return; }
-  BP.cv=cv; BP.cx=cv.getContext('2d'); BP.pipe=currentPipeline();
-  const meta=document.getElementById('bpMeta');
-  if(meta){
-    const p=PIPELINES.find(x=>x.id===BP.pipe);
-    meta.textContent='route · '+((p&&p.label)||BP.pipe);
-  }
-  if(BP.raf) return;                       // already running; keep the phase
-  // Honour reduced-motion by drawing one frame and stopping, never by removing it.
-  const still=window.matchMedia&&window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-  if(still){ BP.rot=0.5; bpDraw(0); return; }
-  BP.last=0; BP.raf=requestAnimationFrame(bpTick);
-}
-function bpUnmount(){
-  if(BP.raf) cancelAnimationFrame(BP.raf);
-  BP.raf=0; BP.cv=null; BP.cx=null;
-}
-
 function pickRow(o, group, current, onchange){
   const on = current===o.id;
   return `<label class="prow${on?' on':''}">
     <input type="radio" name="${group}" value="${o.id}" ${on?'checked':''} onchange="${onchange}('${o.id}')">
-    <span class="pr-rail"></span>
-    <span class="pr-tx"><b>${esc(o.name||o.label)}</b>${o.tag?`<em>${esc(o.tag)}</em>`:''}
+    <span class="pr-mark" aria-hidden="true"></span>
+    <span class="pr-tx"><span class="pr-h"><b>${esc(o.name||o.label)}</b>${o.tag?`<em>${esc(o.tag)}</em>`:''}</span>
       <i>${esc(o.desc)}</i></span>
     ${o.vendor?`<span class="pr-v">${esc(o.vendor)}</span>`:''}
     <span class="pr-n">${esc(o.wait||'')}</span>
@@ -3505,10 +3339,6 @@ function renderSettings(){
   // Fill the async panes from cache synchronously so the pane is full height
   // before scrollTop is restored (they no-op when their group isn't mounted).
   renderMeetSettings(); renderTfSettings(); fillHotkeyLabels();
-  // The blueprint animates, so it must stop the moment its pane is gone — every
-  // settings render replaces innerHTML, which would otherwise leave a rAF loop
-  // drawing into a detached canvas forever.
-  if(SETTINGS_GROUP==='models') bpMount(); else bpUnmount();
   const p2=document.getElementById('setPane');
   if(p2 && keepScroll) p2.scrollTop=keepScroll;
 }
@@ -3550,12 +3380,6 @@ function settingsPane(id){
 
   if(id==='models') return `
     <div class="ssection"><h3>Speed</h3>
-      <div class="bpwrap">
-        <canvas id="bpCanvas" class="bpcanvas" aria-hidden="true"></canvas>
-        <span class="bptick tl"></span><span class="bptick tr"></span>
-        <span class="bptick bl"></span><span class="bptick br"></span>
-        <span class="bpmeta" id="bpMeta"></span>
-      </div>
       <div class="scard tight">${PIPELINES.map(p=>pickRow(p,'pipe',currentPipeline(),'setPipeline')).join('')}</div>
       <div class="ssub" id="pipeMsg" style="margin:8px 0 0"></div>
     </div>
