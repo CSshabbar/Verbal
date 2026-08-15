@@ -103,6 +103,17 @@
    **8 s hard timeout** → fall back to saving raw + surface "Retry formatting" (never block the editor).
    The structure-detection rules live on `NOTES_FORMATTER_SYSTEM_PROMPT`/mobile `formatNotes` (the **LLM**
    system prompt) — Hard Rule #6's 896-char cap is the **Whisper** bias prompt only; don't conflate them.
+   **Notes v3 corollaries (2026-08):** (a) editing the ORIGINAL transcript persists via `save_note` with
+   the **`no_cleanup` control field** — without it, a format-failed note (raw set, content empty) has
+   exactly the initial-dictated shape and every raw keystroke's debounce save would fire a surprise LLM
+   call. Control fields (`run_cleanup`/`no_cleanup`) are never stored or synced. (b) The named restyle
+   prompts (`NOTES_STYLE_PROSE_RULES` / `NOTES_STYLE_TRANSCRIPT_PROMPT`) are mirrored between
+   `whisperflow/app/ai_cleanup.py` and `verbal-mobile/lib/groq.ts` — edit one, edit both (same
+   discipline as the notes/meeting prompts). Styles and `ask_notes` fire on explicit user action ONLY.
+   (c) **A pin write never bumps `updated_at`** (desktop `set_note_pinned`, mobile `setPinned`): a pin is
+   a preference, not an edit — bumping would reorder the recency lists and could mint a conflict pair;
+   mobile's `toEntry` must carry the note's REAL `isPinned` (a hard-coded `false` clobbered other
+   devices' pins in the cache — fixed in v3).
 
 13. **Wipe account-scoped caches on sign-out / account switch (data isolation).** Mobile keys all data by
    `getUserId()`, but the id + local caches persist across sign-ins. If they aren't cleared, a *different*
@@ -1006,6 +1017,17 @@
     - `main.py` `_ui_timer` — every main-thread hop goes through `_ui_queue`, so the timer interval is the
       floor on any UI hop the dictation path *waits* for (it waits for exactly one: hiding the pill before
       focus restore). Dropped 0.1s → **0.04s**, turning a 0-100ms wait into 0-40ms for 25 wakeups/sec.
+    A fourth, worse variant of the same mistake: `asr_stream.start()` opened its websocket
+    INLINE from the hotkey handler, so every record start blocked on a network round trip —
+    measured **703ms median** between the keypress and the widget appearing, and it failed anyway
+    while the relay secret was unset. The connect now happens on a background thread and `start()`
+    returns in **0.5ms**; audio queues from the first callback and the pump holds it until the
+    socket is up (the relay buffers pre-handshake audio too, so connecting late loses nothing).
+    Two follow-on traps found while fixing it: `finish()` must wait on EITHER connected OR
+    already-failed, not just success, or a dead relay costs the grace period at the STOP end; and
+    the post-failure cooldown must mark the arm dead, or a skipped take still pays that grace.
+    **Nothing that touches the network belongs between the hotkey and the overlay.**
+
     The remaining fixed sleep in `recorder.stop()` (0.1s, letting in-flight callbacks land) is deliberate and
     is NOT on the perceived path — it runs before transcription, not after.
 
@@ -1018,11 +1040,14 @@ Single source: desktop `app/theme.py` + `app/fonts_css.py`; mobile `flume-ui/the
   counts, UPPERCASE tags/eyebrows).
 - **Base surface:** near-black (e.g. `#1a1512` / `rgba(22,20,18,…)`), light text `#f4f3f1`.
 - **Accent:** `#C85A3E` (terracotta) — used sparingly. (Historic `#E8522A` is retired; Rule #16.)
-- **Pastel stat-card palette** (dashboard "fcards", and the auto-learn widget matches `cream`):
+- **Pastel stat-card palette** (dashboard "fcards", the Notes Studio "scards" (v3.1), and the auto-learn
+  widget matches `cream`):
   - `cream` `#EADFCE` (ink `#2a1f18`) — "Words today"
   - `sage` `#DDE4D3` (ink `#1e2418`)
   - `plum` `#e6dae4` (ink `#221820`)
-  - each card's icon disc = the ink color inverted (near-black bg, pastel glyph).
+  - `slate` `#d7dfe9` (ink `#182029`) — added for the Notes Studio Export card (v3.1); scards only so far
+  - fcards' icon disc = the ink color inverted (near-black bg, pastel glyph); scards use a translucent
+    ink-tint disc instead (`rgba(ink,.13)`).
 - **Auto-learn widget** deliberately uses the `cream` card language (cream pill, dark ink, near-black
   "Add to dictionary" button) — not orange/black — per user preference.
 
@@ -1128,6 +1153,7 @@ cd whisperflow
 # for dashboard/widget JS changes: node --check each rendered <script> block
 .venv/bin/python autolearn_fixtures.py     # if autolearn touched
 .venv/bin/python qa_filetags_fixtures.py    # if filetags touched
+.venv/bin/python insights_fixtures.py      # if insights/stats touched
 ```
 
 Mobile: `npx tsc --noEmit` in `verbal-mobile/`.

@@ -31,6 +31,9 @@ logger = logging.getLogger("verbal.asr_stream")
 RATE = 16000
 _SEND_CHUNK = int(RATE * 0.10) * 2      # 100 ms of PCM16 per frame
 _QUEUE_MAX = 400                        # ~40 s of audio; drop rather than grow forever
+_CONNECT_GRACE = 8.0                    # how long the pump holds audio waiting for the socket
+_COOLDOWN_SEC = 60                      # after a failed connect, stop dialling for a minute
+_COOLDOWN_UNTIL = 0.0
 
 
 def _endpoint(provider: str, config: dict) -> str:
@@ -59,6 +62,8 @@ class AsrStream:
         self._ready = threading.Event()
         self._done = threading.Event()
         self._stop = threading.Event()
+        self._connected = threading.Event()   # set when the socket is actually up
+        self._dead = threading.Event()        # set when it will never come up
         self._sent_bytes = 0
         self._dropped = 0
         self._t_stop = None
@@ -68,26 +73,57 @@ class AsrStream:
 
     # ── lifecycle ────────────────────────────────────────────────────────────
     def start(self) -> bool:
-        """Open the socket and start the pump. False = not streaming this take."""
+        """Begin streaming. Returns IMMEDIATELY — the socket is opened on a
+        background thread.
+
+        This must never block: it is called from the hotkey handler, between the
+        keypress and the widget appearing. Connecting inline cost a measured
+        **703ms median** of dead time before the overlay showed — the user felt it
+        as a lag in starting the recording, which is the single worst place in this
+        app to add latency.
+
+        Audio queues from the first callback regardless; the pump holds it until the
+        socket is up (the relay also buffers pre-handshake audio), so nothing is lost
+        by connecting late. A connection that never succeeds simply means
+        `final_text()` is None and the caller transcribes the ordinary way.
+        """
+        global _COOLDOWN_UNTIL
+        if time.time() < _COOLDOWN_UNTIL:
+            self._err = "streaming recently failed — skipping this take"
+            # Mark it dead too: callers that hold on to the object must not then pay
+            # the connect grace in finish() for a socket that was never dialled.
+            self._dead.set()
+            self._done.set()
+            return False
+        self._pump = threading.Thread(target=self._pump_loop, daemon=True)
+        self._pump.start()
+        threading.Thread(target=self._connect, daemon=True).start()
+        return True
+
+    def _connect(self):
         try:
             import websocket
             url = _endpoint(self.provider, self._config)
             # enable_multithread is REQUIRED: the reader thread sits in recv()
             # while the pump thread sends. websocket-client uses NoLock() without
             # it, which corrupts the frame state and drops the connection.
-            self._ws = websocket.create_connection(url, timeout=15, enable_multithread=True)
+            ws = websocket.create_connection(url, timeout=15, enable_multithread=True)
         except Exception as e:
+            global _COOLDOWN_UNTIL
             self._err = f"connect: {type(e).__name__}: {e}"[:180]
-            logger.warning("[asr_stream] %s", self._err)
-            self._ws = None
-            return False
+            # Back off rather than re-dialling a broken relay on every dictation.
+            _COOLDOWN_UNTIL = time.time() + _COOLDOWN_SEC
+            logger.warning("[asr_stream] %s — not retrying for %ds",
+                           self._err, _COOLDOWN_SEC)
+            self._dead.set()
+            self._done.set()
+            return
+        self._ws = ws
         self._reader = threading.Thread(target=self._read_loop, daemon=True)
-        self._pump = threading.Thread(target=self._pump_loop, daemon=True)
         self._reader.start()
-        self._pump.start()
+        self._connected.set()
         if self.model:
             self._send_json({"type": "config", "model": self.model})
-        return True
 
     def feed(self, block: np.ndarray, in_rate: int):
         """Called from the audio callback. Must stay cheap and never raise."""
@@ -112,7 +148,23 @@ class AsrStream:
     def finish(self, timeout: float = 6.0) -> str | None:
         """Stop sending, flush, and wait for the final transcript."""
         self._t_stop = time.time()
+        # Never connected (still dialling, or the relay is down) — give it a brief
+        # grace period since the audio is already queued and the socket may be one
+        # moment away, then give up. Cheaper than losing a long dictation's head start,
+        # and still bounded so a dead relay cannot hold up the paste.
+        if self._ws is None and not self._dead.is_set():
+            # Wait on EITHER outcome, not just success: a connect that has already
+            # failed must not still cost the grace period at the stop end, which is
+            # the other place the user is waiting on us.
+            deadline = time.time() + min(1.5, _CONNECT_GRACE)
+            while time.time() < deadline:
+                if self._connected.is_set() or self._dead.is_set():
+                    break
+                time.sleep(0.02)
         if self._ws is None:
+            self._stop.set()
+            if not self._err:
+                self._err = "stream never connected"
             return None
         try:
             self._q.put_nowait(None)          # sentinel: pump flushes and sends done
@@ -152,7 +204,17 @@ class AsrStream:
             self._err = self._err or f"send: {type(e).__name__}"[:80]
 
     def _pump_loop(self):
-        """Drains the queue onto the socket. The ONLY place that sends audio."""
+        """Drains the queue onto the socket. The ONLY place that sends audio.
+
+        Waits for the socket rather than assuming it: start() returns before the
+        connection exists so the hotkey path is never blocked, so audio can begin
+        arriving first. It piles up in the bounded queue until the socket is ready.
+        """
+        while not (self._connected.is_set() or self._dead.is_set() or self._stop.is_set()):
+            if self._connected.wait(timeout=0.1):
+                break
+        if self._dead.is_set() or self._stop.is_set():
+            return
         while not self._stop.is_set():
             try:
                 item = self._q.get(timeout=0.2)
