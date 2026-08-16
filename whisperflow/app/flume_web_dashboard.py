@@ -163,6 +163,45 @@ class FlumeWebDashboard:
         self._window.makeKeyAndOrderFront_(None)
         NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
 
+    def ensure_window_size(self, min_w, min_h=0):
+        """Grow (never shrink) the window's CONTENT area to at least
+        min_w × min_h points, animated, clamped to the screen's visible frame,
+        keeping the top-left corner anchored. Called by DashboardApi when the
+        Notes screen needs its Studio column (CSS hides it under 1000px, and
+        the default window is 980 wide). Main-thread via _on_main; fail-closed."""
+        def run():
+            try:
+                win = self._window
+                if win is None:
+                    return
+                content = win.contentView().frame().size
+                new_w = max(float(content.width), float(min_w or 0))
+                new_h = max(float(content.height), float(min_h or 0))
+                if new_w == content.width and new_h == content.height:
+                    return
+                fr = win.frame()
+                dw = new_w - content.width
+                dh = new_h - content.height
+                x = fr.origin.x
+                y = fr.origin.y - dh          # grow downward, keep the top edge
+                w = fr.size.width + dw
+                h = fr.size.height + dh
+                scr = win.screen() or NSScreen.mainScreen()
+                if scr is not None:
+                    vf = scr.visibleFrame()
+                    w = min(w, vf.size.width)
+                    h = min(h, vf.size.height)
+                    if x + w > vf.origin.x + vf.size.width:
+                        x = vf.origin.x + vf.size.width - w
+                    if x < vf.origin.x:
+                        x = vf.origin.x
+                    if y < vf.origin.y:
+                        y = vf.origin.y
+                win.setFrame_display_animate_(NSMakeRect(x, y, w, h), True, True)
+            except Exception as e:
+                logger.debug("ensure_window_size failed: %s", e)
+        self.app._on_main(run)
+
     def _build(self):
         from WebKit import (
             WKWebView, WKWebViewConfiguration, WKUserContentController,

@@ -72,6 +72,9 @@ a = Analysis(
         'app.auth',
         'app.permissions',
         'app.flume_dashboard_html',
+        # Lazily imported (function-level) by main.py/shared_dashboard.py —
+        # declared explicitly per Rule #30 rather than relying on bytecode scan.
+        'app.insights',
     ],
     hookspath=[],
     hooksconfig={},

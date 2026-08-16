@@ -245,6 +245,38 @@ class SharedDashboard:
         self._canvas_listener_started = False
         self._canvas_stop = threading.Event()
 
+    def ensure_window_size(self, min_w, min_h=0):
+        """Grow (never shrink) the pywebview dashboard window (Windows host).
+
+        DPI TRAP (verified live on the winvm at 200% scaling, 2026-08-15):
+        `min_w`/`min_h` arrive in CSS/logical px, but pywebview's EdgeChromium
+        backend REPORTS `window.width/height` in PHYSICAL pixels and
+        `resize()` SETS physical pixels (a 980-logical window reports 1934,
+        and resize(1220,700) SHRANK it to 597 CSS px of innerWidth). Scale the
+        requested minimums by the system DPI before comparing/resizing —
+        at 96 dpi this is a no-op, so unscaled displays keep the old behavior.
+        pywebview's resize marshals to the GUI thread itself. Fail-closed."""
+        try:
+            w = self._window
+            if not w:
+                return
+            scale = 1.0
+            try:
+                import ctypes
+                dpi = ctypes.windll.user32.GetDpiForSystem()
+                if dpi:
+                    scale = dpi / 96.0
+            except Exception:
+                pass   # pre-1607 Windows → assume unscaled; force3 CSS saves the flow
+            cur_w = int(getattr(w, "width", 0) or 0)
+            cur_h = int(getattr(w, "height", 0) or 0)
+            new_w = max(cur_w, int(float(min_w) * scale))
+            new_h = max(cur_h, int(float(min_h or 0) * scale))
+            if new_w != cur_w or new_h != cur_h:
+                w.resize(new_w, new_h)
+        except Exception as e:
+            logger.debug(f"ensure_window_size failed: {e}")
+
     def show(self):
         try:
             import webview
@@ -897,12 +929,15 @@ class DashboardApi:
         live-meeting-only."""
         try:
             m = self._meetings()
-            got = m.get_meeting(meeting_id) if m else {"ok": False, "error": "unavailable"}
+            # self.get_meeting (not m.get_meeting) so the Windows cloud
+            # fallback applies — a Mac-captured meeting opens read-only there.
+            got = self.get_meeting(meeting_id)
             if not got.get("ok"):
                 return got
             row = got["meeting"]
             try:
-                m.mark_meeting_opened(meeting_id)   # clears the NEW indicator
+                if m:
+                    m.mark_meeting_opened(meeting_id)   # clears the NEW indicator
             except Exception:
                 pass
             dash = self._dash()
@@ -949,6 +984,9 @@ class DashboardApi:
         "meetings_enabled", "meetings_keep_audio", "meetings_keep_audio_days",
         "meetings_max_minutes", "meetings_hud_enabled", "meetings_speaker_labels",
         "meetings_sync_enabled", "meetings_notes_language",
+        # Post-meeting speaker diarization (needs keep-audio + signed-in upload,
+        # since AssemblyAI fetches the WAV from the bucket by signed URL).
+        "meetings_diarize_enabled",
     )
 
     def get_meeting_settings(self):
@@ -1113,11 +1151,18 @@ class DashboardApi:
         except Exception as e:
             return {"ok": False, "error": str(e)}
 
-    def ask_meetings(self, question):
-        """Chat-style Q&A over the user's recorded meetings (Meetings page)."""
+    def ask_meetings(self, question, meeting_id=None):
+        """Q&A over the user's recorded meetings (Meetings page search field).
+        `meeting_id` (Meetings v4 "Ask this meeting") scopes the context to ONE
+        meeting's row — same LLM call, ranked context replaced by that row."""
         try:
             from app.meetings import ask_meetings
-            return ask_meetings(self.app.config, question)
+            rows = None
+            if meeting_id:
+                got = self.get_meeting(meeting_id)
+                if got.get("ok") and got.get("meeting"):
+                    rows = [got["meeting"]]
+            return ask_meetings(self.app.config, question, rows=rows)
         except Exception as e:
             return {"ok": False, "error": str(e)}
 
@@ -1128,8 +1173,8 @@ class DashboardApi:
             import os
             import re
             import threading
-            m = self._meetings()
-            got = m.get_meeting(meeting_id) if m else {"ok": False, "error": "unavailable"}
+            # self.get_meeting so the Windows read-only cloud fallback applies.
+            got = self.get_meeting(meeting_id)
             if not got.get("ok"):
                 return got
             row = got["meeting"]
@@ -1234,6 +1279,42 @@ class DashboardApi:
         return (m.set_speaker_name(meeting_id, sid, name)
                 if m else {"ok": False, "error": "unavailable"})
 
+    def set_meeting_notes(self, meeting_id, notes_md):
+        """Persist USER-EDITED AI meeting notes (Meetings v4 — desktop finally
+        matches mobile's `updateNotesRemote`, which edits the same
+        `meetings.notes_md` column). Cloud row is the store; the live session's
+        cache is refreshed when it is this meeting. Bumps `updated_at` like the
+        mobile editor so cross-device freshness comparisons keep working.
+        Returns ok:false when the cloud write fails — the editor must not
+        pretend an edit that didn't stick."""
+        try:
+            cfg = self.app.config
+            if not (cfg.get("sync_user_id") and _cloud_allowed(cfg)):
+                return _err("Not signed in")
+            text = str(notes_md or "")
+            m = self._meetings()
+            try:
+                s = m.session if m else None
+                if s and s.id == meeting_id:
+                    s.notes_md = text
+            except Exception:
+                pass
+            import httpx
+            from app.sync import SUPABASE_URL
+            from app.auth import auth_header
+            now = _dt.datetime.now(_dt.timezone.utc).isoformat()
+            resp = httpx.patch(
+                f"{SUPABASE_URL}/rest/v1/meetings?id=eq.{meeting_id}",
+                headers={**auth_header(cfg, json=True), "Prefer": "return=minimal"},
+                json={"notes_md": text, "updated_at": now},
+                timeout=10,
+            )
+            resp.raise_for_status()
+            return _ok()
+        except Exception as e:
+            logger.debug(f"set_meeting_notes failed: {e}")
+            return _err("Couldn't save the notes — check your connection")
+
     def get_meeting_audio(self, meeting_id):
         """Local WAV as a data-URI when present, else a short-lived signed cloud
         URL (meeting-audio is private, MER-27 — long TTL since a meeting can run
@@ -1267,11 +1348,54 @@ class DashboardApi:
 
     def list_meetings(self):
         m = self._meetings()
-        return m.list_meetings() if m else {"ok": True, "meetings": []}
+        if m:
+            return m.list_meetings()
+        # No capture manager (Windows): READ-ONLY cloud list, so the account's
+        # Mac-captured meetings still show in the Meetings screen and the
+        # Notes import picker (v3.2). Fail-closed to an empty list.
+        try:
+            from app.meetings import _fetch_meeting_rows
+            metas = []
+            for r in _fetch_meeting_rows(self.app.config, limit=50):
+                if not isinstance(r, dict) or not r.get("id"):
+                    continue
+                metas.append({
+                    "id": r.get("id"),
+                    "title": r.get("title") or "",
+                    "started_at": r.get("started_at") or "",
+                    "duration_seconds": r.get("duration_seconds") or 0,
+                    "status": r.get("status") or "ready",
+                    "speakers": r.get("speakers") or {},
+                    "summary": r.get("summary") or "",
+                    "action_items": r.get("action_items") or [],
+                    "marked_moments": r.get("marked_moments") or [],
+                    "utterances": len(r.get("transcript") or []),
+                    "audio_url": r.get("audio_url") or "",
+                    "pinned": bool(r.get("pinned")),
+                    "cloud": True,
+                })
+            # `opened` = everything, so read-only rows never flash NEW badges.
+            return {"ok": True, "meetings": metas,
+                    "opened": [x["id"] for x in metas], "active_id": None}
+        except Exception as e:
+            logger.debug(f"cloud meetings list fallback failed: {e}")
+            return {"ok": True, "meetings": []}
 
     def get_meeting(self, meeting_id):
         m = self._meetings()
-        return m.get_meeting(meeting_id) if m else {"ok": False, "error": "unavailable"}
+        if m:
+            return m.get_meeting(meeting_id)
+        # Windows read-only fallback (see list_meetings): the full cloud row —
+        # summary/decisions/action_items/transcript — feeds the Notes import
+        # and the read-only detail view.
+        try:
+            from app.meetings import _fetch_meeting_rows
+            for r in _fetch_meeting_rows(self.app.config, limit=50):
+                if isinstance(r, dict) and r.get("id") == meeting_id:
+                    return {"ok": True, "meeting": r}
+        except Exception as e:
+            logger.debug(f"cloud get_meeting fallback failed: {e}")
+        return {"ok": False, "error": "unavailable"}
 
     def complete_onboarding(self):
         self.app.config["onboarded"] = True
@@ -1814,6 +1938,21 @@ class DashboardApi:
         r["id"] = nid
         return r
 
+    def ensure_window_width(self, min_width, min_height=0):
+        """Grow (never shrink) the dashboard window so wide layouts fit —
+        the Notes screen calls this when a note is open and the Studio column
+        would otherwise be hidden by the CSS breakpoint. Fail-closed: a host
+        without ensure_window_size just keeps the current size (the breakpoint
+        still keeps the layout sane)."""
+        try:
+            fn = getattr(self.dashboard, "ensure_window_size", None)
+            if callable(fn):
+                fn(float(min_width), float(min_height or 0))
+                return _ok()
+        except Exception as e:
+            logger.debug(f"ensure_window_width failed: {e}")
+        return {"ok": False}
+
     def set_note_pinned(self, note_id, pinned):
         """Pin/unpin a note (Notes v3). Local-first; the cloud PATCH is
         best-effort. Deliberately does NOT bump updated_at — pinning is a
@@ -1937,6 +2076,39 @@ class DashboardApi:
             return _ok()
         except Exception as e:
             return {"ok": False, "error": str(e)}
+
+    def note_dictate_pause(self):
+        """Pause/resume the in-note dictation (v3.2 dictation bar). Returns the
+        new paused state. Fail-closed — an error never touches the recording."""
+        rec = getattr(self.app, "recorder", None)
+        if rec is None:
+            return {"ok": False, "error": "no recorder"}
+        try:
+            return _ok(paused=bool(rec.toggle_pause()))
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def note_dictate_cancel(self):
+        """Discard the in-progress in-note dictation: stop the recorder and
+        throw the audio away — nothing is transcribed, persisted or linked."""
+        rec = getattr(self.app, "recorder", None)
+        if rec is None:
+            return {"ok": False, "error": "no recorder"}
+        try:
+            rec.stop()   # returned audio is deliberately dropped
+            return _ok()
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def note_dictate_level(self):
+        """Current mic level 0..1 for the dictation bar's live waveform.
+        Cheap (reads a float the audio callback already maintains); polled by
+        the dashboard every ~120 ms while recording. Never raises."""
+        rec = getattr(self.app, "recorder", None)
+        try:
+            return _ok(level=float(rec.level) if rec is not None else 0.0)
+        except Exception:
+            return _ok(level=0.0)
 
     def note_dictate_stop(self, note_id=None):
         rec = getattr(self.app, "recorder", None)

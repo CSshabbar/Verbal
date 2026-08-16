@@ -158,6 +158,7 @@ export async function clearAccountData(): Promise<void> {
     'verbal_notes_cache',   // lib/notesStorage
     'flume_dictionary',     // lib/dictionary (vocabulary + snippets)
     'flume_target_device',  // flume-ui/hooks/useDevices target selection
+    'verbal_insights_cache', // lib/insights cloud aggregate (account-scoped)
   ]);
   // The dictionary's CAS witness (`updated_at` of the row we last read) belongs
   // to the OLD account — keeping it would make the next push compare against a

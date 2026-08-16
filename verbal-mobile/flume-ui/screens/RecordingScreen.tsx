@@ -5,13 +5,18 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { Text, Chip, ChipDot, Visualizer, IconButton } from '../components';
-import { colors, pressedStyle } from '../theme';
+import { colors, radius, pressedStyle } from '../theme';
 import { useRecorder } from '../hooks/useRecorder';
-import { useDevices } from '../hooks/useDevices';
+import { useDevices, SendMode } from '../hooks/useDevices';
+
+/** What the user SAW selected when they stopped — the router must send to
+ *  exactly this, never to whatever the device store resolves to later
+ *  (the "chip said No device, sent to my laptop anyway" race). */
+export type SendChoice = { mode: SendMode; id: string | null; name: string | null };
 
 type Props = {
   onCancel: () => void;
-  onComplete: (audioUri: string, durationMs: number) => void;
+  onComplete: (audioUri: string, durationMs: number, send: SendChoice) => void;
 };
 
 /**
@@ -57,17 +62,42 @@ export const RecordingScreen: React.FC<Props> = ({ onCancel, onComplete }) => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const { target } = useDevices();
+  const { devices, target, mode, ready, setTarget, setSendMode, refresh } = useDevices();
+  const [pickerOpen, setPickerOpen] = useState(false);
+
+  // The choice the chip DISPLAYS is the choice the recording SHIPS with —
+  // captured at stop time and handed to the router (see SendChoice).
+  const sendChoice = (): SendChoice => {
+    if (!ready || mode === 'none') return { mode: 'none', id: null, name: null };
+    if (mode === 'all') return { mode: 'all', id: null, name: null };
+    if (target) return { mode: 'device', id: target.id, name: target.name };
+    return { mode: 'none', id: null, name: null };   // device mode, nobody online
+  };
+
+  const chipLabel = !ready ? 'Finding devices…'
+    : mode === 'none' ? 'This phone only'
+    : mode === 'all' ? '→ All devices'
+    : target ? `→ ${target.name}`
+    : 'This phone only';
+
+  const openPicker = () => {
+    if (busyRef.current) return;
+    setPickerOpen(o => !o);
+    refresh();   // freshest presence while the sheet is open
+  };
+  const pick = (fn: () => void) => { fn(); setPickerOpen(false); };
 
   const handleStop = async () => {
     if (busyRef.current) return;              // double-tap: one pipeline run only
+    const send = sendChoice();                // freeze what the user was shown
+    setPickerOpen(false);
     busyRef.current = true;
     setBusy(true);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
     try {
       // stop() itself plays the status-appropriate cue/haptic (success vs warning)
       const result = await stop();
-      if (result) onComplete(result.uri, result.durationMs);
+      if (result) onComplete(result.uri, result.durationMs, send);
       else onCancel();                        // nothing was recorded
     } catch {
       // Hard failure (recorder error, no URI) — never trap the user in the modal.
@@ -105,12 +135,47 @@ export const RecordingScreen: React.FC<Props> = ({ onCancel, onComplete }) => {
         <Text variant="caption" color={colors.primary}>● REC</Text>
       </View>
 
-      <View style={{ alignItems: 'center', marginTop: 14, marginBottom: 30 }}>
+      <View style={{ alignItems: 'center', marginTop: 14, marginBottom: 30, zIndex: 10 }}>
         <Chip
-          label={`→ ${target?.name ?? 'No device'}`}
+          label={`${chipLabel} ▾`}
           active
           leading={<ChipDot />}
+          onPress={openPicker}
         />
+        {pickerOpen ? (
+          <View style={styles.picker}>
+            <PickRow
+              icon="phone-portrait-outline"
+              label="This phone only"
+              sub="Copy here, send nowhere"
+              selected={ready && (mode === 'none' || (mode === 'device' && !target))}
+              onPress={() => pick(() => setSendMode('none'))}
+            />
+            <PickRow
+              icon="radio-outline"
+              label="All devices"
+              sub="Lands in every device's history"
+              selected={mode === 'all'}
+              onPress={() => pick(() => setTarget(null))}
+            />
+            {devices.map(d => (
+              <PickRow
+                key={d.id}
+                icon={d.platform === 'windows' ? 'desktop-outline' : 'laptop-outline'}
+                label={d.name}
+                sub="Online now · pastes there"
+                online
+                selected={mode === 'device' && target?.id === d.id}
+                onPress={() => pick(() => setTarget(d))}
+              />
+            ))}
+            {ready && devices.length === 0 ? (
+              <Text variant="caption" color={colors.textSubtle} style={{ padding: 12, textAlign: 'center' }}>
+                No other devices online right now.
+              </Text>
+            ) : null}
+          </View>
+        ) : null}
       </View>
 
       <View style={styles.middle}>
@@ -155,6 +220,30 @@ export const RecordingScreen: React.FC<Props> = ({ onCancel, onComplete }) => {
   );
 };
 
+const PickRow: React.FC<{
+  icon: any; label: string; sub: string; selected: boolean; online?: boolean; onPress: () => void;
+}> = ({ icon, label, sub, selected, online, onPress }) => (
+  <Pressable
+    onPress={onPress}
+    style={({ pressed }) => [styles.pickRow, selected && styles.pickRowOn, pressed && pressedStyle]}
+    accessibilityRole="button"
+    accessibilityState={{ selected }}
+    accessibilityLabel={label}
+  >
+    <View style={styles.pickIcon}>
+      <Ionicons name={icon} size={15} color={selected ? colors.primary : colors.textMuted} />
+    </View>
+    <View style={{ flex: 1, minWidth: 0 }}>
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+        {online ? <View style={styles.onlineDot} /> : null}
+        <Text variant="label" style={{ fontSize: 14 }} numberOfLines={1}>{label}</Text>
+      </View>
+      <Text variant="caption" color={colors.textSubtle} numberOfLines={1}>{sub}</Text>
+    </View>
+    {selected ? <Ionicons name="checkmark" size={16} color={colors.primary} /> : null}
+  </Pressable>
+);
+
 function formatMs(ms: number) {
   const total = Math.floor(ms / 1000);
   const m = String(Math.floor(total / 60)).padStart(2, '0');
@@ -188,6 +277,23 @@ const styles = StyleSheet.create({
     paddingVertical: 16,
   },
   stopGroup: { alignItems: 'center', gap: 6 },
+  picker: {
+    position: 'absolute', top: 42, alignSelf: 'center', width: 300,
+    backgroundColor: colors.surface1, borderWidth: 1, borderColor: colors.borderStrong,
+    borderRadius: radius.lg, padding: 6, gap: 2,
+    shadowColor: '#000', shadowOpacity: 0.45, shadowRadius: 22, shadowOffset: { width: 0, height: 10 },
+    elevation: 12,
+  },
+  pickRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 11,
+    paddingVertical: 9, paddingHorizontal: 10, borderRadius: radius.md,
+  },
+  pickRowOn: { backgroundColor: colors.primarySoft },
+  pickIcon: {
+    width: 30, height: 30, borderRadius: 15, backgroundColor: colors.surface2,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  onlineDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: colors.online },
   stopBtn: {
     width: 64,
     height: 64,

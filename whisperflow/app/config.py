@@ -123,6 +123,12 @@ DEFAULT_CONFIG = {
     # Implies chained_mode for the short branch. Default False; every failure path
     # degrades to the normal upload, so this can only ever cost latency.
     "hybrid_mode": False,
+    # Post-meeting speaker diarization (2026-08-16). The live 90s-gap heuristic can
+    # only split remote speakers across long silences; this re-partitions them from
+    # real who-spoke-when (AssemblyAI, via the proxy, on the already-uploaded WAV)
+    # before voiceprint and the summary run. Default ON because the correction is
+    # exactly what meeting notes exist for; fails closed to the gap labels.
+    "meetings_diarize_enabled": True,
 }
 
 # Settings the dashboard may flip individually. Same "only overwrite when present"

@@ -10,7 +10,9 @@ record→transcribe→inject path proceeds untouched.
 
 Data model (all local, in ~/.verbal/config.json — no Supabase columns):
 
-  stats_daily   {"YYYY-MM-DD": {"w","n","s","fx","apps":{name:words},"hh":{"0".."23":words}}}
+  stats_daily   {"YYYY-MM-DD": {"w","n","s","fx","apps":{name:[words,dictations]},"hh":{"0".."23":words}}}
+                (app values were a bare words int in the first build — readers
+                accept both shapes; writers upgrade an int in place)
                 The per-day ledger this device accumulates at dictation time.
                 Bounded to LEDGER_MAX_DAYS (lifetime numbers survive pruning
                 via stats_total).
@@ -78,7 +80,13 @@ def record_dictation(config, save_config_fn, words, seconds=0.0,
         name = (app_name or "Other").strip() or "Other"
         if name not in apps and len(apps) >= APPS_PER_DAY_CAP:
             name = "Other"
-        apps[name] = int(apps.get(name, 0)) + words
+        cur = apps.get(name)
+        if isinstance(cur, list) and len(cur) == 2:      # current shape [w, n]
+            apps[name] = [int(cur[0]) + words, int(cur[1]) + 1]
+        elif isinstance(cur, (int, float)):              # first-build shape: bare words
+            apps[name] = [int(cur) + words, 1]
+        else:
+            apps[name] = [words, 1]
         d["apps"] = apps
         hh = d.get("hh") if isinstance(d.get("hh"), dict) else {}
         hour = str(datetime.now().hour)
@@ -326,17 +334,39 @@ def _compute(config):
     saved_month = round(saved_minutes(m_led_w, m_led_s)) if m_led_s > 0 else None
     saved_all = round(saved_minutes(led_w, led_s)) if led_s > 0 else None
 
-    apps = {}
-    for i in range(30):
-        d = ledger.get(str(today - timedelta(days=i)))
-        if isinstance(d, dict) and isinstance(d.get("apps"), dict):
-            for name, w in d["apps"].items():
-                apps[name] = apps.get(name, 0) + int(w or 0)
-    top_apps = sorted(apps.items(), key=lambda kv: -kv[1])
-    if len(top_apps) > 6:
-        other = sum(w for _, w in top_apps[5:])
-        top_apps = top_apps[:5] + [("Other", other)]
-    apps_total = sum(w for _, w in top_apps) or 1
+    def _apps_stats(day_dicts, top=7):
+        """Aggregate per-app words + dictation counts over the given day dicts.
+        Accepts both app-value shapes ([w, n] current, bare int first-build —
+        the int shape has no count, so those takes read as count 0)."""
+        agg = {}
+        for d in day_dicts:
+            if not (isinstance(d, dict) and isinstance(d.get("apps"), dict)):
+                continue
+            for name, v in d["apps"].items():
+                w, n = (int(v[0]), int(v[1])) if isinstance(v, list) and len(v) == 2 \
+                    else (int(v or 0), 0)
+                cw, cn = agg.get(name, (0, 0))
+                agg[name] = (cw + w, cn + n)
+        rows = sorted(agg.items(), key=lambda kv: -kv[1][0])
+        if len(rows) > top:
+            ow = sum(v[0] for _, v in rows[top - 1:])
+            on = sum(v[1] for _, v in rows[top - 1:])
+            rows = rows[:top - 1] + [("Other", (ow, on))]
+        total = sum(v[0] for _, v in rows) or 1
+        return [
+            {
+                "name": name,
+                "words": w,
+                "count": n,
+                "pct": round(w / total * 100),
+                "avg": round(w / n) if n else None,
+            }
+            for name, (w, n) in rows
+        ]
+
+    apps_30 = _apps_stats(ledger.get(str(today - timedelta(days=i)))
+                          for i in range(30))
+    apps_all = _apps_stats(ledger.values())
 
     hours = [0] * 24
     for d in ledger.values():
@@ -398,8 +428,8 @@ def _compute(config):
         "best_streak": best_streak,
         "busiest_day": list(busiest) if busiest and busiest[1].get("w", 0) > 0 else None,
         "series": series,
-        "apps": [{"name": n, "words": w, "pct": round(w / apps_total * 100)}
-                 for n, w in top_apps],
+        "apps": apps_30,
+        "apps_all": apps_all,
         "hours": hours,
         "peak_hour": peak_hour,
         "morning_share": morning_share,

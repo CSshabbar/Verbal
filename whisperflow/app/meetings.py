@@ -144,6 +144,83 @@ def _now_iso():
     return datetime.now(timezone.utc).isoformat()
 
 
+def map_diarized_speakers(transcript, dz):
+    """Re-partition system-audio speaker ids from real diarization.
+
+    `transcript`: the session's utterance list ({"speaker","t0","t1","text"}).
+    `dz`: diarized turns [{"speaker": "A", "start": s, "end": e}] in SECONDS on the
+    same timeline (the meeting WAV is a timeline-accurate mixdown, so AssemblyAI's
+    clock IS the transcript's clock).
+
+    Returns (new_ids, remap_hint) where `new_ids` is a per-utterance list of speaker
+    ids (unchanged entries keep their old id) and `remap_hint` maps old sid ->
+    the new sid that received the MAJORITY of its utterances (used to carry a name
+    the user typed mid-meeting over to the re-partitioned id).
+
+    Rules, in order of why they exist:
+    - "self" utterances are never touched: the mic channel is ground truth for who
+      the user is, and no statistical model gets to overrule it.
+    - The diarized speaker whose talk-time lands mostly on self utterances IS the
+      user (the WAV mixes the mic in, so AAI labels the user's voice too) — that
+      cluster is excluded from mapping, otherwise the user would appear a second
+      time as a phantom "Speaker N".
+    - A system utterance is only relabelled when a diarized turn overlaps >= 30% of
+      it; anything murkier keeps its old label. Wrongly MERGING two people is worse
+      than the status quo, which the user can already fix by renaming.
+    - New ids are s1, s2, ... in order of first appearance, so labels stay familiar.
+
+    Pure and total: no I/O, never raises, empty inputs -> everything unchanged.
+    """
+    try:
+        if not transcript or not dz:
+            return [u.get("speaker") for u in (transcript or [])], {}
+
+        def overlap(u, d):
+            return max(0.0, min(float(u.get("t1") or 0), d["end"])
+                       - max(float(u.get("t0") or 0), d["start"]))
+
+        # Which diarized cluster is the user?
+        self_ov, sys_ov = {}, {}
+        for d in dz:
+            for u in transcript:
+                ov = overlap(u, d)
+                if ov <= 0:
+                    continue
+                bucket = self_ov if u.get("speaker") == "self" else sys_ov
+                bucket[d["speaker"]] = bucket.get(d["speaker"], 0.0) + ov
+        self_clusters = {k for k, v in self_ov.items() if v > sys_ov.get(k, 0.0)}
+
+        order, alias = [], {}
+        new_ids, votes = [], {}          # votes: old sid -> {new sid: count}
+        for u in transcript:
+            old = u.get("speaker")
+            if old == "self":
+                new_ids.append("self")
+                continue
+            dur = max(0.001, float(u.get("t1") or 0) - float(u.get("t0") or 0))
+            best, best_ov = None, 0.0
+            for d in dz:
+                if d["speaker"] in self_clusters:
+                    continue
+                ov = overlap(u, d)
+                if ov > best_ov:
+                    best, best_ov = d["speaker"], ov
+            if best is None or best_ov < 0.3 * dur:
+                new_ids.append(old)
+                continue
+            if best not in alias:
+                order.append(best)
+                alias[best] = f"s{len(order)}"
+            sid = alias[best]
+            new_ids.append(sid)
+            votes.setdefault(old, {})
+            votes[old][sid] = votes[old].get(sid, 0) + 1
+        remap_hint = {old: max(vs, key=vs.get) for old, vs in votes.items() if vs}
+        return new_ids, remap_hint
+    except Exception:
+        return [u.get("speaker") for u in (transcript or [])], {}
+
+
 def _transcript_text(transcript, speakers, budget=TRANSCRIPT_CHAR_BUDGET):
     """Render utterances as '[m:ss] Name: text' lines, eliding the middle when
     over budget (head + tail preserved — meetings resolve at the ends)."""
@@ -901,6 +978,16 @@ class MeetingSession:
         except Exception as e:
             logger.warning("meeting audio save/upload failed: %s", e)
 
+        # Speaker diarization (2026-08-16) — replace the 90s-gap guess with real
+        # who-spoke-when from AssemblyAI, BEFORE voiceprint (which then gets clean
+        # per-speaker windows) and BEFORE the summary (which then attributes action
+        # items to the right people). Needs the uploaded WAV; fails closed to the
+        # gap-heuristic labels the meeting already has.
+        try:
+            self._diarize()
+        except Exception as e:
+            logger.debug("diarization skipped: %s", e)
+
         # voice fingerprinting (33d) — auto-name unnamed speakers from local
         # prints BEFORE the summary runs so it uses real names. Local-only,
         # fails closed; requires the WAV (skipped when keep-audio is off).
@@ -1026,6 +1113,55 @@ class MeetingSession:
     def _pending(self):
         with self._queue_lock:
             return bool(self._queue) or self._busy
+
+    def _diarize(self, poll_every=4.0, max_wait=120.0):
+        """Post-meeting speaker re-partition. Runs on the end-flow worker thread
+        (state is 'working', so a minute of extra latency here is expected time,
+        not perceived lag). Every exit path leaves the transcript usable."""
+        from app.config import feature_flag
+        if not feature_flag(self.app.config, "meetings_diarize_enabled", True):
+            return
+        if not self.audio_url or not self.transcript:
+            return
+        if not any(u.get("speaker") != "self" for u in self.transcript):
+            return          # nothing but the user's own mic — nothing to partition
+        from app.groq_proxy import diarize_submit, diarize_poll
+        tid = diarize_submit(self.audio_url, self.app.config)
+        if not tid:
+            return
+        deadline, dz = time.time() + max_wait, None
+        while time.time() < deadline:
+            got = diarize_poll(tid, self.app.config)
+            if got is False:
+                return
+            if got is not None:
+                dz = got
+                break
+            time.sleep(poll_every)
+        if not dz:
+            logger.warning("diarization timed out after %.0fs — keeping gap labels", max_wait)
+            return
+        new_ids, remap_hint = map_diarized_speakers(self.transcript, dz)
+        changed = sum(1 for u, nid in zip(self.transcript, new_ids)
+                      if u.get("speaker") != nid)
+        # Rebuild the speakers map around the new partition. A name the user typed
+        # mid-meeting follows the id that received the majority of that speaker's
+        # utterances; everything else gets the familiar default.
+        old_names = dict(self.speakers)
+        for u, nid in zip(self.transcript, new_ids):
+            u["speaker"] = nid
+        fresh = {"self": old_names.get("self", "You")}
+        for u in self.transcript:
+            sid = u.get("speaker")
+            if sid and sid != "self" and sid not in fresh:
+                fresh[sid] = f"Speaker {sid[1:]}" if sid.startswith("s") else sid
+        for old_sid, new_sid in remap_hint.items():
+            name = old_names.get(old_sid, "")
+            if name and not name.startswith("Speaker ") and new_sid in fresh:
+                fresh[new_sid] = name
+        self.speakers = fresh
+        logger.info("diarization: %d clusters, %d/%d utterances relabelled",
+                    len([s for s in fresh if s != 'self']), changed, len(self.transcript))
 
     def _speaker_for(self, source, t0, t1):
         if source == "self":

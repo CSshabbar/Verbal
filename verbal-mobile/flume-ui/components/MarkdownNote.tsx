@@ -74,10 +74,15 @@ export type MarkdownNoteProps = {
   content: string;
   /** Called with the source-line index of a tapped checkbox. Omit to render read-only. */
   onToggleLine?: (lineIndex: number) => void;
+  /** Reader text-size multiplier (the editor's Aa control). Default 1. */
+  fontScale?: number;
 };
 
-export const MarkdownNote: React.FC<MarkdownNoteProps> = ({ content, onToggleLine }) => {
+export const MarkdownNote: React.FC<MarkdownNoteProps> = ({ content, onToggleLine, fontScale = 1 }) => {
   const blocks = parse(content);
+  const sc = (size: number, lh: number) =>
+    fontScale === 1 ? undefined : { fontSize: Math.round(size * fontScale), lineHeight: Math.round(lh * fontScale) };
+  const bodySc = sc(15, 21);   // `bodyXs` runs at 15/21 — scale running text with it
   return (
     <View>
       {blocks.map((b, i) => {
@@ -87,14 +92,14 @@ export const MarkdownNote: React.FC<MarkdownNoteProps> = ({ content, onToggleLin
           case 'h1':
             return <Text key={i} variant="subtitle" style={styles.h1}>{inline(b.text)}</Text>;
           case 'h2':
-            return <Text key={i} style={styles.h2}>{inline(b.text)}</Text>;
+            return <Text key={i} style={[styles.h2, sc(18, 24)]}>{inline(b.text)}</Text>;
           case 'h3':
-            return <Text key={i} style={styles.h3}>{inline(b.text)}</Text>;
+            return <Text key={i} style={[styles.h3, sc(15, 20)]}>{inline(b.text)}</Text>;
           case 'bullet':
             return (
               <View key={i} style={styles.row}>
-                <Text style={styles.bulletDot} color={colors.textMuted}>•</Text>
-                <Text variant="bodyXs" style={styles.rowText} color={colors.textSecondary}>{inline(b.text)}</Text>
+                <Text style={[styles.bulletDot, bodySc]} color={colors.textMuted}>•</Text>
+                <Text variant="bodyXs" style={[styles.rowText, bodySc]} color={colors.textSecondary}>{inline(b.text)}</Text>
               </View>
             );
           case 'checkbox': {
@@ -109,7 +114,7 @@ export const MarkdownNote: React.FC<MarkdownNoteProps> = ({ content, onToggleLin
                 {Box}
                 <Text
                   variant="bodyXs"
-                  style={[styles.rowText, b.checked && styles.checkedText]}
+                  style={[styles.rowText, bodySc, b.checked && styles.checkedText]}
                   color={b.checked ? colors.textMuted : colors.textSecondary}
                 >
                   {inline(b.text)}
@@ -143,7 +148,7 @@ export const MarkdownNote: React.FC<MarkdownNoteProps> = ({ content, onToggleLin
           case 'paragraph':
           default:
             return (
-              <Text key={i} variant="bodyXs" style={styles.paragraph} color={colors.textSecondary}>
+              <Text key={i} variant="bodyXs" style={[styles.paragraph, bodySc]} color={colors.textSecondary}>
                 {inline(b.text)}
               </Text>
             );

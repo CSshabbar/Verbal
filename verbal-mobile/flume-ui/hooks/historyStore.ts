@@ -329,11 +329,14 @@ export async function addTranscription(
   targetDeviceId?: string | null,
   audioUri?: string,
   status: 'done' | 'failed' = 'done',
+  // false = "This phone only" (send-mode 'none'): the entry stays in THIS
+  // device's local history — no cloud row, so no other device ever sees it.
+  pushToCloud = true,
 ): Promise<HistoryItem> {
   let remoteId: string | undefined;
   let audioUrl: string | undefined;
   try {
-    if (await syncStore.getSyncEnabled()) {
+    if (pushToCloud && await syncStore.getSyncEnabled()) {
       const userId = await getUserId();
       const deviceId = await getDeviceId();
       // Upload the audio first so its URL rides along on the row.
@@ -350,6 +353,9 @@ export async function addTranscription(
           target_device_id: targetDeviceId ?? null,
           audio_url: audioUrl ?? null,
           status,
+          // 2026-08-16: durations sync now (nullable column) — they feed the
+          // account-wide WPM on every device's Insights page.
+          duration_ms: durationMs > 0 ? Math.round(durationMs) : null,
         })
         .select('id')
         .single();
@@ -361,8 +367,8 @@ export async function addTranscription(
 
   const deviceId = await getDeviceId();
   const entries = await addToHistory(text, deviceTag, deviceId, remoteId,
-    // duration_ms is persisted LOCALLY (there is no cloud column) so the real
-    // duration survives a refresh instead of decaying to the wordCount estimate.
+    // duration_ms is persisted locally AND on the cloud row (2026-08-16) so
+    // the real duration survives a refresh and feeds account-wide WPM.
     { audio_uri: audioUri, audio_url: audioUrl, status,
       duration_ms: durationMs > 0 ? durationMs : undefined });
   const created = entries[0];

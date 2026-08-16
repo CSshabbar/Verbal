@@ -422,6 +422,80 @@ Deno.serve(async (req) => {
       }
     } else {
       const payload = await req.json();
+
+      // ── Speaker diarization for meetings (2026-08-16) ─────────────────────
+      // Who-spoke-when for the meeting transcript. The audio NEVER passes through
+      // this function: the meeting WAV is already in the private `meeting-audio`
+      // bucket, so we sign a short-lived URL with the service role and hand THAT to
+      // AssemblyAI, which fetches the file itself. Submit and poll are separate
+      // actions so no isolate ever sits in a poll loop against its wall clock —
+      // the desktop polls, one cheap request at a time.
+      //
+      // Only speaker labels + times are consumed client-side; the transcript text
+      // stays Groq's. Fails closed at every step: any error keeps the meeting's
+      // gap-heuristic labels exactly as they are today.
+      if (payload.diarize) {
+        const d = payload.diarize;
+        const aaiKey = Deno.env.get("ASSEMBLYAI_API_KEY");
+        if (!aaiKey) {
+          return json({ error: { message: "ASSEMBLYAI_API_KEY secret not set on the function" } }, 503);
+        }
+        kind = "diarize";
+        if (typeof d.poll === "string" && /^[\w-]{8,64}$/.test(d.poll)) {
+          const g = await fetch(`${AAI_BASE}/transcript/${d.poll}`, {
+            headers: { Authorization: aaiKey },
+          });
+          if (!g.ok) return json({ error: { message: `poll ${g.status}` } }, 502);
+          const j = await g.json();
+          logUsage(identity, userId, kind).catch(() => {});
+          if (j?.status === "completed") {
+            // ms → seconds here, once, so the client never worries about units.
+            const utts = (j?.utterances ?? []).map((u: Record<string, unknown>) => ({
+              speaker: String(u.speaker ?? "?"),
+              start: Number(u.start ?? 0) / 1000,
+              end: Number(u.end ?? 0) / 1000,
+            }));
+            return json({ status: "completed", utterances: utts });
+          }
+          if (j?.status === "error") {
+            return json({ status: "error", error: String(j?.error).slice(0, 200) });
+          }
+          return json({ status: String(j?.status ?? "processing") });
+        }
+        // Submit: object path is constrained to the caller-shaped layout
+        // (<user>/<meeting>.wav) so this cannot be used to sign arbitrary bucket paths.
+        const obj = String(d.object ?? "");
+        if (!/^[\w-]{1,64}\/[\w-]{1,64}\.wav$/.test(obj)) {
+          return json({ error: { message: "bad object path" } }, 400);
+        }
+        const svcUrl = Deno.env.get("SUPABASE_URL"), svc = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+        if (!svcUrl || !svc) return json({ error: { message: "service role unavailable" } }, 503);
+        const sig = await fetch(`${svcUrl}/storage/v1/object/sign/meeting-audio/${obj}`, {
+          method: "POST",
+          headers: { apikey: svc, Authorization: `Bearer ${svc}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ expiresIn: 3600 }),
+        });
+        if (!sig.ok) return json({ error: { message: `sign ${sig.status}: ${(await sig.text()).slice(0, 120)}` } }, 502);
+        const signedPath = (await sig.json())?.signedURL;
+        if (!signedPath) return json({ error: { message: "no signed URL" } }, 502);
+        const sub = await fetch(`${AAI_BASE}/transcript`, {
+          method: "POST",
+          headers: { Authorization: aaiKey, "Content-Type": "application/json" },
+          body: JSON.stringify({
+            audio_url: `${svcUrl}/storage/v1${signedPath}`,
+            // universal-2, not 3.5-pro: measured better on this user's code-switched
+            // speech, and diarization only needs turns + times anyway.
+            speech_models: ["universal-2"],
+            speaker_labels: true,
+            language_code: "en",
+          }),
+        });
+        if (!sub.ok) return json({ error: { message: `submit ${sub.status}: ${(await sub.text()).slice(0, 160)}` } }, 502);
+        const id = (await sub.json())?.id;
+        logUsage(identity, userId, kind).catch(() => {});
+        return json({ id: String(id ?? "") });
+      }
+
       const provider = payload.provider;
       delete payload.provider; // not a valid upstream field — strip before forwarding
       if (provider === "ollama") {

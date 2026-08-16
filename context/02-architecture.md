@@ -158,13 +158,20 @@ bounded `config['meetings']` (`MEETINGS_CAP`). The HUD appears when the meeting 
   `App.tsx` (loads fonts, `ErrorBoundary`, `SafeAreaProvider`) → `flume-ui/navigation/RootNavigator`.
 - **Navigation** (`flume-ui/navigation/`): a root native-stack gated in three states —
   `Onboarding` (until AsyncStorage `flume_onboarded==='1'`) → `Welcome` (until a Supabase session
-  exists) → `Main`. `Main` is bottom tabs **Home · Notes · [center mic] · Canvas · History**
-  (center mic is a floating button opening the `Recording` modal). The Home header **☰** opens the **Menu**
-  modal — the navigation hub for the secondary destinations (Settings, Snippets, Dictionary, Device pairing,
-  a Sync toggle, Sign out) that used to be buried in Settings. The tab bar is **hidden while a note or a
+  exists) → `Main`. **V2 "Daily Four" nav (2026-08-16):** `Main` is bottom tabs
+  **Home · Notes · [center mic] · History · Insights** (center mic is a floating button opening the
+  `Recording` modal). The Home header **☰** opens the **SidePanel**
+  (`flume-ui/components/SidePanel.tsx`) — a left slide-in hub mirroring the desktop sidebar: Workspace
+  (Canvas, Meetings), Tools (Dictionary, Snippets, Device pairing), live device presence + the Sync
+  toggle, and the account footer (gear → Settings). It's a core-`Animated` in-tree overlay rendered by
+  `MainWithPanel` over the tabs — deliberately NOT the reanimated drawer package, so the redesign
+  shipped as an OTA update with no new native modules. The old `MenuScreen` hub is **deleted**; the
+  `Menu` modal stack survives as the host for the secondary screens
+  (Canvas/Settings/Snippets/Dictionary/Devices→PairDevice/Models — Canvas gained an `onBack` prop for
+  this; Sign out lives in Settings). The tab bar is **hidden while a note or a
   meeting's full AI notes are open** (`NoteEditor`, `MeetingNotes`) so the screen owns the view.
-  Modals: `Recording`, `Confirmation`, `Menu`. Sub-stacks: Notes (→NoteEditor), History (→HistoryDetail),
-  Menu (→Settings/Snippets/Dictionary/Devices→PairDevice).
+  Modals: `Recording`, `Confirmation`, `Menu` (stack only, no hub screen).
+  Sub-stacks: Notes (→NoteEditor, →MeetingList…), History (→HistoryDetail).
 - **Singleton data stores (flow-audit B4/B5, 2026-08):** history, canvas, meetings, notes and devices
   each live in ONE module-level store (`flume-ui/hooks/historyStore.ts` is the pattern: module state +
   `subscribe`/`getSnapshot` consumed via `useSyncExternalStore`, `reset()` called from `useAuth`'s

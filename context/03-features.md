@@ -372,6 +372,129 @@ Each feature: **what it does · desktop impl · mobile impl · backend · status
 - **What:** synced, voice-first notes. **v2** (spec `NOTES_ENHANCEMENT_SWARM.md`) adds full-text search,
   auto-titling, structure detection (voice → interactive checklists), note ↔ source-recording linkage,
   raw+formatted dual storage, cost-controlled cleanup, four per-user feature flags, and conflict-pair sync.
+- **v3 (2026-08, research-driven pass — competitive study of Voicenotes/AudioPen/Cleft/Superwhisper/
+  Apple Notes/Bear/Keep):**
+  - **Pinning end-to-end** — `is_pinned` finally has writers: desktop `set_note_pinned` (hover ☆ on list
+    cards + ★ toolbar toggle) and mobile `notesStore.setPinned` (star in the editor top bar); PINNED
+    section renders first on both platforms. Pinning never bumps `updated_at` (see `04` §notes).
+  - **Grouped list (desktop)** — PINNED / Today / This week / Earlier eyebrow groups (mirrors Meetings);
+    rows carry a compact mono meta line: relative date · checklist progress `☑ 2/4` (accent; green when
+    complete) · recording count. Searching switches to a flat ranked list (no groups).
+  - **Sub-second voice capture** — a mic button beside + in the desktop list header (`dictateNewNote()`:
+    create + select + start dictating in one click) and a full-screen empty state whose CTA is
+    "Dictate a note". Research finding #1: capture latency is the retention variable.
+  - **Search upgrades (desktop)** — match highlighting (`hlText`, `<mark class="hl">`), previews centered
+    on the first hit (`noteSnippet`), and a "Create ‘query’" action on empty results (query becomes title).
+  - **Ask your notes** — Enter (or the Ask link) in the notes search box runs `DashboardApi.ask_notes`:
+    token-overlap ranking (title 3×, body 1×) picks top 6 notes → ONE `chat_via_proxy` call → inline
+    answer card with sources + dismiss. Mobile: same ranking client-side in `NotesListScreen.runAsk` →
+    `lib/groq.askNotes`. Explicit action only, fails closed. (Voicenotes' defining feature.)
+  - **Named restyle** — the ✨ button opens a 3-style menu: **Auto-structure** (default prompt) /
+    **Flowing prose** (no scaffolding) / **Clean transcript only** (keep every word). Desktop
+    `format_note_with_ai(text, style)` → `ai_cleanup.build_notes_system_prompt(style=…)`; mobile
+    `reformatNote(id, style, from)` → `formatNoteWithTitle({style})` with mirrored prompts in
+    `lib/groq.ts` (edit one, edit both). **Restyles read the ENTIRE visible note** (2026-08-15 user
+    feedback: the old raw-transcript-first source silently dropped every typed word — "only formats the
+    recent transcription"); the transcript-as-source path lives only behind the Original view's
+    "Reformat from transcript" / "Retry formatting" (`from:'raw'` on mobile, `formatNoteStyled(style,
+    'raw')` on desktop), plus an automatic fallback when the note body is empty (failed first cleanup).
+    Explicit picks only — Hard Rule #12's once-per-dictation cost control is untouched.
+    (AudioPen/Cleft/Superwhisper's most-praised feature family.)
+  - **Per-card note management (desktop, 2026-08-15 feedback)** — every notes-list card has a
+    hover-revealed ⋯ menu (`.ncdots` → body-appended `#ncMenu`, same `.nmenu` family/closer):
+    **Rename** (inline — the card title becomes an input; Enter commits, Esc cancels; the open note
+    rides the normal editor autosave, a closed note saves via `save_note` with `no_cleanup:true`),
+    **Pin/Unpin**, and **Delete** (`delNoteById`, the same confirm + `delete_note` path as the editor's
+    ⋯ menu, which also gained a Rename entry that focuses the title field).
+  - **Mobile editor parity (2026-08-16):** `NoteEditorScreen` gained the same trio — an app-level
+    undo/redo stack over `{title, body}` (snapshot per flushed autosave + around reformat/dictation
+    replacements — the cases native input undo can't cover; ↶/↷ in the top bar), an **Aa text-size
+    cycle** (S/M/L, AsyncStorage `flume_note_fs`, scales the body editor, raw-transcript editor and
+    `MarkdownNote` via its new `fontScale` prop), and **Delete note** in the top bar (native Alert
+    confirm → `removeNote`; pending autosaves are dropped first so they can't resurrect the tombstone).
+    List-level delete already existed on mobile (long-press → multi-select); rename = the title field.
+  - **Editor undo/redo + controls (desktop, 2026-08-15 feedback)** — the note editor owns an
+    app-level snapshot undo stack (`NU` in `flume_dashboard_html.py`): native contenteditable undo
+    dies whenever anything replaces the editor programmatically (AI reformat, restyle, re-render), so
+    snapshots are taken per idle autosave (700 ms), before dictation appends, and around every
+    programmatic replacement. ↶/↷ toolbar buttons + Ctrl/Cmd+Z, Ctrl+Y, Ctrl/Cmd+Shift+Z (the
+    transcript view keeps native plaintext undo). Toolbar grew Word-ish controls: strikethrough,
+    H3 heading, numbered list, and an **Aa text-size menu** (S/M/L, persisted in
+    localStorage `flumeNoteFs`, scales body + transcript + title).
+  - **Editable original + reformat-from-transcript** (the Cleft pattern) — "Show original" is now an
+    editable view on both platforms (desktop `contenteditable` div → debounced `save_note` with the
+    **`no_cleanup` control field** so a format-failed note can't fire a surprise LLM call; mobile
+    `TextInput` → `updateRawContent`); a "Reformat from transcript" button re-runs the AI over the
+    corrected text.
+  - **Copy / export** — desktop overflow ⋯ menu: Copy as text / Copy as Markdown / Export .md / Export
+    .txt (native save panel via `export_note_text`, ~/Downloads fallback on Windows) / Delete (the old
+    red bottom button is gone). `htmlToMd()` walks rich-text content back to markdown so both storage
+    forms export identically. Mobile: share-sheet button in the editor top bar. ("Export = trust.")
+  - **Editor meta line** — `CREATED AUG 12 · 214 WORDS · 2 RECORDINGS` in mono under the title, word
+    count updates live while typing. Checked checklist items render struck-through + dimmed on desktop
+    (`li.done`; mobile's `MarkdownNote` already did).
+  - Restyle/`formatNoteStyled` saves **markdown** as `content` (not rendered HTML) so mobile renders it;
+    `format_note_with_ai`'s stale local-key gate was removed (clients hold no Groq key since IDI-178 —
+    the proxy path needs none).
+  - Considered and REJECTED for now: folders/tags UI (restraint — pins+search suffice at current scale),
+    Keep-style card gallery (hurts text scanning), auto-sorting checked items to the bottom (rewrites
+    synced content lines), karaoke word-sync playback (no word timestamps stored).
+- **v3.1 desktop layout (2026-08-15, user-picked direction — NotebookLM's panel structure adapted to
+  Flume dark):** the Notes screen renders as THREE floating rounded panes (`.nbgrid` replaces
+  `.threepane` for notes only; History keeps `.threepane`): **Notes** (pill New/Dictate buttons, pill
+  search, grouped list, ask card), **Note** (toolbar lives in the pane header; title + meta + body in
+  the pane body; a NotebookLM-style **dictation bar with a terracotta FAB** at the bottom replaces the
+  old toolbar Dictate button — `updateDictateBtn` now drives `#dictBar`/`#dictFab`), and **Studio**
+  (2×2 pastel action cards reusing the fcard cream/sage/plum language plus a new `slate` pastel:
+  Auto-structure / Flowing prose / Clean transcript / Export-menu; "THIS NOTE" rows = the editable
+  original-transcript row + per-recording play rows — the editor `segbar` is GONE, recordings render
+  here via `studioHtml()`; a light "Add note" pill sits in the pane footer). Distinct from the rejected
+  Version B: this third pane is an ACTION pane, not a filter rail. Inside a pane the pane body is the
+  ONLY scroller (Hard Rule #23 spirit) — `.edscroll .notebody`/`.noteorig` are `overflow:visible`.
+  Studio hides under 1000px; the toolbar ✨ menu keeps restyles reachable there. Mobile keeps its own
+  optimized screens (no three-pane on phones). **Selection + chrome behavior (same session):**
+  NO note is selected by default — `curNote()` returns the SELN match or null, with **no fallback to the
+  newest note** — and the Studio pane is rendered ONLY once a note is selected/created (`.nbgrid.nosel`
+  = two columns until then; the editor pane shows a "Pick a note" prompt). The app sidebar collapses
+  **only while a note is open** (the same moment Studio appears — merely landing on the Notes screen
+  keeps the navigation visible); `.app.navhide` is driven by `applyNavCollapse()` (`ACTIVE==='notes' &&
+  curNote() && !NAV_OPEN`), the hamburger (`#navHamb`/`toggleNav()`, rendered only while a note is open)
+  brings it back, and any other screen restores it.
+  **Auto-grow (same session):** the default window (980×680) is narrower than Studio's 1000px CSS
+  breakpoint, so opening a note fires `ensureStudioFits()` → `DashboardApi.ensure_window_width(1220,700)`
+  → host `ensure_window_size` (macOS `FlumeWebDashboard`: animated content-size grow on the main thread,
+  clamped to the screen's visible frame, top edge anchored; Windows `SharedDashboard`: pywebview
+  `window.resize` **scaled by the system DPI** — see `05` Hard Rule #41, the un-scaled version silently
+  never grew on scaled displays). Grow-only, fail-closed, and fires at most ONCE per Notes visit so a
+  user who deliberately shrinks the window afterwards isn't fought on every note click. Belt-and-braces:
+  if 600 ms after the request the page is still under the breakpoint (host can't resize / tiny screen),
+  `.nbgrid.force3` force-shows the three panes squeezed, retired automatically once the user widens past
+  the breakpoint.
+- **v3.2 — Import + full dictation bar (2026-08-15):**
+  - **Import from Meetings / Transcriptions.** Desktop: an "Import" pill beside New/Dictate opens a modal
+    picker (`openImport()`, appended to `<body>` — `.nbgrid` clips overflow) with Meetings/Transcriptions
+    tabs, live search, and one-click rows: one pick = one new note, modal closes, note opens. A meeting
+    imports as markdown — summary ¶ + `## Decisions` bullets + `## Action items` as an INTERACTIVE
+    task-list (`- [x]` with owner bolded + due inline) + an italic provenance line; the full row is
+    fetched via the existing `get_meeting` on click (cloud-hydrated LIST rows lack summary/decisions —
+    don't compose from them), falling back to raw transcript text when no summary exists yet. A
+    transcription imports as its text + provenance. Composition is 100% client-side through the ordinary
+    `save_note` — no new backend. **Windows:** `app.meetings` is None there, so
+    `DashboardApi.list_meetings`/`get_meeting` gained a READ-ONLY cloud fallback
+    (`meetings._fetch_meeting_rows`, module imports are platform-safe) — Mac-captured meetings now show
+    in the Windows Meetings screen and its import picker (`open_meeting` routes through the fallback too;
+    `opened` returns every id so read-only rows never flash NEW). Mobile: `flume-ui/components/ImportNotesModal.tsx` (bottom sheet, same
+    tabs/search/composition — exported `meetingToNote`/`historyToNote` mirror the desktop functions; JS
+    `<Modal>` is allowed because NotesListScreen is a TAB screen, Hard Rule #14 bans it only inside
+    native-stack modals), wired via a download icon in the NotesListScreen header → `createNote` + open.
+  - **Dictation bar, full controls.** While recording the editor's bottom bar shows: cancel (discard —
+    `note_dictate_cancel`, recorder stopped, audio dropped), a **live waveform** (28 bars driven by the
+    REAL mic level — `note_dictate_level` returns `recorder.level`, polled every ~120 ms; bars freeze
+    grey while paused), a mono **timer** (pause-aware, client-side), **pause/resume**
+    (`note_dictate_pause` → `recorder.toggle_pause`), and the stop-FAB (stop + transcribe, unchanged
+    path). `abortDictationIfLive()` DISCARDS a live recording on every context exit (switching/creating/
+    deleting notes, leaving the screen) — previously those paths flipped the UI flag and left the mic
+    running. Mobile's editor already had all of this (dock cancel/stop/pause + Visualizer + timer).
 - **IDI-176 (2026-08), mobile:** notes live in a singleton `notesStore` with a realtime channel
   (`verbal_notes_<uid>`, rejoin/backoff, own-echo suppression — without it your own write's echo minted a
   FALSE conflict pair inside the 60s window) + pull-to-refresh + exported `reload`; editor autosave is
@@ -402,8 +525,9 @@ Each feature: **what it does · desktop impl · mobile impl · backend · status
 - **Deletion (IDI-158, 2026-08):** cross-device deletes are **tombstones**, never hard DELETEs — see
   `04-data-model.md` §notes for the full contract (`deleted_at` column, tombstone-wins merge, scoped
   back-fill, desktop cloud-first delete with `ok:false` on failure, dashboard `delNote` gated on `r.ok`).
-- **Desktop:** `DashboardApi.fetch_notes/save_note/delete_note` (`toggle_note_pin`/`pin_text` were
-  orphaned bridge methods, deleted in IDI-179 — `notes.is_pinned` currently has NO desktop writer) — local-first
+- **Desktop:** `DashboardApi.fetch_notes/save_note/delete_note/set_note_pinned/ask_notes/
+  export_note_text` (the orphaned `toggle_note_pin`/`pin_text` bridge methods were deleted in IDI-179;
+  v3 added the real pin writer) — local-first
   (`config['notes']`) merged with Supabase `notes` via `merge_remote_note` (union + conflict-pair, see
   `04-data-model.md`). `note_dictate_start/stop` = in-note dictation (stop persists the recording +
   appends to `audio_segments` when linkage is on); `format_note_with_ai(text)` returns
@@ -489,10 +613,25 @@ Each feature: **what it does · desktop impl · mobile impl · backend · status
   sync-loop-gated view, not a persistent account-devices view.
 - **Mobile:** `flume-ui/hooks/historyStore.ts` — local AsyncStorage cache is source of truth; realtime
   channel `verbal_history_${userId}` merges remote INSERTs (skips own, respects `target_device_id`,
-  drops+prunes tombstones); real durations persisted (`duration_ms`, local-only). `useDevices` is a
+  drops+prunes tombstones); real durations persisted (`duration_ms` — local cache AND the cloud column
+  since 2026-08-16, see `04` §transcriptions). `useDevices` is a
   singleton store (IDI-177): ONE 60 s poll/heartbeat, shared target selection (picking a send-to device on
   Home reaches the navigator's routing immediately), `reset()` on sign-out stops all `devices` queries;
   per-device sync switch is SELF-only; other devices' rows get an honest "Remove from list" (user-scoped).
+  **Send-target v2 (2026-08-16):** `useDevices` carries an explicit tri-state `SendMode` —
+  `'device'` (targeted) / `'all'` (broadcast, Home's "All" pill = `setTarget(null)`) / `'none'`
+  (**This phone only**: `addTranscription(..., pushToCloud=false)` skips the cloud insert entirely) —
+  persisted in `flume_target_device` as a device id or the desktop-matching `'__all__'`/`'__none__'`
+  sentinels, plus a `ready` flag (first load landed). The most-recent-device auto-fallback applies ONLY
+  in `'device'` mode — an explicit All/none choice is never silently overridden by the poll.
+  **RecordingScreen's chip is now a live tappable picker** (This phone only / All devices / each online
+  device, `refresh()` on open) showing "Finding devices…" until `ready` — and the WYSIWYG rule: the
+  choice displayed at Stop is FROZEN into a `SendChoice` passed through `onComplete`; the router routes
+  from that, never re-reading the store (which used to adopt a target mid-recording — the "chip said No
+  device, sent to my laptop anyway" race). Home shows matching This-phone/All/device pills keyed off
+  `mode` (previously "All" also lit up in the none state). Resend paths target only in `'device'` mode.
+  Desktop receive conditions audited the same day: `sync.py` drops rows targeted at another device
+  BEFORE the callback, `_on_sync_receive` pastes only when targeted, broadcast = history+clipboard only.
 - **Backend:** `transcriptions`, `devices` tables + realtime — both platforms push the full shape
   (`audio_url`/`status`/`target_device_id`) since IDI-172; see `04-data-model.md` §Sync model.
 
@@ -599,7 +738,68 @@ deletes real files under `~/.verbal/` and this development machine has a real, i
 
 ## Meetings — capture, live transcript, hybrid summary
 
+- **Speaker diarization (2026-08-16, `meetings_diarize_enabled`, default ON).** The live 90s-gap
+  heuristic (`SPEAKER_GAP_S`) stays for the in-meeting view, but it cannot split two people in
+  conversation — everything remote lands on one "Speaker 1". At meeting end, AFTER the WAV upload and
+  BEFORE voiceprint and the summary, `MeetingSession._diarize()` re-partitions the system-audio speaker
+  ids from real who-spoke-when:
+  - The audio never moves: `groq-proxy` (v11) signs a 1-hour URL for the already-uploaded
+    `meeting-audio/<user>/<id>.wav` with the service role and submits it to AssemblyAI
+    (`speaker_labels: true`, universal-2). Submit and poll are separate proxy actions
+    (`{"diarize":{"object"|"poll"}}`) so no isolate ever sits in a poll loop; the desktop polls every 4s,
+    ≤120s, on the end-flow worker thread where the meeting is already in its 'working' state.
+  - Only speaker labels + times come back (ms→s converted server-side); the transcript TEXT stays Groq's.
+  - `map_diarized_speakers()` (module-level, pure, pinned by `diarize_fixtures.py` — 14 cases) applies
+    them: "self" is mic ground truth and never relabelled; the diarized cluster that lands mostly on
+    self utterances IS the user heard in the mixdown and is excluded (else the user appears twice); a
+    system utterance is only relabelled at ≥30% overlap (wrongly merging two people is worse than the
+    status quo); new ids are s1,s2,… by first appearance; a name typed mid-meeting follows the id that
+    received the majority of that speaker's utterances.
+  - Ordering matters: diarize → voiceprint (now gets clean per-speaker windows) → summary (attributes
+    action items to the right people).
+  - Fails closed at every step (flag off, no upload/signed-out, key unset → proxy 503s, timeout, any
+    exception): the meeting keeps the gap-heuristic labels exactly as today. Requires keep-audio + being
+    signed in, since AssemblyAI fetches the WAV from the bucket.
 
+
+> **UI v4 — Notes-language panes (2026-08-16, user-approved proposal).** The desktop Meetings screen now
+> renders as the same THREE floating panes as Notes (`.nbgrid`, shared behavior contracts: nothing
+> selected on entry, sidebar collapse + window auto-grow keyed off the shared `paneOpen()` when a meeting
+> is open, hamburger `toggleNav()`):
+> **① Meetings list** — accent "New meeting" pill, live-REC bar (`.mlivebar`, Return/Stop), pill search
+> whose **Enter runs ask_meetings** into a notes-style inline answer card (`MEET_ASK`; the old big Ask
+> card/thread is GONE), and a COMPACT grouped list: one parent card per PINNED/date group (`.mgrp`) with
+> faint dividers, rows (`.mgrow`) = overlapping speaker-avatar stack (`spColor`) + title/one-line summary
+> + right-aligned mono time/duration/★✓ meta, unread dot, accent edge stripe on the open row.
+> **② Meeting document** — pane header holds the Yours/Merged/AI hybrid tabs (restyled as pills,
+> `.npaneHead .hnTab`; `hnView` now selects `.hnTab` unscoped), pin toggle (`meetPinToggle`), copy, and a
+> ⋯ menu (Regenerate / Delete via `deleteMeeting`'s confirm — the old two-click `sumDelete` is retired).
+> Body = title input + meta + summary → Decisions → Action items → Notes → marks/transcript expanders,
+> all populated by the UNCHANGED `fillMeetDetail()` (the v4 shell `meetDocHtml()` keeps every element id;
+> the `#mtgDetail` wrapper survives inside the pane so all its scoped widget CSS still applies —
+> `.npane #mtgDetail` neutralizes only the page chrome). Bottom: the **playback bar** (`meetPlaybarHtml`),
+> the dictation bar's twin — play FAB, click-to-seek progress wave, `mm:ss / total`, speed chip
+> (1×/1.5×/2×), transcript playhead-follow via `timeupdate` (`pbTick`); disabled+captioned when
+> `audio_expired`. The full-AI-notes sub-page renders in this pane too (`meetNotesPaneHtml`).
+> **③ Studio** — pastel cards **AI Notes / Regenerate / Ask this meeting** (sets `MEET_ASK_SCOPE` →
+> `ask_meetings(question, meeting_id)`, a new backend param that feeds ONE meeting's row as context) **/
+> Export** (menu: copy summary, .md, .txt, **Send to Notes** — `meetingNoteMarkdown()`, the import
+> composition factored out and shared with the Notes import picker); a **SPEAKERS section** (avatar +
+> name + talk-time share bar from transcript t0/t1 via `speakerStats`) where **tap = filter the
+> transcript to that speaker** (`MSPK`/`spkFilter` — their lines lit with a speaker-colored edge, others
+> dimmed, a SHOWING <NAME> ✕ chip in the transcript box; `markPlaying` switched to classList so the
+> playing highlight can't wipe filter classes), double-click = rename (`sumRename`, which now refreshes
+> the Studio + list too); "This meeting" rows (Marked moments → expand box, Send to Notes); footer =
+> light "Add note"-style New-meeting pill. Also fixed latent: teaser SVGs had NO size rule (rendered
+> 300×150 in the old layout too).
+> **v4.1 — the AI notes are EDITABLE on desktop (2026-08-16),** matching mobile's raw-markdown editor:
+> a pencil toggle on the AI Notes pane flips `ntBody` into a mono `textarea` (`MNT_EDIT`/`mntChanged`,
+> debounced 800 ms → the NEW `DashboardApi.set_meeting_notes(meeting_id, notes_md)` — PATCHes
+> `meetings.notes_md` + bumps `updated_at` exactly like mobile's `updateNotesRemote`; returns ok:false
+> on cloud failure so the editor shows "Not saved"). Regenerate now **confirms first** when notes exist
+> (it replaces hand edits); every route away (`notesBack`/`openMeetingDetail`/`navTo`) flushes a pending
+> debounce via `mntAbandon()`. Works on Windows too (cloud PATCH, no manager needed).
+>
 > **UI: widget kit v2 — COMPLETE** (`MEETINGS_WIDGETS_HANDOFF.md`, Jul 2026). Dot+label speaker chips,
 > single-parent-card rows with faint dividers, glyph icon buttons (1.4 stroke), ↳ hybrid-note AI additions
 > with Yours/Merged/AI tabs, v2 meeting list on the dashboard AND mobile (compact rows in one parent card,
@@ -714,6 +914,56 @@ deletes real files under `~/.verbal/` and this development machine has a real, i
   `MeetingDetailScreen` already degraded gracefully on a missing `audioUrl` (hide the player bar / show
   "View transcript" instead of "Play with transcript") — that same path now also covers the expired case,
   plus a small "Audio expired — transcript kept" line where the player bar would be.
+
+## Insights — words, speed, streaks & rhythm (all platforms, Aug 2026)
+
+Wispr-Flow-style statistics page. Desktop: a dashboard sidebar destination (`scr-insights` in
+`flume_dashboard_html.py::renderInsights`, shared by macOS + Windows; the Home "Words today" card links to
+it). Mobile: `InsightsScreen` (a bottom TAB since the V2 nav redesign 2026-08-16, plus a plum strip card on
+Home).
+
+**What it shows** (design: hero WPM gauge → pastel stat band → activity heatmap → breakdowns):
+- **Speaking speed** — semicircular gauge (0–200 wpm, average-typist marker at 52) + a **"Top X% of
+  typists"** badge (piecewise mapping vs global *typing* speeds: 52→50%, 100→top 4%, 150→top 0.5%,
+  clamped 0.1–99; identical in `app/insights.py::_percentile` and `lib/insights.ts::percentile`).
+- **Words dictated** (all time, + today, ▲/▼ % vs the prior 30 days, "≈ N novels" at ≥40k words).
+- **Time saved** vs typing at 40 wpm (desktop: measured from real speech seconds; mobile: estimated from
+  the WPM — needs ≥60 s of measured speech, tile shows "—" until then). **Mobile WPM is account-wide
+  since 2026-08-16**: `transcriptions.duration_ms` syncs from every device (see `04` §transcriptions),
+  so the phone clocks your speed from desktop dictations too — not just its own recordings.
+- **Streak** (current — may end today or yesterday — and best ever) + a GitHub-style **activity heatmap**
+  (last ~53 weeks desktop / width-fitted weeks mobile, terracotta sequential ramp
+  `#1f2225→#4a2d24→#7a4030→#a84b33→#C85A3E→#E88D6A`, the live streak's cells glow, hover tooltips on desktop).
+- **Where you dictate** — desktop: full per-app usage stats with a **30 days / All time** segmented
+  toggle on the card — per app: words, share %, dictation count and average words per take
+  (rank-colored bars, top 6 + Other). Mobile: per-device (JS has no frontmost-app API, so mobile rows
+  carry no app signal — same limitation as context grounding's app hint).
+- **Your rhythm** — 24-hour histogram, peak hour highlighted, morning share.
+- **Polished for you** (desktop only) — words changed between raw transcript and pasted result
+  (`insights.polish_delta`, word-level SequenceMatcher) + dictionary-rule counts.
+- **Copy recap** (desktop, via `copy_text`) / **Share** (mobile, native share sheet) — a text summary.
+
+**Data model — no new Supabase columns.** Desktop (`app/insights.py`, fail-closed everywhere):
+- `config['stats_daily']` per-day ledger `{w,n,s,fx,apps,hh}` (`apps` values are `[words, dictations]`;
+  the first build wrote bare word ints — readers accept both, writers upgrade in place) written by
+  `record_dictation` from both
+  `main._process_audio` and `win_main._process_audio` AFTER the paste; bounded to 800 days;
+  `config['stats_total']` lifetime counters survive pruning; `config['stats_since']` = ledger birth date.
+- `config['stats_cloud']` — incremental aggregate of the account's `transcriptions` rows
+  (`refresh_cloud`, paginated REST via `auth.auth_header`, high-water-marked on `created_at`).
+  **Merge rule (no double counting):** a cloud row from a day *before* `stats_since` counts regardless of
+  device; on/after it, only rows from OTHER devices count (this device's are in the ledger). Tombstoned
+  rows (empty text) count zero.
+- Bridge: `DashboardApi.get_insights` (instant, cached) + `refresh_insights` (network fold-in; the page
+  calls it once per dashboard session after first paint).
+Mobile (`lib/insights.ts`): cloud-only aggregate cached in AsyncStorage `verbal_insights_cache`
+(uid-stamped, wiped by `clearAccountData` and ignored across account switches), incremental fetch; WPM
+from local history `duration_ms` PLUS synced rows' `duration_ms` (own-device rows excluded from the
+cloud accumulator — no double counting); hook `useInsights` (+ `.mock.ts` contract). If sync is off the
+screen shows a "this phone isn't being counted" hint.
+
+Fixtures: `whisperflow/insights_fixtures.py` (accumulation, streaks, merge rule, percentile, polish
+delta, fail-closed paths). Both spec files declare `app.insights` in `hiddenimports` (lazy import).
 
 ## Settings screen — grouped rail (desktop, Aug 2026)
 

@@ -22,3 +22,5 @@ export { MarkdownNote } from './MarkdownNote';
 export type { MarkdownNoteProps } from './MarkdownNote';
 export { AudioSegmentPlayer } from './AudioSegmentPlayer';
 export type { AudioSegmentPlayerProps } from './AudioSegmentPlayer';
+export { ImportNotesModal } from './ImportNotesModal';
+export { SidePanel } from './SidePanel';

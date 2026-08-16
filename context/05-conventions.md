@@ -1031,6 +1031,53 @@
     The remaining fixed sleep in `recorder.stop()` (0.1s, letting in-flight callbacks land) is deliberate and
     is NOT on the perceived path — it runs before transcription, not after.
 
+42. **pywebview on Windows mixes units under DPI scaling: `create_window(width=…)` takes LOGICAL px, but
+    `window.width/height` REPORT physical px and `resize()` SETS physical px.** Verified live on the winvm
+    at 200% scaling (2026-08-15): a `create_window(980,680)` window reports `(1934,1289)`, and a naive
+    `resize(1220,700)` SHRANK it to 597 CSS px of innerWidth. Consequence: any size compare between a
+    CSS/logical target and `window.width` silently fails on scaled displays — this is exactly why the
+    Notes auto-grow "did nothing" on Windows while working on macOS. `SharedDashboard.ensure_window_size`
+    scales its logical minimums by `GetDpiForSystem()/96` before comparing/resizing (no-op at 96 dpi);
+    apply the same conversion to ANY future pywebview geometry code. The JS side keeps a fallback
+    (`.nbgrid.force3`) for hosts where resize still can't deliver. Also remember: BOTH desktop hosts reuse
+    their window object across open/close, so a running app serves the OLD page until process restart —
+    "feature missing on Windows" is often just a stale process (restart via the `FlumeRun` scheduled task
+    on the winvm).
+
+42. **A bulk backend UPDATE on a synced table REPLAYS every touched row to every connected client** —
+    Realtime `postgres_changes` emits an UPDATE event per row, and the desktop's `_deliver` used to treat
+    each as fresh content: clipboard overwritten per row, local history flooded with old rows stamped
+    "today" (real incident, 2026-08-15: an account merge moved ~700 `transcriptions` rows and both
+    running desktops replayed them; local histories had to be rebuilt from the cloud). Two rules:
+    (a) `sync.SyncClient._deliver` now DROPS content rows whose `created_at` is >3 days old — fresh
+    dictation is seconds old and the disconnect backfill is watermark-bounded, so nothing legitimate is
+    that stale; the row is still `_remember`ed. (b) When running a bulk migration on `transcriptions` /
+    `notes` / `meetings` / `canvas`, prefer doing it while clients are stopped anyway — Realtime also has
+    its own rate limits and a partial replay is confusing to debug. Related repair details in
+    `04-data-model.md` §Sync model (history bootstrap).
+    NB the account merge itself: the legacy `shabbaraza26@gmail.com` account (`cc57c93e…`) was folded into
+    `sraza@idiaz.io` (`1e642227…`) on 2026-08-15 — reversal ids in the `_acct_merge_20260815` table;
+    storage objects deliberately stayed under the old uid's path prefix (rows store bare object paths, and
+    signed URLs don't care whose prefix the path carries).
+
+43. **Native contenteditable undo cannot survive this codebase — the note editor owns its own stack.**
+    Any programmatic `innerHTML` replacement (AI reformat, restyle, `renderNotes()` re-render) wipes the
+    browser's undo history, so Ctrl+Z "did nothing" exactly when users wanted it most (undoing an AI
+    format). `flume_dashboard_html.py`'s `NU` stack snapshots per idle autosave + around every
+    programmatic replacement; `noteKeys()` handles Ctrl/Cmd+Z / Ctrl+Y / Ctrl/Cmd+Shift+Z at the editor
+    container. Any future surface with a programmatically-replaced editable region needs the same
+    treatment — don't rely on `document.execCommand('undo')`. (The plaintext transcript view is left on
+    native undo on purpose: nothing replaces it programmatically while it's open.)
+
+44. **Three dashboard chrome rules from the 2026-08-15 small-window feedback:** (a) every icon-only
+    button class needs an explicit `svg{width;height}` rule — an SVG with only a viewBox defaults to
+    300×150 and paints outside a 32px button, which renders as a BLANK button (bit the notes ⋯ menu);
+    (b) dropdowns inside `.npane` (which clips overflow) must open `position:fixed`, anchored to the
+    trigger's rect and clamped to the viewport (`toggleNoteMenu`) — in-flow absolute menus get cut at
+    the pane edge in small windows; (c) the WebView's native right-click menu is suppressed outside
+    editable fields (`contextmenu` preventDefault) because its "Reload" blanks the window — the
+    dashboard is loaded from a string, not a URL, so a reload has nothing to reload.
+
 ## Design system (Flume)
 
 Single source: desktop `app/theme.py` + `app/fonts_css.py`; mobile `flume-ui/theme/`. Also

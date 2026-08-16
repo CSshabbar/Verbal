@@ -21,6 +21,7 @@ export type Note = {
   preview: string;          // first 140 chars stripped
   dateLabel: string;        // "Today · 9:24 AM" | "Yesterday" | "Mon · 2:08 PM"
   isVoice: boolean;
+  isPinned: boolean;        // Notes v3 — synced `is_pinned`; pinning never bumps updatedAt
   createdAt: number;
   updatedAt: number;
   // Notes v2 (NOTES_ENHANCEMENT_SWARM.md). Absent/null on pre-existing notes.
@@ -40,6 +41,7 @@ const MOCK: Note[] = [
     preview: 'Things to bring up: the onboarding regression, design review timing, and whether we ship behind a flag…',
     dateLabel: 'Today · 9:24 AM',
     isVoice: true,
+    isPinned: true,
     createdAt: Date.now() - 60_000,
     updatedAt: Date.now() - 60_000,
     rawContent: 'things to bring up the onboarding regression design review timing',
@@ -52,6 +54,7 @@ const MOCK: Note[] = [
     preview: 'Belém pastries, Time Out market, tram 28 early morning before crowds…',
     dateLabel: 'Yesterday',
     isVoice: false,
+    isPinned: false,
     createdAt: Date.now() - 86_400_000,
     updatedAt: Date.now() - 86_400_000,
   },
@@ -62,6 +65,7 @@ const MOCK: Note[] = [
     preview: 'They want a revised quote by Friday. Three deliverables: copy, hi-fi mocks, and a deck for the board…',
     dateLabel: 'Mon · 2:08 PM',
     isVoice: true,
+    isPinned: false,
     createdAt: Date.now() - 4 * 86_400_000,
     updatedAt: Date.now() - 4 * 86_400_000,
     rawContent: 'they want a revised quote by friday',
@@ -74,6 +78,7 @@ const MOCK: Note[] = [
     preview: 'Eggs, oat milk, bread, garlic, lemons, parmesan…',
     dateLabel: 'Mon',
     isVoice: false,
+    isPinned: false,
     createdAt: Date.now() - 4 * 86_400_000,
     updatedAt: Date.now() - 4 * 86_400_000,
   },
@@ -106,6 +111,7 @@ export function useNotes() {
       preview: (data.body ?? '').slice(0, 140),
       dateLabel: 'Just now',
       isVoice: data.isVoice ?? false,
+      isPinned: false,
       createdAt: now,
       updatedAt: now,
     };
@@ -172,15 +178,38 @@ export function useNotes() {
     [],
   );
 
-  /** Explicit "Reformat" / "Retry formatting" over the stored raw transcript. */
-  const reformatNote = useCallback(async (id: string): Promise<Note | null> => {
+  /** Explicit "Reformat" / "Retry formatting" over the stored raw transcript.
+   *  `style` (Notes v3): 'structured' | 'prose' | 'transcript' — explicit picks
+   *  only; the mock ignores it and just echoes the source. */
+  const reformatNote = useCallback(async (
+    id: string, _style: 'structured' | 'prose' | 'transcript' = 'structured',
+    from: 'note' | 'raw' = 'note',
+  ): Promise<Note | null> => {
     let out: Note | null = null;
     setNotes(prev => prev.map(n => {
       if (n.id !== id) return n;
-      const source = (n.rawContent && n.rawContent.trim()) ? n.rawContent : n.body;
+      // Whole-note source by default (2026-08-15); 'raw' = transcript view.
+      const raw = (n.rawContent ?? '').trim();
+      const source = (from === 'raw' && raw) ? raw : (n.body.trim() || raw);
       if (!source.trim()) return n;
       out = { ...n, body: source, preview: source.slice(0, 140),
               formatFailed: false, formatting: false, updatedAt: Date.now() };
+      return out;
+    }));
+    return out;
+  }, []);
+
+  /** Pin/unpin (Notes v3). Never bumps updatedAt — a preference, not an edit. */
+  const setPinned = useCallback(async (id: string, pinned: boolean): Promise<void> => {
+    setNotes(prev => prev.map(n => (n.id === id ? { ...n, isPinned: pinned } : n)));
+  }, []);
+
+  /** Persist an edited ORIGINAL transcript (Notes v3). Never triggers cleanup. */
+  const updateRawContent = useCallback(async (id: string, raw: string): Promise<Note | null> => {
+    let out: Note | null = null;
+    setNotes(prev => prev.map(n => {
+      if (n.id !== id) return n;
+      out = { ...n, rawContent: raw, updatedAt: Date.now() };
       return out;
     }));
     return out;
@@ -252,6 +281,8 @@ export function useNotes() {
     removeNotes,
     saveDictation,
     reformatNote,
+    setPinned,
+    updateRawContent,
     addAudioSegment,
     resolveConflict,
   };

@@ -23,7 +23,11 @@ _PRESSED_SELECTORS = [
     ".toggle", ".tgtpill", ".dchip button", ".reprow button", ".sndots",
     ".snmenu button", ".snx", ".sndel", ".siGoogle", ".siCancel",
     ".mrActs button", ".link", ".chkbox", ".deadbar .dbbtn", ".deadside .dsbtn",
-    ".devrm", ".npin", ".nmenu button", ".askNote .ax",
+    ".insseg button",
+    ".devrm", ".npin", ".ncdots", ".nmenu button", ".askNote .ax",
+    ".pillbtn", ".scard", ".srow .splay", ".addpill", ".dictbar .dfab", ".hamb",
+    ".nimpTab", ".nimpX", ".dictbar .dside",
+    ".spkrow", ".playbar .pfab", ".pspeed", ".spkchip", ".npaneHead .hnTab",
     ".sniptable th.th-trig",
     # meeting detail (MER-46)
     "#mtgDetail .btnS", "#mtgDetail .iconbtn", "#mtgDetail .aiCb", "#mtgDetail .hnTab",
@@ -226,6 +230,10 @@ body{background:var(--bg);font-family:'Geist',-apple-system,system-ui,sans-serif
 .insabar .arow .av{font:500 11px 'JetBrains Mono';color:var(--mut);flex:none}
 .insabar .atr{height:7px;border-radius:4px;background:rgba(240,240,240,.05)}
 .insabar .atr i{display:block;height:100%;border-radius:4px}
+.insabar .asub{font:400 10.5px 'Geist';color:var(--sub);margin-top:4px}
+.insseg{float:right;display:inline-flex;gap:2px;background:rgba(240,240,240,.05);border-radius:7px;padding:2px}
+.insseg button{border:0;background:transparent;color:var(--sub);font:600 9.5px 'Geist';letter-spacing:.02em;padding:3px 8px;border-radius:5px;cursor:pointer;text-transform:none}
+.insseg button.on{background:rgba(240,240,240,.1);color:var(--tx)}
 .inshours{display:flex;align-items:flex-end;gap:3px;height:64px}
 .inshours i{flex:1;background:rgba(240,240,240,.14);border-radius:3px 3px 0 0;min-height:2px}
 .inshours i.pk{background:var(--acc)}
@@ -308,6 +316,10 @@ body{background:var(--bg);font-family:'Geist',-apple-system,system-ui,sans-serif
 .fmtbtn{width:32px;height:32px;border-radius:8px;border:1px solid var(--bd);background:transparent;color:var(--mut);cursor:pointer;display:flex;align-items:center;justify-content:center;font:600 14px 'Geist';line-height:1}
 .fmtbtn:hover{color:var(--tx);background:rgba(240,240,240,.05)}
 .fmtbtn i{font-style:italic}.fmtbtn u{text-decoration:underline}
+/* An icon fmtbtn (the ⋯ More menu) rendered BLANK without this — an svg with
+   only a viewBox gets the 300×150 default size and paints outside the 32px
+   button (2026-08-15 "blank button" report). */
+.fmtbtn svg{width:15px;height:15px;flex:none}
 .fmtsep{width:1px;height:20px;background:var(--bd);margin:0 4px}
 .dictate{margin-left:auto;display:flex;align-items:center;gap:8px;border-radius:10px;border:1px solid var(--acc-bd);background:var(--acc-soft);color:var(--acc);cursor:pointer;padding:7px 13px;font:600 12.5px 'Geist'}
 .dictate:hover{filter:brightness(1.05)}
@@ -325,6 +337,13 @@ body{background:var(--bg);font-family:'Geist',-apple-system,system-ui,sans-serif
 .notebody h4{font:700 14.5px 'Geist';color:var(--tx);margin:10px 0 4px}
 .notebody h5{font:700 13px 'Geist';color:var(--tx);margin:8px 0 3px}
 .notebody code{font:500 13px 'JetBrains Mono';background:rgba(240,240,240,.08);padding:1px 5px;border-radius:5px}
+/* Editor text size (Aa menu, persisted): scales body + transcript + title. */
+.edscroll.fs-s .notebody,.edscroll.fs-s .noteorig{font-size:13px;line-height:1.65}
+.edscroll.fs-l .notebody,.edscroll.fs-l .noteorig{font-size:17.5px;line-height:1.75}
+.edscroll.fs-s .edtitle{font-size:20px}
+.edscroll.fs-l .edtitle{font-size:27px}
+.fmtbtn:disabled{opacity:.35;cursor:default}
+.fmtbtn:disabled:hover{color:var(--mut);background:transparent}
 .notebody pre{background:rgba(240,240,240,.05);border:1px solid var(--bd);border-radius:8px;padding:10px 12px;font:500 12.5px 'JetBrains Mono';white-space:pre-wrap;overflow-x:auto;margin:8px 0}
 .dcards{display:flex;flex-direction:column;gap:12px;margin-bottom:18px}
 /* Devices screen. The scroller is still `.main` (Hard Rule #23 — do NOT nest a
@@ -545,6 +564,13 @@ body{background:var(--bg);font-family:'Geist',-apple-system,system-ui,sans-serif
 .ncard:hover .npin{display:flex}
 .npin:hover{color:var(--acc);background:rgba(240,240,240,.07)}
 .npin.on{display:flex;color:var(--acc)}
+/* Per-card ⋯ menu (rename/pin/delete from the list — 2026-08-15 feedback) */
+.ncdots{position:absolute;top:8px;right:38px;width:26px;height:26px;border-radius:8px;border:0;background:none;color:var(--sub);cursor:pointer;display:none;align-items:center;justify-content:center}
+.ncard:hover .ncdots{display:flex}
+.ncdots:hover{color:var(--tx);background:rgba(240,240,240,.07)}
+.ncdots svg{width:14px;height:14px}
+#ncMenu{position:fixed;top:auto;right:auto}
+.nctitle input.ncren{width:100%;border:1px solid var(--acc-bd);background:rgba(240,240,240,.06);border-radius:6px;color:var(--tx);font:600 13px 'Geist';padding:3px 6px;outline:0}
 .ncmeta{display:flex;align-items:center;gap:10px}
 .ncprog{color:var(--acc);letter-spacing:.04em}
 .ncprog.alldone{color:var(--on)}
@@ -573,6 +599,169 @@ mark.hl{background:rgba(200,90,62,.32);color:inherit;border-radius:3px;padding:0
 .askNote .asrc{font:500 9.5px 'JetBrains Mono';letter-spacing:.08em;color:var(--sub);margin-top:8px}
 .askNote .ax{position:absolute;top:8px;right:8px;width:22px;height:22px;border:0;background:none;color:var(--sub);cursor:pointer;font-size:13px;border-radius:6px}
 .askNote .ax:hover{color:var(--tx);background:rgba(240,240,240,.07)}
+/* ── notes v3.1 — NotebookLM-style floating panes (user-picked direction):
+   three rounded cards on the dark ground, pill buttons, pastel Studio cards
+   (reusing the fcard cream/sage/plum language), dictation bar with a FAB. ── */
+.nbgrid{display:grid;grid-template-columns:minmax(230px,290px) minmax(0,1fr) minmax(230px,290px);gap:14px;height:100vh;padding:16px;overflow:hidden}
+/* No note selected → no Studio: two columns until a note is picked/created. */
+.nbgrid.nosel{grid-template-columns:minmax(240px,330px) minmax(0,1fr)}
+/* Notes collapses the app sidebar for room; the hamburger brings it back. */
+.app{transition:grid-template-columns .22s ease}
+.app.navhide{grid-template-columns:0 minmax(0,1fr)}
+.app.navhide .sidebar{visibility:hidden;overflow:hidden;padding-left:0;padding-right:0;border-right:0}
+.hamb{width:32px;height:32px;border-radius:9px;border:1px solid var(--bd);background:transparent;color:var(--mut);cursor:pointer;display:flex;align-items:center;justify-content:center;flex:none;padding:0}
+.hamb:hover{color:var(--tx);background:var(--raised)}
+.hamb svg{width:15px;height:15px}
+.npane{background:var(--card);border:1px solid var(--bd);border-radius:20px;display:flex;flex-direction:column;min-height:0;overflow:hidden}
+.npaneHead{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;padding:14px 18px 12px;border-bottom:1px solid var(--bd);flex:none}
+.npaneHead .pt{font:600 15px 'Geist';letter-spacing:-.01em}
+.npaneHead .notetoolbar{margin:0}
+.npaneBody{flex:1;min-height:0;overflow-y:auto;padding:14px 16px;overscroll-behavior:contain}
+.npane .searchbox{margin:0 0 10px;border-radius:999px;padding:10px 16px}
+.npane .ncard{border-radius:16px}
+.npane .askNote{border-radius:16px}
+.npane .notecount{margin:0 0 10px}
+.pillbtn{display:inline-flex;align-items:center;gap:7px;padding:9px 15px;border-radius:999px;border:1px solid var(--bd2);background:transparent;color:var(--tx);font:600 12px 'Geist';cursor:pointer}
+.pillbtn:hover{background:var(--raised)}
+.pillbtn svg{width:14px;height:14px}
+.pillbtn.acc{background:var(--acc-soft);border-color:var(--acc-bd);color:var(--acc)}
+.pillrow{display:flex;gap:8px;margin-bottom:12px}
+.pillrow .pillbtn{flex:1;justify-content:center}
+.scards{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px}
+.scards .nmenuwrap{display:block}
+.scards .nmenuwrap .scard{width:100%;height:100%}
+.scard{border:0;border-radius:16px;padding:12px;min-height:88px;display:flex;flex-direction:column;align-items:flex-start;gap:7px;cursor:pointer;text-align:left}
+.scard:hover{filter:brightness(1.05)}
+.scard:disabled{opacity:.45;cursor:default;filter:none}
+.scard .sdisc{width:27px;height:27px;border-radius:9px;display:flex;align-items:center;justify-content:center;margin-bottom:auto}
+.scard .sdisc svg{width:13px;height:13px}
+.scard .sl{font:600 12.5px 'Geist';letter-spacing:-.01em}
+.scard .ss{font:400 10.5px/1.35 'Geist';opacity:.62}
+.scard.cream{background:#EADFCE;color:#2a1f18}.scard.cream .sdisc{background:rgba(42,31,24,.13);color:#2a1f18}
+.scard.sage{background:#DDE4D3;color:#1e2418}.scard.sage .sdisc{background:rgba(30,36,24,.13);color:#1e2418}
+.scard.plum{background:#e6dae4;color:#221820}.scard.plum .sdisc{background:rgba(34,24,32,.13);color:#221820}
+.scard.slate{background:#d7dfe9;color:#182029}.scard.slate .sdisc{background:rgba(24,32,41,.13);color:#182029}
+.shead{font:500 9.5px 'JetBrains Mono';letter-spacing:.16em;color:var(--sub);text-transform:uppercase;margin:8px 2px 7px}
+.srow{display:flex;align-items:center;gap:10px;padding:8px;border-radius:12px;cursor:pointer}
+.srow:hover{background:var(--raised)}
+.srow .sic{width:30px;height:30px;border-radius:50%;background:var(--raised);display:flex;align-items:center;justify-content:center;color:var(--mut);flex:none}
+.srow .sic svg{width:13px;height:13px}
+.srow .st{flex:1;min-width:0}
+.srow .st .a{display:block;font:500 12.5px 'Geist';white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.srow .st .b{display:block;font:500 9.5px 'JetBrains Mono';color:var(--sub);letter-spacing:.05em;margin-top:2px}
+.srow .splay{width:30px;height:30px;border-radius:50%;border:1px solid var(--acc-bd);background:var(--acc-soft);color:var(--acc);display:flex;align-items:center;justify-content:center;flex:none;cursor:pointer;padding:0}
+.srow .splay svg{width:12px;height:12px}
+.studioFoot{flex:none;padding:12px 16px 14px;display:flex;justify-content:flex-end;border-top:1px solid var(--bd)}
+.addpill{display:inline-flex;align-items:center;gap:8px;background:#f2f2f2;color:#111417;border:0;border-radius:999px;padding:11px 18px;font:600 12.5px 'Geist';cursor:pointer;box-shadow:0 8px 22px rgba(0,0,0,.35)}
+.addpill:hover{filter:brightness(.93)}
+.addpill svg{width:14px;height:14px}
+.edscroll{padding:18px 20px}
+/* Inside the pane the pane BODY is the one scroller (Hard Rule #23 spirit) —
+   the note content must not open a nested scroller of its own. */
+.edscroll .notebody{flex:none;overflow:visible;min-height:260px}
+.edscroll .noteorig{flex:none;overflow:visible;min-height:240px}
+.dictbar{flex:none;margin:10px 16px 16px;border:1px solid var(--bd2);background:#1b1e22;border-radius:18px;padding:9px 10px 9px 16px;display:flex;align-items:center;gap:12px}
+.dictbar .dtx{flex:1;font:400 12.5px 'Geist';color:var(--mut);min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dictbar .notesave{flex:none}
+.dictbar .dfab{width:38px;height:38px;border-radius:50%;background:var(--acc);color:#2a1710;border:0;display:flex;align-items:center;justify-content:center;cursor:pointer;flex:none;padding:0}
+.dictbar .dfab svg{width:16px;height:16px}
+.dictbar .dfab .dstop{width:11px;height:11px;border-radius:3px;background:currentColor;display:block}
+.dictbar.rec{border-color:var(--acc-bd);background:var(--acc-softer)}
+.dictbar.rec .dtx{color:var(--acc-txt)}
+/* v3.2 recording state: cancel · live waveform · timer · pause · stop-FAB */
+.dictbar .dside{width:34px;height:34px;border-radius:50%;border:1px solid var(--bd2);background:transparent;color:var(--mut);display:flex;align-items:center;justify-content:center;cursor:pointer;flex:none;padding:0;font-size:13px;line-height:1}
+.dictbar .dside:hover{color:var(--tx);background:var(--raised)}
+.dictbar .dside svg{width:13px;height:13px}
+.dwave{display:flex;align-items:center;gap:2px;height:24px;flex:1;min-width:0;overflow:hidden;justify-content:flex-end}
+.dwave i{width:3px;height:3px;border-radius:2px;background:var(--acc);flex:none;transition:height .1s linear}
+.dictbar.paused .dwave i{background:var(--sub)}
+.dtimer{font:600 11px 'JetBrains Mono';color:var(--acc-txt);letter-spacing:.05em;flex:none;min-width:40px;text-align:right;font-variant-numeric:tabular-nums}
+.dictbar.paused .dtimer{color:var(--sub)}
+@media (max-width:1000px){.nbgrid{grid-template-columns:minmax(210px,250px) minmax(0,1fr)}.npane.studio{display:none}}
+/* Host couldn't grow the window (no resize support / clamped by the screen):
+   force the three-pane grid anyway — squeezed beats hidden. Declared after the
+   media query and with higher specificity so it wins at any width. */
+.nbgrid.force3{grid-template-columns:minmax(180px,230px) minmax(0,1fr) minmax(190px,240px)}
+.nbgrid.force3 .npane.studio{display:flex}
+/* ── notes v3.2 — import from Meetings / Transcriptions (modal picker) ── */
+.pillrow{flex-wrap:wrap}
+.nimpWrap{position:fixed;inset:0;z-index:60;background:rgba(6,7,8,.62);display:flex;align-items:center;justify-content:center;padding:24px}
+.nimp{width:600px;max-width:100%;max-height:82vh;background:var(--card);border:1px solid var(--bd2);border-radius:20px;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 30px 80px rgba(0,0,0,.55)}
+.nimpHead{display:flex;align-items:center;justify-content:space-between;padding:15px 18px 12px;border-bottom:1px solid var(--bd);flex:none}
+.nimpHead .pt{font:600 15px 'Geist';letter-spacing:-.01em}
+.nimpX{width:28px;height:28px;border-radius:8px;border:0;background:none;color:var(--sub);cursor:pointer;font-size:14px;padding:0}
+.nimpX:hover{color:var(--tx);background:var(--raised)}
+.nimpTabs{display:flex;gap:6px;padding:12px 16px 0;flex:none}
+.nimpTab{padding:8px 15px;border-radius:999px;border:1px solid var(--bd2);background:transparent;color:var(--mut);font:600 11.5px 'Geist';cursor:pointer}
+.nimpTab.on{background:var(--acc-soft);border-color:var(--acc-bd);color:var(--acc)}
+.nimp .searchbox{margin:12px 16px 0;border-radius:999px;padding:10px 16px;flex:none}
+.nimpBody{flex:1;min-height:220px;overflow-y:auto;padding:10px 12px 14px;overscroll-behavior:contain}
+.srow .imppill{opacity:0;font:600 10.5px 'Geist';color:var(--acc);border:1px solid var(--acc-bd);background:var(--acc-soft);border-radius:999px;padding:5px 11px;flex:none;transition:opacity .12s}
+.srow:hover .imppill,.srow:focus .imppill{opacity:1}
+.srow .imppill.busy{opacity:1}
+.nimpHint{font:400 11px/1.5 'Geist';color:var(--sub);padding:0 18px 13px;flex:none}
+/* ── meetings v4 — the Notes pane language (approved proposal, 2026-08-15) ── */
+.mgrp{background:rgba(240,240,240,.025);border:1px solid var(--bd);border-radius:16px;overflow:hidden}
+.mgrow{display:flex;align-items:center;gap:11px;padding:11px 12px;position:relative;cursor:pointer}
+.mgrow + .mgrow{border-top:1px solid rgba(240,240,240,.045)}
+.mgrow:hover{background:var(--raised)}
+.mgrow.active{background:rgba(200,90,62,.07)}
+.mgrow.active::before{content:'';position:absolute;left:0;top:10px;bottom:10px;width:3px;border-radius:2px;background:var(--acc)}
+.mavs{display:flex;flex:none}
+.mav{width:24px;height:24px;border-radius:50%;display:flex;align-items:center;justify-content:center;font:700 10px 'Geist';color:#1a1512;border:2px solid var(--card)}
+.mav + .mav{margin-left:-7px}
+.mgmid{flex:1;min-width:0}
+.mgtitle{font:600 12.5px 'Geist';letter-spacing:-.01em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:flex;align-items:center;gap:6px}
+.mgnew{width:5px;height:5px;border-radius:50%;background:var(--acc);flex:none}
+.mgprev{display:block;font:400 11px 'Geist';color:var(--mut);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px}
+.mgside{flex:none;text-align:right;white-space:nowrap}
+.mgtime{display:block;font:500 9.5px 'JetBrains Mono';color:var(--sub);letter-spacing:.05em}
+.mgmeta{display:block;font:500 9.5px 'JetBrains Mono';color:var(--sub);letter-spacing:.05em;margin-top:3px}
+.mgmeta .st{color:var(--acc)}
+.mlivebar{display:flex;align-items:center;gap:9px;border:1px solid rgba(224,80,73,.38);background:rgba(224,80,73,.08);border-radius:14px;padding:8px 10px 8px 12px;margin-bottom:12px}
+.mlivebar .t{font:600 12px 'Geist';flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.mlivebar .m{font:500 10px 'JetBrains Mono';color:#f0a5a0;flex:none;letter-spacing:.06em}
+.mlivebar .pillbtn{padding:6px 11px;font-size:11px;flex:none}
+/* the detail lives INSIDE a pane now — neutralize its full-page chrome, keep
+   every #mtgDetail-scoped widget style working via the wrapper */
+.npane #mtgDetail{display:flex;flex-direction:column;height:auto;min-height:0;overflow:visible;padding:0}
+.npane #mtgDetail .sumTitle{font:700 24px 'Geist';letter-spacing:-.02em;border:0;background:transparent;color:var(--tx);outline:0;width:100%;padding:0;margin:0 0 8px}
+.npane #mtgDetail .sumMeta{margin:0 0 14px}
+.npane #mtgNotes{height:auto;padding:0;overflow:visible}
+.mdocsec{font:700 15px 'Geist';color:var(--tx);margin:20px 0 8px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.mdocsum{font:400 14px/1.7 'Geist';color:rgba(240,240,240,.9);max-width:680px}
+/* speakers (Studio) — tap to filter the transcript to that speaker's color */
+.spkrow{display:flex;align-items:center;gap:10px;padding:7px 8px;border-radius:12px;cursor:pointer;border:1px solid transparent;width:100%;background:none;text-align:left}
+.spkrow:hover{background:var(--raised)}
+.spkrow.on{background:rgba(240,240,240,.05);border-color:var(--bd2)}
+.spkrow .sav{width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font:700 11px 'Geist';color:#15181b;flex:none}
+.spkrow .sn{flex:1;min-width:0}
+.spkrow .sn .a{display:block;font:600 12.5px 'Geist';color:var(--tx)}
+.spkrow .sn .b{display:block;font:500 9px 'JetBrains Mono';color:var(--sub);letter-spacing:.05em;margin-top:1px}
+.spkrow .share{flex:none;width:52px;height:4px;border-radius:2px;background:rgba(240,240,240,.08);overflow:hidden}
+.spkrow .share i{display:block;height:100%;border-radius:2px}
+.spkhint{font:400 10.5px/1.5 'Geist';color:var(--sub);margin:6px 4px 0}
+#mtgDetail .exUtt.dimf{opacity:.32}
+#mtgDetail .exUtt.hlf{background:rgba(240,240,240,.045);border-radius:8px}
+.spkchip{display:inline-flex;align-items:center;gap:8px;margin:2px 0 8px;border:1px solid var(--bd2);background:var(--raised);color:var(--tx2);border-radius:999px;padding:5px 12px;font:600 10px 'JetBrains Mono';letter-spacing:.06em;cursor:pointer}
+.spkchip i{width:7px;height:7px;border-radius:50%;flex:none}
+/* playback bar — the dictation bar's twin (play FAB, progress wave, time, speed) */
+.playbar{flex:none;margin:10px 16px 16px;border:1px solid var(--bd2);background:#1b1e22;border-radius:18px;padding:9px 10px 9px 14px;display:flex;align-items:center;gap:12px}
+.playbar.off{opacity:.45}
+.playbar .pfab{width:38px;height:38px;border-radius:50%;background:var(--acc);color:#2a1710;border:0;display:flex;align-items:center;justify-content:center;cursor:pointer;flex:none;padding:0}
+.playbar .pfab svg{width:15px;height:15px}
+.pwave{display:flex;align-items:center;gap:2px;height:24px;flex:1;min-width:0;overflow:hidden;cursor:pointer}
+.pwave i{width:3px;border-radius:2px;background:rgba(240,240,240,.2);flex:none}
+.pwave i.played{background:var(--acc)}
+.ptime{font:600 11px 'JetBrains Mono';color:var(--acc-txt);letter-spacing:.04em;flex:none;font-variant-numeric:tabular-nums}
+.pspeed{font:600 10.5px 'JetBrains Mono';color:var(--mut);border:1px solid var(--bd2);background:none;border-radius:999px;padding:5px 10px;flex:none;cursor:pointer}
+.addpill .rd{width:8px;height:8px;border-radius:50%;background:#E05049;flex:none}
+.ntEdit{width:100%;min-height:440px;background:rgba(240,240,240,.03);border:1px solid var(--bd2);border-radius:12px;padding:14px;color:var(--tx);font:400 12.5px/1.7 'JetBrains Mono';outline:none;resize:vertical;caret-color:var(--acc)}
+.ntEdit:focus{border-color:var(--acc-bd)}
+.npaneHead .hnTabs{display:flex;gap:4px;margin-right:4px}
+.npaneHead .hnTab{font:600 10.5px 'JetBrains Mono';color:var(--mut);border:1px solid var(--bd2);border-radius:999px;padding:4px 10px;background:none;cursor:pointer;letter-spacing:.04em}
+.npaneHead .hnTab:hover{color:var(--tx)}
+.npaneHead .hnTab.on{color:var(--acc);border-color:var(--acc-bd);background:var(--acc-soft)}
 /* ── Meetings (31a launcher card · 31f folder tabs) ── */
 .mcard{display:flex;align-items:center;gap:14px;margin:18px 0 6px;padding:16px 18px;border-radius:12px;
   background:linear-gradient(160deg,#17191c,#1c1e22);border:1px solid var(--bd)}
@@ -828,6 +1017,7 @@ mark.hl{background:rgba(200,90,62,.32);color:inherit;border-radius:3px;padding:0
 #mtgDetail .teasers{display:flex;gap:8px;flex:none}
 #mtgDetail .teaser{flex:1;display:flex;align-items:center;gap:8px;background:var(--raised);
   border:1px solid var(--bd);border-radius:10px;padding:9px 12px;cursor:pointer}
+#mtgDetail .teaser svg{width:14px;height:14px;flex:none;color:var(--mut)}
 #mtgDetail .teaser .tl{font:400 11px 'Geist';color:var(--tx);flex:1}
 #mtgDetail .teaser .eyebrow{margin-left:auto}
 #mtgDetail .expandBox{display:none;flex-direction:column;gap:8px}
@@ -957,7 +1147,7 @@ def flume_html() -> str:
       <section class="screen" id="scr-home"><div class="main" id="homeMain"></div></section>
       <section class="screen" id="scr-history" hidden><div class="threepane" id="historyMain"></div></section>
       <section class="screen" id="scr-canvas" hidden><div class="main" id="canvasMain"></div></section>
-      <section class="screen" id="scr-notes" hidden><div class="threepane" id="notesMain"></div></section>
+      <section class="screen" id="scr-notes" hidden><div class="nbgrid" id="notesMain"></div></section>
       <section class="screen" id="scr-meetings" hidden><div class="main" id="meetingsMain"></div></section>
       <section class="screen" id="scr-insights" hidden><div class="main" id="insightsMain"></div></section>
       <section class="screen" id="scr-dictionary" hidden><div class="main" id="dictionaryMain"></div></section>
@@ -1012,7 +1202,13 @@ function busyGuard(target, run){
 }
 
 function show(id){
+  // Notes runs full-bleed: entering it collapses the app sidebar (fresh each
+  // visit); the hamburger in the Notes pane toggles it back. Every other
+  // screen restores the sidebar.
+  if((id==='notes'||id==='meetings') && ACTIVE!==id){ NAV_OPEN=false; STUDIO_FIT_TRIED=false; }
+  if(ACTIVE==='notes' && id!=='notes') abortDictationIfLive();
   ACTIVE=id;
+  applyNavCollapse();
   document.querySelectorAll('.screen').forEach(s=>s.hidden=(s.id!=='scr-'+id));
   document.querySelectorAll('#wsnav .navitem').forEach(b=>b.classList.toggle('active',b.dataset.screen===id));
   renderActive();
@@ -1082,33 +1278,41 @@ function stopMeeting(btn){
     loadMeets();
   });
 }
-let MCHAT=[];   // [{q, a, sources, err, pending}]
-function renderAskThread(){
-  const box=document.getElementById('askThread');
-  if(!box) return;
-  box.innerHTML = MCHAT.map(m=>{
-    let a='';
-    if(m.pending) a='<div class="askThink"><i></i><i></i><i></i></div>';
-    else if(m.err) a=`<div class="askA err">${esc(m.err)}</div>`;
-    else a=`<div class="askA">${esc(m.a)}${m.sources&&m.sources.length?`<div class="askSrc">FROM: ${esc(m.sources.join(' · '))}</div>`:''}</div>`;
-    return `<div class="askQ">${esc(m.q)}</div>`+a;
-  }).join('');
-  box.scrollTop=box.scrollHeight;
+// Ask-your-meetings (v4): the notes-style inline answer card, fed from the
+// SEARCH field on Enter. MEET_ASK_SCOPE (set by the Studio "Ask this meeting"
+// card) narrows the context to one meeting.
+let MEET_ASK=null, MEET_ASK_SCOPE=null;
+function renderMeetAsk(){
+  const box=document.getElementById('meetAsk'); if(!box) return;
+  if(!MEET_ASK){
+    box.innerHTML = MEET_ASK_SCOPE
+      ? `<div class="spkchip" role="button" tabindex="0" onclick="clearAskScope()" title="Asking about one meeting — click to widen">ASKING THIS MEETING ONLY <span style="color:var(--sub)">✕</span></div>`
+      : '';
+    return;
+  }
+  if(MEET_ASK.busy){
+    box.innerHTML=`<div class="askNote"><div class="aq">${esc(MEET_ASK.q)}</div><div class="aa" style="color:var(--mut)">Thinking…</div></div>`;
+    return;
+  }
+  const src=(MEET_ASK.sources||[]).length?`<div class="asrc">FROM: ${esc(MEET_ASK.sources.join(' · '))}</div>`:'';
+  box.innerHTML=`<div class="askNote" role="status">
+    <button class="ax" aria-label="Dismiss answer" onclick="MEET_ASK=null;renderMeetAsk()">✕</button>
+    <div class="aq">${esc(MEET_ASK.q)}${MEET_ASK.scoped?' · THIS MEETING':''}</div>
+    <div class="aa">${esc(MEET_ASK.answer||'')}</div>${src}</div>`;
 }
+function clearAskScope(){ MEET_ASK_SCOPE=null; renderMeetAsk(); const i=document.getElementById('meetSearch'); if(i){ i.placeholder='Search or ask your meetings…'; } }
 function askMeetings(){
-  const inp=document.getElementById('askInput');
-  const q=(inp.value||'').trim();
-  if(!q) return;
-  inp.value='';
-  const entry={q:q, pending:true};
-  MCHAT.push(entry);
-  if(MCHAT.length>6) MCHAT=MCHAT.slice(-6);
-  renderAskThread();
-  api('ask_meetings', q).then(r=>{
-    entry.pending=false;
-    if(r && r.ok){ entry.a=r.answer; entry.sources=r.sources||[]; }
-    else { entry.err=(r&&r.error)||'Something went wrong — try again.'; }
-    renderAskThread();
+  const inp=document.getElementById('meetSearch');
+  const q=(inp && inp.value || '').trim();
+  if(!q || (MEET_ASK&&MEET_ASK.busy)) return;
+  const scoped = MEET_ASK_SCOPE;
+  MEET_ASK={q:q, busy:true, scoped:!!scoped};
+  renderMeetAsk();
+  busyGuard('askmeet', ()=>api('ask_meetings', q, scoped||null)).then(r=>{
+    if(r && r.busy) return;
+    if(r && r.ok) MEET_ASK={q:q, answer:r.answer, sources:r.sources||[], scoped:!!scoped};
+    else MEET_ASK={q:q, answer:(r&&r.error)||'Could not get an answer — try again.', sources:[], scoped:!!scoped};
+    renderMeetAsk();
   });
 }
 function fmtDur(secs){
@@ -1170,7 +1374,7 @@ function renderHome(){
 }
 
 // ── Insights ──────────────────────────────────────────────────────────────────
-let INS=null, INS_REFRESHED=false;
+let INS=null, INS_REFRESHED=false, INS_APPWIN='30';
 const fmtN = n => (n==null?'—':Number(n).toLocaleString('en-US'));
 const fmtK = n => n>=10000 ? (Math.round(n/100)/10)+'K' : fmtN(n);
 function fmtMin(min){
@@ -1294,12 +1498,18 @@ function renderInsights(){
   const deltaTag = (delta==null||delta===0) ? '' :
     `<span class="up">${delta>0?'&#9650;':'&#9660;'}${Math.abs(delta)}%</span>`;
   const savedAll = INS.saved_all_min ? ` &middot; ${fmtMin(INS.saved_all_min)} all time` : '';
-  const apps=(INS.apps||[]);
+  const apps=((INS_APPWIN==='all' ? INS.apps_all : INS.apps)||[]);
   const appsTotal=apps.reduce((a,b)=>a+b.words,0)||1;
-  const cols=['#C85A3E','#a84b33','#a84b33','#7a4030','#7a4030','#7a4030'];
-  const appsHtml = apps.length ? apps.map((a,i)=>`
+  const cols=['#C85A3E','#a84b33','#a84b33','#7a4030','#7a4030','#7a4030','#7a4030'];
+  const appsHtml = apps.length ? apps.map((a,i)=>{
+      const sub = a.count
+        ? `${fmtN(a.count)} dictation${a.count===1?'':'s'}${a.avg?` &middot; avg ${a.avg} words`:''}`
+        : '';
+      return `
       <div class="insabar"><div class="arow"><span class="an">${esc(a.name)}</span><span class="av">${fmtK(a.words)} &middot; ${a.pct}%</span></div>
-      <div class="atr"><i style="width:${Math.max(1,Math.round(a.words/appsTotal*100))}%;background:${cols[i]||cols[5]}"></i></div></div>`).join('')
+      <div class="atr"><i style="width:${Math.max(1,Math.round(a.words/appsTotal*100))}%;background:${cols[i]||cols[6]}"></i></div>
+      ${sub?`<div class="asub">${sub}</div>`:''}</div>`;
+    }).join('')
     : '<div class="empty" style="padding:18px 0">App breakdown builds as you dictate on this device.</div>';
   const hrs=INS.hours||[]; const hmx=Math.max(1,...hrs);
   const hoursHtml=hrs.map((v,i)=>
@@ -1345,7 +1555,11 @@ function renderInsights(){
     </div>
     <div class="inscard inssplit">
       <div>
-        <div class="inssub">Where you dictate <span style="float:right;letter-spacing:.02em;text-transform:none;color:rgba(240,240,240,.42)">last 30 days</span></div>
+        <div class="inssub">Where you dictate
+          <span class="insseg">
+            <button class="${INS_APPWIN==='30'?'on':''}" onclick="INS_APPWIN='30';renderInsights()">30 days</button>
+            <button class="${INS_APPWIN==='all'?'on':''}" onclick="INS_APPWIN='all';renderInsights()">All time</button>
+          </span></div>
         ${appsHtml}
       </div>
       <div>
@@ -1541,6 +1755,30 @@ function applyCanvasImage(r){
 function sendCanvasImage(dataUri){ const txt=canvasText(); api('save_canvas_image_data', dataUri, txt).then(applyCanvasImage); }
 
 let NOTE_REC=false, _noteTimer=null, _rawTimer=null, NOTE_QUERY='', SHOW_ORIG=false, NOTE_SEG_ID=null;
+let NOTE_FS='m';
+try{ const v=localStorage.getItem('flumeNoteFs'); if(v==='s'||v==='l') NOTE_FS=v; }catch(e){}
+let NAV_OPEN=false;   // user re-opened the sidebar while on Notes (via the hamburger)
+// The sidebar collapses only when a NOTE IS OPEN (alongside the Studio pane) —
+// merely landing on the Notes screen keeps the navigation visible.
+// A "document is open" test shared by Notes and Meetings (v4): the sidebar
+// collapse, the hamburger and the window auto-grow all key off it.
+function paneOpen(){
+  if(ACTIVE==='notes') return !!curNote();
+  if(ACTIVE==='meetings') return !!MROW;
+  return false;
+}
+function applyNavCollapse(){
+  const app=document.querySelector('.app'); if(!app) return;
+  app.classList.toggle('navhide', !NAV_OPEN && paneOpen());
+  const h=document.getElementById('navHamb');
+  if(h){
+    h.setAttribute('aria-expanded', NAV_OPEN?'true':'false');
+    h.setAttribute('aria-label', NAV_OPEN?'Hide menu':'Show menu');
+    h.title = NAV_OPEN?'Hide menu':'Show menu';
+  }
+}
+function toggleNav(){ NAV_OPEN=!NAV_OPEN; applyNavCollapse(); }
+const SVG_HAMB='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 6.5h16M4 12h16M4 17.5h16"/></svg>';
 let NOTE_ASK=null;   // {q, answer, sources} | {q, busy:true} | null — the ask-your-notes card
 function strippedNote(n){ return (n.content||'').replace(/<[^>]*>/g,' ').replace(/&nbsp;/g,' ').replace(/\[( |x|X)\]/g,'').replace(/(^|\n)\s*(?:[-*]|\d+\.)\s+/g,'$1').replace(/[*#`>☑☐]/g,'').replace(/\s+/g,' ').trim(); }
 function notePreview(n){ return strippedNote(n).slice(0,80); }
@@ -1603,7 +1841,9 @@ function chkProgress(n){
   }
   return total ? {done:done, total:total} : null;
 }
-function curNote(){ return NOTES.find(x=>x.id===SELN) || filteredNotes()[0] || NOTES[0] || null; }
+// Nothing is selected by default (v3.2 — the user picks; only then do the
+// editor + Studio panes light up). No fallback to the newest note.
+function curNote(){ return NOTES.find(x=>x.id===SELN) || null; }
 function notesFlag(name){ return !(STATE&&STATE.settings) || STATE.settings[name]!==false; }
 function isHtmlContent(s){ return /<(\w|\/)/.test(s||''); }
 function noteBodyHtml(n){ const c=n.content||''; if(!c.trim()) return ''; return isHtmlContent(c) ? c : mdToHtml(c); }
@@ -1631,23 +1871,121 @@ function renderNotes(){
       <div class="searchbox">${SVG.search}<input id="noteSearch" type="search" aria-label="Search notes" placeholder="Search or ask your notes…" value="${esc(NOTE_QUERY)}" oninput="noteSearchInput(this.value)" onkeydown="if(event.key==='Enter')askNotes()"/></div>
       <div class="notecount" id="noteCount" role="status" aria-live="polite"></div>
       <div id="noteAsk"></div>` : '';
-  const editor = n ? noteEditorHtml(n) : '<div class="empty">Select or create a note.</div>';
+  const hasAny=realNotes().length>0;
+  const editor = n ? noteEditorHtml(n)
+    : `<div class="npaneHead"><span class="pt">Note</span></div>
+       <div class="npaneBody" style="display:flex">
+         <div class="nempty" style="margin:auto">
+           <div class="t">${hasAny?'Pick a note':'Nothing here yet'}</div>
+           <div class="s">${hasAny?'Select one from the list — or start a new one — and the editor and Studio open with it.':'Your first note will open here — dictate or type one from the left.'}</div>
+         </div>
+       </div>`;
   const all=realNotes();
   const weekAgo=Date.now()-7*86400000;
   const wk=all.filter(x=>{ const t=Date.parse(x.updated_at||''); return t && t>=weekAgo; }).length;
-  document.getElementById('notesMain').innerHTML = `
-    <div class="listcol"><div class="mhead"><div><div class="eyebrow">${all.length} notes${wk?` · ${wk} this week`:''}</div><h1 class="title">Notes</h1></div>
-      <div style="display:flex;gap:8px">
-        <button class="roundbtn" aria-label="Dictate a new note" title="Dictate a new note" onclick="dictateNewNote()">${SVG.mic}</button>
-        <button class="roundbtn" aria-label="New note" title="New note" onclick="newNote()">${SVG.plus}</button>
-      </div></div>
-      ${searchBox}
-      <div id="noteList"></div></div>
-    <div class="editor">${editor}</div>`;
+  const box=document.getElementById('notesMain');
+  box.className='nbgrid'+(n?'':' nosel')+((n&&STUDIO_FORCE3)?' force3':'');
+  box.innerHTML = `
+    <div class="npane">
+      <div class="npaneHead">
+        <div style="display:flex;align-items:center;gap:10px">
+          ${n?`<button class="hamb" id="navHamb" aria-label="Show menu" aria-expanded="false" onclick="toggleNav()">${SVG_HAMB}</button>`:''}
+          <span class="pt">Notes</span>
+        </div>
+        <span class="eyebrow">${all.length} note${all.length===1?'':'s'}${wk?` · ${wk} this week`:''}</span>
+      </div>
+      <div class="npaneBody">
+        <div class="pillrow">
+          <button class="pillbtn" aria-label="New note" onclick="newNote()">${SVG.plus}New</button>
+          <button class="pillbtn acc" aria-label="Dictate a new note" onclick="dictateNewNote()">${SVG.mic}Dictate</button>
+          <button class="pillbtn" aria-label="Import from meetings or transcriptions" title="Import from meetings or transcriptions" onclick="openImport()">${SVG_IMPORT}Import</button>
+        </div>
+        ${searchBox}
+        <div id="noteList"></div>
+      </div>
+    </div>
+    <div class="npane" id="notePane">${editor}</div>
+    ${n?`<div class="npane studio" id="studioPane">${studioHtml(n)}</div>`:''}`;
+  applyNavCollapse();
   renderNoteList();
   renderNoteAsk();
-  if(n && !SHOW_ORIG){ const b=document.getElementById('noteBody'); if(b) b.innerHTML=noteBodyHtml(n); updateDictateBtn(); }
+  if(n && !SHOW_ORIG){ const b=document.getElementById('noteBody'); if(b) b.innerHTML=noteBodyHtml(n); }
+  nuInit(n && !SHOW_ORIG ? n : null);
+  updateDictateBtn();
   updateSegIcons();
+  if(n) ensureStudioFits();
+}
+// The Studio column collapses under 1000px and the default window is 980 wide —
+// so with a note open, GROW THE WINDOW instead of hiding the pane. Fail-closed:
+// if the host can't resize, the CSS breakpoint still keeps the layout sane.
+// The resize re-fires the media query, so Studio appears without a re-render.
+// Fires at most ONCE per Notes visit (reset in show()) — if the user then
+// shrinks the window on purpose, we don't fight them on every note click.
+let STUDIO_FIT_TRIED=false, STUDIO_FORCE3=false;
+function ensureStudioFits(){
+  if(STUDIO_FIT_TRIED || window.innerWidth >= 1010) return;
+  STUDIO_FIT_TRIED=true;
+  api('ensure_window_width', 1220, 700);
+  // Belt and braces: if the window did NOT grow (host without resize support,
+  // or clamped by a small screen), force the three-pane grid anyway once the
+  // resize has had its chance — a squeezed Studio beats a missing one.
+  setTimeout(()=>{
+    if(!paneOpen() || window.innerWidth >= 1010) return;
+    STUDIO_FORCE3=true;
+    const g=document.getElementById(ACTIVE==='meetings'?'meetingsMain':'notesMain');
+    if(g) g.classList.add('force3');
+  }, 600);
+}
+// Manual widening past the breakpoint retires the forced layout.
+window.addEventListener('resize', ()=>{
+  if(STUDIO_FORCE3 && window.innerWidth >= 1010){
+    STUDIO_FORCE3=false;
+    ['notesMain','meetingsMain'].forEach(id=>{
+      const g=document.getElementById(id);
+      if(g) g.classList.remove('force3');
+    });
+  }
+});
+// The Studio pane (v3.1): pastel restyle/export cards + this note's recordings
+// and original-transcript row + the Add-note pill. Rebuilding it never touches
+// the editor pane, so in-progress typing is safe.
+function studioHtml(n){
+  const dis = n ? '' : ' disabled';
+  const menu = `
+      <div class="nmenuwrap">
+        <button class="scard slate"${dis} aria-haspopup="true" onclick="toggleNoteMenu(event,'studioExpMenu')">
+          <span class="sdisc">${SVG.send}</span><span class="sl">Export</span><span class="ss">Markdown, text, clipboard</span></button>
+        <div class="nmenu" id="studioExpMenu" hidden>
+          <button onclick="noteCopy('txt')">${SVG.copy}Copy as text</button>
+          <button onclick="noteCopy('md')">${SVG.copy}Copy as Markdown</button>
+          <button onclick="noteExport('md')">Export as .md…</button>
+          <button onclick="noteExport('txt')">Export as .txt…</button>
+        </div></div>`;
+  const cards = `<div class="scards">
+      <button class="scard cream"${dis} onclick="formatNoteStyled('structured')"><span class="sdisc">${SVG.bolt}</span><span class="sl">Auto-structure</span><span class="ss">Headings &amp; checklists</span></button>
+      <button class="scard sage"${dis} onclick="formatNoteStyled('prose')"><span class="sdisc">${SVG.lines}</span><span class="sl">Flowing prose</span><span class="ss">Connected paragraphs</span></button>
+      <button class="scard plum"${dis} onclick="formatNoteStyled('transcript')"><span class="sdisc">${SVG.book}</span><span class="sl">Clean transcript</span><span class="ss">Keep every word</span></button>
+      ${menu}
+    </div>`;
+  const segs = n ? (n.audio_segments||[]).filter(s=>s&&s.id) : [];
+  const segRows = segs.map((s,i)=>{
+    const t=(s.created_at||'').slice(11,16);
+    return `<div class="srow">
+      <span class="sic">${SVG.mic}</span>
+      <span class="st"><span class="a">Recording ${i+1}</span><span class="b">${t?esc(t)+' · ':''}source audio</span></span>
+      <button class="splay segbtn" data-id="${esc(s.id)}" aria-label="Play recording ${i+1}" onclick="noteSegPlay(this)"><span class="segic">${SVG.play}</span></button>
+    </div>`;
+  }).join('');
+  const hasRaw = n && (n.raw_content!=null) && String(n.raw_content).trim()!=='';
+  const origRow = hasRaw ? `<div class="srow" role="button" tabindex="0" onclick="toggleShowOrig()" onkeydown="if(event.key==='Enter')toggleShowOrig()">
+      <span class="sic">${SVG.book}</span>
+      <span class="st"><span class="a">${SHOW_ORIG?'Formatted note':'Original transcript'}</span><span class="b">${SHOW_ORIG?'Back to the clean version':'What you actually said · editable'}</span></span>
+    </div>` : '';
+  const rows = (origRow||segRows) ? `<div class="shead">This note</div>${origRow}${segRows}` : '';
+  return `
+    <div class="npaneHead"><span class="pt">Studio</span></div>
+    <div class="npaneBody">${cards}${rows}</div>
+    <div class="studioFoot"><button class="addpill" onclick="newNote()">${SVG.edit}Add note</button></div>`;
 }
 
 // ── 31f — Meetings page (dedicated sidebar destination) ──────────────────────
@@ -1661,120 +1999,348 @@ function meetGroup(m){
     return 'Earlier';
   }catch(e){ return 'Earlier'; }
 }
+// ── Meetings v4: the Notes pane language (approved proposal, 2026-08-15) ─────
+// Three floating panes — list · document · Studio — sharing the Notes screen's
+// behavior contracts (no default selection, sidebar collapse with a selection,
+// window auto-grow). All the detail EDITING machinery (fillMeetDetail, action
+// items, hybrid notes, transcript edit, marks) is reused untouched: the pane
+// keeps the same element ids the fill code writes into.
+function spColor(sid, i){
+  const SPCOL={self:'#D9B36B'};
+  const PAL=['#D98A72','#8FA7C2','#A9BD98','#D9B36B'];
+  return SPCOL[sid]||PAL[i%PAL.length];
+}
+function fmtHM(secs){
+  const m=Math.round((secs||0)/60);
+  return m>=60 ? Math.floor(m/60)+'h '+(m%60)+'m' : m+'m';
+}
 function renderMeetings(){
-  // The Meetings screen is a two-level route: the list, or ONE meeting's detail
-  // (which itself has a full-notes sub-page). MER-46 — this is where reading a
-  // meeting happens now; the panel keeps only the live meeting.
-  if(MVIEW==='detail' && MROW) return MSUBNOTES ? renderMeetNotes() : renderMeetDetail();
+  const box=document.getElementById('meetingsMain'); if(!box) return;
+  const open=!!MROW;
+  box.className='nbgrid'+(open?'':' nosel');
   const all=MEETS.meetings||[];
   const total=all.reduce((a,m)=>a+(m.duration_seconds||0),0);
-  const activeBar = MEETS.active_id ? `
-    <div class="mcard" style="margin:0 0 14px">
-      <div class="mrec"><span class="mdot"></span>REC</div>
-      <div style="flex:1;min-width:0">
-        <div class="mctitle">${esc(MEETS.active_title||'Meeting')}</div>
-        <div class="mcsub mono">${fmtDur(MEETS.active_elapsed)} · recording</div></div>
-      <button class="btn primary" style="flex:none" onclick="api('open_meeting_launcher')">Return</button>
-      <button class="btn ghost" style="flex:none" onclick="stopMeeting(this)">Stop</button>
+  const hamb = open?`<button class="hamb" id="navHamb" aria-label="Show menu" aria-expanded="false" onclick="toggleNav()">${SVG_HAMB}</button>`:'';
+  const live = MEETS.active_id ? `
+    <div class="mlivebar"><span class="recdot" style="width:8px;height:8px;border-radius:50%;background:#E05049;flex:none"></span>
+      <span class="t">${esc(MEETS.active_title||'Meeting')}</span>
+      <span class="m">${fmtDur(MEETS.active_elapsed)} · REC</span>
+      <button class="pillbtn" onclick="api('open_meeting_launcher')">Return</button>
+      <button class="pillbtn" onclick="stopMeeting(this)">Stop</button>
     </div>` : '';
-  document.getElementById('meetingsMain').innerHTML = `
-    <div class="mhead"><div><div class="eyebrow">${all.length} meetings · ${Math.round(total/60)} min captured</div><h1 class="title">Meetings</h1></div>
-      <button class="btn primary" style="flex:none" onclick="api('open_meeting_launcher')"><span class="mrecdot"></span>New meeting</button></div>
-    ${activeBar}
-    <div class="askCard">
-      <div class="askHead">Ask your meetings</div>
-      <div class="askRow">
-        <input id="askInput" placeholder="e.g. What did we decide about the launch? Who owns the wireframes?"
-          onkeydown="if(event.key==='Enter')askMeetings()"/>
-        <button class="btn primary" style="flex:none" onclick="askMeetings()">Ask</button>
+  const center = MSUBNOTES ? meetNotesPaneHtml()
+    : (open ? meetDocHtml()
+    : `<div class="npaneHead"><span class="pt">Meeting</span></div>
+       <div class="npaneBody" style="display:flex">
+         <div class="nempty">
+           <div class="t">${MEETS.active_id?'Recording in progress':'Pick a meeting'}</div>
+           <div class="s">${MEETS.active_id
+             ?'A meeting is being captured — open it from the bar, or read past meetings meanwhile.'
+             :'Select one from the list and the summary, transcript and Studio open with it.'}</div>
+         </div>
+       </div>`);
+  box.innerHTML = `
+    <div class="npane">
+      <div class="npaneHead">
+        <div style="display:flex;align-items:center;gap:10px">${hamb}<span class="pt">Meetings</span></div>
+        <span class="eyebrow">${all.length} meeting${all.length===1?'':'s'}${total?` · ${fmtHM(total)}`:''}</span>
       </div>
-      <div class="askThread" id="askThread"></div>
+      <div class="npaneBody">
+        <div class="pillrow">
+          <button class="pillbtn acc" onclick="api('open_meeting_launcher')"><span class="mrecdot"></span>New meeting</button>
+        </div>
+        ${live}
+        <div class="searchbox">${SVG.search}<input id="meetSearch" type="search" aria-label="Search meetings" placeholder="${MEET_ASK_SCOPE?'Ask this meeting…':'Search or ask your meetings…'}" value="${esc(MEET_QUERY)}" oninput="MEET_QUERY=this.value;renderMeetList()" onkeydown="if(event.key==='Enter')askMeetings()"/></div>
+        <div id="meetAsk"></div>
+        <div id="meetList"></div>
+      </div>
     </div>
-    <div class="searchbox">${SVG.search}<input id="meetSearch" type="search" aria-label="Search meetings" placeholder="Search meetings…" value="${esc(MEET_QUERY)}" oninput="MEET_QUERY=this.value;renderMeetRows()"/></div>
-    <div class="rows" style="display:block" id="meetRows"></div>`;
-  renderMeetRows();
-  renderAskThread();
+    <div class="npane" id="meetDocPane">${center}</div>
+    ${open?`<div class="npane studio" id="meetStudio">${meetStudioHtml()}</div>`:''}`;
+  renderMeetList();
+  renderMeetAsk();
+  if(open && !MSUBNOTES){ fillMeetDetail(); wirePlaybar(); }
+  applyNavCollapse();
+  if(open) ensureStudioFits();
   if(!MEETS_LOADED){ MEETS_LOADED=true; loadMeets(); }
 }
-// Rows only — re-rendered on each search keystroke so the input keeps focus.
-function renderMeetRows(){
-  const box=document.getElementById('meetRows'); if(!box) return;
+// Rows only — re-rendered per search keystroke so the input keeps focus.
+function renderMeetList(){
+  const box=document.getElementById('meetList'); if(!box) return;
   const q=(MEET_QUERY||'').trim().toLowerCase();
   const all=MEETS.meetings||[];
-  const ms=q?all.filter(m=>(m.title||'').toLowerCase().includes(q)):all;
+  const ms=q?all.filter(m=>((m.title||'')+' '+(m.summary||'')).toLowerCase().includes(q)):all;
   if(!ms.length){
     box.innerHTML = q
-      ? `<div class="empty">No meetings match “${esc(q)}”.</div>`
-      : `<div class="meetEmpty">
-          <div class="meetEmptyDisc">${SVG.meet}</div>
-          <div class="meetEmptyTitle">No meetings yet</div>
-          <div class="meetEmptyBody">Start your first meeting from the button above or the menubar.
-            Flume captures system audio and your mic silently — no bot joins the call.</div>
+      ? `<div class="empty">No meetings match “${esc(q)}”. Press Enter to ask AI instead.</div>`
+      : `<div class="nempty" style="padding:34px 10px">
+          <div class="disc">${SVG.meet}</div>
+          <div class="t">No meetings yet</div>
+          <div class="s">Flume captures system audio and your mic silently — no bot joins the call.</div>
           <button class="btn primary" style="width:auto" onclick="api('open_meeting_launcher')">Start your first meeting</button>
         </div>`;
     return;
   }
-  // 33j — group rows into ONE parent card per group (Today / This week / Earlier)
-  const SPCOL={self:'#D9B36B'};
-  const PAL=['#D98A72','#8FA7C2','#A9BD98','#D9B36B'];
-  function spDot(sid,i){ return SPCOL[sid]||PAL[i%PAL.length]; }
   function rowHtml(m){
-    const status = m.status==='failed' ? ' <span class="tag fail">failed</span>'
-      : m.status==='processing' ? ' <span class="tag local">summarizing…</span>' : '';
-    const prev = m.status==='processing' ? 'Summarizing…'
-      : (m.summary||'').split('\n')[0] || ((m.utterances||0)+' segments'+(m.cloud?'':' · this Mac only'));
     const spk=m.speakers||{};
     const sids=Object.keys(spk);
-    const chips=sids.slice(0,3).map((sid,i)=>
-      `<span class="mrChip"><i style="background:${spDot(sid,i)}"></i>${esc(spk[sid]||sid)}</span>`).join('');
-    const more=sids.length>3?`<span class="mrMore">+${sids.length-3}</span>`:'';
-    const marks=(m.marked_moments||[]).length, acts=(m.action_items||[]).length;
-    const attrs=[
-      marks?`<span class="st">★ ${marks}</span>`:'',
-      acts?`<span>✓ ${acts}</span>`:'',
-      m.audio_url?'<span>▶</span>':''
-    ].filter(Boolean).join('');
+    const avs = sids.length
+      ? sids.slice(0,3).map((sid,i)=>`<span class="mav" style="background:${spColor(sid,i)}">${esc(((spk[sid]||'?').trim().charAt(0)||'?').toUpperCase())}</span>`).join('')
+      : `<span class="mav" style="background:#D9B36B">·</span>`;
+    const prev = m.status==='processing' ? 'Summarizing…'
+      : m.status==='failed' ? 'Summary failed — open to retry'
+      : ((m.summary||'').split('\n')[0] || ((m.utterances||0)+' segments'+(m.cloud?'':' · this Mac only')));
     const isNew = m.status==='ready' && (MEETS.opened||[]).indexOf(m.id)<0;
-    return `
-    <div class="meetrow" onclick="api('open_meeting', ${esc(JSON.stringify(m.id))})">
-      ${isNew?'<span class="newbar"></span>':''}
-      <div class="meetrowTop">${m.pinned?'<span class="pinG" title="Pinned">★</span>':''}<span class="meetrowTitle">${esc(m.title||'Meeting')}</span>${isNew?'<span class="newTag">NEW</span>':''}${status}
-        <span class="mrMeta">${esc((m.started_at||'').slice(0,10))} · ${fmtDur(m.duration_seconds)}</span></div>
-      <div class="mrPrev">${esc(prev)}</div>
-      <div class="mrFoot">${chips}${more}<span class="mrAttrs">${attrs}</span></div>
-      <div class="mrActs">
-        <button title="${m.pinned?'Unpin':'Pin'}" onclick="event.stopPropagation();pinMeeting(${esc(JSON.stringify(m.id))}, ${m.pinned?'false':'true'}, this)">${m.pinned?'★':'☆'}</button>
-        <button title="Open" onclick="event.stopPropagation();api('open_meeting', ${esc(JSON.stringify(m.id))})">${SVG.play}</button>
-        <button class="del" title="Delete meeting"
-          onclick="event.stopPropagation();deleteMeeting(${esc(JSON.stringify(m.id))}, ${esc(JSON.stringify(m.title||'Meeting'))}, this)">✕</button>
-      </div>
+    const marks=(m.marked_moments||[]).length, acts=(m.action_items||[]).length;
+    const meta=[fmtHM(m.duration_seconds)];
+    if(marks) meta.push('<span class="st">★'+marks+'</span>');
+    if(acts) meta.push('✓'+acts);
+    return `<div class="mgrow${(MROW&&MROW.id===m.id)?' active':''}" role="button" tabindex="0"
+        onclick="api('open_meeting', ${esc(JSON.stringify(m.id))})"
+        onkeydown="if(event.key==='Enter')api('open_meeting', ${esc(JSON.stringify(m.id))})">
+      <span class="mavs">${avs}</span>
+      <span class="mgmid">
+        <span class="mgtitle">${isNew?'<span class="mgnew"></span>':''}${m.pinned?'<span style="color:var(--acc)">★</span>':''}${esc(m.title||'Meeting')}</span>
+        <span class="mgprev">${esc(prev)}</span>
+      </span>
+      <span class="mgside"><span class="mgtime">${esc(noteDateLabel(m.started_at))}</span><span class="mgmeta">${meta.join(' · ')}</span></span>
     </div>`;
   }
   const pinned=ms.filter(m=>m.pinned), rest=ms.filter(m=>!m.pinned);
   let html='';
-  if(pinned.length){
-    html+=`<div class="eyebrow" style="margin:14px 0 0">PINNED</div><div class="meetlist">`+
-      pinned.map(rowHtml).join('')+`</div>`;
-  }
-  let last='', open=false;
+  if(pinned.length) html+=`<div class="ngroup">Pinned</div><div class="mgrp">${pinned.map(rowHtml).join('')}</div>`;
+  let last='', buf=[];
+  const flush=()=>{ if(buf.length){ html+=`<div class="ngroup">${last}</div><div class="mgrp">${buf.join('')}</div>`; buf=[]; } };
   rest.forEach(m=>{
     const g=meetGroup(m);
-    if(g!==last){
-      if(open) html+='</div>';
-      html+=`<div class="eyebrow" style="margin:14px 0 0">${g.toUpperCase()}</div><div class="meetlist">`;
-      open=true; last=g;
-    }
-    html+=rowHtml(m);
+    if(g!==last){ flush(); last=g; }
+    buf.push(rowHtml(m));
   });
-  if(open) html+='</div>';
+  flush();
   box.innerHTML=html;
+}
+// ── the document pane (center): summary → decisions → actions → notes →
+// marks/transcript expanders, with the playback bar at the bottom. Element ids
+// match what fillMeetDetail() has always written into.
+function meetDocHtml(){
+  const m=MROW;
+  return `
+    <div class="npaneHead">
+      <span class="pt">Meeting</span>
+      <div class="notetoolbar">
+        <span class="hnTabs">
+          <button class="hnTab" data-hnv="yours" onclick="hnView('yours')">Yours</button>
+          <button class="hnTab${HNVIEW==='merged'?' on':''}" data-hnv="merged" onclick="hnView('merged')">Merged</button>
+          <button class="hnTab" data-hnv="ai" onclick="hnView('ai')">AI</button>
+        </span>
+        <button class="fmtbtn${m.pinned?' pinned':''}" id="meetPinBtn" title="${m.pinned?'Unpin meeting':'Pin meeting'}" aria-pressed="${m.pinned?'true':'false'}" onclick="meetPinToggle()">${m.pinned?'★':'☆'}</button>
+        <button class="fmtbtn" title="Copy summary to clipboard" onclick="sumShare(this)">${SVG.copy}</button>
+        <span class="nmenuwrap">
+          <button class="fmtbtn" title="More actions" aria-haspopup="true" onclick="toggleNoteMenu(event,'meetMoreMenu')">${SVG.dots}</button>
+          <div class="nmenu" id="meetMoreMenu" hidden>
+            <button onclick="sumRegen()">${SVG_REFRESH}Regenerate summary</button>
+            <div class="nmsep"></div>
+            <button class="danger" onclick="meetDeleteCurrent()">${SVG.trash}Delete meeting</button>
+          </div></span>
+      </div>
+    </div>
+    <div class="npaneBody edscroll">
+      <div id="mtgDetail" class="show">
+        <span class="eyebrow" id="sumEyebrow" style="display:none"></span>
+        <input class="sumTitle" id="sumTitle" value="" spellcheck="false" aria-label="Meeting title" onchange="mtgTitle(this.value)"/>
+        <div class="sumMeta" id="sumMeta"></div>
+        <div id="sumBody" class="mdocsum"></div>
+        <div class="mdocsec">Decisions</div>
+        <div id="decBody"></div>
+        <div class="mdocsec">Action items</div>
+        <div id="aiBody"></div>
+        <div class="mdocsec">Notes
+          <span class="legend"><span class="lu"><i></i>Your notes</span><span class="la"><i></i>AI additions</span></span>
+          <button class="btnS mini" title="Full AI notes of this meeting" onclick="openNotes()">Open notes &#8599;</button>
+        </div>
+        <div id="hnBody"></div>
+        <div class="teasers">
+          <div class="teaser" onclick="toggleBox('marksBox', renderMarksBox)">${SVG.bolt}<span class="tl" id="marksTeaseL">Marked moments</span><span class="eyebrow">Expand</span></div>
+          <div class="teaser" onclick="toggleBox('txBox', renderTxBox)">${SVG.search}<span class="tl" id="txTeaseL">Full transcript</span><span class="eyebrow">Expand</span></div>
+        </div>
+        <div class="card expandBox" id="marksBox"></div>
+        <div class="card expandBox" id="txBox"></div>
+      </div>
+    </div>
+    ${meetPlaybarHtml()}
+    <audio id="sumAudio"></audio>`;
+}
+// ── the Studio pane: pastel actions, speakers-with-filter, this-meeting rows ──
+function speakerStats(m){
+  const spk=(m&&m.speakers)||{};
+  const ids=Object.keys(spk);
+  const dur={};
+  ((m&&m.transcript)||[]).forEach(u=>{ dur[u.speaker]=(dur[u.speaker]||0)+Math.max(0,(u.t1||0)-(u.t0||0)); });
+  const tot=Object.keys(dur).reduce((a,k)=>a+dur[k],0)||0;
+  return ids.map((sid,i)=>({
+    sid:sid, name:spk[sid]||sid, color:spColor(sid,i),
+    secs:dur[sid]||0, pct: tot? Math.round(100*(dur[sid]||0)/tot) : 0,
+  }));
+}
+function meetStudioHtml(){
+  const m=MROW; if(!m) return '';
+  const stats=speakerStats(m);
+  const spkRows=stats.map(s=>`
+    <button class="spkrow${MSPK===s.sid?' on':''}" aria-pressed="${MSPK===s.sid?'true':'false'}"
+        title="Show only ${esc(s.name)}'s lines · double-click to rename"
+        onclick="spkFilter(${esc(JSON.stringify(s.sid))})"
+        ondblclick="event.stopPropagation();sumRename(${esc(JSON.stringify(s.sid))}, this)">
+      <span class="sav" style="background:${s.color}">${esc(((s.name||'?').trim().charAt(0)||'?').toUpperCase())}</span>
+      <span class="sn"><span class="a">${esc(s.name)}</span><span class="b">${Math.round(s.secs/60)} MIN · ${s.pct}%</span></span>
+      <span class="share"><i style="width:${s.pct}%;background:${s.color}"></i></span>
+    </button>`).join('');
+  const filt=stats.find(s=>s.sid===MSPK);
+  const marks=(m.marked_moments||[]).length;
+  return `
+    <div class="npaneHead"><span class="pt">Studio</span></div>
+    <div class="npaneBody">
+      <div class="scards">
+        <button class="scard cream" onclick="openNotes()"><span class="sdisc">${SVG.book}</span><span class="sl">AI Notes</span><span class="ss">The full notes page</span></button>
+        <button class="scard sage" onclick="sumRegen()"><span class="sdisc">${SVG_REFRESH}</span><span class="sl">Regenerate</span><span class="ss">Re-run the summary</span></button>
+        <button class="scard plum" onclick="askThisMeeting()"><span class="sdisc">${SVG.search}</span><span class="sl">Ask this meeting</span><span class="ss">Who said what, when</span></button>
+        <span class="nmenuwrap">
+          <button class="scard slate" aria-haspopup="true" onclick="toggleNoteMenu(event,'meetExpMenu')"><span class="sdisc">${SVG.send}</span><span class="sl">Export</span><span class="ss">Markdown, text, note</span></button>
+          <div class="nmenu" id="meetExpMenu" hidden>
+            <button onclick="sumShare(this)">${SVG.copy}Copy summary</button>
+            <button id="expMdBtn" onclick="sumExport('md')">Export as .md…</button>
+            <button id="expTxtBtn" onclick="sumExport('txt')">Export as .txt…</button>
+            <div class="nmsep"></div>
+            <button onclick="sendMeetingToNotes()">${SVG_IMPORT}Send to Notes</button>
+          </div></span>
+      </div>
+      ${stats.length?`<div class="shead">Speakers · tap to filter</div>${spkRows}
+        ${filt?`<div class="spkhint">Showing only ${esc(filt.name)}'s lines in the transcript — tap again for everyone.</div>`:''}`:''}
+      <div class="shead" style="margin-top:14px">This meeting</div>
+      <div class="srow" role="button" tabindex="0" onclick="toggleBox('marksBox', renderMarksBox)" onkeydown="if(event.key==='Enter')toggleBox('marksBox', renderMarksBox)">
+        <span class="sic">★</span><span class="st"><span class="a">Marked moments</span><span class="b">${marks} · jump to transcript</span></span></div>
+      <div class="srow" role="button" tabindex="0" onclick="sendMeetingToNotes()" onkeydown="if(event.key==='Enter')sendMeetingToNotes()">
+        <span class="sic">${SVG_IMPORT}</span><span class="st"><span class="a">Send to Notes</span><span class="b">Import as an editable note</span></span></div>
+    </div>
+    <div class="studioFoot"><button class="addpill" onclick="api('open_meeting_launcher')"><span class="rd"></span>New meeting</button></div>`;
+}
+function meetPinToggle(){
+  if(!MROW) return;
+  const on=!MROW.pinned;
+  MROW.pinned=on;
+  (MEETS.meetings||[]).forEach(x=>{ if(x.id===MROW.id) x.pinned=on; });
+  const b=document.getElementById('meetPinBtn');
+  if(b){ b.className='fmtbtn'+(on?' pinned':''); b.textContent=on?'★':'☆'; b.title=on?'Unpin meeting':'Pin meeting'; }
+  renderMeetList();
+  api('set_meeting_pinned', MROW.id, on).then(r=>{
+    if(r && r.ok===false){ MROW.pinned=!on; renderMeetList(); toast((r.error)||'Could not update the pin.', true); }
+  });
+}
+function meetDeleteCurrent(){
+  if(!MROW) return;
+  deleteMeeting(MROW.id, MROW.title||'Meeting', null);
+}
+function askThisMeeting(){
+  if(!MROW) return;
+  MEET_ASK_SCOPE=MROW.id;
+  renderMeetAsk();
+  const i=document.getElementById('meetSearch');
+  if(i){ i.placeholder='Ask this meeting…'; i.focus(); }
+}
+// Send to Notes — the Notes import pointed the other way (v4).
+function sendMeetingToNotes(){
+  const m=MROW; if(!m) return;
+  const c=meetingNoteMarkdown(m);
+  if(!c){ toast('This meeting has no content to send yet.', true); return; }
+  busyGuard('send2notes', ()=>api('save_note', {title:c.title, content:c.content})).then(r=>{
+    if(r && r.busy) return;
+    if(!(r&&r.ok)){ toast('Could not create the note — try again.', true); return; }
+    NOTES=r.notes||NOTES; SELN=r.id||SELN; NOTE_QUERY=''; NOTE_ASK=null; SHOW_ORIG=false;
+    navTo('notes');
+  });
+}
+// ── speaker filter (v4): tap a Studio speaker → only their transcript lines ──
+function spkFilter(sid){
+  MSPK = (MSPK===sid) ? null : sid;
+  const st=document.getElementById('meetStudio');
+  if(st) st.innerHTML=meetStudioHtml();
+  const tx=document.getElementById('txBox');
+  if(MSPK && tx && !tx.classList.contains('show')) toggleBox('txBox', renderTxBox);
+  else renderTxBox();
+}
+// ── playback bar — the dictation bar's twin ──────────────────────────────────
+function meetPlaybarHtml(){
+  const m=MROW;
+  const dis=!!(m && m.audio_expired);
+  let bars='';
+  for(let i=0;i<34;i++){ bars+='<i style="height:'+(5+((i*7919)%13))+'px"></i>'; }
+  return `<div class="playbar${dis?' off':''}" id="meetPlaybar"${dis?' title="Audio expired — notes and transcript kept"':''}>
+    <button class="pfab" id="pbFabBtn" aria-label="Play recording" onclick="pbFab()">${SVG.play}</button>
+    <div class="pwave" id="pbWaveEl" aria-hidden="true" onclick="pbSeek(event)">${bars}</div>
+    <span class="ptime" id="pbTime">0:00 / ${fmtMT(m?m.duration_seconds:0)}</span>
+    <button class="pspeed" id="pbSpeed" title="Playback speed" onclick="pbSpeed()">${MRATE}×</button>
+  </div>`;
+}
+function wirePlaybar(){
+  const a=document.getElementById('sumAudio'); if(!a) return;
+  a.playbackRate=MRATE;
+  a.addEventListener('play', updPB);
+  a.addEventListener('pause', updPB);
+  a.addEventListener('ended', updPB);
+  a.addEventListener('timeupdate', pbTick);
+}
+function updPB(){
+  const a=document.getElementById('sumAudio');
+  const f=document.getElementById('pbFabBtn');
+  if(f && a){
+    f.innerHTML=(!a.paused)?SVG_PAUSE:SVG.play;
+    f.setAttribute('aria-label', (!a.paused)?'Pause':'Play recording');
+    a.playbackRate=MRATE;
+  }
+}
+function pbTick(){
+  const a=document.getElementById('sumAudio'); if(!a||!MROW) return;
+  const dur=MROW.duration_seconds||a.duration||0;
+  const t=a.currentTime||0;
+  const tl=document.getElementById('pbTime');
+  if(tl) tl.textContent=fmtMT(t)+' / '+fmtMT(dur);
+  const w=document.getElementById('pbWaveEl');
+  if(w && dur>0){
+    const bars=w.children, n=bars.length, k=Math.round(n*Math.min(1,t/dur));
+    for(let i=0;i<n;i++) bars[i].classList.toggle('played', i<k);
+  }
+  // follow the playhead through the transcript while it's open
+  const tx=document.getElementById('txBox');
+  if(tx && tx.classList.contains('show')){
+    const segs=MROW.transcript||[];
+    let best=-1;
+    for(let i=0;i<segs.length;i++){ if((segs[i].t0||0)<=t) best=i; else break; }
+    if(best>=0 && best!==MPLAYING) markPlaying(best);
+  }
+}
+function pbFab(){
+  if(MROW && MROW.audio_expired) return;
+  const a=document.getElementById('sumAudio'); if(!a) return;
+  if(!MAUDIO_SRC){ playAt(0,-1); return; }
+  if(a.paused) a.play().catch(()=>{}); else a.pause();
+}
+function pbSeek(ev){
+  if(!MROW || MROW.audio_expired) return;
+  const w=document.getElementById('pbWaveEl'); if(!w) return;
+  const r=w.getBoundingClientRect();
+  const pct=Math.max(0, Math.min(1, (ev.clientX-r.left)/Math.max(1,r.width)));
+  playAt(pct*(MROW.duration_seconds||0), -1);
+}
+function pbSpeed(){
+  MRATE = MRATE===1 ? 1.5 : (MRATE===1.5 ? 2 : 1);
+  const a=document.getElementById('sumAudio'); if(a) a.playbackRate=MRATE;
+  const b=document.getElementById('pbSpeed'); if(b) b.textContent=MRATE+'×';
 }
 function pinMeeting(id, on, btn){
   busyGuard(btn || ('pin:'+id), ()=>api('set_meeting_pinned', id, on)).then(r=>{
     if(r && r.busy) return;
     if(r && r.ok){
       (MEETS.meetings||[]).forEach(m=>{ if(m.id===id) m.pinned=on; });
-      renderMeetRows();
+      renderMeetList();
     } else if(r && r.ok===false){ toast((r.error)||'Could not update the pin.', true); }
   });
 }
@@ -1784,7 +2350,11 @@ function deleteMeeting(id, title, btn){
   if(!confirm('Delete “'+(title||'this meeting')+'”?\n\nIts transcript, notes and recording are permanently removed. This cannot be undone.')) return;
   busyGuard(btn || ('delmeet:'+id), ()=>api('delete_meeting', id)).then(r=>{
     if(r && r.busy) return;
-    if(r && r.ok){ MEETS.meetings=(MEETS.meetings||[]).filter(m=>m.id!==id); renderActive(); }
+    if(r && r.ok){
+      MEETS.meetings=(MEETS.meetings||[]).filter(m=>m.id!==id);
+      if(MROW && MROW.id===id){ MROW=null; MVIEW='list'; MSUBNOTES=false; MSPK=null; MEET_ASK_SCOPE=null; }
+      renderActive();
+    }
     else { toast((r&&r.error)||'Could not delete the meeting.', true); }
   });
 }
@@ -1798,6 +2368,8 @@ let MROW=null;             // the meeting being read
 let MSUBNOTES=false;       // detail sub-page: the full AI notes
 let HNVIEW='merged';       // hybrid notes view: yours | merged | ai (33i)
 let MAUDIO_SRC=null, MPLAYING=-1, MDEL_ARMED=null, MNOTES_BUSY=false;
+let MSPK=null;   // v4 speaker filter: speaker id or null (everyone)
+let MRATE=1;     // v4 playbar speed: 1 | 1.5 | 2
 const CHIP_CLASS={self:'self'};
 function chipClass(sid){
   if(CHIP_CLASS[sid]) return CHIP_CLASS[sid];
@@ -1825,13 +2397,15 @@ function relDate(iso){
 // Entry point for the `openMeeting` native event (Python side: open_meeting).
 function openMeetingDetail(row){
   if(!row || !row.id) return;
+  mntAbandon();
   MROW=row; MVIEW='detail'; MSUBNOTES=false;
-  MAUDIO_SRC=null; MPLAYING=-1; MDEL_ARMED=null;
+  MAUDIO_SRC=null; MPLAYING=-1; MDEL_ARMED=null; MSPK=null; MRATE=1; MEET_ASK_SCOPE=null;
   if(ACTIVE!=='meetings') show('meetings');   // show() renders the screen itself
   else renderMeetings();
 }
 function meetBack(){
-  MVIEW='list'; MROW=null; MSUBNOTES=false;
+  mntAbandon();
+  MVIEW='list'; MROW=null; MSUBNOTES=false; MSPK=null; MEET_ASK_SCOPE=null;
   const a=document.getElementById('sumAudio');
   if(a){ try{ a.pause(); }catch(e){} }
   renderMeetings();
@@ -1847,63 +2421,8 @@ function mtgTitle(v){
     if(r && r.ok===false) toast((r.error)||'Could not rename the meeting.', true);
   });
 }
-// The shell: header + card frames. Content goes in via fillMeetDetail() so a
-// re-render (an edited action item, a renamed speaker) never rebuilds the DOM
-// under an expanded transcript or a focused input.
-function renderMeetDetail(){
-  const box=document.getElementById('meetingsMain'); if(!box) return;
-  box.innerHTML = `
-    <div id="mtgDetail" class="show">
-      <div class="sumHead">
-        <div class="sumHeadL">
-          <button class="mtgBack" onclick="meetBack()">&#8249; All meetings</button>
-          <span class="eyebrow" id="sumEyebrow">Meeting</span>
-          <input class="sumTitle" id="sumTitle" value="" spellcheck="false"
-                 onchange="mtgTitle(this.value)"/>
-          <div class="sumMeta" id="sumMeta"></div>
-        </div>
-        <div class="mact">
-          <button class="btnS mini" id="expTxtBtn" title="Export transcript as .txt" onclick="sumExport('txt')">TXT</button>
-          <button class="btnS mini" id="expMdBtn" title="Export as Markdown" onclick="sumExport('md')">MD</button>
-          <button class="iconbtn" id="sumDelBtn" title="Delete meeting" onclick="sumDelete()">${SVG.trash}</button>
-          <button class="iconbtn" title="Copy summary to clipboard" onclick="sumShare(this)">${SVG.copy}</button>
-          <button class="iconbtn" title="Regenerate summary" onclick="sumRegen()">${SVG_REFRESH}</button>
-        </div>
-      </div>
-      <div class="sumCards">
-        <div class="card" id="sumCard">
-          <div class="cardHead"><span class="eyebrow accd">Summary</span></div>
-          <div id="sumBody"></div>
-        </div>
-        <div class="twoCol">
-          <div class="card colL" id="hnCard">
-            <div class="cardHead"><span class="eyebrow">Notes</span>
-              <span class="hnTabs">
-                <button class="hnTab" data-hnv="yours" onclick="hnView('yours')">Yours</button>
-                <button class="hnTab on" data-hnv="merged" onclick="hnView('merged')">Merged</button>
-                <button class="hnTab" data-hnv="ai" onclick="hnView('ai')">AI</button>
-              </span>
-              <span class="legend"><span class="lu"><i></i>Your notes</span><span class="la"><i></i>AI additions</span></span>
-              <button class="btnS mini" style="margin-left:10px" title="Full AI notes of this meeting" onclick="openNotes()">Open notes &#8599;</button>
-            </div>
-            <div id="hnBody"></div>
-          </div>
-          <div class="colR">
-            <div class="card"><div class="cardHead"><span class="eyebrow accd">Decisions</span></div><div id="decBody"></div></div>
-            <div class="card" style="flex:1"><div class="cardHead"><span class="eyebrow accd">Action items</span></div><div id="aiBody"></div></div>
-          </div>
-        </div>
-        <div class="card expandBox" id="marksBox"></div>
-        <div class="card expandBox" id="txBox"></div>
-      </div>
-      <div class="teasers">
-        <div class="teaser" onclick="toggleBox('marksBox', renderMarksBox)">${SVG.bolt}<span class="tl" id="marksTeaseL">Marked moments</span><span class="eyebrow">Expand</span></div>
-        <div class="teaser" onclick="toggleBox('txBox', renderTxBox)">${SVG.search}<span class="tl" id="txTeaseL">Full transcript</span><span class="eyebrow">Expand</span></div>
-      </div>
-      <audio id="sumAudio"></audio>
-    </div>`;
-  fillMeetDetail();
-}
+// (renderMeetDetail was replaced by meetDocHtml — the v4 pane shell keeps the
+// same element ids, so fillMeetDetail() below is unchanged.)
 function fillMeetDetail(){
   const ROW=MROW;
   if(MVIEW!=='detail' || MSUBNOTES || !ROW) return;
@@ -2058,23 +2577,80 @@ function mdRender(md){
   return html;
 }
 function renderMeetNotes(){
-  const box=document.getElementById('meetingsMain'); if(!box || !MROW) return;
-  box.innerHTML = `
-    <div id="mtgDetail" class="show">
-      <div id="mtgNotes" class="show">
-        <div class="ntHead">
-          <button class="mtgBack" onclick="notesBack()">&#8249; Summary</button>
-          <span class="ntTitle" id="ntTitle">${esc((MROW.title||'Meeting')+' — notes')}</span>
-          <button class="btnS mini" title="Copy notes as Markdown" onclick="notesCopy(this)">Copy</button>
-          <button class="iconbtn" title="Regenerate notes" onclick="openNotes(true)">${SVG_REFRESH}</button>
-        </div>
-        <div class="ntSkel" id="ntSkel" style="display:none"><i style="width:38%"></i><i style="width:92%"></i><i style="width:85%"></i><i style="width:60%"></i><i style="width:88%"></i><i style="width:74%"></i></div>
-        <div class="ntErr" id="ntErr" style="display:none"></div>
-        <div class="ntBody" id="ntBody"></div>
+  // v4: the notes sub-page lives in the CENTER pane; renderMeetings routes to
+  // meetNotesPaneHtml() when MSUBNOTES is set. Kept as the openNotes entry.
+  renderMeetings();
+}
+function meetNotesPaneHtml(){
+  const body = MNT_EDIT
+    ? `<textarea class="ntEdit" id="ntEdit" aria-label="Edit meeting notes (markdown)" spellcheck="false" oninput="mntChanged()">${esc((MROW&&MROW.notes_md)||'')}</textarea>`
+    : `<div class="ntSkel" id="ntSkel" style="display:none"><i style="width:38%"></i><i style="width:92%"></i><i style="width:85%"></i><i style="width:60%"></i><i style="width:88%"></i><i style="width:74%"></i></div>
+       <div class="ntErr" id="ntErr" style="display:none"></div>
+       <div class="ntBody" id="ntBody"></div>`;
+  return `
+    <div class="npaneHead">
+      <span class="pt">AI Notes</span>
+      <div class="notetoolbar">
+        <button class="fmtbtn ftxt" title="Back to the summary" onclick="notesBack()">&#8249; Summary</button>
+        <span class="notesave" id="mntState"></span>
+        <button class="fmtbtn${MNT_EDIT?' pinned':''}" id="mntEditBtn" title="${MNT_EDIT?'Done editing':'Edit the notes (markdown)'}" aria-pressed="${MNT_EDIT?'true':'false'}" onclick="mntToggleEdit()">${MNT_EDIT?'✓':SVG.edit}</button>
+        <button class="fmtbtn" title="Copy notes as Markdown" onclick="notesCopy(this)">${SVG.copy}</button>
+        <button class="fmtbtn" title="Regenerate notes" onclick="mntRegen()">${SVG_REFRESH}</button>
       </div>
+    </div>
+    <div class="npaneBody edscroll">
+      <div id="mtgDetail" class="show"><div id="mtgNotes" class="show">
+        <div class="ntTitle" style="margin-bottom:10px">${esc((MROW&&MROW.title||'Meeting')+' — notes')}</div>
+        ${body}
+      </div></div>
     </div>`;
 }
-function notesBack(){ MSUBNOTES=false; renderMeetings(); }
+// ── editable AI notes (v4.1) — raw-markdown edit mode, debounced persist via
+// set_meeting_notes (the desktop twin of mobile's MeetingNotesScreen editor).
+let MNT_EDIT=false, _mntTimer=null;
+function setMntState(t){ const el=document.getElementById('mntState'); if(el) el.textContent=t; }
+function mntChanged(){
+  const ta=document.getElementById('ntEdit'); if(!ta||!MROW) return;
+  MROW.notes_md=ta.value;
+  setMntState('Saving…');
+  if(_mntTimer) clearTimeout(_mntTimer);
+  _mntTimer=setTimeout(mntFlush, 800);
+}
+function mntFlush(){
+  if(_mntTimer){ clearTimeout(_mntTimer); _mntTimer=null; }
+  if(!MROW) return;
+  const id=MROW.id, text=MROW.notes_md||'';
+  api('set_meeting_notes', id, text).then(r=>{
+    if(!MROW || MROW.id!==id) return;
+    if(r&&r.ok){ setMntState('Saved'); setTimeout(()=>{ setMntState(''); }, 1500); }
+    else setMntState((r&&r.error)||'Not saved — check connection');
+  });
+}
+function mntToggleEdit(){
+  if(!MROW) return;
+  if(!MNT_EDIT && !String(MROW.notes_md||'').trim()){ setMntState('Nothing to edit yet'); setTimeout(()=>setMntState(''),1500); return; }
+  MNT_EDIT=!MNT_EDIT;
+  if(!MNT_EDIT) mntFlush();
+  renderMeetings();
+  if(MNT_EDIT){ const ta=document.getElementById('ntEdit'); if(ta) ta.focus(); }
+  else openNotes();   // cached notes_md — re-renders the markdown, no LLM call
+}
+// Regenerating REPLACES the notes, including hand edits — confirm first (v4.1).
+function mntRegen(){
+  if(!MROW) return;
+  if(String(MROW.notes_md||'').trim() &&
+     !confirm('Regenerate the AI notes?\n\nThis replaces the current notes — including any edits you made. This cannot be undone.')) return;
+  if(_mntTimer){ clearTimeout(_mntTimer); _mntTimer=null; }
+  MNT_EDIT=false;
+  renderMeetings();
+  openNotes(true);
+}
+// Leaving the notes view must not lose the tail of an edit debounce.
+function mntAbandon(){
+  if(_mntTimer) mntFlush();
+  MNT_EDIT=false;
+}
+function notesBack(){ mntAbandon(); MSUBNOTES=false; renderMeetings(); }
 function openNotes(regen){
   if(!MROW || MNOTES_BUSY) return;
   const ROW=MROW;
@@ -2111,7 +2687,7 @@ function notesCopy(btn){
 }
 function hnView(v){
   HNVIEW=v;
-  const tabs=document.querySelectorAll('#mtgDetail .hnTab');
+  const tabs=document.querySelectorAll('.hnTab');
   for(let i=0;i<tabs.length;i++) tabs[i].className='hnTab'+(tabs[i].dataset.hnv===v?' on':'');
   const l=document.getElementById('hnList'); if(l) l.className='v-'+v;
 }
@@ -2256,9 +2832,16 @@ function renderTxBox(){
   const el=document.getElementById('txBox');
   if(!el) return;
   const tx=MROW&&MROW.transcript||[], spk=MROW&&MROW.speakers||{};
-  el.innerHTML='<div class="cardHead"><span class="eyebrow">Full transcript</span></div>'+
+  const sids=Object.keys(spk);
+  const fname=MSPK?(spk[MSPK]||MSPK):null;
+  const fcol=MSPK?spColor(MSPK, Math.max(0,sids.indexOf(MSPK))):null;
+  const chip=MSPK?'<div class="spkchip" role="button" tabindex="0" onclick="spkFilter('+JSON.stringify(MSPK).replace(/"/g,'&quot;')+')" title="Show everyone">'+
+      '<i style="background:'+fcol+'"></i>SHOWING '+esc(String(fname).toUpperCase())+' <span style="color:var(--sub)">&#10005;</span></div>':'';
+  el.innerHTML='<div class="cardHead"><span class="eyebrow">Full transcript</span></div>'+chip+
     (tx.length?tx.map(function(u,i){
-      return '<div class="exUtt" id="exU'+i+'" onclick="playAt('+u.t0+','+i+')">'+
+      const fcls=MSPK?(u.speaker===MSPK?' hlf':' dimf'):'';
+      const fsty=(MSPK&&u.speaker===MSPK)?' style="border-left:3px solid '+fcol+';padding-left:8px"':'';
+      return '<div class="exUtt'+fcls+'" id="exU'+i+'"'+fsty+' onclick="playAt('+u.t0+','+i+')">'+
         '<span class="schip '+chipClass(u.speaker)+'" title="Double-click to rename" '+
           'ondblclick="event.stopPropagation();sumRename(\''+esc(u.speaker)+'\', this)">'+esc(spk[u.speaker]||u.speaker)+'</span> '+
         '<span class="mono" style="color:var(--dim);font-size:10px">'+fmtMT(u.t0)+'</span> '+
@@ -2318,9 +2901,11 @@ function playAt(secs, idx){
   });
 }
 function markPlaying(idx){
-  if(MPLAYING>=0){ const p=document.getElementById('exU'+MPLAYING); if(p) p.className='exUtt'; }
+  // classList, NOT className: the v4 speaker filter parks hlf/dimf classes on
+  // these rows and a blanket assignment would wipe them.
+  if(MPLAYING>=0){ const p=document.getElementById('exU'+MPLAYING); if(p) p.classList.remove('playing'); }
   MPLAYING=idx;
-  if(idx>=0){ const el=document.getElementById('exU'+idx); if(el) el.className='exUtt playing'; }
+  if(idx>=0){ const el=document.getElementById('exU'+idx); if(el) el.classList.add('playing'); }
 }
 function flashOk(btn){
   // clipboard/actions must LOOK like they worked (33f feedback lesson)
@@ -2356,38 +2941,8 @@ function sumExport(fmt){
     setTimeout(function(){ btn.textContent=orig; }, 1800);
   });
 }
-function sumDelete(){
-  if(!MROW) return;
-  const id=MROW.id;
-  const btn=document.getElementById('sumDelBtn');
-  if(MDEL_ARMED!==id){
-    // first click arms; second click within 2.5s deletes
-    MDEL_ARMED=id;
-    btn.innerHTML='<span style="font:600 10.5px Geist;color:var(--rec-soft);padding:0 4px">Delete?</span>';
-    btn.style.width='auto'; btn.style.background='var(--acc-softer)';
-    setTimeout(function(){
-      if(MDEL_ARMED===id){ MDEL_ARMED=null; resetDelBtn(); }
-    }, 2500);
-    return;
-  }
-  MDEL_ARMED=null;
-  btn.innerHTML='<span style="font:600 10.5px Geist;color:var(--rec-soft);padding:0 4px">…</span>';
-  api('delete_meeting', id).then(function(r){
-    if(r && r.ok){
-      MEETS.meetings=(MEETS.meetings||[]).filter(function(m){return m.id!==id;});
-      meetBack();
-    } else {
-      resetDelBtn();
-      toast((r&&r.error)||'Could not delete the meeting.', true);
-    }
-  });
-}
-function resetDelBtn(){
-  const btn=document.getElementById('sumDelBtn');
-  if(!btn) return;
-  btn.innerHTML=SVG.trash;
-  btn.style.width=''; btn.style.background='';
-}
+// (sumDelete/resetDelBtn retired in v4 — the ⋯ menu delete goes through
+// deleteMeeting's confirm() like the list always has.)
 function sumRename(sid, el){
   const ROW=MROW;
   if(!ROW || !ROW.speakers) return;
@@ -2414,6 +2969,10 @@ function sumRename(sid, el){
       });
     }
     fillMeetDetail();
+    // v4: the Studio speaker rows and the list avatars carry the name too.
+    const st=document.getElementById('meetStudio');
+    if(st) st.innerHTML=meetStudioHtml();
+    renderMeetList();
     const tb=document.getElementById('txBox');
     if(tb && tb.classList.contains('show')) renderTxBox();
   }
@@ -2450,8 +3009,9 @@ function noteMetaBits(n,q){
   return bits.join('');
 }
 function noteRowHtml(n,q){
-  return `<div class="ncard${(SELN===n.id)?' active':''}" onclick="selectNote(${esc(JSON.stringify(n.id))})">
+  return `<div class="ncard${(SELN===n.id)?' active':''}" data-nid="${esc(n.id)}" onclick="selectNote(${esc(JSON.stringify(n.id))})">
     <button class="npin${n.is_pinned?' on':''}" title="${n.is_pinned?'Unpin':'Pin'}" aria-label="${n.is_pinned?'Unpin note':'Pin note'}" aria-pressed="${n.is_pinned?'true':'false'}" onclick="event.stopPropagation();togglePin(${esc(JSON.stringify(n.id))})">${n.is_pinned?'★':'☆'}</button>
+    <button class="ncdots" title="Note options" aria-label="Note options" aria-haspopup="true" onclick="openCardMenu(event, ${esc(JSON.stringify(n.id))})">${SVG.dots}</button>
     <div class="nctitle">${hlText(n.title||'Untitled',q)}</div>
     <div class="ncprev">${hlText(noteSnippet(n,q),q)||'Empty note'}</div>
     <div class="ncmeta">${noteMetaBits(n,q)}</div></div>`;
@@ -2573,17 +3133,27 @@ function noteEditorHtml(n){
     : `<div class="notebody" id="noteBody" contenteditable="true" role="textbox" aria-multiline="true" aria-label="Note content" data-ph="Tap Dictate to speak, or start typing…" oninput="noteChanged()"></div>`;
   const styleMenu = `
       <span class="nmenuwrap">
-        <button class="fmtbtn" title="Reformat with AI" aria-haspopup="true" onclick="toggleNoteMenu(event,'noteStyleMenu')">&#10024;</button>
+        <button class="fmtbtn" title="Reformat the whole note with AI" aria-haspopup="true" onclick="toggleNoteMenu(event,'noteStyleMenu')">&#10024;</button>
         <div class="nmenu" id="noteStyleMenu" hidden>
-          <div class="nmhead">Reformat with AI</div>
+          <div class="nmhead">Reformat entire note</div>
           <button onclick="formatNoteStyled('structured')">Auto-structure</button>
           <button onclick="formatNoteStyled('prose')">Flowing prose</button>
           <button onclick="formatNoteStyled('transcript')">Clean transcript only</button>
+        </div></span>`;
+  const sizeMenu = `
+      <span class="nmenuwrap">
+        <button class="fmtbtn ftxt" title="Text size" aria-haspopup="true" onclick="toggleNoteMenu(event,'noteSizeMenu')">Aa</button>
+        <div class="nmenu" id="noteSizeMenu" hidden>
+          <div class="nmhead">Text size</div>
+          <button onclick="setNoteFs('s')">${NOTE_FS==='s'?'&#10003; ':''}Small</button>
+          <button onclick="setNoteFs('m')">${NOTE_FS==='m'?'&#10003; ':''}Default</button>
+          <button onclick="setNoteFs('l')">${NOTE_FS==='l'?'&#10003; ':''}Large</button>
         </div></span>`;
   const moreMenu = `
       <span class="nmenuwrap">
         <button class="fmtbtn" title="More actions" aria-haspopup="true" onclick="toggleNoteMenu(event,'noteMoreMenu')">${SVG.dots}</button>
         <div class="nmenu" id="noteMoreMenu" hidden>
+          <button onclick="renameOpenNote()">${SVG.edit}Rename</button>
           <button onclick="noteCopy('txt')">${SVG.copy}Copy as text</button>
           <button onclick="noteCopy('md')">${SVG.copy}Copy as Markdown</button>
           <button onclick="noteExport('md')">Export as .md…</button>
@@ -2592,28 +3162,175 @@ function noteEditorHtml(n){
           <button class="danger" onclick="delNote(null)">${SVG.trash}Delete note</button>
         </div></span>`;
   return `
-      <input class="edtitle" id="noteTitle" value="${esc(n.title||'')}" placeholder="Untitled note" aria-label="Note title" oninput="noteChanged()"/>
-      <div class="notemeta" id="noteMeta">${esc(noteMetaText(n))}</div>
-      ${noteSegBar(n)}
-      <div class="notetoolbar">
-        <button class="fmtbtn" title="Bold" onmousedown="fmt(event,'bold')"><b>B</b></button>
-        <button class="fmtbtn" title="Italic" onmousedown="fmt(event,'italic')"><i>I</i></button>
-        <button class="fmtbtn" title="Underline" onmousedown="fmt(event,'underline')"><u>U</u></button>
-        <span class="fmtsep"></span>
-        <button class="fmtbtn" title="Bullet list" onmousedown="fmt(event,'insertUnorderedList')">&bull;</button>
-        ${styleMenu}
-        ${origBtn}${refmtOrig}${retryBtn}
-        <button class="fmtbtn${n.is_pinned?' pinned':''}" id="notePinBtn" title="${n.is_pinned?'Unpin note':'Pin note'}" aria-pressed="${n.is_pinned?'true':'false'}" onclick="togglePin(${esc(JSON.stringify(n.id))})">${n.is_pinned?'★':'☆'}</button>
-        ${moreMenu}
-        <button class="dictate" id="dictateBtn" onclick="toggleDictate()">${SVG.mic}Dictate</button>
-        <span class="notesave" id="noteSaveState"></span>
+      <div class="npaneHead">
+        <span class="pt">${SHOW_ORIG?'Original':'Note'}</span>
+        <div class="notetoolbar">
+          <button class="fmtbtn" id="nuUndoBtn" title="Undo (Ctrl+Z)" onmousedown="event.preventDefault();nuUndo()">&#8617;</button>
+          <button class="fmtbtn" id="nuRedoBtn" title="Redo (Ctrl+Y)" onmousedown="event.preventDefault();nuRedo()">&#8618;</button>
+          <span class="fmtsep"></span>
+          <button class="fmtbtn" title="Bold" onmousedown="fmt(event,'bold')"><b>B</b></button>
+          <button class="fmtbtn" title="Italic" onmousedown="fmt(event,'italic')"><i>I</i></button>
+          <button class="fmtbtn" title="Underline" onmousedown="fmt(event,'underline')"><u>U</u></button>
+          <button class="fmtbtn" title="Strikethrough" onmousedown="fmt(event,'strikeThrough')"><s>S</s></button>
+          <span class="fmtsep"></span>
+          <button class="fmtbtn" title="Heading" onmousedown="fmt(event,'formatBlock','h3')">H</button>
+          <button class="fmtbtn" title="Bullet list" onmousedown="fmt(event,'insertUnorderedList')">&bull;</button>
+          <button class="fmtbtn" title="Numbered list" onmousedown="fmt(event,'insertOrderedList')">1.</button>
+          ${sizeMenu}
+          ${styleMenu}
+          ${origBtn}${refmtOrig}${retryBtn}
+          <button class="fmtbtn${n.is_pinned?' pinned':''}" id="notePinBtn" title="${n.is_pinned?'Unpin note':'Pin note'}" aria-pressed="${n.is_pinned?'true':'false'}" onclick="togglePin(${esc(JSON.stringify(n.id))})">${n.is_pinned?'★':'☆'}</button>
+          ${moreMenu}
+        </div>
       </div>
-      ${body}`;
+      <div class="npaneBody edscroll fs-${NOTE_FS}" id="edScroll" onkeydown="noteKeys(event)">
+        <input class="edtitle" id="noteTitle" value="${esc(n.title||'')}" placeholder="Untitled note" aria-label="Note title" oninput="noteChanged()"/>
+        <div class="notemeta" id="noteMeta">${esc(noteMetaText(n))}</div>
+        ${body}
+      </div>
+      <div class="dictbar" id="dictBar">
+        <span class="dtx" id="dictTx">Dictate into this note — Verbal cleans and formats it</span>
+        <span class="notesave" id="noteSaveState"></span>
+        <button class="dfab" id="dictFab" aria-label="Start dictation" onclick="toggleDictate()">${SVG.mic}</button>
+      </div>`;
+}
+// ── Import from Meetings / Transcriptions (v3.2) ─────────────────────────────
+// A modal picker over the whole app (appended to <body> — .nbgrid clips
+// overflow). One click on a row = one new note, then the modal closes and the
+// note opens. All content is composed CLIENT-side and saved via the ordinary
+// save_note path; meetings fetch their full row on click (list rows hydrated
+// from the cloud don't carry summary/decisions).
+const SVG_IMPORT='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v11"/><path d="m7.5 9.5 4.5 4.5 4.5-4.5"/><path d="M4 17v2.4A1.6 1.6 0 0 0 5.6 21h12.8a1.6 1.6 0 0 0 1.6-1.6V17"/></svg>';
+let IMP_TAB='meetings', IMP_Q='', IMP_BUSY=null, IMP_HIST=[];
+function openImport(){
+  IMP_TAB='meetings'; IMP_Q=''; IMP_BUSY=null;
+  renderImport();
+  // Refresh the meetings list for the picker (it may never have been loaded
+  // this session). Re-render only the modal's list — never the screen.
+  api('list_meetings').then(r=>{
+    if(r && r.ok){ MEETS=r; MEETS_LOADED=true; if(document.getElementById('impList')) renderImportList(); }
+  });
+}
+function closeImport(){ const w=document.getElementById('nimpWrap'); if(w) w.remove(); }
+function impTab(t){ IMP_TAB=t; IMP_Q=''; renderImport(); }
+function renderImport(){
+  let w=document.getElementById('nimpWrap');
+  if(!w){
+    w=document.createElement('div'); w.id='nimpWrap'; w.className='nimpWrap';
+    w.addEventListener('click', e=>{ if(e.target===w) closeImport(); });
+    w.addEventListener('keydown', e=>{ if(e.key==='Escape') closeImport(); });
+    document.body.appendChild(w);
+  }
+  w.innerHTML=`<div class="nimp" role="dialog" aria-modal="true" aria-label="Import into Notes">
+    <div class="nimpHead"><span class="pt">Import into Notes</span>
+      <button class="nimpX" aria-label="Close" onclick="closeImport()">✕</button></div>
+    <div class="nimpTabs">
+      <button class="nimpTab${IMP_TAB==='meetings'?' on':''}" onclick="impTab('meetings')">Meetings</button>
+      <button class="nimpTab${IMP_TAB==='hist'?' on':''}" onclick="impTab('hist')">Transcriptions</button>
+    </div>
+    <div class="searchbox">${SVG.search}<input id="impSearch" aria-label="Search" placeholder="${IMP_TAB==='meetings'?'Search meetings…':'Search transcriptions…'}" value="${esc(IMP_Q)}" oninput="IMP_Q=this.value;renderImportList()"/></div>
+    <div class="nimpBody" id="impList"></div>
+    <div class="nimpHint">${IMP_TAB==='meetings'
+      ?'A meeting becomes a note with its summary, decisions and an interactive action-item checklist.'
+      :'A transcription becomes a note with its text — clean it up afterwards with the Studio styles.'}</div>`;
+  renderImportList();
+  const i=document.getElementById('impSearch'); if(i) i.focus();
+}
+function renderImportList(){
+  const box=document.getElementById('impList'); if(!box) return;
+  const q=(IMP_Q||'').trim().toLowerCase();
+  if(IMP_TAB==='meetings'){
+    let ms=(MEETS.meetings||[]).filter(m=>m && m.id && m.status!=='processing');
+    if(q) ms=ms.filter(m=>((m.title||'')+' '+(m.summary||'')).toLowerCase().includes(q));
+    box.innerHTML = ms.length ? ms.map(m=>{
+      const busy=IMP_BUSY===('m:'+m.id);
+      return `<div class="srow" role="button" tabindex="0" onclick="importMeeting(${esc(JSON.stringify(m.id))})" onkeydown="if(event.key==='Enter')importMeeting(${esc(JSON.stringify(m.id))})">
+        <span class="sic">${SVG.meet}</span>
+        <span class="st"><span class="a">${esc(m.title||'Meeting')}</span><span class="b">${esc((m.started_at||'').slice(0,10))} · ${Math.max(1,Math.round((m.duration_seconds||0)/60))} min</span></span>
+        <span class="imppill${busy?' busy':''}">${busy?'Importing…':'Import'}</span></div>`;
+    }).join('') : `<div class="empty">${q?'No meetings match.':'No meetings yet — capture one first.'}</div>`;
+  } else {
+    let hs=((STATE&&STATE.history)||[]).filter(e=>e && e.status!=='failed' && String(e.text||'').trim());
+    if(q) hs=hs.filter(e=>String(e.text||'').toLowerCase().includes(q));
+    IMP_HIST=hs.slice(0,120);
+    box.innerHTML = IMP_HIST.length ? IMP_HIST.map((e,i)=>{
+      return `<div class="srow" role="button" tabindex="0" onclick="importTranscription(${i})" onkeydown="if(event.key==='Enter')importTranscription(${i})">
+        <span class="sic">${SVG.mic}</span>
+        <span class="st"><span class="a">${esc(titleOf(e.text))}</span><span class="b">${esc(e.ts||'')} · ${words(e.text)} words${e.app?(' · '+esc(e.app)):''}</span></span>
+        <span class="imppill">Import</span></div>`;
+    }).join('') : `<div class="empty">${q?'No transcriptions match.':'No transcriptions yet — dictate something first.'}</div>`;
+  }
+}
+function importMeeting(id){
+  if(IMP_BUSY) return;
+  IMP_BUSY='m:'+id; renderImportList();
+  api('get_meeting', id).then(r=>{
+    IMP_BUSY=null;
+    if(!(r&&r.ok&&r.meeting)){ renderImportList(); toast((r&&r.error)||'Could not load that meeting.', true); return; }
+    const c=meetingNoteMarkdown(r.meeting);
+    if(!c){ toast('That meeting has no content to import yet.', true); return; }
+    finishImport(c.title, c.content);
+  });
+}
+// Compose a meeting into note markdown — shared by the Notes import picker and
+// the Meetings Studio "Send to Notes" (v4). Returns {title, content} or null.
+function meetingNoteMarkdown(m){
+  if(!m) return null;
+  const lines=[];
+  if(String(m.summary||'').trim()) lines.push(String(m.summary).trim());
+  if((m.decisions||[]).length){
+    lines.push('','## Decisions');
+    m.decisions.forEach(d=>lines.push('- '+String(d)));
+  }
+  if((m.action_items||[]).length){
+    lines.push('','## Action items');
+    m.action_items.forEach(it=>{
+      const owner=(it.owner && m.speakers && m.speakers[it.owner]) ? (' — **'+m.speakers[it.owner]+'**') : '';
+      const due=it.due ? (' (due '+it.due+')') : '';
+      lines.push('- ['+(it.done?'x':' ')+'] '+String(it.task||'')+owner+due);
+    });
+  }
+  if(!lines.length){
+    // No summary yet — fall back to the raw transcript text so the import
+    // still lands something, restylable from the Studio afterwards.
+    try{ const t=(m.transcript||[]).map(s=>String(s.text||'')).join(' ').trim(); if(t) lines.push(t); }catch(e){}
+  }
+  if(!lines.length) return null;
+  lines.push('','*Imported from the meeting “'+String(m.title||'Meeting')+'” · '+String(m.started_at||'').slice(0,10)+'*');
+  return {title:String(m.title||'Meeting'), content:lines.join('\n').trim()};
+}
+function importTranscription(i){
+  if(IMP_BUSY) return;
+  const e=IMP_HIST[i]; if(!e) return;
+  const t=String(e.text||'').trim(); if(!t) return;
+  const content=t+'\n\n*Imported from dictation · '+String(e.ts||'')+'*';
+  finishImport(titleOf(t), content);
+}
+function finishImport(title, content){
+  busyGuard('noteimport', ()=>api('save_note', {title:title||'', content:content||''})).then(r=>{
+    if(r && r.busy) return;
+    if(!(r&&r.ok)){ toast('Import failed — please try again.', true); return; }
+    NOTES=r.notes||NOTES; SELN=r.id||SELN; NOTE_QUERY=''; NOTE_ASK=null; SHOW_ORIG=false;
+    closeImport();
+    renderNotes();
+    setSaveState('Imported');
+    setTimeout(()=>setSaveState(''), 1600);
+  });
 }
 // Close any open note menu on an outside click (registered ONCE — this script
 // runs a single time; the open buttons stopPropagation so they don't self-close).
 document.addEventListener('click', ()=>{
   document.querySelectorAll('.nmenu').forEach(m=>{ if(!m.hidden) m.hidden=true; });
+});
+// The WebView's built-in right-click menu offers "Reload" — which blanks the
+// window, since the dashboard is loaded from a string, not a URL (2026-08-15,
+// Windows/WebView2; WKWebView has the same item). Keep the native menu only
+// inside editable fields (cut/copy/paste/spellcheck live there).
+document.addEventListener('contextmenu', (e)=>{
+  const t=e.target;
+  const editable = t && t.closest &&
+    t.closest('input, textarea, [contenteditable="true"], [contenteditable="plaintext-only"]');
+  if(!editable) e.preventDefault();
 });
 function toggleNoteMenu(ev, id){
   ev.stopPropagation();
@@ -2621,19 +3338,22 @@ function toggleNoteMenu(ev, id){
   const was=m.hidden;
   document.querySelectorAll('.nmenu').forEach(x=>{ x.hidden=true; });
   m.hidden=!was;
+  if(!m.hidden){
+    // .npane clips overflow, so an in-flow absolute menu gets cut at the pane
+    // edge in small windows ("blocked by the first panel", 2026-08-15).
+    // position:fixed escapes the clip (no transformed ancestors here) —
+    // anchor to the trigger button and clamp to the viewport.
+    const btn=ev.currentTarget || ev.target;
+    const r=btn.getBoundingClientRect();
+    m.style.position='fixed'; m.style.right='auto';
+    m.style.left='0px'; m.style.top='0px';          // paint first, then measure
+    const mw=m.offsetWidth, mh=m.offsetHeight;
+    m.style.left=Math.max(8, Math.min(window.innerWidth-mw-8, r.right-mw))+'px';
+    m.style.top=Math.max(8, Math.min(window.innerHeight-mh-8, r.bottom+6))+'px';
+  }
 }
-// Per-segment playback control at the top of a note (Feature 4). No control at all
-// when the note has no audio segments (Decision 6).
-function noteSegBar(n){
-  const segs=(n.audio_segments||[]).filter(s=>s&&s.id);
-  if(!segs.length) return '';
-  const rows=segs.map((s,i)=>{
-    const t=(s.created_at||'').slice(11,16);
-    const lbl='Play recording'+(t?(' from '+t):(' '+(i+1)));
-    return `<button class="segbtn" data-id="${esc(s.id)}" aria-label="${esc(lbl)}" onclick="noteSegPlay(this)"><span class="segic">${SVG.play}</span><span>${esc(lbl)}</span></button>`;
-  }).join('');
-  return `<div class="segbar" role="group" aria-label="Note recordings">${rows}</div>`;
-}
+// Per-segment playback (Feature 4) renders as Studio rows since v3.1 — see
+// studioHtml. No control at all when the note has no audio (Decision 6).
 let _noteAudio=null;
 function _noteAudioEl(){
   let a=document.getElementById('noteAudio');
@@ -2663,9 +3383,9 @@ function noteSegPlay(btn){
 }
 function stopNoteAudio(){ const a=document.getElementById('noteAudio'); if(a){ try{a.pause();}catch(e){} } NOTE_SEG_ID=null; }
 
-function selectNote(id){ flushNoteSave(); flushRawSave(); stopNoteAudio(); SELN=id; NOTE_REC=false; SHOW_ORIG=false; renderNotes(); }
+function selectNote(id){ flushNoteSave(); flushRawSave(); stopNoteAudio(); abortDictationIfLive(); SELN=id; SHOW_ORIG=false; renderNotes(); }
 function newNote(title){
-  flushNoteSave(); flushRawSave(); stopNoteAudio(); NOTE_QUERY=''; NOTE_ASK=null; SHOW_ORIG=false;
+  flushNoteSave(); flushRawSave(); stopNoteAudio(); abortDictationIfLive(); NOTE_QUERY=''; NOTE_ASK=null; SHOW_ORIG=false;
   return api('save_note', {title:(typeof title==='string')?title:'', content:''}).then(r=>{
     if(r&&r.ok){ NOTES=r.notes||NOTES; SELN=r.id||SELN; renderNotes();
       const b=document.getElementById('noteBody'); if(b) b.focus(); }
@@ -2709,7 +3429,76 @@ function flushRawSave(){
   if(_rawTimer){ clearTimeout(_rawTimer); _rawTimer=null;
     const n=curNote(); if(n) saveRawNow(n); }
 }
-function fmt(ev, cmd){ ev.preventDefault(); if(SHOW_ORIG) return; const b=document.getElementById('noteBody'); if(b) b.focus(); document.execCommand(cmd,false,null); noteChanged(); }
+function fmt(ev, cmd, val){ ev.preventDefault(); if(SHOW_ORIG) return; const b=document.getElementById('noteBody'); if(b) b.focus(); document.execCommand(cmd,false,val||null); noteChanged(); }
+
+// ── Editor text size (Aa menu) — persisted per install ───────────────────────
+function setNoteFs(v){
+  NOTE_FS=(v==='s'||v==='l')?v:'m';
+  try{ localStorage.setItem('flumeNoteFs', NOTE_FS); }catch(e){}
+  const sc=document.getElementById('edScroll');
+  if(sc){ sc.classList.remove('fs-s','fs-m','fs-l'); sc.classList.add('fs-'+NOTE_FS); }
+  const m=document.getElementById('noteSizeMenu'); if(m) m.hidden=true;
+}
+
+// ── Note undo/redo (2026-08-15 feedback) ─────────────────────────────────────
+// The browser's native contenteditable undo dies the moment anything replaces
+// the editor programmatically (AI reformat, restyle, re-render) — so the
+// editor owns its own snapshot stack. Granularity = autosave idle chunks
+// (700ms) plus an explicit snapshot before/after every programmatic change.
+// Ctrl/Cmd+Z, Ctrl+Y and Ctrl/Cmd+Shift+Z work; the toolbar has ↶/↷ too.
+let NU={id:null, stack:[], idx:-1, applying:false};
+function nuState(){
+  const t=document.getElementById('noteTitle'), b=document.getElementById('noteBody');
+  if(!t||!b) return null;
+  return {t:t.value, c:b.innerHTML};
+}
+function nuButtons(){
+  const u=document.getElementById('nuUndoBtn'), r=document.getElementById('nuRedoBtn');
+  if(u) u.disabled=!(NU.idx>0);
+  if(r) r.disabled=!(NU.idx<NU.stack.length-1);
+}
+function nuSnap(){
+  if(NU.applying) return;
+  const s=nuState(); if(!s) return;
+  const cur=NU.stack[NU.idx];
+  if(cur && cur.t===s.t && cur.c===s.c) { nuButtons(); return; }
+  NU.stack=NU.stack.slice(0, NU.idx+1);
+  NU.stack.push(s);
+  if(NU.stack.length>100) NU.stack.shift();
+  NU.idx=NU.stack.length-1;
+  nuButtons();
+}
+function nuInit(n){
+  if(!n){ NU={id:null, stack:[], idx:-1, applying:false}; return; }
+  if(NU.id!==n.id){ NU={id:n.id, stack:[], idx:-1, applying:false}; }
+  nuSnap();   // same note re-rendered (e.g. after a reformat): push the new state
+}
+function nuApply(s){
+  const t=document.getElementById('noteTitle'), b=document.getElementById('noteBody');
+  if(!t||!b||!s) return;
+  NU.applying=true;
+  try{
+    t.value=s.t; b.innerHTML=s.c;
+    const n=curNote(); if(n){ n.title=s.t; n.content=s.c; }
+    setSaveState('Saving…');
+    if(_noteTimer) clearTimeout(_noteTimer);
+    _noteTimer=setTimeout(saveCurrentNote, 400);
+    const m=document.getElementById('noteMeta'); const n2=curNote();
+    if(n2&&m) m.textContent=noteMetaText(n2, b.innerText);
+  } finally { NU.applying=false; }
+  nuButtons();
+}
+function nuUndo(){ if(SHOW_ORIG) return; if(NU.idx>0){ NU.idx--; nuApply(NU.stack[NU.idx]); } }
+function nuRedo(){ if(SHOW_ORIG) return; if(NU.idx<NU.stack.length-1){ NU.idx++; nuApply(NU.stack[NU.idx]); } }
+function noteKeys(ev){
+  const k=(ev.key||'').toLowerCase();
+  if(!(ev.ctrlKey||ev.metaKey)) return;
+  // The transcript view is plaintext-only — native undo behaves there.
+  const inOrig=ev.target && ev.target.id==='noteOrig';
+  if(inOrig) return;
+  if(k==='z' && !ev.shiftKey){ ev.preventDefault(); nuUndo(); }
+  else if(k==='y' || (k==='z' && ev.shiftKey)){ ev.preventDefault(); nuRedo(); }
+}
 
 // Interactive checklist checkbox (Decision 8): toggles the item and persists.
 function toggleChk(ev, el){
@@ -2739,6 +3528,7 @@ function saveCurrentNote(){
   const n=curNote(); if(!n) return;
   const t=document.getElementById('noteTitle'), b=document.getElementById('noteBody');
   if(!t||!b) return;   // no editable body (e.g. viewing the original) — nothing to persist
+  nuSnap();            // each idle-save is one undo step
   n.title=t.value; n.content=b.innerHTML;
   const payload={id:n.id, title:n.title, content:n.content};
   if(n.raw_content!=null) payload.raw_content=n.raw_content;
@@ -2756,22 +3546,169 @@ function updateListCard(n){
   if(p) p.textContent=notePreview(n)||'Empty note';
   if(m) m.innerHTML=noteMetaBits(n,'');
 }
-function delNote(btn){
-  const n=curNote(); if(!n) return;
+function delNote(btn){ const n=curNote(); if(n) delNoteById(n.id, btn); }
+function delNoteById(id, btn){
+  closeCardMenu();
+  const n=NOTES.find(x=>x.id===id); if(!n) return;
   if(!confirm('Delete “'+(n.title||'Untitled')+'”?\n\nThe note and its linked recordings are permanently removed. This cannot be undone.')) return;
-  if(_noteTimer){ clearTimeout(_noteTimer); _noteTimer=null; }
-  if(_rawTimer){ clearTimeout(_rawTimer); _rawTimer=null; }
-  stopNoteAudio();
-  busyGuard(btn || ('delnote:'+n.id), ()=>api('delete_note', n.id)).then(r=>{
+  if(SELN===id){
+    if(_noteTimer){ clearTimeout(_noteTimer); _noteTimer=null; }
+    if(_rawTimer){ clearTimeout(_rawTimer); _rawTimer=null; }
+    stopNoteAudio();
+    abortDictationIfLive();
+  }
+  busyGuard(btn || ('delnote:'+id), ()=>api('delete_note', id)).then(r=>{
     if(r && r.busy) return;
     if(!(r&&r.ok)){ alert((r&&r.error)||"Couldn't delete the note — please try again."); return; }
-    NOTES=r.notes||NOTES.filter(x=>x.id!==n.id); SELN=null; SHOW_ORIG=false; renderNotes(); });
+    NOTES=r.notes||NOTES.filter(x=>x.id!==id);
+    if(SELN===id){ SELN=null; SHOW_ORIG=false; }
+    renderNotes(); });
 }
 
+// ── Per-card ⋯ menu: rename / pin / delete from the notes list ───────────────
+// (2026-08-15 feedback: managing a note shouldn't require opening it first.)
+// The menu is body-appended (.nbgrid clips overflow) with class .nmenu so the
+// existing document-level click closer dismisses it like every other menu.
+function closeCardMenu(){ const m=document.getElementById('ncMenu'); if(m) m.remove(); }
+function openCardMenu(ev, id){
+  ev.stopPropagation();
+  document.querySelectorAll('.nmenu').forEach(x=>{ x.hidden=true; });
+  closeCardMenu();
+  const n=NOTES.find(x=>x.id===id); if(!n) return;
+  const m=document.createElement('div');
+  m.id='ncMenu'; m.className='nmenu';
+  m.innerHTML=`
+    <button onclick="startCardRename(${esc(JSON.stringify(id))})">${SVG.edit}Rename</button>
+    <button onclick="togglePin(${esc(JSON.stringify(id))});closeCardMenu()">${n.is_pinned?'&#9734; Unpin':'&#9733; Pin'}</button>
+    <div class="nmsep"></div>
+    <button class="danger" onclick="delNoteById(${esc(JSON.stringify(id))})">${SVG.trash}Delete note</button>`;
+  document.body.appendChild(m);
+  const r=ev.currentTarget.getBoundingClientRect();
+  m.style.left=Math.max(8, Math.min(window.innerWidth-m.offsetWidth-8, r.right-m.offsetWidth))+'px';
+  m.style.top=Math.min(window.innerHeight-m.offsetHeight-8, r.bottom+6)+'px';
+}
+function startCardRename(id){
+  closeCardMenu();
+  const n=NOTES.find(x=>x.id===id);
+  const card=document.querySelector('.ncard[data-nid="'+(window.CSS&&CSS.escape?CSS.escape(id):id)+'"]');
+  if(!n||!card) return;
+  const t=card.querySelector('.nctitle'); if(!t) return;
+  t.innerHTML='<input class="ncren" value="'+esc(n.title||'')+'" aria-label="Rename note"'
+    +' onclick="event.stopPropagation()"'
+    +' onkeydown="renameKeys(event)"'
+    +' onblur="commitRename(this, '+esc(JSON.stringify(id))+')"/>';
+  const inp=t.querySelector('input');
+  if(inp){ inp.focus(); inp.select(); }
+}
+function renameKeys(ev){
+  ev.stopPropagation();
+  if(ev.key==='Enter'){ ev.preventDefault(); ev.target.blur(); }
+  else if(ev.key==='Escape'){ ev.preventDefault(); ev.target.__cancel=true; ev.target.blur(); }
+}
+function commitRename(inp, id){
+  const n=NOTES.find(x=>x.id===id);
+  const cancel=!!inp.__cancel; inp.__cancel=false;
+  const val=(inp.value||'').trim();
+  if(!n || cancel || val===String(n.title||'').trim()){ renderNoteList(); return; }
+  n.title=val;
+  if(SELN===id){
+    // The open note rides the normal editor save (autosave + undo snapshot).
+    const t=document.getElementById('noteTitle');
+    if(t){ t.value=val; noteChanged(); }
+    renderNoteList();
+    return;
+  }
+  const payload={id:n.id, title:val, content:n.content||'', no_cleanup:true};
+  if(n.raw_content!=null) payload.raw_content=n.raw_content;
+  if(n.audio_segments&&n.audio_segments.length) payload.audio_segments=n.audio_segments;
+  busyGuard('ren:'+id, ()=>api('save_note', payload)).then(r=>{
+    if(r&&r.ok){ if(r.notes) NOTES=r.notes; toast('Renamed'); }
+    else toast((r&&r.error)||"Couldn't rename — please try again.", true);
+    renderNoteList();
+  });
+}
+function renameOpenNote(){
+  const t=document.getElementById('noteTitle');
+  if(t){ t.focus(); t.select(); }
+}
+
+// ── v3.2 dictation bar: idle = hint + FAB; recording = cancel · live waveform
+// · timer · pause/resume · stop-FAB. The waveform is REAL (recorder.level
+// polled every ~120ms), not an animation loop.
+let NOTE_PAUSED=false, _recTimer=null, _recMs=0, _recLast=0;
+function startRecTimer(){
+  _recMs=0; _recLast=Date.now(); NOTE_PAUSED=false;
+  if(_recTimer) clearInterval(_recTimer);
+  _recTimer=setInterval(recTick, 120);
+}
+function stopRecTimer(){ if(_recTimer){ clearInterval(_recTimer); _recTimer=null; } NOTE_PAUSED=false; }
+function recTick(){
+  const now=Date.now();
+  if(!NOTE_PAUSED) _recMs += now - _recLast;
+  _recLast=now;
+  const t=document.getElementById('dictTimer');
+  if(t){ const s=Math.floor(_recMs/1000); t.textContent=Math.floor(s/60)+':'+String(s%60).padStart(2,'0'); }
+  if(NOTE_PAUSED) return;   // bars freeze while paused
+  api('note_dictate_level').then(r=>{
+    if(!NOTE_REC) return;
+    const w=document.getElementById('dictWave'); if(!w) return;
+    const bars=w.children; if(!bars.length) return;
+    for(let i=0;i<bars.length-1;i++){ bars[i].style.height=bars[i+1].style.height||'3px'; }
+    const lv=(r&&r.ok)?Math.max(0,Math.min(1,r.level||0)):0;
+    bars[bars.length-1].style.height=(3+Math.round(lv*17))+'px';
+  });
+}
 function updateDictateBtn(){
-  const b=document.getElementById('dictateBtn'); if(!b) return;
-  b.className='dictate'+(NOTE_REC?' rec':'');
-  b.innerHTML = NOTE_REC ? '<span class="pulse"></span>Stop' : SVG.mic+'Dictate';
+  const bar=document.getElementById('dictBar'); if(!bar) return;
+  bar.classList.toggle('rec', NOTE_REC);
+  bar.classList.toggle('paused', NOTE_REC && NOTE_PAUSED);
+  if(NOTE_REC){
+    bar.innerHTML=`
+      <button class="dside" title="Cancel — discard this recording" aria-label="Cancel recording" onclick="cancelDictate()">✕</button>
+      <div class="dwave" id="dictWave" aria-hidden="true">${'<i></i>'.repeat(28)}</div>
+      <span class="dtimer" id="dictTimer">0:00</span>
+      <button class="dside" id="dictPauseBtn" title="Pause" aria-label="Pause recording" onclick="pauseDictate()">${SVG_PAUSE}</button>
+      <button class="dfab" aria-label="Stop and transcribe" onclick="toggleDictate()"><span class="dstop"></span></button>`;
+  } else {
+    bar.innerHTML=`
+      <span class="dtx" id="dictTx">Dictate into this note — Verbal cleans and formats it</span>
+      <span class="notesave" id="noteSaveState"></span>
+      <button class="dfab" id="dictFab" aria-label="Start dictation" onclick="toggleDictate()">${SVG.mic}</button>`;
+  }
+}
+function pauseDictate(){
+  busyGuard('note_pause', ()=>api('note_dictate_pause')).then(r=>{
+    if(r && r.busy) return;
+    if(!(r&&r.ok)) return;
+    NOTE_PAUSED=!!r.paused;
+    const bar=document.getElementById('dictBar'); if(bar) bar.classList.toggle('paused', NOTE_PAUSED);
+    const b=document.getElementById('dictPauseBtn');
+    if(b){
+      b.innerHTML=NOTE_PAUSED?SVG.play:SVG_PAUSE;
+      b.title=NOTE_PAUSED?'Resume':'Pause';
+      b.setAttribute('aria-label', NOTE_PAUSED?'Resume recording':'Pause recording');
+    }
+  });
+}
+// Leaving the recording context (switching notes, new note, deleting, leaving
+// the screen) DISCARDS a live recording — the mic must never keep running with
+// no UI attached to it. Fire-and-forget by design.
+function abortDictationIfLive(){
+  if(!NOTE_REC) return;
+  NOTE_REC=false;
+  stopRecTimer();
+  api('note_dictate_cancel');
+}
+// Cancel = discard: recorder stops, audio is dropped, nothing is transcribed.
+// Shares the 'note_dictate' guard so it can't race a stop-and-transcribe.
+function cancelDictate(){
+  busyGuard('note_dictate', ()=>api('note_dictate_cancel')).then(r=>{
+    if(r && r.busy) return;
+    stopRecTimer();
+    NOTE_REC=false;
+    updateDictateBtn();
+    setSaveState('');
+  });
 }
 // Key-guarded, not element-guarded: updateDictateBtn() rewrites the button's
 // contents on every state flip, so a flag parked on the node would be lost —
@@ -2779,6 +3716,7 @@ function updateDictateBtn(){
 function toggleDictate(){
   const n=curNote();
   if(NOTE_REC){
+    stopRecTimer();
     NOTE_REC=false; updateDictateBtn(); setSaveState('Transcribing…');
     busyGuard('note_dictate', ()=>api('note_dictate_stop', n?n.id:null)).then(r=>{
       if(r && r.busy) return;
@@ -2793,7 +3731,7 @@ function toggleDictate(){
   } else {
     busyGuard('note_dictate', ()=>api('note_dictate_start')).then(r=>{
       if(r && r.busy) return;
-      if(r&&r.ok){ NOTE_REC=true; updateDictateBtn(); setSaveState('Listening…'); }
+      if(r&&r.ok){ NOTE_REC=true; startRecTimer(); updateDictateBtn(); }
       else setSaveState((r&&r.error==='busy')?'Busy':'Mic error');
     });
   }
@@ -2816,6 +3754,7 @@ function onDictation(r){
       else setSaveState('');
     });
   } else {
+    nuSnap();   // the pre-append state is one Ctrl+Z away
     const b=document.getElementById('noteBody');
     if(b){ b.focus();
       const sep=(b.innerText && !/\s$/.test(b.innerText))?' ':'';
@@ -2823,10 +3762,10 @@ function onDictation(r){
       const rng=document.createRange(); rng.selectNodeContents(b); rng.collapse(false);
       const sel=window.getSelection(); sel.removeAllRanges(); sel.addRange(rng);
     }
-    // refresh the segment bar without wiping the freshly appended text
-    const bar=document.querySelector('#notesMain .editor .segbar');
-    const barHtml=noteSegBar(n);
-    if(bar){ bar.outerHTML=barHtml; } else if(barHtml){ const tb=document.querySelector('#notesMain .notetoolbar'); if(tb) tb.insertAdjacentHTML('beforebegin', barHtml); }
+    // refresh the Studio pane (recordings live there now, v3.1) without
+    // wiping the freshly appended editor text — it is a separate pane.
+    const sp=document.getElementById('studioPane');
+    if(sp) sp.innerHTML=studioHtml(n);
     updateSegIcons();
     noteChanged();
   }
@@ -2860,13 +3799,25 @@ function mdToHtml(md){
 }
 // Explicit Reformat with a named style (Notes v3, replaces the bare ✨ button) —
 // Decision 2 still holds: an LLM call happens ONLY on this explicit pick.
-// Source: the raw transcript when one exists (the true source — a restyle
-// should not compound earlier formatting), else the visible text.
-function formatNoteStyled(style){
+// Source (2026-08-15 feedback): the ENTIRE visible note — what the user sees
+// is what gets reformatted. Restyling from raw_content silently DROPPED every
+// typed/edited word (the transcript only holds dictated segments), which read
+// as "the tool only formats the recent transcription, not the entire text".
+// The transcript-as-source path still exists where it belongs: the Original
+// view's "Reformat from transcript" button (retryFormatting → 'raw').
+function formatNoteStyled(style, from){
   const n=curNote(); if(!n) return;
+  flushNoteSave();                      // pending edits are part of "entire"
   let source='';
-  if((n.raw_content!=null) && String(n.raw_content).trim()!=='') source=String(n.raw_content);
-  else { const b=document.getElementById('noteBody'); source=b?b.innerText:strippedNote(n); }
+  if(from==='raw' && (n.raw_content!=null) && String(n.raw_content).trim()!==''){
+    source=String(n.raw_content);
+  } else {
+    const b=document.getElementById('noteBody');
+    source=(b && b.innerText.trim()) ? b.innerText : strippedNote(n);
+    // Nothing typed yet but a transcript exists (failed first cleanup) —
+    // fall back to it so Reformat still has something to work on.
+    if(!source.trim() && n.raw_content!=null) source=String(n.raw_content);
+  }
   if(!source.trim()) return;
   setSaveState('Formatting…');
   busyGuard('notefmt', ()=>api('format_note_with_ai', source, style||'structured')).then(r=>{
@@ -2893,7 +3844,7 @@ function formatNoteStyled(style){
 function retryFormatting(){
   const n=curNote(); if(!n || !String(n.raw_content||'').trim()) return;
   if(_rawTimer){ clearTimeout(_rawTimer); _rawTimer=null; }   // raw edits ride along below
-  formatNoteStyled('structured');
+  formatNoteStyled('structured', 'raw');
 }
 // ── copy / export (Notes v3 — "export = trust") ───────────────────────────────
 // The stored content is EITHER markdown (dictated/AI-formatted) or HTML (typed
@@ -3527,6 +4478,7 @@ function renderMeetSettings(){
       ${tgl('meetings_enabled','Enable meetings')}
       ${tgl('meetings_hud_enabled','Floating HUD when tabbed away')}
       ${tgl('meetings_speaker_labels','Speaker labeling')}
+      ${tgl('meetings_diarize_enabled','Identify who spoke (after the meeting)')}
       <div class="saverow"><span style="font:500 13px Geist">Meeting notes language</span>
         ${ddStr('meetings_notes_language',['en','auto'],['Always English','Same as meeting'])}</div>
       ${tgl('meetings_keep_audio','Keep audio files')}
@@ -4096,7 +5048,7 @@ async function load(){
 // while reading one meeting goes back to the list (MER-46), where an
 // openMeeting event (which sets the sub-route first) must not be reset.
 function navTo(id){
-  if(id==='meetings'){ MVIEW='list'; MROW=null; MSUBNOTES=false; }
+  if(id==='meetings'){ mntAbandon(); MVIEW='list'; MROW=null; MSUBNOTES=false; MSPK=null; MEET_ASK_SCOPE=null; MEET_ASK=null; }
   show(id);
 }
 document.querySelectorAll('[data-screen]').forEach(n=>n.onclick=()=>navTo(n.dataset.screen));

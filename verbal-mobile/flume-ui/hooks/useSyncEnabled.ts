@@ -6,7 +6,7 @@
  * wrapper is the ONLY place that bridges it into React, via useSyncExternalStore
  * — the same subscribe/getSnapshot split historyStore already uses.
  *
- * Every sync toggle in the UI (MenuScreen, SettingsScreen, the DevicesScreen
+ * Every sync toggle in the UI (SidePanel, SettingsScreen, the DevicesScreen
  * self-row) reads through this hook and writes through setSyncEnabled, so they
  * always show the same value and a flip anywhere is reflected everywhere
  * immediately — no per-screen useState copy hydrated once on mount.

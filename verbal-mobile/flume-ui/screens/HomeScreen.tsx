@@ -18,6 +18,8 @@ const CARD_CREAM = '#EADFCE';
 const CARD_CREAM_INK = '#2a1f18';
 const CARD_SAGE = '#DDE4D3';
 const CARD_SAGE_INK = '#1e2418';
+const CARD_PLUM = '#e6dae4';
+const CARD_PLUM_INK = '#221820';
 
 /**
  * Screen 7a — Home dashboard (minimalist dark): greeting, device pills,
@@ -27,7 +29,7 @@ export const HomeScreen: React.FC<Props> = ({ onOpenMenu }) => {
   const insets = useSafeAreaInsets();
   const nav = useNavigation<any>();
   const { user } = useAuth();
-  const { devices, target, setTarget } = useDevices();
+  const { devices, target, mode, setTarget, setSendMode } = useDevices();
   const { items } = useHistory();
   const { notes } = useNotes();
 
@@ -54,9 +56,10 @@ export const HomeScreen: React.FC<Props> = ({ onOpenMenu }) => {
       <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: insets.bottom + 24 }}>
         {/* Device target pills */}
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 7, paddingRight: 16 }} style={{ marginBottom: 20, flexGrow: 0 }}>
-          <Pill label="All" active={!target} onPress={() => setTarget(null)} />
+          <Pill label="This phone" active={mode === 'none'} onPress={() => setSendMode('none')} />
+          <Pill label="All" active={mode === 'all'} onPress={() => setTarget(null)} />
           {devices.map(d => (
-            <Pill key={d.id} label={d.name} active={target?.id === d.id} onPress={() => setTarget(d)} />
+            <Pill key={d.id} label={d.name} active={mode === 'device' && target?.id === d.id} onPress={() => setTarget(d)} />
           ))}
         </ScrollView>
 
@@ -65,6 +68,22 @@ export const HomeScreen: React.FC<Props> = ({ onOpenMenu }) => {
           <FeatureCard bg={CARD_CREAM} ink={CARD_CREAM_INK} icon="mic-outline" big={`${devices.length} online`} title="Devices ready" sub={onlineNames} onPress={openDevices} />
           <FeatureCard bg={CARD_SAGE} ink={CARD_SAGE_INK} icon="document-text-outline" big={`${notes.length} notes`} title="Your notebook" sub={notes.length ? 'Tap to open' : 'No notes yet'} onPress={openNotes} />
         </View>
+
+        {/* Insights strip */}
+        <Pressable
+          onPress={() => nav.navigate('InsightsTab')}
+          style={({ pressed }) => [styles.insightsRow, pressed && pressedStyle]}
+          accessibilityRole="button" accessibilityLabel="Open insights"
+        >
+          <View style={[styles.featureIcon, { backgroundColor: CARD_PLUM_INK, width: 28, height: 28, borderRadius: 14 }]}>
+            <Ionicons name="pulse-outline" size={14} color={CARD_PLUM} />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={{ fontSize: 13, fontFamily: 'Geist_600SemiBold', color: CARD_PLUM_INK }}>Insights</Text>
+            <Text style={{ fontSize: 11, fontFamily: 'Geist_400Regular', color: CARD_PLUM_INK, opacity: 0.6 }}>Your words, speed & streaks</Text>
+          </View>
+          <Ionicons name="chevron-forward" size={13} color={CARD_PLUM_INK} style={{ opacity: 0.5 }} />
+        </Pressable>
 
         {/* Recent */}
         <View style={styles.recentHead}>
@@ -129,7 +148,8 @@ const styles = StyleSheet.create({
   pill: { paddingVertical: 9, paddingHorizontal: 16, borderRadius: 999 },
   pillActive: { backgroundColor: colors.inkLight },
   pillIdle: { backgroundColor: 'transparent', borderWidth: 1, borderColor: colors.borderStrong },
-  featureRow: { flexDirection: 'row', gap: 10, marginBottom: 24 },
+  featureRow: { flexDirection: 'row', gap: 10, marginBottom: 10 },
+  insightsRow: { flexDirection: 'row', alignItems: 'center', gap: 11, backgroundColor: CARD_PLUM, borderRadius: 16, paddingVertical: 11, paddingHorizontal: 13, marginBottom: 24 },
   feature: { flex: 1, borderRadius: 18, padding: 14, paddingBottom: 16 },
   featureTop: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 26 },
   featureIcon: { width: 32, height: 32, borderRadius: 16, alignItems: 'center', justifyContent: 'center' },

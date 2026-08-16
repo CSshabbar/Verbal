@@ -4,7 +4,7 @@
  *
  * The real hook is the ONLY React bridge over `lib/syncStore` (IDI-171), which
  * is deliberately React-free so `lib/` can own it. There is exactly ONE sync
- * flag (Hard Rule #28): MenuScreen, SettingsScreen, the DevicesScreen self-row
+ * flag (Hard Rule #28): SidePanel, SettingsScreen, the DevicesScreen self-row
  * and DevicesSyncSheet all read through this hook and write through
  * setSyncEnabled, so a flip anywhere is reflected everywhere immediately.
  *

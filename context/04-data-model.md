@@ -47,7 +47,9 @@ anon-key curl: select returns `[]`, double-claim rejected, status never exposes 
 **`notes`** — `notes_migration.sql` (base) + `supabase_notes_v2.sql` (self-contained: **creates the table if
 missing** — it was never provisioned in the live DB, so Notes was local-only until 2026-07 — then adds v2 cols).
 `id` **text** PK · `user_id` text · `title` text `''` · `content` text `''` (AI-formatted) · `folder` text `''` ·
-`is_pinned` bool `false` (NB: no desktop writer since IDI-179 deleted the orphaned `toggle_note_pin`) ·
+`is_pinned` bool `false` (LIVE since Notes v3, 2026-08: desktop `set_note_pinned` / mobile `notesStore.setPinned`.
+**Pin writes NEVER bump `updated_at`** — a pin is a preference, not an edit, so it must not reorder the
+recency-sorted lists or mint a conflict pair; both writers PATCH `{is_pinned}` alone, best-effort) ·
 `device_name` text · `created_at` · `updated_at`. Indexes on `(user_id)` and
 `(user_id, updated_at DESC)`. In the `supabase_realtime` publication.
 **`id` is `text`, not uuid** (migration `fix_notes_id_type_to_text`, applied 2026-07 after a live-schema
@@ -188,8 +190,15 @@ live migration `transcriptions_deleted_at_tombstone` 2026-08: delete = UPDATE wi
 `edited_text`+`audio_url` nulled, storage object removed — never a hard DELETE; merges drop + prune
 tombstoned ids; reconnect backfill sweeps tombstones separately since an UPDATE never moves `created_at`).
 Indexes `(user_id, created_at desc)` and `(user_id, is_pinned, created_at desc)`. In the realtime
-publication (desktop subscribes to `*`, not just INSERT). Local-cache-only field with NO DB column:
-`duration_ms` (mobile persists the real recording duration; never pushed).
+publication (desktop subscribes to `*`, not just INSERT). `duration_ms` int nullable (**2026-08-16**,
+live migration `transcriptions_duration_ms` + `supabase_transcriptions.sql`): the recording's real
+duration, written by both desktops' `SyncClient.push` and mobile's `addTranscription` insert; feeds the
+**account-wide WPM** on the Insights pages (mobile combines it with its local measured speech —
+`lib/insights.ts::localSpeech` + the cache's `wpmW/wpmMs` accumulator, own-device rows excluded to avoid
+double counting; insights cache is versioned `v:2` so existing installs re-read history once). Historic
+desktop rows were backfilled from their stored 16 kHz mono PCM16 WAV sizes (32 bytes/ms); compressed
+mobile uploads (m4a/caf) can't be size-derived and stayed NULL. (This replaced the old
+"local-cache-only, never pushed" posture.)
 
 **`devices`** — device registry/presence. `id` uuid PK · `user_id` text · `device_id` text (since IDI-177
 a STABLE per-install uuid — desktop `config.get_device_id()`, mobile `verbal_device_uuid` — never derived
@@ -297,10 +306,24 @@ columns it isn't changing (text edits never null the image); a clear is an expli
   open relay spending the account's ASR credit. That relaxation is quarantined in this function precisely so
   `groq-proxy` can keep verify_jwt on. Wire protocol: client sends binary PCM16 @16 kHz and
   `{"type":"done"}`; server sends `{"type":"ready"|"partial"|"final"|"error"}`. Needs `ASSEMBLYAI_API_KEY`.
+- **`diarize` JSON action on `groq-proxy`** (2026-08-16): `{"diarize":{"object":"<user>/<id>.wav"}}`
+  → signs a 1h URL for the private `meeting-audio` object (service role; path regex-locked to
+  `<user>/<meeting>.wav` so it cannot sign arbitrary bucket paths) and submits to AssemblyAI with
+  `speaker_labels: true`; returns `{id}`. `{"diarize":{"poll":"<id>"}}` → `{status}` or
+  `{status:"completed", utterances:[{speaker,start,end}]}` in SECONDS. Usage logged as kind `diarize`.
+  Needs `ASSEMBLYAI_API_KEY`; 503 without it and the desktop keeps gap labels (fail-closed, verified live).
 - **`groq-proxy` function secrets:** `GROQ_API_KEY`, `OLLAMA_API_KEY`, plus (2026-08-15)
   `ELEVENLABS_API_KEY` and `ASSEMBLYAI_API_KEY`. Set with `supabase secrets set` — there is **no MCP tool
   for secrets**. Without them the provider branch 502s naming the missing secret and dictation falls back
   to Groq, so a half-configured deploy degrades instead of breaking.
+- **Insights stats (config-only, NO Supabase columns — Aug 2026):** desktop
+  `config['stats_daily']` (per-day `{w,n,s,fx,apps,hh}` ledger, 800-day cap; `apps` values are
+  `[words, dictations]` — bare ints from the first build are read-tolerated and upgraded on the next
+  write to that app), `stats_total`,
+  `stats_since`, and `stats_cloud` (incremental aggregate of `transcriptions` rows, high-water-marked on
+  `created_at`; merge rule in `app/insights.py` prevents double counting). Mobile mirrors the cloud
+  aggregate in AsyncStorage `verbal_insights_cache` (uid-stamped; in the `clearAccountData` teardown
+  list). The Insights feature reads `transcriptions` but never writes it.
 - **Device**: `{user_id, device_id, device_name, device_type, last_seen}`.
 - **Canvas** (mobile UI item): `{id, state:'draft'|'sent', kind:'text'|'link'|'image', …}` → collapsed to the
   single shared `{content, image_url}` row on save.
@@ -344,6 +367,13 @@ history/notes/canvas/dictionary; meetings edits + recording uploads gate on bein
 desktop's `SyncClient` has a single reconnect loop with a bounded backfill (content since last-seen + a
 separate tombstone sweep).
 
+- **History bootstrap on joining a device (2026-08-15):** `sync.bootstrap_history(config, save_config_fn)`
+  seeds local history with the account's newest 50 non-tombstoned `transcriptions` when a device signs in
+  (both desktops' after-sign-in paths) or starts sync with a near-empty local history (<5 entries). The
+  SyncClient watermark is deliberately seeded to NOW, so without this a fresh install showed an empty
+  History despite hundreds of cloud rows. QUIET merge (dedup by `sync_id`, then text+day as a backstop for
+  entries that lost their sync_id to a config-reload race) — never touches the clipboard/overlay/paste
+  path, which is `_on_sync_receive`'s job for LIVE rows only.
 - **Transcriptions (history / shared clipboard):** push = INSERT into `transcriptions`; BOTH platforms
   include `audio_url`+`status`+`target_device_id` since IDI-172 (desktop patches `audio_url` row-scoped
   after the async upload; local↔cloud linkage via a local `sync_id`). Receive: desktop Phoenix WS

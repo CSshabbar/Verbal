@@ -1,14 +1,15 @@
 import React, { useState, useMemo, useEffect, useCallback } from 'react';
-import { View, StyleSheet, ScrollView, Pressable, TextInput, AccessibilityInfo, RefreshControl } from 'react-native';
+import { View, StyleSheet, ScrollView, Pressable, TextInput, AccessibilityInfo, RefreshControl, ActivityIndicator } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
-import { Text } from '../components';
+import { Text, ImportNotesModal } from '../components';
 import { confirm } from '../components/ConfirmDialog';
 import { colors, radius, pressedStyle } from '../theme';
 import { useNotes, Note } from '../hooks/useNotes';
 import { searchNotes } from '../../lib/notesSearch';
+import { askNotes } from '../../lib/groq';
 
 type Props = {
   onOpen: (note: Note) => void;
@@ -27,11 +28,20 @@ const CARD_CREAM_INK = '#2a1f18';
  */
 export const NotesListScreen: React.FC<Props> = ({ onOpen, onCreate, onOpenMeetings }) => {
   const insets = useSafeAreaInsets();
-  const { notes, flags, reloadFlags, reload, removeNotes } = useNotes();
+  const { notes, flags, reloadFlags, reload, removeNotes, createNote } = useNotes();
   const [filter, setFilter] = useState<'all' | 'voice' | 'typed'>('all');
   const [searchOpen, setSearchOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [refreshing, setRefreshing] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
+
+  // Import (Notes v3.2): one pick = one note, created here and opened at once.
+  const handleImport = useCallback((data: { title: string; body: string }) => {
+    setImportOpen(false);
+    const note = createNote({ title: data.title, body: data.body });
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+    onOpen(note);
+  }, [createNote, onOpen]);
 
   // Settings toggles (search / audio / autotitle / structure) apply as soon as
   // the user comes back to this screen — they used to need an app relaunch.
@@ -93,6 +103,39 @@ export const NotesListScreen: React.FC<Props> = ({ onOpen, onCreate, onOpenMeeti
     [searching, base, query],
   );
 
+  /* ── Ask your notes (Notes v3) — explicit action only (submit / Ask row) ── */
+  const [asking, setAsking] = useState(false);
+  const [askAnswer, setAskAnswer] = useState<string | null>(null);
+  useEffect(() => { setAskAnswer(null); }, [query]);
+
+  const runAsk = useCallback(async () => {
+    const q = query.trim();
+    if (!q || asking || notes.length === 0) return;
+    setAsking(true);
+    setAskAnswer(null);
+    try {
+      // Same token-overlap ranking as desktop ask_notes: title 3×, body 1×.
+      const toks = (q.toLowerCase().match(/[a-z0-9]+/g) ?? []).filter(t => t.length > 2);
+      const score = (n: Note) => {
+        const t = (n.title || '').toLowerCase(), b = (n.body || '').toLowerCase();
+        let s = 0;
+        for (const k of toks) { if (t.includes(k)) s += 3; if (b.includes(k)) s += 1; }
+        return s;
+      };
+      const ranked = [...notes].sort((a, b) => score(b) - score(a)).slice(0, 6);
+      const r = await askNotes(q, ranked.map(n => ({
+        title: n.title, content: n.body, updatedAt: new Date(n.updatedAt).toISOString(),
+      })));
+      setAskAnswer(r.ok ? r.answer : "Couldn't get an answer — check your connection and try again.");
+    } finally {
+      setAsking(false);
+    }
+  }, [query, notes, asking]);
+
+  // Pinned notes surface in their own labeled section (never while searching).
+  const pinnedNotes = useMemo(() => results.filter(n => n.isPinned), [results]);
+  const unpinned = useMemo(() => results.filter(n => !n.isPinned), [results]);
+
   // Announce result count to screen readers as the query changes (Decision 8).
   useEffect(() => {
     if (searching) {
@@ -105,8 +148,8 @@ export const NotesListScreen: React.FC<Props> = ({ onOpen, onCreate, onOpenMeeti
   const weekAgo = Date.now() - 7 * 86_400_000;
   const thisWeek = useMemo(() => notes.filter(n => n.updatedAt >= weekAgo).length, [notes, weekAgo]);
 
-  const featured = results[0];
-  const rest = results.slice(1);
+  const featured = unpinned[0];
+  const rest = unpinned.slice(1);
 
   const closeSearch = () => { setSearchOpen(false); setQuery(''); };
 
@@ -149,6 +192,14 @@ export const NotesListScreen: React.FC<Props> = ({ onOpen, onCreate, onOpenMeeti
                 <Ionicons name="search-outline" size={16} color={searchOpen ? colors.primary : colors.textSecondary} />
               </Pressable>
             ) : null}
+            <Pressable
+              onPress={() => setImportOpen(true)}
+              style={({ pressed }) => [styles.iconCircle, pressed && pressedStyle]}
+              accessibilityRole="button"
+              accessibilityLabel="Import from meetings or transcriptions"
+            >
+              <Ionicons name="download-outline" size={16} color={colors.textSecondary} />
+            </Pressable>
             <Pressable onPress={onCreate} style={({ pressed }) => [styles.iconCircle, { backgroundColor: colors.primarySoft }, pressed && pressedStyle]} accessibilityRole="button" accessibilityLabel="New note">
               <Ionicons name="add" size={18} color={colors.primary} />
             </Pressable>
@@ -156,18 +207,21 @@ export const NotesListScreen: React.FC<Props> = ({ onOpen, onCreate, onOpenMeeti
         </View>
       )}
 
+      <ImportNotesModal visible={importOpen} onClose={() => setImportOpen(false)} onImport={handleImport} />
+
       {flags.search && searchOpen ? (
         <View style={styles.searchBar}>
           <Ionicons name="search-outline" size={16} color={colors.textMuted} />
           <TextInput
             value={query}
             onChangeText={setQuery}
-            placeholder="Search notes…"
+            placeholder="Search or ask your notes…"
             placeholderTextColor={colors.textSubtle}
             style={styles.searchInput}
             autoFocus
             autoCorrect={false}
             returnKeyType="search"
+            onSubmitEditing={runAsk}
             accessibilityLabel="Search notes"
           />
           {query.length > 0 ? (
@@ -214,22 +268,68 @@ export const NotesListScreen: React.FC<Props> = ({ onOpen, onCreate, onOpenMeeti
         }
       >
         {searching ? (
-          results.length === 0 ? (
-            <View style={styles.empty}>
-              <Text variant="bodySm" color={colors.textSubtle} align="center">No notes match “{query.trim()}”.</Text>
-              <Pressable onPress={() => setQuery('')} style={({ pressed }) => [styles.clearBtn, pressed && pressedStyle]} accessibilityRole="button" accessibilityLabel="Clear search">
-                <Text variant="buttonSm" color={colors.primary}>Clear search</Text>
-              </Pressable>
-            </View>
-          ) : (
-            <View style={{ gap: 10 }} accessibilityLabel={`${results.length} results`}>
-              {results.map(n => (
-                <NoteRow key={n.id} note={n} selectMode={selectMode} selected={selected.has(n.id)} onPress={handlePress} onLongPress={enterSelect} />
-              ))}
-            </View>
-          )
-        ) : featured ? (
           <>
+            {/* Ask-your-notes (Notes v3): explicit action — submit or this row. */}
+            {asking ? (
+              <View style={styles.askCard}>
+                <ActivityIndicator size="small" color={colors.primary} />
+                <Text variant="bodyXs" color={colors.primaryAccent}>Thinking…</Text>
+              </View>
+            ) : askAnswer ? (
+              <View style={styles.askCard}>
+                <View style={{ flex: 1 }}>
+                  <Text variant="metaSm" color={colors.primaryAccent} style={{ marginBottom: 4 }}>
+                    {query.trim().toUpperCase()}
+                  </Text>
+                  <Text variant="bodyXs" color={colors.textPrimary} selectable style={{ lineHeight: 19 }}>
+                    {askAnswer}
+                  </Text>
+                </View>
+                <Pressable onPress={() => setAskAnswer(null)} hitSlop={8} accessibilityRole="button" accessibilityLabel="Dismiss answer">
+                  <Ionicons name="close" size={15} color={colors.textMuted} />
+                </Pressable>
+              </View>
+            ) : results.length > 0 ? (
+              <Pressable onPress={runAsk} style={({ pressed }) => [styles.askRow, pressed && pressedStyle]} accessibilityRole="button" accessibilityLabel={`Ask AI about ${query.trim()}`}>
+                <Ionicons name="sparkles-outline" size={14} color={colors.primary} />
+                <Text variant="buttonSm" color={colors.primary}>Ask AI about “{query.trim()}”</Text>
+              </Pressable>
+            ) : null}
+            {results.length === 0 ? (
+              <View style={styles.empty}>
+                <Text variant="bodySm" color={colors.textSubtle} align="center">No notes match “{query.trim()}”.</Text>
+                {!asking && !askAnswer ? (
+                  <Pressable onPress={runAsk} style={({ pressed }) => [styles.clearBtn, pressed && pressedStyle]} accessibilityRole="button" accessibilityLabel="Ask AI">
+                    <Text variant="buttonSm" color={colors.primary}>Ask AI</Text>
+                  </Pressable>
+                ) : null}
+                <Pressable onPress={() => setQuery('')} style={({ pressed }) => [styles.clearBtn, pressed && pressedStyle]} accessibilityRole="button" accessibilityLabel="Clear search">
+                  <Text variant="buttonSm" color={colors.primary}>Clear search</Text>
+                </Pressable>
+              </View>
+            ) : (
+              <View style={{ gap: 10 }} accessibilityLabel={`${results.length} results`}>
+                {results.map(n => (
+                  <NoteRow key={n.id} note={n} selectMode={selectMode} selected={selected.has(n.id)} onPress={handlePress} onLongPress={enterSelect} />
+                ))}
+              </View>
+            )}
+          </>
+        ) : (pinnedNotes.length > 0 || featured) ? (
+          <>
+            {pinnedNotes.length > 0 && (
+              <>
+                <View style={styles.sectionHead}>
+                  <Text variant="metaSm" color={colors.textSubtle}>PINNED</Text>
+                </View>
+                <View style={{ gap: 10, marginBottom: 20 }}>
+                  {pinnedNotes.map(n => (
+                    <NoteRow key={n.id} note={n} selectMode={selectMode} selected={selected.has(n.id)} onPress={handlePress} onLongPress={enterSelect} />
+                  ))}
+                </View>
+              </>
+            )}
+            {featured ? (
             <Pressable
               onPress={() => handlePress(featured)}
               onLongPress={() => enterSelect(featured.id)}
@@ -268,6 +368,7 @@ export const NotesListScreen: React.FC<Props> = ({ onOpen, onCreate, onOpenMeeti
                 </View>
               </View>
             </Pressable>
+            ) : null}
 
             {rest.length > 0 && (
               <>
@@ -309,7 +410,10 @@ const NoteRow: React.FC<{
     accessibilityLabel={n.title || 'Untitled note'}
   >
     <View style={styles.noteCardHead}>
-      <Text variant="caption" color={colors.textSubtle}>{n.dateLabel}</Text>
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
+        {n.isPinned ? <Ionicons name="star" size={11} color={colors.primary} /> : null}
+        <Text variant="caption" color={colors.textSubtle}>{n.dateLabel}</Text>
+      </View>
       <View style={[styles.noteIcon, selectMode && selected && { backgroundColor: colors.primarySoft }]}>
         <Ionicons
           name={selectMode ? (selected ? 'checkmark-circle' : 'ellipse-outline') : (n.isVoice ? 'mic-outline' : 'create-outline')}
@@ -383,6 +487,16 @@ const styles = StyleSheet.create({
   featuredChevron: { width: 26, height: 26, borderRadius: 13, backgroundColor: 'rgba(42,31,24,0.1)', alignItems: 'center', justifyContent: 'center' },
   empty: { paddingVertical: 28, alignItems: 'center', gap: 12 },
   clearBtn: { paddingVertical: 8, paddingHorizontal: 16, borderRadius: 999, backgroundColor: colors.primarySoft, borderWidth: 1, borderColor: colors.primaryBorder },
+  askRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 7, alignSelf: 'flex-start',
+    paddingVertical: 8, paddingHorizontal: 13, borderRadius: 999, marginBottom: 12,
+    backgroundColor: colors.primarySoft, borderWidth: 1, borderColor: colors.primaryBorder,
+  },
+  askCard: {
+    flexDirection: 'row', alignItems: 'flex-start', gap: 10,
+    padding: 13, borderRadius: radius.md, marginBottom: 14,
+    backgroundColor: colors.primarySoft, borderWidth: 1, borderColor: colors.primaryBorder,
+  },
   sectionHead: { flexDirection: 'row', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 12 },
   noteCard: { padding: 14, borderRadius: 16, backgroundColor: colors.surface1, borderWidth: 1, borderColor: colors.borderSubtle },
   cardSelected: { borderColor: colors.primary, borderWidth: 2 },

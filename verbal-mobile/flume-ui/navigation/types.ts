@@ -33,8 +33,8 @@ export type TabsParamList = {
   HomeTab:     undefined;
   NotesTab:    undefined;
   RecordTab:   undefined;
-  CanvasTab:   undefined;
   HistoryTab:  undefined;
+  InsightsTab: undefined;
 };
 
 /** Stacks inside each tab. */
@@ -54,12 +54,14 @@ export type HistoryStackParamList = {
   HistoryDetail: { itemId: string };
 };
 
+// The "Menu" ROOT screen is gone (V2 nav redesign, 2026-08-16): the SidePanel
+// is the hub now, and this modal stack hosts only the secondary destinations.
 export type MenuStackParamList = {
-  Menu: undefined;
   Settings: undefined;
   Dictionary: undefined;
   Devices: undefined;
   PairDevice: undefined;
   Snippets: undefined;
   Models: undefined;
+  Canvas: undefined;
 };

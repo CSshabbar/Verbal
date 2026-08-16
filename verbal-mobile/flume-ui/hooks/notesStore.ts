@@ -627,19 +627,24 @@ export async function saveDictation(
 
 /**
  * reformatNote — explicit "Reformat" / "Retry formatting" (Design Decision 2 +
- * Decision 6). Re-runs cleanup on the raw transcript (or the body if the note
- * never had one). Only fills the title when it is still empty — never
- * overwrites a manually-set title.
+ * Decision 6). Source (2026-08-15 feedback, mirrors the desktop fix): the
+ * ENTIRE current note — restyling from raw_content silently dropped every
+ * typed word (the transcript only holds dictated segments), which read as
+ * "the tool only formats the recent transcription". Pass from:'raw' for the
+ * transcript-view "Reformat from transcript" flow; the empty-content /
+ * failed-first-cleanup case still falls back to the transcript. Only fills
+ * the title when it is still empty — never overwrites a manually-set title.
  */
 export async function reformatNote(
   id: string, style: 'structured' | 'prose' | 'transcript' = 'structured',
+  from: 'note' | 'raw' = 'note',
 ): Promise<Note | null> {
   const cached = await getCachedNotes();
   const existing = cached.find((n) => n.id === id);
   if (!existing) return null;
-  const source = (existing.raw_content && existing.raw_content.trim())
-    ? existing.raw_content
-    : existing.content;
+  const raw = (existing.raw_content ?? '').trim();
+  const body = (existing.content ?? '').trim();
+  const source = (from === 'raw' && raw) ? raw : (body || raw);
   if (!source || !source.trim()) return null;
 
   const f = await getNotesFeatureFlags().catch(() => DEFAULT_NOTES_FLAGS);

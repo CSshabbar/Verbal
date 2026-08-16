@@ -8,7 +8,9 @@ import { colors, radius, pressedStyle } from '../theme';
 import { useCanvas, CanvasItem } from '../hooks/useCanvas';
 import { useDevices } from '../hooks/useDevices';
 
-type Props = {};
+// onBack appeared with the V2 nav redesign (2026-08-16): Canvas moved from a
+// tab to the SidePanel → Menu modal stack, so it needs its own way home.
+type Props = { onBack?: () => void };
 
 /**
  * Screen 4c — Canvas. Drop & send to computer's clipboard.
@@ -16,7 +18,7 @@ type Props = {};
  * Each card is a single payload (text, link, or image). Tapping "Save → Device"
  * sends that payload to the paired device's clipboard.
  */
-export const CanvasScreen: React.FC<Props> = () => {
+export const CanvasScreen: React.FC<Props> = ({ onBack }) => {
   const insets = useSafeAreaInsets();
   const { items, save, discard, addText, addLink, addPhoto, updateText, refresh, toast, dismissToast } = useCanvas();
   const { target } = useDevices();
@@ -30,7 +32,15 @@ export const CanvasScreen: React.FC<Props> = () => {
         </Pressable>
       ) : null}
       <View style={styles.header}>
-        <Text variant="titleSm">Canvas</Text>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+          {onBack ? (
+            <Pressable onPress={onBack} hitSlop={8} style={({ pressed }) => pressed && pressedStyle}
+              accessibilityRole="button" accessibilityLabel="Back">
+              <Ionicons name="chevron-back" size={22} color={colors.textSecondary} />
+            </Pressable>
+          ) : null}
+          <Text variant="titleSm">Canvas</Text>
+        </View>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
           <Pressable
             onPress={() => { Haptics.selectionAsync(); refresh(); }}

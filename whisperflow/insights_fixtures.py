@@ -40,7 +40,16 @@ def main():
        "ledger accumulates words/count/seconds/fx")
     ok(cfg["stats_total"]["w"] == 62 and cfg["stats_since"] == t,
        "lifetime totals + stats_since stamped")
-    ok(d["apps"] == {"Cursor": 42, "Slack": 20}, "per-app words recorded")
+    ok(d["apps"] == {"Cursor": [42, 1], "Slack": [20, 1]},
+       "per-app words + dictation counts recorded")
+
+    # 1b. legacy first-build shape (bare int) upgrades in place on next write
+    cfg["stats_daily"][t]["apps"]["Cursor"] = 42          # simulate old data
+    insights.record_dictation(cfg, save, 8, seconds=3.0, app_name="Cursor")
+    ok(cfg["stats_daily"][t]["apps"]["Cursor"] == [50, 1],
+       "legacy int app value upgrades to [w, n]")
+    cfg["stats_daily"][t]["w"] -= 8                        # undo for later spans
+    cfg["stats_total"]["w"] -= 8
 
     # 2. streaks
     for i in (1, 2, 3):
@@ -52,6 +61,18 @@ def main():
     p = insights.compute(cfg)
     ok(p["current_streak"] == 4, "current streak includes today + run")
     ok(p["best_streak"] == 5, "best streak found in older history")
+
+    # 2b. per-app stats: 30-day and all-time windows, count/avg, legacy tolerance
+    old_day = str(date.today() - timedelta(days=90))
+    cfg["stats_daily"][old_day] = {"w": 30, "n": 1, "s": 10.0, "fx": 0,
+                                   "apps": {"Cursor": 30}, "hh": {}}  # legacy int
+    p = insights.compute(cfg)
+    cur30 = next(a for a in p["apps"] if a["name"] == "Cursor")
+    ok(cur30["words"] == 50 and cur30["count"] == 1 and cur30["avg"] == 50,
+       "30-day per-app row carries words/count/avg")
+    cur_all = next(a for a in p["apps_all"] if a["name"] == "Cursor")
+    ok(cur_all["words"] == 80 and cur_all["count"] == 1,
+       "all-time window includes legacy-int days (count-less)")
 
     # 3. merge rule
     cfg["stats_cloud"] = {"days": {t: {"w": 100, "n": 2}}, "hh": {"9": 100},

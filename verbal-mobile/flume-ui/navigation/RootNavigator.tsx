@@ -19,6 +19,7 @@ import {
   PairDeviceScreen,
   DevicesScreen,
   SnippetsScreen,
+  InsightsScreen,
   ModelsScreen,
   NotesListScreen,
   NoteEditorScreen,
@@ -29,9 +30,9 @@ import {
   MeetingLiveScreen,
   CanvasScreen,
   SettingsScreen,
-  MenuScreen,
   DictionaryScreen,
 } from '../screens';
+import { SidePanel } from '../components/SidePanel';
 import * as Clipboard from 'expo-clipboard';
 import { colors, type } from '../theme';
 import { useAuth } from '../hooks/useAuth';
@@ -159,7 +160,7 @@ function HistoryNavigator() {
 
 const HistoryDetail: React.FC<{ itemId: string; onBack: () => void }> = ({ itemId, onBack }) => {
   const { items, addTranscription, retryEntry, playEntry, remove } = useHistory();
-  const { target } = useDevices();
+  const { target, mode } = useDevices();
   const item = items.find(i => i.id === itemId);
   if (!item) return null;
   const copy = () => { Clipboard.setStringAsync(item.text); };
@@ -187,7 +188,7 @@ const HistoryDetail: React.FC<{ itemId: string; onBack: () => void }> = ({ itemI
       onResend={() => {
         // Re-send: copy locally + push to the current target device.
         Clipboard.setStringAsync(item.text);
-        addTranscription(item.text, target?.name ?? item.deviceTag, 0, target?.id ?? null);
+        addTranscription(item.text, (mode === 'device' && target?.name) || item.deviceTag, 0, mode === 'device' ? target?.id ?? null : null);
         onBack();
       }}
     />
@@ -195,20 +196,15 @@ const HistoryDetail: React.FC<{ itemId: string; onBack: () => void }> = ({ itemI
 };
 
 const MenuStack = createNativeStackNavigator<MenuStackParamList>();
+// V2 nav redesign (2026-08-16): the old MenuScreen hub is gone — the SidePanel
+// owns navigation now. This modal stack hosts only the secondary destinations,
+// each with its own back affordance (or swipe-down, it's a modal).
 function MenuNavigator() {
   return (
     <MenuStack.Navigator screenOptions={{ headerShown: false }}>
-      <MenuStack.Screen name="Menu">
+      <MenuStack.Screen name="Canvas">
         {({ navigation }) => (
-          <MenuScreen
-            // getParent().goBack() dismisses the whole modal (Menu is this stack's
-            // root, so its own goBack is a no-op).
-            onClose={() => navigation.getParent()?.goBack()}
-            onOpenSettings={() => navigation.navigate('Settings')}
-            onOpenSnippets={() => navigation.navigate('Snippets')}
-            onOpenDictionary={() => navigation.navigate('Dictionary')}
-            onOpenDevices={() => navigation.navigate('Devices')}
-          />
+          <CanvasScreen onBack={() => navigation.getParent()?.goBack()} />
         )}
       </MenuStack.Screen>
       <MenuStack.Screen name="Settings">
@@ -287,10 +283,10 @@ type TabsNavigatorProps = {
 const EmptyTab = () => null;
 
 /**
- * Minimalist-dark tab bar (wireframe 7a/8e): Home · Notes · [center mic] ·
- * Canvas · History. The mic is a floating white button that opens the
- * Recording modal — it's the primary action, so it sits in the center.
- * Settings is reached from the Home header gear.
+ * "Daily Four" tab bar (V2 nav redesign, 2026-08-16): Home · Notes ·
+ * [center mic] · History · Insights — the four daily surfaces one tap away,
+ * dictation as the floating centerpiece. Canvas, Meetings and the tools live
+ * in the SidePanel (Home ☰), which mirrors the desktop sidebar.
  */
 function TabsNavigator({ onRecord, onOpenMenu }: TabsNavigatorProps) {
   const insets = useSafeAreaInsets();
@@ -352,15 +348,16 @@ function TabsNavigator({ onRecord, onOpenMenu }: TabsNavigatorProps) {
         }}
       />
       <Tabs.Screen
-        name="CanvasTab"
-        component={CanvasScreen}
-        options={{ tabBarIcon: ({ color }) => <Ionicons name="grid-outline" size={23} color={color} /> }}
-      />
-      <Tabs.Screen
         name="HistoryTab"
         component={HistoryNavigator}
         options={{ tabBarIcon: ({ color }) => <Ionicons name="time-outline" size={24} color={color} /> }}
       />
+      <Tabs.Screen
+        name="InsightsTab"
+        options={{ tabBarIcon: ({ color }) => <Ionicons name="pulse-outline" size={24} color={color} /> }}
+      >
+        {() => <InsightsScreen />}
+      </Tabs.Screen>
     </Tabs.Navigator>
   );
 }
@@ -384,6 +381,36 @@ const navStyles = StyleSheet.create({
 });
 
 /* ────────────────────────────────────────────────────────────────
+ * Main = tabs + the SidePanel overlay (V2 nav redesign, 2026-08-16).
+ * The panel is an in-tree Animated overlay (OTA-safe — no drawer package),
+ * covering the tab bar too, and routes into the Menu modal stack / tab stacks.
+ * ──────────────────────────────────────────────────────────────── */
+
+function MainWithPanel({ navigation }: { navigation: any }) {
+  const [panelOpen, setPanelOpen] = useState(false);
+  const go = (dest: string) => {
+    setPanelOpen(false);
+    switch (dest) {
+      case 'canvas':     navigation.navigate('Menu', { screen: 'Canvas' }); break;
+      case 'meetings':   navigation.navigate('Main', { screen: 'NotesTab', params: { screen: 'MeetingList' } }); break;
+      case 'dictionary': navigation.navigate('Menu', { screen: 'Dictionary' }); break;
+      case 'snippets':   navigation.navigate('Menu', { screen: 'Snippets' }); break;
+      case 'devices':    navigation.navigate('Menu', { screen: 'Devices' }); break;
+      case 'settings':   navigation.navigate('Menu', { screen: 'Settings' }); break;
+    }
+  };
+  return (
+    <View style={{ flex: 1 }}>
+      <TabsNavigator
+        onRecord={() => navigation.navigate('Recording')}
+        onOpenMenu={() => setPanelOpen(true)}
+      />
+      <SidePanel open={panelOpen} onClose={() => setPanelOpen(false)} onNavigate={go as any} />
+    </View>
+  );
+}
+
+/* ────────────────────────────────────────────────────────────────
  * Root
  * ──────────────────────────────────────────────────────────────── */
 
@@ -394,7 +421,7 @@ const ONBOARDED_KEY = 'flume_onboarded';
 export const RootNavigator: React.FC = () => {
   const { user, isLoading, signOut } = useAuth();
   const { addTranscription } = useHistory();
-  const { target } = useDevices();
+  const { target, mode } = useDevices();
   const isSignedIn = !!user;
 
   // Onboarding is gated by its OWN flag, independent of auth — so a first-run
@@ -447,10 +474,7 @@ export const RootNavigator: React.FC = () => {
           <>
             <Root.Screen name="Main">
               {({ navigation }) => (
-                <TabsNavigator
-                  onRecord={() => navigation.navigate('Recording')}
-                  onOpenMenu={() => navigation.navigate('Menu')}
-                />
+                <MainWithPanel navigation={navigation} />
               )}
             </Root.Screen>
             <Root.Screen
@@ -460,11 +484,18 @@ export const RootNavigator: React.FC = () => {
               {({ navigation }) => (
                 <RecordingScreen
                   onCancel={() => navigation.goBack()}
-                  onComplete={async (_uri, durationMs) => {
+                  onComplete={async (_uri, durationMs, send) => {
                     const last = consumeLastRecording();
                     const failed = last?.status === 'failed';
                     const hasSpeech = !!last?.text?.trim();
-                    const deviceName = target?.name ?? 'Local';
+                    // WHAT THE USER SAW IS WHAT HAPPENS: `send` is the choice
+                    // the recording screen displayed at Stop — never re-read
+                    // the device store here (it may have adopted a target
+                    // AFTER the chip said "This phone only").
+                    const targetedId = send.mode === 'device' ? send.id : null;
+                    const push = send.mode !== 'none';
+                    const deviceName = send.mode === 'device' && send.name ? send.name
+                      : send.mode === 'all' ? 'All devices' : 'Local';
                     const transcript = failed
                       ? 'Transcription failed — your audio is saved. Retry it from History.'
                       : hasSpeech ? last!.text : 'No speech detected.';
@@ -472,16 +503,16 @@ export const RootNavigator: React.FC = () => {
 
                     if (failed) {
                       // Keep the audio; save a retryable entry.
-                      addTranscription('', deviceName, durationMs, target?.id ?? null, last?.uri, 'failed');
+                      addTranscription('', deviceName, durationMs, targetedId, last?.uri, 'failed', push);
                     } else if (hasSpeech) {
                       Clipboard.setStringAsync(last!.text);
-                      addTranscription(last!.text, deviceName, durationMs, target?.id ?? null, last?.uri, 'done');
+                      addTranscription(last!.text, deviceName, durationMs, targetedId, last?.uri, 'done', push);
                     }
 
                     // Only claim device delivery when it can actually happen:
                     // the cloud push is gated on the Sync toggle AND a target.
                     const syncOn = await getSyncEnabled().catch(() => false);
-                    const sent = !failed && hasSpeech && syncOn && !!target?.id;
+                    const sent = !failed && hasSpeech && syncOn && send.mode === 'device' && !!send.id;
 
                     navigation.replace('Confirmation', {
                       transcript,
@@ -514,7 +545,7 @@ export const RootNavigator: React.FC = () => {
                   onResendToAnother={() => {
                     Clipboard.setStringAsync(route.params.transcript ?? '');
                     if (route.params.transcript) {
-                      addTranscription(route.params.transcript, target?.name ?? 'Local', route.params.durationSeconds * 1000, target?.id ?? null);
+                      addTranscription(route.params.transcript, (mode === 'device' && target?.name) || 'Local', route.params.durationSeconds * 1000, mode === 'device' ? target?.id ?? null : null);
                     }
                     navigation.popToTop();
                   }}

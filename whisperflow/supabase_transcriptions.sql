@@ -45,3 +45,10 @@ create policy "Users access own transcriptions" on public.transcriptions
 -- history deletes are soft — deleted_at set + text cleared, never a hard
 -- DELETE — so every device's merge removes its copy and nothing resurrects.
 alter table public.transcriptions add column if not exists deleted_at timestamptz;
+
+-- 2026-08-16 (live migration `transcriptions_duration_ms` — applied via
+-- execute_sql, recorded here for reproducibility): recording duration in ms,
+-- written by both desktops' sync push and mobile's insert; feeds the
+-- account-wide WPM on the Insights pages. Historic desktop rows were
+-- backfilled from their stored 16 kHz mono PCM16 WAVs (32 bytes/ms).
+alter table public.transcriptions add column if not exists duration_ms int;

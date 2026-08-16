@@ -377,8 +377,28 @@ class VerbalApp(rumps.App):
                 device_id=get_device_id(self.config),
             )
             logger.info(f"Sync started for user {user_id[:8]}...")
+            # Fresh install / restored session with an empty local history:
+            # the account may have plenty of cloud rows this device has never
+            # seen (the backfill watermark starts at NOW) — seed them quietly.
+            if len(self.config.get("history") or []) < 5:
+                self._bootstrap_history_async()
         except Exception as e:
             logger.error(f"Sync init failed: {e}")
+
+    def _bootstrap_history_async(self):
+        """Seed local history from the cloud on a daemon thread (fail-closed).
+        See sync.bootstrap_history — quiet merge, no clipboard/paste."""
+        def _seed():
+            try:
+                from app.sync import bootstrap_history
+                if bootstrap_history(self.config, save_config):
+                    self._on_main(self._refresh_dashboards)
+            except Exception as e:
+                logger.debug(f"history bootstrap skipped: {e}")
+        try:
+            threading.Thread(target=_seed, daemon=True).start()
+        except Exception:
+            pass
 
     def _this_device_id(self) -> str:
         from app.config import get_device_id
@@ -615,6 +635,10 @@ class VerbalApp(rumps.App):
             self._sync = None
         if enable:
             self._init_sync()
+            # A device that just JOINED the account starts blind (the sync
+            # watermark is seeded to NOW) — pull the newest cloud rows so
+            # History isn't empty on a fresh machine (2026-08-15).
+            self._bootstrap_history_async()
         try:
             self.dashboard.show()  # bring Flume to the front after sign-in
             self.dashboard._refresh()
@@ -1565,10 +1589,14 @@ class VerbalApp(rumps.App):
                     # empty here (the WAV upload starts below and takes seconds)
                     # — `_upload_recording_async` patches the row once it lands.
                     entry = self._history_entry(rec_id) or {}
+                    try:
+                        _push_ms = int(len(audio) / float(self.recorder.sample_rate or 16000) * 1000)
+                    except Exception:
+                        _push_ms = 0
                     threading.Thread(
                         target=self._sync.push,
                         args=(result, push_target, entry.get("audio_url") or "",
-                              "done", rec_id),
+                              "done", rec_id, _push_ms),
                         daemon=True,
                     ).start()
 

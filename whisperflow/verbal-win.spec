@@ -82,6 +82,9 @@ a = Analysis(
         # in IDI-179; a hiddenimport for a missing module fails the build.)
         'app.autolearn_widget',
         'app.fonts_css',
+        # Lazily imported (function-level) by win_main.py/shared_dashboard.py —
+        # declared explicitly per Rule #30 rather than relying on bytecode scan.
+        'app.insights',
         # NOTE: app.theme is intentionally NOT listed — it imports AppKit/Foundation
         # at module load time and is macOS-only. Adding it would break the frozen
         # Windows exe. Windows uses fonts_css.py (base64 @font-face) instead.

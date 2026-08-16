@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   View, StyleSheet, Pressable, TextInput, ScrollView, ActivityIndicator,
-  KeyboardAvoidingView, Platform, AppState,
+  KeyboardAvoidingView, Platform, AppState, Alert, Share,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Text, Visualizer, MarkdownNote, AudioSegmentPlayer } from '../components';
 import { colors, radius, pressedStyle } from '../theme';
 import { useNotes, Note } from '../hooks/useNotes';
@@ -15,6 +16,11 @@ import * as recordings from '../../lib/recordings';
  *  one AsyncStorage write and one Supabase update per character, landing out of
  *  order (IDI-176 §7). */
 const SAVE_DEBOUNCE_MS = 500;
+
+/** Reader/editor text-size steps (the Aa control, desktop parity). */
+const FS_KEY = 'flume_note_fs';
+const FS_SCALE: Record<'s' | 'm' | 'l', number> = { s: 0.87, m: 1, l: 1.17 };
+const FS_NEXT: Record<'s' | 'm' | 'l', 's' | 'm' | 'l'> = { s: 'm', m: 'l', l: 's' };
 
 type Props = {
   noteId: string | null; // null = create new
@@ -36,7 +42,8 @@ const MARKDOWN_RE = /(^|\n)\s*(#{1,3}\s|[-*]\s\[[ xX]\]|[-*]\s)/;
 export const NoteEditorScreen: React.FC<Props> = ({ noteId, onBack }) => {
   const insets = useSafeAreaInsets();
   const {
-    notes, getNote, updateNote, createNote, saveDictation, reformatNote, resolveConflict, flags,
+    notes, getNote, updateNote, createNote, saveDictation, reformatNote,
+    setPinned, updateRawContent, resolveConflict, removeNote, flags,
   } = useNotes();
   const [note, setNote] = useState<Note | null>(() => (noteId ? getNote(noteId) : null));
   const [title, setTitle] = useState(note?.title ?? '');
@@ -45,6 +52,70 @@ export const NoteEditorScreen: React.FC<Props> = ({ noteId, onBack }) => {
   const [showOriginal, setShowOriginal] = useState(false);
   const [editingRaw, setEditingRaw] = useState(false);
   const [message, setMessage] = useState('');      // dictation / conflict feedback
+  // Editable original transcript (Notes v3) — declared early: handleBack's
+  // dependency list reads these.
+  const [rawDraft, setRawDraft] = useState('');
+  const rawTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  /* ── text size (Aa, desktop parity 2026-08-15) ─────────────────────────── */
+  const [fsStep, setFsStep] = useState<'s' | 'm' | 'l'>('m');
+  useEffect(() => {
+    AsyncStorage.getItem(FS_KEY)
+      .then(v => { if (v === 's' || v === 'l') setFsStep(v); })
+      .catch(() => {});
+  }, []);
+  const cycleFs = useCallback(() => {
+    setFsStep(prev => {
+      const next = FS_NEXT[prev];
+      AsyncStorage.setItem(FS_KEY, next).catch(() => {});
+      return next;
+    });
+  }, []);
+  const fsScale = FS_SCALE[fsStep];
+
+  /* ── undo/redo (desktop parity 2026-08-15) ─────────────────────────────────
+   * State-level snapshots of {title, body}: one per flushed autosave plus one
+   * around every programmatic replacement (AI reformat, dictation save) — the
+   * cases native text-input undo can never cover. */
+  const undoStack = useRef<Array<{ t: string; b: string }>>([]);
+  const undoIdx = useRef(-1);
+  const [, bumpUndo] = useState(0);
+  const snapUndo = useCallback((t: string, b: string) => {
+    const cur = undoStack.current[undoIdx.current];
+    if (cur && cur.t === t && cur.b === b) return;
+    undoStack.current = undoStack.current.slice(0, undoIdx.current + 1);
+    undoStack.current.push({ t, b });
+    if (undoStack.current.length > 100) undoStack.current.shift();
+    undoIdx.current = undoStack.current.length - 1;
+    bumpUndo(x => x + 1);
+  }, []);
+  useEffect(() => {
+    if (!note?.id) return;
+    undoStack.current = [{ t: note.title, b: note.body }];
+    undoIdx.current = 0;
+    bumpUndo(x => x + 1);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [note?.id]);
+  const applyUndoState = useCallback((s: { t: string; b: string }) => {
+    // setTitle/setBody ride the ordinary autosave effect, which persists the
+    // restored state; the identical-state check in snapUndo keeps that flush
+    // from pushing a duplicate snapshot.
+    setTitle(s.t);
+    setBody(s.b);
+    bumpUndo(x => x + 1);
+  }, []);
+  const doUndo = useCallback(() => {
+    if (undoIdx.current <= 0) return;
+    undoIdx.current -= 1;
+    applyUndoState(undoStack.current[undoIdx.current]);
+  }, [applyUndoState]);
+  const doRedo = useCallback(() => {
+    if (undoIdx.current >= undoStack.current.length - 1) return;
+    undoIdx.current += 1;
+    applyUndoState(undoStack.current[undoIdx.current]);
+  }, [applyUndoState]);
+  const canUndo = undoIdx.current > 0;
+  const canRedo = undoIdx.current < undoStack.current.length - 1;
 
   // Adopt an existing note from the store once it loads (avoids creating a
   // duplicate when the notes list hasn't hydrated yet); create only for a genuine
@@ -70,8 +141,11 @@ export const NoteEditorScreen: React.FC<Props> = ({ noteId, onBack }) => {
     if (saveTimer.current) { clearTimeout(saveTimer.current); saveTimer.current = null; }
     const q = queued.current;
     queued.current = null;
-    if (q) updateNote(q.id, { title: q.title, body: q.body });
-  }, [updateNote]);
+    if (q) {
+      updateNote(q.id, { title: q.title, body: q.body });
+      snapUndo(q.title, q.body);   // each flushed save is one undo step
+    }
+  }, [updateNote, snapUndo]);
 
   useEffect(() => {
     if (!note) return;
@@ -91,7 +165,40 @@ export const NoteEditorScreen: React.FC<Props> = ({ noteId, onBack }) => {
     return () => sub.remove();
   }, [flushSave]);
 
-  const handleBack = useCallback(() => { flushSave(); onBack(); }, [flushSave, onBack]);
+  const handleBack = useCallback(() => {
+    flushSave();
+    // Don't lose the tail of an original-transcript edit (Notes v3): the raw
+    // debounce may still be pending when the user leaves.
+    if (rawTimer.current) { clearTimeout(rawTimer.current); rawTimer.current = null; }
+    if (note && showOriginal && rawDraft !== (note.rawContent ?? '')) {
+      updateRawContent(note.id, rawDraft).catch(() => {});
+    }
+    onBack();
+  }, [flushSave, onBack, note, showOriginal, rawDraft, updateRawContent]);
+
+  const confirmDelete = useCallback(() => {
+    if (!note) return;
+    // Native Alert by convention (Hard Rule #14 posture) — works on every host.
+    Alert.alert(
+      `Delete “${note.title || 'Untitled'}”?`,
+      'The note and its linked recordings are permanently removed. This cannot be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete', style: 'destructive',
+          onPress: () => {
+            // Drop any pending autosave — it would resurrect the tombstone.
+            if (saveTimer.current) { clearTimeout(saveTimer.current); saveTimer.current = null; }
+            queued.current = null;
+            if (rawTimer.current) { clearTimeout(rawTimer.current); rawTimer.current = null; }
+            removeNote(note.id);
+            onBack();
+          },
+        },
+      ],
+      { cancelable: true },
+    );
+  }, [note, removeNote, onBack]);
 
   const discardQueuedSave = useCallback(() => {
     if (saveTimer.current) { clearTimeout(saveTimer.current); saveTimer.current = null; }
@@ -199,6 +306,7 @@ export const NoteEditorScreen: React.FC<Props> = ({ noteId, onBack }) => {
       // clean the same words twice — a second LLM call per dictated note, which
       // Hard Rule #12 exists to prevent — and would put cleaned text in
       // `raw_content`, which "Show original" renders.
+      snapUndo(title, body);   // the pre-dictation state is one Undo away
       const saved = await saveDictation(target.id, { rawText: result.raw, recordingUri: result.uri });
       if (saved) {
         setNote(saved);
@@ -206,6 +314,7 @@ export const NoteEditorScreen: React.FC<Props> = ({ noteId, onBack }) => {
         setBody(saved.body);
         setEditingRaw(false);
         setShowOriginal(false);
+        snapUndo(saved.title, saved.body);
       } else {
         // Fail closed: never lose the transcript even if the save path bailed.
         setBody(b => (b ? b + ' ' : '') + result!.text);
@@ -213,7 +322,7 @@ export const NoteEditorScreen: React.FC<Props> = ({ noteId, onBack }) => {
     } finally {
       setBusy(false);
     }
-  }, [stop, note, title, body, createNote, saveDictation]);
+  }, [stop, note, title, body, createNote, saveDictation, snapUndo]);
 
   const pauseResume = useCallback(() => {
     if (paused) resume(); else pause();
@@ -224,22 +333,83 @@ export const NoteEditorScreen: React.FC<Props> = ({ noteId, onBack }) => {
     try { await cancel(); } catch { /* fail closed */ }
   }, [cancel]);
 
-  const doReformat = useCallback(async () => {
+  /* ── editable original transcript (Notes v3, Cleft pattern) ──────────────
+   * Typing in the "Show original" view edits raw_content directly (debounced
+   * save, never triggers cleanup); "Reformat from transcript" then re-runs the
+   * AI over the corrected text. State lives near the top of the component. */
+  useEffect(() => {
+    if (showOriginal) setRawDraft(note?.rawContent ?? '');
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showOriginal, note?.id]);
+
+  const onRawChange = useCallback((t: string) => {
+    setRawDraft(t);
+    if (rawTimer.current) clearTimeout(rawTimer.current);
+    rawTimer.current = setTimeout(() => {
+      rawTimer.current = null;
+      if (note) {
+        updateRawContent(note.id, t).then((saved) => {
+          if (saved) setNote(prev => (prev ? { ...prev, rawContent: t } : prev));
+        }).catch(() => {});
+      }
+    }, 600);
+  }, [note, updateRawContent]);
+
+  const flushRawDraft = useCallback(async () => {
+    if (rawTimer.current) { clearTimeout(rawTimer.current); rawTimer.current = null; }
+    if (note && showOriginal && rawDraft !== (note.rawContent ?? '')) {
+      await updateRawContent(note.id, rawDraft).catch(() => {});
+      setNote(prev => (prev ? { ...prev, rawContent: rawDraft } : prev));
+    }
+  }, [note, showOriginal, rawDraft, updateRawContent]);
+
+  const doReformat = useCallback(async (
+    style: 'structured' | 'prose' | 'transcript' = 'structured',
+    from: 'note' | 'raw' = 'note',
+  ) => {
     if (!note) return;
     setBusy(true);
     try {
-      const saved = await reformatNote(note.id);
+      flushSave();             // pending typed edits are part of "entire note"
+      snapUndo(title, body);   // the pre-format state is one Undo away
+      await flushRawDraft();   // reformat must see the corrected transcript
+      const saved = await reformatNote(note.id, style, from);
       if (saved) {
         setNote(saved);
         setTitle(saved.title);
         setBody(saved.body);
         setEditingRaw(false);
         setShowOriginal(false);
+        snapUndo(saved.title, saved.body);
       }
     } finally {
       setBusy(false);
     }
-  }, [note, reformatNote]);
+  }, [note, reformatNote, flushRawDraft, flushSave, snapUndo, title, body]);
+
+  // Named styles (Notes v3) — explicit pick, native sheet-style alert.
+  const chooseReformat = useCallback(() => {
+    Alert.alert('Reformat with AI', 'How should this note be written?', [
+      { text: 'Auto-structure', onPress: () => doReformat('structured') },
+      { text: 'Flowing prose', onPress: () => doReformat('prose') },
+      { text: 'Clean transcript only', onPress: () => doReformat('transcript') },
+      { text: 'Cancel', style: 'cancel' },
+    ]);
+  }, [doReformat]);
+
+  const togglePin = useCallback(() => {
+    if (!note) return;
+    const on = !note.isPinned;
+    setNote(prev => (prev ? { ...prev, isPinned: on } : prev));
+    setPinned(note.id, on).catch(() => {});
+  }, [note, setPinned]);
+
+  const shareNote = useCallback(() => {
+    flushSave();
+    const text = (title.trim() ? title.trim() + '\n\n' : '') + body.trim();
+    if (!text.trim()) return;
+    Share.share({ message: text }).catch(() => {});
+  }, [title, body, flushSave]);
 
   // Flip a task-list item on its ORIGINAL source line and persist (autosave).
   const toggleChecklistLine = useCallback((lineIndex: number) => {
@@ -262,27 +432,89 @@ export const NoteEditorScreen: React.FC<Props> = ({ noteId, onBack }) => {
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
       <View style={styles.topBar}>
-        <Pressable
-          onPress={handleBack}
-          style={({ pressed }) => pressed && pressedStyle}
-          accessibilityRole="button"
-          accessibilityLabel="Back"
-        >
-          <Ionicons name="chevron-back" size={24} color={colors.textSecondary} />
-        </Pressable>
-        <SavedIndicator busy={busy} />
-        {hasMarkdown && !showOriginal ? (
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
           <Pressable
-            onPress={() => setEditingRaw(e => !e)}
+            onPress={handleBack}
             style={({ pressed }) => pressed && pressedStyle}
             accessibilityRole="button"
-            accessibilityLabel={editingRaw ? 'Done editing' : 'Edit raw text'}
+            accessibilityLabel="Back"
           >
-            <Ionicons name={editingRaw ? 'checkmark' : 'create-outline'} size={22} color={colors.textSecondary} />
+            <Ionicons name="chevron-back" size={24} color={colors.textSecondary} />
           </Pressable>
-        ) : (
-          <View style={{ width: 22 }} />
-        )}
+          <Pressable
+            onPress={doUndo}
+            disabled={!canUndo}
+            style={({ pressed }) => [!canUndo && { opacity: 0.3 }, pressed && pressedStyle]}
+            hitSlop={6}
+            accessibilityRole="button"
+            accessibilityLabel="Undo"
+            accessibilityState={{ disabled: !canUndo }}
+          >
+            <Ionicons name="arrow-undo-outline" size={19} color={colors.textSecondary} />
+          </Pressable>
+          <Pressable
+            onPress={doRedo}
+            disabled={!canRedo}
+            style={({ pressed }) => [!canRedo && { opacity: 0.3 }, pressed && pressedStyle]}
+            hitSlop={6}
+            accessibilityRole="button"
+            accessibilityLabel="Redo"
+            accessibilityState={{ disabled: !canRedo }}
+          >
+            <Ionicons name="arrow-redo-outline" size={19} color={colors.textSecondary} />
+          </Pressable>
+        </View>
+        <SavedIndicator busy={busy} />
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 13 }}>
+          <Pressable
+            onPress={cycleFs}
+            style={({ pressed }) => pressed && pressedStyle}
+            hitSlop={6}
+            accessibilityRole="button"
+            accessibilityLabel={`Text size: ${fsStep === 's' ? 'small' : fsStep === 'l' ? 'large' : 'default'}. Tap to change.`}
+          >
+            <Text style={{ fontFamily: 'Geist_600SemiBold', color: colors.textSecondary, fontSize: fsStep === 's' ? 13 : fsStep === 'l' ? 17 : 15 }}>Aa</Text>
+          </Pressable>
+          <Pressable
+            onPress={confirmDelete}
+            style={({ pressed }) => pressed && pressedStyle}
+            hitSlop={6}
+            accessibilityRole="button"
+            accessibilityLabel="Delete note"
+          >
+            <Ionicons name="trash-outline" size={19} color={colors.textSecondary} />
+          </Pressable>
+          <Pressable
+            onPress={togglePin}
+            style={({ pressed }) => pressed && pressedStyle}
+            hitSlop={6}
+            accessibilityRole="button"
+            accessibilityState={{ selected: !!note?.isPinned }}
+            accessibilityLabel={note?.isPinned ? 'Unpin note' : 'Pin note'}
+          >
+            <Ionicons name={note?.isPinned ? 'star' : 'star-outline'} size={20} color={note?.isPinned ? colors.primary : colors.textSecondary} />
+          </Pressable>
+          <Pressable
+            onPress={shareNote}
+            style={({ pressed }) => pressed && pressedStyle}
+            hitSlop={6}
+            accessibilityRole="button"
+            accessibilityLabel="Share note"
+          >
+            <Ionicons name="share-outline" size={20} color={colors.textSecondary} />
+          </Pressable>
+          {hasMarkdown && !showOriginal ? (
+            <Pressable
+              onPress={() => setEditingRaw(e => !e)}
+              style={({ pressed }) => pressed && pressedStyle}
+              hitSlop={6}
+              accessibilityRole="button"
+              accessibilityLabel={editingRaw ? 'Done editing' : 'Edit raw text'}
+            >
+              <Ionicons name={editingRaw ? 'checkmark' : 'create-outline'} size={20} color={colors.textSecondary} />
+            </Pressable>
+          ) : null}
+        </View>
       </View>
 
       <TextInput
@@ -326,16 +558,18 @@ export const NoteEditorScreen: React.FC<Props> = ({ noteId, onBack }) => {
       {/* Notes-v2 affordances: reformat / retry, show original. */}
       {(canReformat || note?.rawContent) ? (
         <View style={styles.affordances}>
-          {note?.formatFailed ? (
-            <Chip icon="refresh" label="Retry formatting" onPress={doReformat} disabled={busy} accent />
+          {showOriginal && note?.rawContent ? (
+            <Chip icon="sparkles-outline" label="Reformat from transcript" onPress={() => doReformat('structured', 'raw')} disabled={busy} accent />
+          ) : note?.formatFailed ? (
+            <Chip icon="refresh" label="Retry formatting" onPress={() => doReformat('structured', 'raw')} disabled={busy} accent />
           ) : canReformat ? (
-            <Chip icon="sparkles-outline" label="Reformat" onPress={doReformat} disabled={busy} />
+            <Chip icon="sparkles-outline" label="Reformat" onPress={chooseReformat} disabled={busy} />
           ) : null}
           {note?.rawContent ? (
             <Chip
               icon={showOriginal ? 'document-text-outline' : 'reader-outline'}
               label={showOriginal ? 'Show formatted' : 'Show original'}
-              onPress={() => setShowOriginal(s => !s)}
+              onPress={async () => { await flushRawDraft(); setShowOriginal(s => !s); }}
               disabled={busy}
             />
           ) : null}
@@ -354,20 +588,26 @@ export const NoteEditorScreen: React.FC<Props> = ({ noteId, onBack }) => {
       <ScrollView style={{ flex: 1 }} keyboardShouldPersistTaps="handled" contentContainerStyle={{ paddingBottom: 40 }}>
         {showOriginal ? (
           <View>
-            <Text variant="metaSm" color={colors.textSubtle} style={{ marginBottom: 8 }}>ORIGINAL TRANSCRIPT</Text>
-            <Text variant="bodyXs" color={colors.textMuted} selectable style={{ lineHeight: 21 }}>
-              {note?.rawContent}
-            </Text>
+            <Text variant="metaSm" color={colors.textSubtle} style={{ marginBottom: 8 }}>ORIGINAL TRANSCRIPT · EDITABLE</Text>
+            <TextInput
+              value={rawDraft}
+              onChangeText={onRawChange}
+              style={[styles.rawEditor, fsScale !== 1 && { fontSize: Math.round(13 * fsScale), lineHeight: Math.round(21 * fsScale) }]}
+              multiline
+              textAlignVertical="top"
+              autoCorrect={false}
+              accessibilityLabel="Original transcript, editable"
+            />
           </View>
         ) : renderMarkdown ? (
-          <MarkdownNote content={body} onToggleLine={toggleChecklistLine} />
+          <MarkdownNote content={body} onToggleLine={toggleChecklistLine} fontScale={fsScale} />
         ) : (
           <TextInput
             value={body}
             onChangeText={setBody}
             placeholder="Tap the mic to dictate, or type…"
             placeholderTextColor={colors.textSubtle}
-            style={styles.body}
+            style={[styles.body, fsScale !== 1 && { fontSize: Math.round(13 * fsScale), lineHeight: Math.round(21 * fsScale) }]}
             multiline
             textAlignVertical="top"
             accessibilityLabel="Note content"
@@ -510,6 +750,18 @@ const styles = StyleSheet.create({
     lineHeight: 21,
     minHeight: 200,
     paddingBottom: 40,
+  },
+  rawEditor: {
+    color: colors.textMuted,
+    fontFamily: 'Geist_400Regular',
+    fontSize: 13,
+    lineHeight: 21,
+    minHeight: 180,
+    padding: 12,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.borderSubtle,
+    backgroundColor: colors.surface1,
   },
   dictStrip: {
     flexDirection: 'row',

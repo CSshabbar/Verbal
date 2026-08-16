@@ -151,3 +151,47 @@ def chat_via_proxy(messages: list, config: dict, model: str = "llama-3.3-70b-ver
     except Exception as e:
         logger.warning("groq-proxy chat failed: %s", e)
         return None
+
+
+def diarize_submit(object_path: str, config: dict, timeout: float = 20.0) -> str | None:
+    """Ask the proxy to start speaker diarization for an uploaded meeting WAV.
+
+    `object_path` is the bare `meeting-audio` bucket path (`<user>/<meeting>.wav`).
+    The audio never leaves the bucket through us — the proxy signs a short-lived URL
+    and AssemblyAI fetches the file itself, so this call is tiny regardless of how
+    long the meeting was. Returns a transcript id to poll, or None (fail-soft)."""
+    try:
+        import httpx
+        resp = httpx.post(_endpoint(), headers=_headers(config, json=True),
+                          json={"diarize": {"object": object_path}}, timeout=timeout)
+        if resp.status_code != 200:
+            logger.warning("diarize submit %s: %s", resp.status_code, resp.text[:160])
+            return None
+        return (resp.json().get("id") or "").strip() or None
+    except Exception as e:
+        logger.warning("diarize submit failed: %s", e)
+        return None
+
+
+def diarize_poll(transcript_id: str, config: dict, timeout: float = 20.0):
+    """One poll. Returns:
+      list of {"speaker","start","end"} (seconds)  — done
+      None                                          — still processing, poll again
+      False                                         — failed, stop polling"""
+    try:
+        import httpx
+        resp = httpx.post(_endpoint(), headers=_headers(config, json=True),
+                          json={"diarize": {"poll": transcript_id}}, timeout=timeout)
+        if resp.status_code != 200:
+            logger.warning("diarize poll %s: %s", resp.status_code, resp.text[:160])
+            return False
+        j = resp.json()
+        if j.get("status") == "completed":
+            return j.get("utterances") or []
+        if j.get("status") == "error":
+            logger.warning("diarize failed upstream: %s", j.get("error"))
+            return False
+        return None
+    except Exception as e:
+        logger.warning("diarize poll failed: %s", e)
+        return False

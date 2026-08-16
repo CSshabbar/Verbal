@@ -12,6 +12,12 @@ import { useState, useCallback } from 'react';
 export type DevicePlatform = 'macos' | 'windows' | 'linux';
 export type DeviceStatus = 'online' | 'offline';
 
+/** Where a finished dictation goes (v2, 2026-08-16):
+ *  'device' → the picked target only · 'all' → broadcast (null target row) ·
+ *  'none' → this phone only, no cloud push. Persisted in `flume_target_device`
+ *  as a device id or the desktop-matching sentinels '__all__' / '__none__'. */
+export type SendMode = 'device' | 'all' | 'none';
+
 export type Device = {
   id: string;            // = device_id
   name: string;
@@ -32,11 +38,24 @@ const MOCK: Device[] = [
 export function useDevices() {
   const [devices, setDevices] = useState<Device[]>(MOCK);
   const [target, setTargetState] = useState<Device | null>(MOCK.find(d => d.isDefault) ?? null);
+  const [mode, setMode] = useState<SendMode>('device');
+  /** First register+load landed — before this the UI says "Finding devices…",
+   *  never "No device" (a lie that let the store adopt a target mid-recording). */
+  const ready = true;
 
-  /** Choose the device new dictations are sent to. `null` = "All". */
+  /** Choose the device new dictations are sent to. `null` = "All" (broadcast). */
   const setTarget = useCallback((d: Device | null): void => {
     setDevices(prev => prev.map(x => ({ ...x, isDefault: x.id === (d?.id ?? null) })));
     setTargetState(d);
+    setMode(d ? 'device' : 'all');
+  }, []);
+
+  /** 'all' | 'none' — a device target is picked via setTarget instead. */
+  const setSendMode = useCallback((m: SendMode): void => {
+    if (m === 'device') return;
+    setMode(m);
+    setTargetState(null);
+    setDevices(prev => prev.map(x => ({ ...x, isDefault: false })));
   }, []);
 
   /** Devices self-register via their own app; kept for the local/manual add path. */
@@ -66,7 +85,10 @@ export function useDevices() {
   return {
     devices,
     target,
+    mode,
+    ready,
     setTarget,
+    setSendMode,
     pair,
     /** @deprecated alias for removeDevice — kept for older call sites. */
     unpair: removeDevice,

@@ -155,22 +155,27 @@ class SyncClient:
         return str(self._ref)
 
     def push(self, text: str, target_device_id: str | None = None,
-             audio_url: str = "", status: str = "", entry_id: str = ""):
+             audio_url: str = "", status: str = "", entry_id: str = "",
+             duration_ms: int = 0):
         """Insert transcription via REST. If target_device_id set, only that device receives it.
 
         IDI-172: `audio_url` / `status` are part of the push shape now — the row
         was previously text-only, so a receiving device could never play the
         dictation's audio or tell a failed-and-retryable row from a good one
-        even though both columns already existed."""
+        even though both columns already existed.
+        2026-08-16: `duration_ms` rides along too — it feeds the account-wide
+        WPM on the Insights pages (mobile has no other duration source for
+        rows dictated elsewhere)."""
         logger.info(f"Sync push request: target={target_device_id}")
         threading.Thread(
             target=self._push_rest,
-            args=(text, target_device_id, audio_url, status, entry_id),
+            args=(text, target_device_id, audio_url, status, entry_id, duration_ms),
             daemon=True,
         ).start()
 
     def _push_rest(self, text: str, target_device_id: str | None = None,
-                   audio_url: str = "", status: str = "", entry_id: str = ""):
+                   audio_url: str = "", status: str = "", entry_id: str = "",
+                   duration_ms: int = 0):
         from app.auth import auth_header
         try:
             payload = {
@@ -179,6 +184,8 @@ class SyncClient:
                 "device_name": self.device_name,
                 "text":        text,
             }
+            if duration_ms and duration_ms > 0:
+                payload["duration_ms"] = int(duration_ms)
             # Only include target_device_id if it's not None (None means broadcast)
             if target_device_id:
                 payload["target_device_id"] = target_device_id
@@ -322,6 +329,25 @@ class SyncClient:
         target = record.get("target_device_id")
         if target and target != self.device_id:
             return                       # targeted at another device
+        # A row whose created_at is DAYS old is a replay artifact, not fresh
+        # dictation — e.g. a backend bulk UPDATE on `transcriptions` re-emits
+        # every touched row as a realtime UPDATE event (2026-08-15: an account
+        # merge replayed ~700 old rows into every connected client, overwrote
+        # the clipboard repeatedly and flooded local history with entries
+        # stamped "today"). Fresh content is always seconds old; the
+        # disconnect backfill is bounded by the watermark, so nothing
+        # legitimate arrives here this stale. Remembered (above) but never
+        # delivered as content.
+        created = str(record.get("created_at") or "")
+        if created:
+            try:
+                from datetime import datetime, timedelta, timezone
+                dt = datetime.fromisoformat(created.replace("Z", "+00:00"))
+                if datetime.now(timezone.utc) - dt > timedelta(days=3):
+                    logger.debug(f"Sync: dropping stale replayed row ({created})")
+                    return
+            except Exception:
+                pass                     # unparseable timestamp → deliver as before
         text = record.get("text", "")
         if text and self.on_receive:
             logger.info(f"Sync received from '{record.get('device_name','Unknown')}': '{text[:60]}'")
@@ -552,6 +578,95 @@ class SyncClient:
                 pass
         self._ws = None
         self._connected = False
+
+
+def bootstrap_history(config, save_config_fn, limit: int = 50) -> int:
+    """Seed local history from the account's newest cloud transcriptions.
+
+    SyncClient's backfill watermark is deliberately seeded to NOW (replaying
+    everything on every connect would be wrong), which left one hole: a device
+    that JOINS an account — fresh install, first sign-in, account switch —
+    started blind, and History looked empty until new dictations arrived
+    ("I signed into the Windows app and got nothing", 2026-08-15).
+
+    Called from both platforms' after-sign-in paths, and from sync start when
+    local history is near-empty. QUIET by design: merges straight into
+    config['history'] (dedup by cloud row id against each entry's sync_id/id)
+    and never touches the clipboard/overlay/paste path — `_on_sync_receive`
+    is for LIVE rows only. Fail-closed: returns 0 on any error, never raises.
+    """
+    try:
+        from app.auth import auth_header, cloud_allowed
+        user_id = (config.get("sync_user_id") or "").strip()
+        if not user_id or not cloud_allowed(config):
+            return 0
+        resp = httpx.get(
+            f"{REST_URL}/transcriptions",
+            headers=auth_header(config),
+            params={
+                "user_id":    f"eq.{user_id}",
+                "deleted_at": "is.null",
+                "select":     "id,text,device_name,created_at,audio_url,status",
+                "order":      "created_at.desc",
+                "limit":      str(limit),
+            },
+            timeout=10,
+        )
+        if resp.status_code != 200:
+            logger.debug(f"history bootstrap skipped ({resp.status_code})")
+            return 0
+        rows = resp.json() or []
+        history = config.get("history", [])
+        if not isinstance(history, list):
+            history = []
+        known = set()
+        known_txt = set()
+        for e in history:
+            if isinstance(e, dict):
+                for k in ("sync_id", "id"):
+                    if e.get(k):
+                        known.add(str(e[k]))
+                # Belt-and-suspenders: some local entries lose their sync_id
+                # to a config-reload race, so also match same-text-same-day —
+                # a seeded duplicate of a row the user can already see is
+                # worse than missing one edge case.
+                if e.get("text"):
+                    known_txt.add((str(e["text"]).strip(), str(e.get("ts") or "")))
+        import uuid
+        added = []
+        for r in rows:
+            if not isinstance(r, dict):
+                continue
+            rid = str(r.get("id") or "")
+            text = (r.get("text") or "").strip()
+            if not text or not rid or rid in known:
+                continue
+            if (text, (r.get("created_at") or "")[:10]) in known_txt:
+                continue
+            added.append({
+                "id": uuid.uuid4().hex[:16],
+                "text": text,
+                "app": r.get("device_name") or "Synced",
+                "ts": (r.get("created_at") or "")[:10],
+                "audio": "",
+                "audio_url": r.get("audio_url") or "",
+                "status": r.get("status") or "done",
+                "sync_id": rid,                       # tombstones prune by this
+                "created_at": r.get("created_at") or "",
+                "device_name": r.get("device_name") or "",
+                "source": "sync",
+            })
+        if not added:
+            return 0
+        # Existing entries keep their positions (they're this device's newest);
+        # seeded rows append below, newest-first, then the usual cap applies.
+        config["history"] = (history + added)[:50]
+        save_config_fn(config)
+        logger.info(f"History bootstrap: seeded {len(added)} cloud row(s)")
+        return len(added)
+    except Exception as e:
+        logger.debug(f"history bootstrap failed: {e}")
+        return 0
 
 
 def _delete_recording_object(audio_url: str) -> None:

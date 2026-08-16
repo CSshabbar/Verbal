@@ -40,8 +40,17 @@ export type Device = {
 };
 
 const TARGET_KEY = 'flume_target_device';
+// Sentinel values stored in TARGET_KEY beside real device ids — the SAME
+// sentinels the desktop dashboard uses for its target ('__all__'/'__none__').
+const ALL_SENTINEL = '__all__';
+const NONE_SENTINEL = '__none__';
 const PRESENCE_MS = 5 * 60 * 1000;
 const POLL_MS = 60_000;
+
+/** Where a finished dictation goes (v2, 2026-08-16):
+ *  'device' → the picked target only · 'all' → broadcast (null target row) ·
+ *  'none' → THIS PHONE ONLY, no cloud push at all. */
+export type SendMode = 'device' | 'all' | 'none';
 
 function toPlatform(deviceType?: string): DevicePlatform {
   const v = String(deviceType ?? '').toLowerCase();
@@ -52,14 +61,19 @@ function toPlatform(deviceType?: string): DevicePlatform {
 
 /* ── store internals ─────────────────────────────────────────────────────── */
 
-type Snapshot = { devices: Device[]; target: Device | null };
+type Snapshot = { devices: Device[]; target: Device | null; mode: SendMode; ready: boolean };
 
-let snapshot: Snapshot = { devices: [], target: null };
+let snapshot: Snapshot = { devices: [], target: null, mode: 'device', ready: false };
 let targetId: string | null = null;
-/** True once the user has explicitly chosen "All" (target = null). Without it,
- *  the next poll's "fall back to the first device" rule would silently undo the
- *  choice 60s later — invisible with five short-lived copies, obvious with one. */
-let targetCleared = false;
+/** The explicit send mode. 'device' with targetId=null means "no explicit
+ *  choice yet" → the poll adopts the most-recently-active device (the
+ *  long-standing default). 'all' and 'none' are explicit user choices the
+ *  poll must never override. */
+let sendMode: SendMode = 'device';
+/** First register+load has completed — before this the UI must say
+ *  "Finding devices…" instead of claiming there is no device (the exact lie
+ *  behind "it said No device but sent to my laptop"). */
+let ready = false;
 let targetHydrated = false;
 let started = false;
 let poll: ReturnType<typeof setInterval> | null = null;
@@ -79,8 +93,9 @@ function sameDevices(a: Device[], b: Device[]) {
  *  nothing about the device list changed. */
 function publish(devices: Device[], target: Device | null) {
   if (sameDevices(snapshot.devices, devices)
-      && (snapshot.target?.id ?? null) === (target?.id ?? null)) return;
-  snapshot = { devices, target };
+      && (snapshot.target?.id ?? null) === (target?.id ?? null)
+      && snapshot.mode === sendMode && snapshot.ready === ready) return;
+  snapshot = { devices, target, mode: sendMode, ready };
   emit();
 }
 
@@ -93,11 +108,18 @@ export function getSnapshot(): Snapshot { return snapshot; }
 async function hydrateTarget() {
   if (targetHydrated) return;
   targetHydrated = true;
-  try { targetId = await AsyncStorage.getItem(TARGET_KEY); } catch { targetId = null; }
+  let stored: string | null = null;
+  try { stored = await AsyncStorage.getItem(TARGET_KEY); } catch { stored = null; }
+  if (stored === ALL_SENTINEL) { sendMode = 'all'; targetId = null; }
+  else if (stored === NONE_SENTINEL) { sendMode = 'none'; targetId = null; }
+  else { sendMode = 'device'; targetId = stored; }
 }
 
-function persistTarget(id: string | null) {
-  if (id) AsyncStorage.setItem(TARGET_KEY, id).catch(() => {});
+function persistChoice() {
+  const v = sendMode === 'all' ? ALL_SENTINEL
+    : sendMode === 'none' ? NONE_SENTINEL
+    : targetId;
+  if (v) AsyncStorage.setItem(TARGET_KEY, v).catch(() => {});
   else AsyncStorage.removeItem(TARGET_KEY).catch(() => {});
 }
 
@@ -128,14 +150,21 @@ async function loadDevices() {
       lastSeen: r.last_seen ?? undefined,
     }));
 
-    // Keep the target valid; fall back to the first device unless the user
-    // deliberately chose "All".
-    const stillThere = list.find(d => d.id === targetId) ?? null;
-    const next = stillThere ?? (targetCleared ? null : list[0] ?? null);
-    targetId = next?.id ?? null;
+    // Keep the target valid; the most-recent-device fallback applies ONLY in
+    // 'device' mode (an explicit All / This-phone-only choice is never undone).
+    let next: Device | null = null;
+    if (sendMode === 'device') {
+      const stillThere = list.find(d => d.id === targetId) ?? null;
+      next = stillThere ?? list[0] ?? null;
+      targetId = next?.id ?? null;
+    }
     publish(list.map(d => ({ ...d, isDefault: d.id === targetId })), next);
   } catch (err) {
     console.error('Failed to load devices:', err);
+  } finally {
+    // Even a failed load ends "Finding devices…" — the UI then tells the truth
+    // about what it knows instead of hanging on a spinner state.
+    if (!ready) { ready = true; publish(snapshot.devices, snapshot.target); }
   }
 }
 
@@ -181,8 +210,9 @@ export async function restart(): Promise<void> {
 export function reset(): void {
   stop();
   targetId = null;
-  targetCleared = false;
+  sendMode = 'device';
   targetHydrated = false;
+  ready = false;
   publish([], null);
 }
 
@@ -193,10 +223,20 @@ export function refresh(): Promise<void> {
 /* ── mutations ───────────────────────────────────────────────────────────── */
 
 export function setTarget(d: Device | null): void {
+  // Kept API: setTarget(null) is the Home pills' "All" (broadcast) — the
+  // this-phone-only state is set via setSendMode('none').
   targetId = d?.id ?? null;
-  targetCleared = d === null;
-  persistTarget(targetId);
+  sendMode = d ? 'device' : 'all';
+  persistChoice();
   publish(snapshot.devices.map(x => ({ ...x, isDefault: x.id === targetId })), d);
+}
+
+export function setSendMode(m: SendMode): void {
+  if (m === 'device') return;   // pick a device via setTarget instead
+  sendMode = m;
+  targetId = null;
+  persistChoice();
+  publish(snapshot.devices.map(x => ({ ...x, isDefault: false })), null);
 }
 
 export function makeDefault(id: string): void {
@@ -220,7 +260,7 @@ export function pair(d: Device): void {
 export async function removeDevice(id: string): Promise<boolean> {
   const remaining = snapshot.devices.filter(d => d.id !== id);
   const nextTarget = snapshot.target?.id === id ? null : snapshot.target;
-  if (snapshot.target?.id === id) { targetId = null; persistTarget(null); }
+  if (snapshot.target?.id === id) { targetId = null; persistChoice(); }
   publish(remaining, nextTarget);
   return removeDeviceRow(id);
 }
@@ -233,7 +273,10 @@ export function useDevices() {
   return {
     devices: snap.devices,
     target: snap.target,
+    mode: snap.mode,
+    ready: snap.ready,
     setTarget,
+    setSendMode,
     pair,
     /** Deprecated alias kept for the useDevices.mock.ts contract. */
     unpair: removeDevice,
