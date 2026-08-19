@@ -227,7 +227,12 @@ Return ONLY the formatted text. No explanations, no commentary, no added content
 # emit 8x the tokens. 8b-instant also carries 500k tokens/day on the free tier against the
 # 70B's 100k, which combined with the lean prompt is the difference between ~34 and ~590
 # formatted dictations a day.
-SPEED_CLEANUP_MODEL = "llama-3.1-8b-instant"
+# 2026-08-18: Groq retired the llama-3.x tier from this key (every call
+# 404'd model_not_found — notes reformat, meeting summaries and speed/
+# chained formatting all silently degraded). The two models the key can
+# still use, verified live: openai/gpt-oss-20b (fast) and
+# openai/gpt-oss-120b (quality, strict-JSON confirmed).
+SPEED_CLEANUP_MODEL = "openai/gpt-oss-20b"
 # At or below this many words, speed_mode skips the LLM entirely and ships the
 # regex-cleaned text. clean_raw_transcript already capitalizes and adds terminal
 # punctuation, which is essentially all a short command needs.
@@ -349,7 +354,7 @@ def cleanup_with_groq(text: str, api_key: str, context: str = "") -> str | None:
         user_message = build_dictation_user_message(text, context)
 
         response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",   # better instruction following than 8b
+            model="openai/gpt-oss-120b",   # quality tier (llama-3.3 retired 2026-08)
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user",   "content": user_message},
@@ -467,7 +472,7 @@ def build_chain_spec(config: dict, active_app: str | None = None) -> dict | None
         return {
             "system": LEAN_SYSTEM_PROMPT if fast else SYSTEM_PROMPT,
             "user": build_dictation_user_message("{{TEXT}}", context),
-            "model": SPEED_CLEANUP_MODEL if fast else "llama-3.3-70b-versatile",
+            "model": SPEED_CLEANUP_MODEL if fast else "openai/gpt-oss-120b",
             "replace": rules,
         }
     except Exception as e:
@@ -537,7 +542,7 @@ def process_text(text: str, config: dict, active_app: str | None = None,
     # Step 2: Groq LLaMA formatting via the Supabase proxy (key held server-side)
     user_message = build_dictation_user_message(text, context)
     _prompt = LEAN_SYSTEM_PROMPT if fast else SYSTEM_PROMPT
-    _model = SPEED_CLEANUP_MODEL if fast else "llama-3.3-70b-versatile"
+    _model = SPEED_CLEANUP_MODEL if fast else "openai/gpt-oss-120b"
     messages = [
         {"role": "system", "content": _prompt},
         {"role": "user",   "content": user_message},
@@ -769,7 +774,7 @@ def format_note(text: str, config: dict, *, structure_detection: bool = True,
     try:
         from app.groq_proxy import chat_via_proxy
         start = time.time()
-        content = chat_via_proxy(messages, config, model="llama-3.3-70b-versatile",
+        content = chat_via_proxy(messages, config, model="openai/gpt-oss-120b",
                                  max_tokens=4096, timeout=timeout)
         logger.info(f"Note formatting (proxy) took {time.time() - start:.2f}s")
         if content:
@@ -785,7 +790,7 @@ def format_note(text: str, config: dict, *, structure_detection: bool = True,
             client = Groq(api_key=key)
             start = time.time()
             response = client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
+                model="openai/gpt-oss-120b",
                 messages=messages,
                 temperature=0.0,
                 max_tokens=4096,

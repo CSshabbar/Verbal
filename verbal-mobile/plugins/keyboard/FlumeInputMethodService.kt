@@ -2111,7 +2111,7 @@ class FlumeInputMethodService : InputMethodService() {
             conn.setRequestProperty("x-flume-device", readConfig()?.optString("deviceId", "android-keyboard") ?: "android-keyboard")
             conn.setRequestProperty("Content-Type", "application/json")
             val payload = JSONObject().apply {
-                put("model", "llama-3.3-70b-versatile")
+                put("model", "openai/gpt-oss-120b")
                 put("messages", JSONArray().apply {
                     put(JSONObject().apply { put("role", "system"); put("content", system) })
                     put(JSONObject().apply { put("role", "user"); put("content", user) })

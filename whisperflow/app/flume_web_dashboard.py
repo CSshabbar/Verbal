@@ -121,7 +121,12 @@ class FlumeWebDashboard:
     """Duck-types the old DashboardWindow: show(), update_recording_state(), etc.
     Also serves as the `dashboard` object DashboardApi expects."""
 
-    WIN_W, WIN_H = 980, 680
+    # 2026-08-17 (user feedback, corrected): WIDE by default — the old 980
+    # width felt cramped and hid the Notes Studio pane (collapses under
+    # 1000px); the two-pane Canvas and three-pane History/Notes want the
+    # horizontal room. Height stays modest; both clamped to the visible
+    # screen in _build so small displays still fit.
+    WIN_W, WIN_H = 1280, 760
 
     def __init__(self, app):
         self.app = app
@@ -211,12 +216,20 @@ class FlumeWebDashboard:
 
         screen = NSScreen.mainScreen()
         sf = screen.frame() if screen else NSMakeRect(0, 0, 1440, 900)
-        x = (sf.size.width - self.WIN_W) / 2
-        y = (sf.size.height - self.WIN_H) / 2
+        # Clamp the taller default to the actual screen (menu bar + margin),
+        # so a 900-high display still gets a fully visible window.
+        try:
+            vf = screen.visibleFrame() if screen else sf
+            win_w = min(self.WIN_W, int(vf.size.width) - 40)
+            win_h = min(self.WIN_H, int(vf.size.height) - 24)
+        except Exception:
+            win_w, win_h = self.WIN_W, self.WIN_H
+        x = (sf.size.width - win_w) / 2
+        y = (sf.size.height - win_h) / 2
         style = (NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
                  NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable)
         self._window = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
-            NSMakeRect(x, y, self.WIN_W, self.WIN_H), style, NSBackingStoreBuffered, False)
+            NSMakeRect(x, y, win_w, win_h), style, NSBackingStoreBuffered, False)
         self._window.setTitle_("Flume")
         self._window.setMinSize_(NSMakeSize(760, 520))
         self._window.setBackgroundColor_(

@@ -23,7 +23,7 @@ _PRESSED_SELECTORS = [
     ".toggle", ".tgtpill", ".dchip button", ".reprow button", ".sndots",
     ".snmenu button", ".snx", ".sndel", ".siGoogle", ".siCancel",
     ".mrActs button", ".link", ".chkbox", ".deadbar .dbbtn", ".deadside .dsbtn",
-    ".insseg button",
+    ".insseg button", ".cvrcopy", ".cvmore",
     ".devrm", ".npin", ".ncdots", ".nmenu button", ".askNote .ax",
     ".pillbtn", ".scard", ".srow .splay", ".addpill", ".dictbar .dfab", ".hamb",
     ".nimpTab", ".nimpX", ".dictbar .dside",
@@ -302,6 +302,33 @@ body{background:var(--bg);font-family:'Geist',-apple-system,system-ui,sans-serif
 .cvimgx:hover{background:rgba(0,0,0,.8)}
 .cvmsg{font:500 11px 'JetBrains Mono';color:var(--mut);letter-spacing:.03em;margin-top:10px;min-height:14px}
 .canvasBar{display:flex;gap:8px;align-items:center;margin-top:12px}
+/* ── Canvas D1 (two-pane, 2026-08-17) ── */
+.cvgrid{display:grid;grid-template-columns:7fr 6fr;gap:14px;align-items:start}
+@media (max-width:980px){.cvgrid{grid-template-columns:1fr}}
+.cvdevs{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end}
+.cvdevlab{font:500 11.5px 'Geist';color:var(--sub)}
+.cvdev{display:flex;align-items:center;gap:6px;border:1px solid var(--bd2);border-radius:999px;padding:6px 11px;font:500 11.5px 'Geist';color:var(--tx2)}
+.cvdev.muted{color:var(--sub);border-style:dashed}
+.cvhint{font:400 11.5px 'Geist';color:var(--sub);margin-left:auto}
+.cvlive{border-color:var(--acc-bd)}
+.cvorg{display:flex;align-items:center;gap:9px;margin-bottom:10px}
+.cvav{width:26px;height:26px;border-radius:13px;background:var(--acc-soft);border:1px solid var(--acc-bd);display:flex;align-items:center;justify-content:center;font:600 11px 'Geist';color:var(--acc-txt)}
+.cvwho{font:600 12.5px 'Geist'}
+.cvwhen{font:500 10px 'JetBrains Mono';letter-spacing:.06em;color:var(--sub)}
+.cvlivetx{font:400 13.5px/1.65 'Geist';color:var(--tx2);white-space:pre-wrap;display:-webkit-box;-webkit-line-clamp:8;-webkit-box-orient:vertical;overflow:hidden}
+.cvlivetx.open{display:block;-webkit-line-clamp:unset;max-height:none}
+.cvmore{display:inline-block;font:600 12px 'Geist';color:var(--acc-txt);margin-top:8px;cursor:pointer}
+.cvempty{font:400 12.5px/1.55 'Geist';color:var(--sub);padding:4px 0 2px}
+.cvacts{display:flex;gap:8px;margin-top:14px;flex-wrap:wrap}
+.cvrow{display:flex;gap:11px;align-items:flex-start;padding:10px 0;border-bottom:1px solid var(--bd-faint)}
+.cvrow:last-child{border-bottom:0}
+.cvric{width:28px;height:28px;border-radius:9px;background:rgba(240,240,240,.06);display:flex;align-items:center;justify-content:center;color:var(--mut);flex:none}
+.cvric svg{width:14px;height:14px}
+.cvrtx{flex:1;min-width:0}
+.cvr1{font:400 12.5px/1.5 'Geist';color:var(--tx2);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;word-break:break-word}
+.cvr2{font:400 10.5px 'Geist';color:var(--sub);margin-top:2px}
+.cvrcopy{border:0;background:none;color:var(--mut);font:600 11px 'Geist';cursor:pointer;padding:4px 2px;flex:none}
+.cvrcopy:hover{color:var(--tx)}
 .chipbtn{background:var(--card);border:1px solid var(--bd2);color:var(--tx);border-radius:10px;padding:10px 16px;font:600 12.5px 'Geist';cursor:pointer}
 .ncard{border-radius:14px;padding:14px;margin-bottom:10px;cursor:pointer}
 .ncard.active{background:rgba(200,90,62,.06);border:1px solid var(--acc-bd)}.ncard:not(.active):hover{background:var(--card)}
@@ -1698,61 +1725,170 @@ function saveHistEdit(oldText){
 }
 
 const SVG_REFRESH='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg>';
+// ── Canvas — D1 two-pane redesign (2026-08-17) ────────────────────────────────
+// Left: a DRAFT composer (persists locally as you type; "Send to devices" is
+// the one write) + a device-local activity log. Right: the LIVE slot — what the
+// one shared row holds now, who put it there, how fresh — with Copy / Save as
+// note / Clear. The backend keeps ONE row and no history; the log is honest
+// about being this device's own record (localStorage, bounded).
+let CV_LOG=[], CV_EXPAND=false;
+try{ const v=JSON.parse(localStorage.getItem('flumeCanvasLog')||'[]'); if(Array.isArray(v)) CV_LOG=v; }catch(e){}
+function cvLog(kind, text, from, own){
+  const top=CV_LOG[0];
+  if(top && top.text===text && top.kind===kind) return;
+  CV_LOG=[{id:Date.now(), kind, text:String(text||'').slice(0,500), from:from||'', own:!!own,
+           at:new Date().toISOString()}, ...CV_LOG].slice(0,20);
+  try{ localStorage.setItem('flumeCanvasLog', JSON.stringify(CV_LOG)); }catch(e){}
+}
+function cvRel(iso){
+  if(!iso) return '';
+  const t=Date.parse(iso); if(isNaN(t)) return '';
+  const m=Math.round((Date.now()-t)/60000);
+  if(m<1) return 'just now';
+  if(m<60) return m+' min ago';
+  const h=Math.round(m/60);
+  if(h<24) return h+'h ago';
+  const d=Math.round(h/24);
+  return d===1?'yesterday':d+' days ago';
+}
+const cvIsUrl = s => /^https?:\/\/\S+$/i.test(String(s||'').trim());
+function cvDraft(){ try{ return localStorage.getItem('flumeCanvasDraft')||''; }catch(e){ return ''; } }
+function cvDraftSave(){ const a=document.getElementById('canvasArea');
+  if(a){ try{ localStorage.setItem('flumeCanvasDraft', a.value); }catch(e){} } }
 function renderCanvas(){
-  const img = CANVAS.image_url
-    ? `<div class="cvimgwrap"><img class="cvimg" src="${esc(CANVAS.image_url)}"/><button class="cvimgx" title="Remove image" onclick="clearCanvasImage()">✕</button></div>` : '';
-  const from = CANVAS.from ? `<span class="pvsub" style="margin-left:auto">From ${esc(CANVAS.from)}</span>` : '';
+  const devs=((STATE&&STATE.devices)||[]).slice(0,4).map(d=>
+    `<span class="cvdev"><span class="ddot${d.online?' on':''}"></span>${esc(d.device_name||'Device')}</span>`).join('')
+    || '<span class="cvdev muted">no other devices online</span>';
+  // Live slot
+  let liveBody='';
+  const from = CANVAS.own ? 'This Mac' : (CANVAS.from || '');
+  const when = CANVAS.at ? cvRel(CANVAS.at) : '';
+  if(!(CANVAS.content||'').trim() && !CANVAS.image_url){
+    liveBody = '<div class="cvempty">Nothing shared right now — whatever you send lands on every device instantly.</div>';
+  } else {
+    const img = CANVAS.image_url
+      ? `<div class="cvimgwrap"><img class="cvimg" src="${esc(CANVAS.image_url)}"/><button class="cvimgx" title="Remove image" onclick="clearCanvasImage()">✕</button></div>` : '';
+    const words = (CANVAS.content||'').trim() ? words_count(CANVAS.content) : 0;
+    const txt = (CANVAS.content||'').trim()
+      ? `<div class="cvlivetx${CV_EXPAND?' open':''}">${esc(CANVAS.content)}</div>`
+        +(words>60 && !CV_EXPAND ? `<span class="cvmore" onclick="CV_EXPAND=true;renderCanvas()">Show all</span>`
+          : (CV_EXPAND?`<span class="cvmore" onclick="CV_EXPAND=false;renderCanvas()">Show less</span>`:''))
+      : '';
+    liveBody = `
+      <div class="cvorg"><span class="cvav">${esc((from||'?')[0]).toUpperCase()}</span>
+        <span class="cvwho">${esc(from||'Unknown device')}</span>
+        <span class="cvwhen">${esc(when ? when.toUpperCase() : '')}${words?` · ${words} WORDS`:''}</span></div>
+      ${img}${txt}
+      <div class="cvacts">
+        <button class="btn primary" style="flex:none" onclick="cvCopyLive(this)">${SVG.copy}Copy</button>
+        <button class="btn ghost" style="flex:none" onclick="cvSaveNote(this)">Save as note</button>
+        <button class="btn ghost" style="flex:none" onclick="clearCanvas(this)">Clear canvas</button>
+      </div>`;
+  }
+  // Activity (device-local)
+  const logRows = CV_LOG.length ? CV_LOG.map(e=>`
+    <div class="cvrow">
+      <span class="cvric">${e.kind==='image'?SVG.grid:(e.kind==='link'?SVG.bolt:SVG.lines)}</span>
+      <div class="cvrtx"><div class="cvr1">${esc(e.text)}</div>
+        <div class="cvr2">${esc(cvRel(e.at))} · ${e.own?'from this Mac':('from '+esc(e.from||'another device'))}</div></div>
+      <button class="cvrcopy" title="Copy" onclick="api('copy_text', ${esc(JSON.stringify(e.text))});toast('Copied')">Copy</button>
+    </div>`).join('')
+    : '<div class="cvempty" style="padding:6px 0 2px">Sends and receipts will appear here.</div>';
   document.getElementById('canvasMain').innerHTML = `
     <div class="mhead"><div><div class="eyebrow">Shared clipboard</div><h1 class="title">Canvas</h1></div>
-      <button class="roundbtn" title="Refresh" onclick="loadCanvas()">${SVG_REFRESH}</button></div>
-    <div class="dropzone" onclick="pickCanvasImage()"><div class="dzicon">${SVG.grid}</div><div><div class="dztitle">Type below, or add an image</div><div class="dzsub">Paste an image (${IS_WINDOWS?'Ctrl+V':'⌘V'}), or click to choose a file · syncs to your devices</div></div></div>
-    ${img}
-    <textarea class="canvasArea" id="canvasArea" placeholder="Type or paste text here…" oninput="canvasDirty()">${esc(CANVAS.content||'')}</textarea>
-    <div class="canvasBar">
-      <button class="chipbtn" onclick="saveCanvas(this)">Save &amp; Sync</button>
-      <button class="chipbtn" onclick="pickCanvasImage()">Add image…</button>
-      <button class="chipbtn" onclick="pasteCanvasImage()">Paste image</button>
-      <button class="chipbtn" onclick="clearCanvas(this)">Clear</button>${from}</div>
-    <div class="cvmsg" id="cvMsg"></div>`;
+      <div class="cvdevs"><span class="cvdevlab">Goes to</span>${devs}
+        <button class="roundbtn" title="Refresh" onclick="loadCanvas()">${SVG_REFRESH}</button></div></div>
+    <div class="cvgrid">
+      <div>
+        <div class="inscard" style="margin-bottom:14px">
+          <div class="chd">Compose <span class="csub">kept as a draft until you send</span></div>
+          <textarea class="canvasArea" id="canvasArea" placeholder="Type or paste here — or paste an image (${IS_WINDOWS?'Ctrl+V':'⌘V'})…" oninput="cvDraftSave()">${esc(cvDraft())}</textarea>
+          <div class="canvasBar">
+            <button class="btn primary" style="flex:none" onclick="cvSendNow(this)">Send to devices</button>
+            <button class="btn ghost" style="flex:none" onclick="pickCanvasImage()">Image…</button>
+            <span class="cvhint">${IS_WINDOWS?'Ctrl+V':'⌘V'} pastes an image straight to the canvas</span>
+          </div>
+          <div class="cvmsg" id="cvMsg"></div>
+        </div>
+        <div class="inscard">
+          <div class="chd">Activity <span class="csub">recent sends · this device's log</span></div>
+          ${logRows}
+        </div>
+      </div>
+      <div class="inscard cvlive">
+        <div class="chd" style="color:var(--acc-txt)">● Live on canvas <span class="csub">every device sees this</span></div>
+        ${liveBody}
+      </div>
+    </div>`;
 }
+function words_count(s){ const t=String(s||'').trim(); return t?t.split(/\s+/).length:0; }
 function cvMsg(t){ const el=document.getElementById('cvMsg'); if(el) el.textContent=t||''; }
-function canvasText(){ return (document.getElementById('canvasArea')||{}).value||CANVAS.content||''; }
-function canvasDirty(){ const a=document.getElementById('canvasArea'); if(a) CANVAS.content=a.value; }
-// Was: printed "Saved & synced" unconditionally, even when the write failed
-// (IDI-167). Only claim success when the backend says so.
-// IDI-173: a text save sends ONLY the text. It used to resend image_url on
-// every keystroke-save, so two devices editing text/image raced each other into
-// clearing the other's column.
-function saveCanvas(btn){
-  const v=canvasText();
-  cvMsg('Saving…');
+function canvasText(){ return (document.getElementById('canvasArea')||{}).value||''; }
+// Send = the ONE shared-row write for text (IDI-173: text-only, never touches
+// the image column). On success the draft clears and the live slot flips.
+function cvSendNow(btn){
+  const v=canvasText().trim();
+  if(!v){ cvMsg('Nothing to send yet.'); return; }
+  cvMsg('Sending…');
   busyGuard(btn || 'save_canvas', ()=>api('save_canvas', v)).then(r=>{
     if(r && r.busy) return;
-    if(r && r.ok===false){ cvMsg((r.error)||'Could not save — check your connection.'); return; }
-    CANVAS.content=v; cvMsg('Saved & synced');
+    if(r && r.ok===false){ cvMsg((r.error)||'Could not send — check your connection.'); return; }
+    CANVAS.content=v; CANVAS.own=true; CANVAS.from=''; CANVAS.at=new Date().toISOString();
+    CV_EXPAND=false;
+    cvLog(cvIsUrl(v)?'link':'text', v, '', true);
+    try{ localStorage.setItem('flumeCanvasDraft',''); }catch(e){}
+    renderCanvas();
+    toast('Sent to your devices');
   });
 }
-function loadCanvas(){ api('fetch_canvas').then(r=>{ if(r&&r.ok){ CANVAS={content:r.content||'',image_url:r.image_url||null,from:CANVAS.from}; if(ACTIVE==='canvas')renderCanvas(); } }); }
+function cvCopyLive(btn){
+  const payload = (CANVAS.content||'').trim() || CANVAS.image_url || '';
+  if(!payload) return;
+  busyGuard(btn||'cv_copy', ()=>api('copy_text', payload)).then(()=>toast('Copied'));
+}
+function cvSaveNote(btn){
+  const content=(CANVAS.content||'').trim();
+  if(!content){ toast('Nothing to save', true); return; }
+  const id='cv'+Date.now().toString(16)+Math.floor(Math.random()*1e6).toString(16);
+  busyGuard(btn||'cv_note', ()=>api('save_note', {id:id, title:titleOf(content), content:content, no_cleanup:true})).then(r=>{
+    if(r&&r.busy) return;
+    if(r&&r.ok) toast('Saved to Notes');
+    else toast((r&&r.error)||'Could not save the note', true);
+  });
+}
+function loadCanvas(){ api('fetch_canvas').then(r=>{ if(r&&r.ok){
+  CANVAS={content:r.content||'', image_url:r.image_url||null,
+          from:r.device_name||CANVAS.from||'', at:r.updated_at||'', own:!!r.own};
+  if(ACTIVE==='canvas')renderCanvas(); } }); }
 // An explicit clear — a real write of {content:'', image_url:null} that other
 // devices APPLY (they used to falsy-drop the empty content and stay stale).
 function clearCanvas(btn){
   busyGuard(btn || 'clear_canvas', ()=>api('clear_canvas')).then(r=>{
     if(r && r.busy) return;
-    if(r && r.ok===false){ cvMsg((r.error)||'Could not clear the canvas.'); return; }
-    CANVAS={content:'',image_url:null}; if(ACTIVE==='canvas')renderCanvas();
+    if(r && r.ok===false){ toast((r.error)||'Could not clear the canvas.', true); return; }
+    CANVAS={content:'',image_url:null,from:'',at:new Date().toISOString(),own:true};
+    CV_EXPAND=false;
+    if(ACTIVE==='canvas')renderCanvas();
   });
 }
-// Image-only removal: keeps the text, nulls the image explicitly.
-function clearCanvasImage(){ const v=canvasText(); api('save_canvas', v, null).then(()=>{ CANVAS.image_url=null; CANVAS.content=v; if(ACTIVE==='canvas')renderCanvas(); }); }
-function pickCanvasImage(){ cvMsg('Choose an image…'); api('canvas_add_image_file', canvasText()).then(applyCanvasImage); }
-function pasteCanvasImage(){ cvMsg('Pasting image…'); api('canvas_paste_image', canvasText()).then(applyCanvasImage); }
+// Image-only removal: keeps the LIVE text, nulls the image explicitly (IDI-173).
+function clearCanvasImage(){ const v=CANVAS.content||''; api('save_canvas', v, null).then(()=>{ CANVAS.image_url=null; if(ACTIVE==='canvas')renderCanvas(); }); }
+// Image sends carry the CURRENT LIVE text (never the draft — sending a photo
+// must not publish half-typed text, and content:"" would clear the column).
+function pickCanvasImage(){ cvMsg('Choose an image…'); api('canvas_add_image_file', CANVAS.content||'').then(applyCanvasImage); }
+function pasteCanvasImage(){ cvMsg('Pasting image…'); api('canvas_paste_image', CANVAS.content||'').then(applyCanvasImage); }
 function applyCanvasImage(r){
-  if(r&&r.ok&&r.image_url){ CANVAS.image_url=r.image_url; CANVAS.content=canvasText(); if(ACTIVE==='canvas')renderCanvas(); }
+  if(r&&r.ok&&r.image_url){
+    CANVAS.image_url=r.image_url; CANVAS.own=true; CANVAS.from=''; CANVAS.at=new Date().toISOString();
+    cvLog('image','Image','',true);
+    if(ACTIVE==='canvas')renderCanvas();
+    toast('Image sent to your devices');
+  }
   else if(r&&r.cancelled){ cvMsg(''); }
   else { cvMsg((r&&r.error)||'Could not add image'); }
 }
 // JS clipboard path (works on some WKWebView builds); native pasteCanvasImage is the reliable fallback.
-function sendCanvasImage(dataUri){ const txt=canvasText(); api('save_canvas_image_data', dataUri, txt).then(applyCanvasImage); }
+function sendCanvasImage(dataUri){ api('save_canvas_image_data', dataUri, CANVAS.content||'').then(applyCanvasImage); }
 
 let NOTE_REC=false, _noteTimer=null, _rawTimer=null, NOTE_QUERY='', SHOW_ORIG=false, NOTE_SEG_ID=null;
 let NOTE_FS='m';
@@ -4874,7 +5010,13 @@ window.VerbalNative = function(event, payload){
   else if(event==='state'){ STATE=payload; applyAuthGate(); renderSidebar(); renderActive(); }
   else if(event==='selectTab'){ if(payload && payload.tab) show(payload.tab); }
   else if(event==='result'){ load(); }
-  else if(event==='canvasRemote'){ CANVAS={content:payload.content||'', image_url:payload.image_url||null, from:payload.device_name}; if(ACTIVE==='canvas')renderCanvas(); }
+  else if(event==='canvasRemote'){
+    CANVAS={content:payload.content||'', image_url:payload.image_url||null,
+            from:payload.device_name||'', at:new Date().toISOString(), own:false};
+    CV_EXPAND=false;
+    if(payload.image_url) cvLog('image','Image', payload.device_name, false);
+    else if((payload.content||'').trim()) cvLog(cvIsUrl(payload.content)?'link':'text', payload.content, payload.device_name, false);
+    if(ACTIVE==='canvas')renderCanvas(); }
   else if(event==='meetingsUpdated'){ loadMeets();
     refreshOpenMeeting(payload && payload.id, payload && payload.deleted); }
   // MER-46: open_meeting hands the row straight to the detail view. Buffered on

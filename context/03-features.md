@@ -61,7 +61,7 @@ Each feature: **what it does · desktop impl · mobile impl · backend · status
 - **What:** turn a raw transcript into clean, correctly-formatted text without adding content.
 - **Desktop:** `ai_cleanup.py::process_text` — ① `clean_raw_transcript` (regex: strip hallucinations,
   fillers, doubled words; capitalize; terminal punctuation), ② LLM format via Groq
-  `llama-3.3-70b-versatile` (`cleanup_with_groq`) → Gemini fallback with key rotation. `SYSTEM_PROMPT` =
+  `openai/gpt-oss-120b` (was llama-3.3-70b, retired by Groq 2026-08-18) (`cleanup_with_groq`) → Gemini fallback with key rotation. `SYSTEM_PROMPT` =
   18 rules ("you are a TEXT FORMATTER, not an assistant") — rule 18 (MER-42, 2026-07; hardened MER-43,
   2026-07) resolves spoken self-corrections to the final value ("ticket RBR 343, sorry, RBR 344" →
   "ticket RBR 344") the same way the notes/meeting-notes prompts already did, but hardened for injected
@@ -100,7 +100,7 @@ Each feature: **what it does · desktop impl · mobile impl · backend · status
   the pre-tuning behaviour stays reachable for A/B. When on: transcripts of **≤ 8 words**
   (`ai_cleanup._SKIP_CLEANUP_MAX_WORDS`) skip the LLM entirely; `SYSTEM_PROMPT` (~2,428 tokens) is replaced
   by `LEAN_SYSTEM_PROMPT` (~677); formatting runs on `SPEED_CLEANUP_MODEL` (`llama-3.1-8b-instant`) instead
-  of `llama-3.3-70b-versatile`. Measured: prompt size has **~zero** latency effect — the win comes from the
+  of `openai/gpt-oss-120b` (was llama-3.3-70b, retired by Groq 2026-08-18). Measured: prompt size has **~zero** latency effect — the win comes from the
   skip rule and the smaller model, not from the shorter prompt.
 - **Settings → Dictation → "Speed & pipeline" (2026-08-15).** A radio group exposing the three real
   pipelines, plus a **Transcription model** select (`asr_model`: `auto` | `whisper-large-v3-turbo` |
@@ -216,7 +216,7 @@ Each feature: **what it does · desktop impl · mobile impl · backend · status
     Pro transcribed the Roman-Urdu clip `s07` into **Devanagari script** despite `language_code: "en"`
     (scored 0% — right meaning, useless for dictation into English), while Universal-2 handled the same clip
     best of any model tested at 83.3%. So model choice there is not a simple "newer is better".
-- **Mobile:** `lib/groq.ts::formatText` (same `llama-3.3-70b-versatile`) — used on **retry** and where
+- **Mobile:** `lib/groq.ts::formatText` (same `openai/gpt-oss-120b` (was llama-3.3-70b, retired by Groq 2026-08-18)) — used on **retry** and where
   screens call it. Brought to full **logic parity** with desktop's self-correction rule in MER-43 (same
   cue families, 4-part test, anti-cues, and-carve-out, asymmetry, punctuation-invariance, directionality —
   terser prose, no dropped rules; MER-42 had shipped it with several gaps vs. desktop, closed in MER-43).
@@ -460,8 +460,11 @@ Each feature: **what it does · desktop impl · mobile impl · backend · status
   keeps the navigation visible); `.app.navhide` is driven by `applyNavCollapse()` (`ACTIVE==='notes' &&
   curNote() && !NAV_OPEN`), the hamburger (`#navHamb`/`toggleNav()`, rendered only while a note is open)
   brings it back, and any other screen restores it.
-  **Auto-grow (same session):** the default window (980×680) is narrower than Studio's 1000px CSS
-  breakpoint, so opening a note fires `ensureStudioFits()` → `DashboardApi.ensure_window_width(1220,700)`
+  **Auto-grow (same session):** since 2026-08-17 the default window is WIDE — macOS 1280×760
+  (clamped to the screen's visible frame in `_build`), Windows 1240×740 — so Studio's 1000px
+  breakpoint is met out of the box and the screens get the vertical room they're designed for (user
+  feedback: the old 980×680 felt squat). The auto-grow below now mostly matters for users who shrank
+  the window: opening a note fires `ensureStudioFits()` → `DashboardApi.ensure_window_width(1220,700)`
   → host `ensure_window_size` (macOS `FlumeWebDashboard`: animated content-size grow on the main thread,
   clamped to the screen's visible frame, top edge anchored; Windows `SharedDashboard`: pywebview
   `window.resize` **scaled by the system DPI** — see `05` Hard Rule #41, the un-scaled version silently
@@ -560,6 +563,22 @@ Each feature: **what it does · desktop impl · mobile impl · backend · status
 ## Canvas — shared clipboard
 
 - **What:** a staging board to send text/links/images between your devices (one shared row per user).
+- **M1/D1 redesign (2026-08-17)** — the UI is now honest about the one-slot model on both platforms:
+  a **"Live on Canvas" hero** (payload clamped, origin device + relative time + word count, actions
+  Copy / Clear — desktop adds **Save as note** via the ordinary `save_note` path) + a **device-local
+  activity log** (bounded 20; mobile AsyncStorage `verbal_canvas_log`, wiped by `clearAccountData`;
+  desktop localStorage `flumeCanvasLog`) + a **draft composer** (composing no longer edits the shared
+  row in place — "Send to devices" is the one write; the desktop draft persists in localStorage
+  `flumeCanvasDraft`). Mobile (`CanvasScreen`, M1 "Slot & feed"): chat-style composer (text/paste,
+  photo button, **mic dictation → transcript lands in the field for review, send stays manual** via
+  `useRecorder`), an "Earlier" feed of 2-line-clamped rows, and long content opens an **in-tree expand
+  overlay** (never an RN `<Modal>` — the screen lives in the native-stack Menu modal, Hard Rule #14),
+  which killed the "a long text looks like an open file" bug. The `useCanvas` hook contract changed to
+  `{live, feed, sendText, sendPhoto, copyLive, clearLive, copyFeedEntry, refresh, toast, dismissToast}`
+  (mock updated in the same change); all IDI-173 sync machinery (selective-column writes, explicit
+  clears, device_id own-echo filtering, live toggle gating, rejoin/backoff, reset/catchUp) is unchanged.
+  Desktop `fetch_canvas` now also returns `device_name`/`updated_at`/`own` for the hero card; desktop
+  image sends carry the current LIVE text (never the draft). Backend/schema untouched.
 - **Desktop:** `DashboardApi.fetch_canvas/save_canvas` + image support (`save_canvas_image_data`, native
   `NSOpenPanel`/`NSPasteboard` pickers → `canvas-images` bucket). `FlumeWebDashboard._canvas_listen_loop`
   = a `websocket` subscription to `postgres_changes` on `canvas`, emits `canvasRemote` to JS (ignores own
@@ -1314,7 +1333,7 @@ default ON, Settings → Keyboard) — gates the feature without carrying any cl
 `transform_enabled` (default OFF) + per-mode flags, in Settings → Transform.
 
 Both modes share `transform._chat`, which is resilient like `process_text`: primary = Groq
-`llama-3.3-70b-versatile` via the shared proxy; on any failure (including Groq's **daily-token 429**)
+`openai/gpt-oss-120b` (was llama-3.3-70b, retired by Groq 2026-08-18) via the shared proxy; on any failure (including Groq's **daily-token 429**)
 it retries the SAME `groq-proxy` against **Ollama Cloud** (`gpt-oss:120b`, `provider="ollama"`, model
 const `transform.OLLAMA_FALLBACK_MODEL`) — a separate quota with a server-held key (the same path
 meeting-notes uses, reversed order). So Transform keeps working when the shared Groq key is exhausted.

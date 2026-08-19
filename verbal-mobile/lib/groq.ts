@@ -301,7 +301,7 @@ export async function formatNoteWithTitle(
       method: 'POST',
       headers: await proxyHeaders(true),
       body: JSON.stringify({
-        model: 'llama-3.3-70b-versatile',
+        model: 'openai/gpt-oss-120b',
         messages: [
           { role: 'system', content: system },
           { role: 'user', content: user },
@@ -357,7 +357,7 @@ export async function askNotes(
       method: 'POST',
       headers: await proxyHeaders(true),
       body: JSON.stringify({
-        model: 'llama-3.3-70b-versatile',
+        model: 'openai/gpt-oss-120b',
         messages: [
           {
             role: 'system',
@@ -608,7 +608,7 @@ Return ONLY the formatted text.`;
   // mobile cleanup outright while desktop survived (4f08d1e) — try Ollama Cloud
   // ONCE through the same proxy. Fully fail-closed: both down → raw text, which
   // is exactly what every formatText caller already treats a failure as.
-  const primary = await call('llama-3.3-70b-versatile', CLEANUP_TIMEOUT_MS);
+  const primary = await call('openai/gpt-oss-120b', CLEANUP_TIMEOUT_MS);
   if ('text' in primary) return primary.text;
   if (!primary.retry) return text;
 
@@ -742,7 +742,7 @@ export async function generateMeetingNotes(meeting: {
       if (text.startsWith('```')) text = text.replace(/^```(markdown)?/i, '').replace(/```$/, '').trim();
       return text || null;
     };
-    return (await call(NOTES_MODEL, 'ollama')) || (await call('llama-3.3-70b-versatile'));
+    return (await call(NOTES_MODEL, 'ollama')) || (await call('openai/gpt-oss-120b'));
   } catch {
     // Aborted (30 s timeout) or network error — the caller shows the failure.
     return null;
@@ -759,7 +759,7 @@ export async function formatNotes(
     method: 'POST',
     headers: await proxyHeaders(true),
     body: JSON.stringify({
-      model: 'llama-3.3-70b-versatile',
+      model: 'openai/gpt-oss-120b',
       messages: [
         { role: 'system', content: NOTES_FORMATTER_PROMPT },
         { role: 'user', content: `NOTES TO FORMAT:\n\`\`\`\n${text}\n\`\`\`\n\nOutput the formatted markdown only.` },

@@ -123,7 +123,7 @@ def transcribe_via_proxy(wav_path: str, config: dict, prompt: str | None = None,
         return None
 
 
-def chat_via_proxy(messages: list, config: dict, model: str = "llama-3.3-70b-versatile",
+def chat_via_proxy(messages: list, config: dict, model: str = "openai/gpt-oss-120b",
                    max_tokens: int = 2048, timeout: float = 10.0,
                    response_format: dict | None = None,
                    provider: str | None = None) -> str | None:

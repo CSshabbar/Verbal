@@ -161,7 +161,7 @@
    (`gpt-oss:120b`): the client adds `{"provider":"ollama"}` to the chat payload → the function strips it
    and forwards to `https://ollama.com/v1/chat/completions` (OpenAI-compatible, pure passthrough) using a
    second secret `OLLAMA_API_KEY`. It **fails closed**: no key / Ollama down → the client retries on Groq
-   `llama-3.3-70b` so notes never fail (`meetings.generate_meeting_notes`, `lib/groq.ts::generateMeetingNotes`).
+   `openai/gpt-oss-120b` so notes never fail (`meetings.generate_meeting_notes`, `lib/groq.ts::generateMeetingNotes`).
    Set/rotate via `supabase secrets set OLLAMA_API_KEY=…` (key from ollama.com/settings/keys). The earlier
    `app_config` **provider-secret-key-table** idea is correctly **SUPERSEDED** (a client must never be able
    to read `GROQ_API_KEY` itself). The whole mobile client-key resolution chain
@@ -467,7 +467,7 @@
   the other in the same change, and keep `max_tokens=4000` on both `generate_meeting_notes` /
   `generateMeetingNotes` (rich output needs the headroom; 2500 truncated tables/roadmaps).
 - Notes run on **Ollama Cloud `gpt-oss:120b`** (`NOTES_MODEL`, mirrored in both files) via
-  `provider:"ollama"` through the proxy, with an automatic **Groq `llama-3.3-70b` fallback** if Ollama
+  `provider:"ollama"` through the proxy, with an automatic **Groq `openai/gpt-oss-120b` fallback** if Ollama
   is unset/slow/down — so notes always generate. To try another model swap `NOTES_MODEL` in BOTH files
   (`glm-4.6`, `qwen3:235b`); to go Groq-only drop the provider. Ollama timeout is longer (90s desktop).
 - The prompt is **analyst-grade and proportional**: TL;DR + topic sections + Decisions + Action items

@@ -1862,7 +1862,7 @@ class KeyboardViewController: UIInputViewController, AVAudioRecorderDelegate, UI
         req.setValue(proxyDeviceId(), forHTTPHeaderField: "x-flume-device")   // proxy rate-limit identity
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         let payload: [String: Any] = [
-            "model": "llama-3.3-70b-versatile",
+            "model": "openai/gpt-oss-120b",
             "messages": [["role": "system", "content": system], ["role": "user", "content": user]],
             "temperature": 0, "max_tokens": 2048,
         ]

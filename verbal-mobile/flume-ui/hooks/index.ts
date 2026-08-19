@@ -9,7 +9,7 @@ export type { HistoryItem } from './useHistory';
 export { useNotes } from './useNotes';
 export type { Note } from './useNotes';
 export { useCanvas } from './useCanvas';
-export type { CanvasItem, TextItem, LinkItem, ImageItem } from './useCanvas';
+export type { CanvasKind, LiveSlot, FeedEntry } from './useCanvas';
 export { useSnippets } from './useSnippets';
 export type { Snippet, SnippetPatch } from './useSnippets';
 export { useSyncEnabled, setSyncEnabled } from './useSyncEnabled';

@@ -2595,7 +2595,7 @@ class DashboardWindow:
                 "https://api.groq.com/openai/v1/chat/completions",
                 headers={"Authorization": f"Bearer {api_keys[0]}", "Content-Type": "application/json"},
                 json={
-                    "model": "llama-3.3-70b-versatile",
+                    "model": "openai/gpt-oss-120b",
                     "messages": [
                         {"role": "system", "content": NOTES_FORMATTER_SYSTEM_PROMPT},
                         {"role": "user", "content": f"NOTES TO FORMAT:\n```\n{content}\n```\n\nOutput the formatted markdown only."},

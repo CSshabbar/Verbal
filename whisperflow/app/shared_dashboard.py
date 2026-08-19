@@ -310,8 +310,11 @@ class SharedDashboard:
             "Flume",
             html=flume_html(),
             js_api=api,
-            width=980,
-            height=680,
+            # 2026-08-17 (corrected): WIDE default (matches macOS) — the
+            # multi-pane screens want horizontal room, and >1000px keeps the
+            # Notes Studio pane visible. Height stays modest.
+            width=1240,
+            height=740,
             min_size=(760, 520),
             background_color="#0e1012",
         )
@@ -2594,14 +2597,21 @@ class DashboardApi:
             resp = httpx.get(
                 f"{SUPABASE_URL}/rest/v1/canvas",
                 headers=auth_header(self.app.config),
-                params={"user_id": f"eq.{user_id}", "select": "content,image_url"},
+                params={"user_id": f"eq.{user_id}",
+                        # D1 redesign (2026-08-17): the Live card shows origin +
+                        # freshness, so the read carries them (additive).
+                        "select": "content,image_url,device_name,device_id,updated_at"},
                 timeout=8,
             )
             if resp.status_code != 200:
                 return _err(f"Canvas load failed: {resp.status_code}")
             data = resp.json()
             row = data[0] if data else {}
-            return _ok(content=row.get("content", "") or "", image_url=row.get("image_url"))
+            from app.config import get_device_id
+            own = bool(row.get("device_id")) and row.get("device_id") == get_device_id(self.app.config)
+            return _ok(content=row.get("content", "") or "", image_url=row.get("image_url"),
+                       device_name=row.get("device_name") or "", updated_at=row.get("updated_at") or "",
+                       own=own)
         except Exception as e:
             logger.error(f"Canvas fetch failed: {e}")
             return _err(str(e))

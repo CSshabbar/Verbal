@@ -218,7 +218,7 @@ bounded `config['meetings']` (`MEETINGS_CAP`). The HUD appears when the meeting 
   Supabase JWT (or anon key); the function logs usage per identity (`groq_usage`) and forwards to Groq —
   except **meeting notes**, which send `provider:"ollama"` and are forwarded to **Ollama Cloud
   `gpt-oss:120b`** (`OLLAMA_API_KEY` secret, OpenAI-compatible passthrough) with an automatic Groq
-  `llama-3.3-70b` fallback. See `04-data-model.md` and `05-conventions.md` Hard Rule #15.
+  `openai/gpt-oss-120b` fallback. See `04-data-model.md` and `05-conventions.md` Hard Rule #15.
   **Auth:** Google provider.
 - **Access model:** both apps use the **anon key** for all REST/realtime; scoping is by `user_id` value
   (not JWT/RLS — that's a documented deferred hardening). Realtime over Phoenix WebSocket.

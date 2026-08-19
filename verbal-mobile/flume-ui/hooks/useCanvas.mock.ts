@@ -1,128 +1,67 @@
 /**
- * useCanvas — MOCK (contract reference, never imported at runtime).
- * Same exported shape as ./useCanvas, backed by in-memory state.
+ * useCanvas.mock — the design contract for useCanvas (never imported at
+ * runtime; kept mutually type-assignable with useCanvas.ts — IDI-179 rule).
  *
- * Model bridge the real hook implements: the design is a multi-item board, the
- * backend is ONE shared `canvas` row per user. `save` pushes an item onto that
- * row (+ system clipboard, + image upload); a realtime channel prepends what
- * OTHER devices wrote and raises the `toast` banner. Everything remote is gated
- * by the Sync toggle — the mock has no remote half, so `refresh` is a no-op and
- * `toast` only ever comes from a local action.
+ * M1 redesign contract (2026-08-17): `live` slot + device-local `feed` +
+ * sendText/sendPhoto composer verbs + copy/clear hero actions.
  */
-import { useState, useCallback, useRef, useEffect } from 'react';
+import { useCallback, useState } from 'react';
+import type { CanvasKind, FeedEntry, LiveSlot } from './useCanvas';
 
-type BaseItem = {
-  id: string;
-  state: 'draft' | 'sent';
-  sentAt?: string; // "9:24"
+export type { CanvasKind, FeedEntry, LiveSlot } from './useCanvas';
+
+const NOW = new Date().toISOString();
+
+const MOCK_LIVE: LiveSlot = {
+  kind: 'text',
+  text: 'Meeting follow-ups for the latency pass: the baseline was 1.02s ASR plus roughly 1.2 seconds of formatting…',
+  from: "Muhammad's Mac",
+  own: false,
+  at: NOW,
 };
 
-export type TextItem  = BaseItem & { kind: 'text';  text: string };
-export type LinkItem  = BaseItem & { kind: 'link';  url: string };
-export type ImageItem = BaseItem & {
-  kind: 'image';
-  uri: string;
-  filename: string;
-  sizeLabel?: string;
-  dimensions?: string;
-};
-
-export type CanvasItem = TextItem | LinkItem | ImageItem;
-
-const MOCK: CanvasItem[] = [
-  {
-    id: 'c1',
-    kind: 'text',
-    state: 'sent',
-    sentAt: '9:24',
-    text: "Let's meet at 3pm in Studio B — bring the latest mocks.",
-  },
-  {
-    id: 'c2',
-    kind: 'link',
-    state: 'sent',
-    sentAt: '9:18',
-    url: 'github.com/flume/voice-app',
-  },
-  {
-    id: 'c3',
-    kind: 'image',
-    state: 'sent',
-    sentAt: '8:51',
-    uri: 'https://placehold.co/120x120/0b0908/C85A3E/png',
-    filename: 'screenshot-2026-06-30.png',
-    sizeLabel: '1.2 MB',
-    dimensions: '1920×1080',
-  },
-  {
-    id: 'c4',
-    kind: 'text',
-    state: 'draft',
-    text: 'Reschedule the design review to Thursday and pull marketing in.',
-  },
+const MOCK_FEED: FeedEntry[] = [
+  { id: 'f1', kind: 'text', text: 'Reminder: rotate the Groq key after the demo.', from: 'this phone', own: true, at: NOW },
+  { id: 'f2', kind: 'link', text: 'https://linear.app/idiaz/issue/IDI-184/overlay-dpi', from: "Muhammad's Mac", own: false, at: NOW },
+  { id: 'f3', kind: 'image', text: 'Image', imageUrl: 'https://example.com/x.jpg', from: 'this phone', own: true, at: NOW },
 ];
 
-const nowHHmm = () =>
-  new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+export function reset() {}
+export async function catchUp() {}
 
 export function useCanvas() {
-  const [items, setItems] = useState<CanvasItem[]>(MOCK);
+  const [live, setLive] = useState<LiveSlot | null>(MOCK_LIVE);
+  const [feed, setFeed] = useState<FeedEntry[]>(MOCK_FEED);
   const [toast, setToast] = useState<string | null>(null);
-  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  useEffect(() => () => { if (toastTimer.current) clearTimeout(toastTimer.current); }, []);
-
-  const flashToast = useCallback((msg: string) => {
-    setToast(msg);
-    if (toastTimer.current) clearTimeout(toastTimer.current);
-    toastTimer.current = setTimeout(() => setToast(null), 2800);
+  const sendText = useCallback(async (text: string): Promise<boolean> => {
+    const t = text.trim();
+    if (!t) return false;
+    const kind: CanvasKind = /^https?:\/\/\S+$/i.test(t) ? 'link' : 'text';
+    const at = new Date().toISOString();
+    setLive({ kind, text: t, from: 'this phone', own: true, at });
+    setFeed(prev => [{ id: `f_${Date.now()}`, kind, text: t, from: 'this phone', own: true, at }, ...prev].slice(0, 20));
+    return true;
   }, []);
 
-  const dismissToast = useCallback(() => {
-    if (toastTimer.current) clearTimeout(toastTimer.current);
-    setToast(null);
+  const sendPhoto = useCallback(async (): Promise<boolean> => {
+    const at = new Date().toISOString();
+    setLive({ kind: 'image', imageUrl: 'https://example.com/mock.jpg', from: 'this phone', own: true, at });
+    return true;
   }, []);
 
-  /** Push the item's payload to the shared row + the system clipboard. */
-  const save = useCallback(async (id: string) => {
-    const stamp = nowHHmm();
-    setItems(prev => prev.map(i => (i.id === id ? { ...i, state: 'sent', sentAt: stamp } : i)));
-    flashToast('Sent to your computer');
-  }, [flashToast]);
-
-  /** Remove a card. A 'sent' card also clears the shared row in the real hook. */
-  const discard = useCallback(async (id: string) => {
-    setItems(prev => prev.filter(i => i.id !== id));
+  const copyLive = useCallback(async () => { setToast('Copied'); }, []);
+  const clearLive = useCallback(async () => {
+    setLive({ kind: 'empty', from: 'this phone', own: true, at: new Date().toISOString() });
   }, []);
-
-  /** Start an empty, editable text draft (the card itself hosts the input). */
-  const addText = useCallback(async () => {
-    setItems(prev => [{ id: `c_${Date.now()}`, kind: 'text', state: 'draft', text: '' }, ...prev]);
-  }, []);
-
-  /** Live edit of a text draft's body. */
-  const updateText = useCallback((id: string, text: string) => {
-    setItems(prev => prev.map(i => (i.id === id && i.kind === 'text' ? { ...i, text } : i)));
-  }, []);
-
-  /** Real hook reads the system clipboard. */
-  const addLink = useCallback(async () => {
-    setItems(prev => [{ id: `c_${Date.now()}`, kind: 'link', state: 'draft', url: 'https://…' }, ...prev]);
-  }, []);
-
-  /** Real hook launches the image picker + uploads to canvas-images. */
-  const addPhoto = useCallback(async () => {
-    setItems(prev => [{
-      id: `c_${Date.now()}`,
-      kind: 'image',
-      state: 'draft',
-      uri: 'https://placehold.co/120x120/0b0908/C85A3E/png',
-      filename: 'photo.jpg',
-    }, ...prev]);
-  }, []);
-
-  /** Catch-up read of the shared row (pull-to-refresh / foreground). */
+  const copyFeedEntry = useCallback(async (_id: string) => { setToast('Copied'); }, []);
   const refresh = useCallback(async () => {}, []);
+  const dismissToast = useCallback(() => setToast(null), []);
 
-  return { items, save, discard, addText, addLink, addPhoto, updateText, refresh, toast, dismissToast };
+  return {
+    live, feed,
+    sendText, sendPhoto,
+    copyLive, clearLive, copyFeedEntry,
+    refresh, toast, dismissToast,
+  };
 }

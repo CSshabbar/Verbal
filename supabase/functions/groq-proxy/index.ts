@@ -322,7 +322,9 @@ Deno.serve(async (req) => {
       if (!form.get("model")) form.set("model", DEFAULT_TRANSCRIBE_MODEL);
       // Pull the chain fields out BEFORE forwarding — Groq would reject unknown fields.
       const wantChain = String(form.get("chain") ?? "") === "1";
-      const chainModel = String(form.get("chain_model") ?? "llama-3.1-8b-instant");
+      // Default only matters when a client omits chain_model (they all send it).
+      // llama-3.1-8b was retired by Groq (2026-08) — gpt-oss-20b is the fast tier now.
+      const chainModel = String(form.get("chain_model") ?? "openai/gpt-oss-20b");
       const chainSystem = String(form.get("chain_system") ?? "");
       const chainUser = String(form.get("chain_user") ?? "{{TEXT}}");
       // Dictionary rules as JSON. Malformed -> no rules, never an error: losing a
