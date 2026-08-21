@@ -27,6 +27,7 @@ on:
 
 permissions:
   contents: write
+  actions: write  # needed to dispatch build-release.yml — see the note below
 
 jobs:
   bump-and-tag:
@@ -76,3 +77,21 @@ jobs:
           git push origin HEAD:dev
           git tag "v${{ steps.bump.outputs.next }}"
           git push origin "v${{ steps.bump.outputs.next }}"
+
+      # GitHub's own anti-recursion rule: a push made with a workflow's default
+      # GITHUB_TOKEN does NOT fire other workflows (this is what stops an
+      # infinite chain) — so the tag push above is silently invisible to
+      # build-release.yml's `on.push.tags` trigger. Learned this the hard way
+      # on the very first real run: v1.0.11 got tagged and nothing built.
+      # Explicitly dispatching it via the API sidesteps that rule entirely
+      # (it's a direct API call, not a webhook-chained push event) — no PAT
+      # secret needed, just `actions: write` on this job's own token.
+      - name: Trigger build-release.yml for the new tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          curl -sf -X POST \
+            -H "Authorization: token ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/workflows/build-release.yml/dispatches" \
+            -d "{\"ref\":\"v${{ steps.bump.outputs.next }}\",\"inputs\":{\"version\":\"${{ steps.bump.outputs.next }}\"}}"
