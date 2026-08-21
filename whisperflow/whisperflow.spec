@@ -67,6 +67,11 @@ a = Analysis(
         'app.fonts_css',
         'app.recordings',
         'app.dictionary',
+        # IDI-216 team layer. Imported at FUNCTION level from dictionary.py,
+        # shared_dashboard.py and auth.py, so bytecode analysis won't reach it —
+        # a frozen build without it would fail only when a user opens Team or
+        # dictates while in one (Hard Rule #30).
+        'app.organizations',
         'app.autolearn',
         'app.filetags',
         'app.auth',
@@ -113,6 +118,12 @@ coll = COLLECT(
     name='Verbal',
 )
 
+# Deliberately unsigned here (no codesign_identity/entitlements_file) — CI
+# signs every nested binary + this bundle itself with hardened runtime AFTER
+# this build step (see .github/workflows/build-release.yml's "Code-sign the
+# app bundle" step + whisperflow/entitlements.plist), then notarizes the DMG.
+# PyInstaller's own signing here can't do the leaf-then-bundle ordering
+# hardened runtime needs, so don't add codesign_identity to this call.
 app = BUNDLE(
     coll,
     name='Verbal.app',

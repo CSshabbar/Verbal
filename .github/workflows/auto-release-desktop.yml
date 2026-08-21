@@ -1,0 +1,78 @@
+name: Auto Release (Desktop)
+
+# GitOps trigger for the desktop app (IDI-224): a push to `dev` that touches
+# whisperflow/** auto-bumps the patch version, tags it, and that tag push is
+# what fires build-release.yml (mac+win always build and ship TOGETHER as one
+# versioned desktop bundle — they share one Python core and one APP_VERSION,
+# so releasing them independently would just reintroduce the "mac stuck on an
+# old version" drift this ticket exists to fix).
+#
+# Path-filtered on purpose: verbal-mobile/** changes must NEVER trigger a
+# desktop release, and this workflow must NEVER touch mobile. Mobile ships
+# through Expo/EAS + App Store/Play Store review, which cannot be "auto
+# released" the way a direct-download desktop installer can — give it its own
+# workflow, scoped to verbal-mobile/**, if/when that's wanted.
+#
+# No human gate: every push to dev under whisperflow/** ships straight to
+# every auto-updating install. That's a deliberate choice (2026-08-20) — the
+# tradeoff is speed over a review step. If that ever needs walking back, add
+# an environment-protection rule or a beta/stable split; don't reinvent this
+# ad hoc later.
+
+on:
+  push:
+    branches: [dev]
+    paths:
+      - 'whisperflow/**'
+
+permissions:
+  contents: write
+
+jobs:
+  bump-and-tag:
+    runs-on: ubuntu-latest
+    # Anti-loop guard: this job's own commit+push below is itself a push to
+    # dev touching whisperflow/** (it edits config.py), which would otherwise
+    # re-trigger this exact workflow forever. The bump commit is always made
+    # by github-actions[bot] via GITHUB_TOKEN, so skipping runs actuated by
+    # that actor breaks the cycle without relying on ambiguous "[skip ci]"
+    # commit-message semantics (which could also suppress the tag-push that
+    # is supposed to fire build-release.yml).
+    if: github.actor != 'github-actions[bot]'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: dev
+
+      - name: Compute next patch version
+        id: bump
+        run: |
+          CURRENT=$(grep -m1 -E '^APP_VERSION[[:space:]]*=' whisperflow/app/config.py | sed -E 's/.*"([^"]+)".*/\1/')
+          if [ -z "$CURRENT" ]; then
+            echo "::error::Could not read APP_VERSION from whisperflow/app/config.py"
+            exit 1
+          fi
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
+          NEXT="${MAJOR}.${MINOR}.$((PATCH + 1))"
+          if git rev-parse "v${NEXT}" >/dev/null 2>&1; then
+            echo "::error::Tag v${NEXT} already exists — refusing to reuse a version number."
+            exit 1
+          fi
+          echo "current=$CURRENT" >> $GITHUB_OUTPUT
+          echo "next=$NEXT" >> $GITHUB_OUTPUT
+
+      - name: Bump APP_VERSION
+        run: |
+          sed -i -E 's/^(APP_VERSION[[:space:]]*=[[:space:]]*)"[^"]+"/\1"${{ steps.bump.outputs.next }}"/' whisperflow/app/config.py
+          grep -m1 '^APP_VERSION' whisperflow/app/config.py
+
+      - name: Commit and tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add whisperflow/app/config.py
+          git commit -m "chore(release): bump desktop to v${{ steps.bump.outputs.next }}"
+          git push origin HEAD:dev
+          git tag "v${{ steps.bump.outputs.next }}"
+          git push origin "v${{ steps.bump.outputs.next }}"

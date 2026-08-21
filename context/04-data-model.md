@@ -128,6 +128,11 @@ the matching flat-namespaced `canvas-images` objects, then deletes the Supabase 
 last — a partial failure leaves a recoverable signed-in state). Idempotent; see `03-features.md`'s Account
 deletion entry for the full design and live-verification notes. Apple-token revocation is an intentionally
 deferred stub (`revokeAppleToken()`, Batch C).
+**Known gap (IDI-216):** `USER_TABLES` does not yet include the org layer, so deleting an account leaves
+its `organization_members` row behind (and, if it owned a team, the org itself). The FK is
+`on delete cascade` from `organizations`, not from `auth.users`, so nothing breaks — but a deleted
+owner's team is orphaned. Add `organization_members` to the purge (and decide owner-transfer-vs-delete)
+before Teams goes live.
 
 `reap-meeting-audio` (`supabase/functions/reap-meeting-audio/index.ts`, MER-31, 2026-07) — invoked by the
 daily `reap-meeting-audio-daily` `pg_cron` job (`supabase_meetings.sql`, via `pg_net.http_post` with the
@@ -167,10 +172,24 @@ RLS on, policy "meetings rw" `FOR ALL TO public USING(true)`
 (Hard Rule #10 — same deferred-hardening posture as the rest). Desktop also keeps a bounded metadata list
 in `config['meetings']` (`MEETINGS_CAP=30`) and the mixed WAV at `~/.verbal/meetings/<id>.wav`.
 
+**`app_versions_latest`** (view, 2026-08-20) — **the single definition of "newest build"**, read by
+both `updater.py` and the public `download` Edge Function. `distinct on (platform)` ordered by
+`public.semver_key(version) desc, released_at desc`.
+**Why it exists:** `app_versions.released_at` is NOT monotonic — CI stamps whatever is convenient —
+and live data had win `1.0.9` at `00:00:00` next to win `1.0.8` at `09:13:24` on the same day. The old
+`order=released_at.desc&limit=1` therefore resolved "latest" to **1.0.8**, so a Windows user on 1.0.7
+was offered 1.0.8 and could never reach 1.0.9. `semver_key()` sorts a version as an `int[]` (plain
+text sort ranks `1.0.9` above `1.0.10`) and strips non-numeric suffixes so a `-beta` tag degrades
+instead of erroring. **Never order `app_versions` by `released_at` again — read the view.**
+
 **`app_versions`** — `supabase_migrations/001_app_versions.sql`. Auto-update manifest.
 `id` bigserial PK · `platform` text (`mac`/`win`/`ios`) · `version` text · `changelog` · `file_url` ·
 `file_hash` (sha256) · `file_size` · `released_at` · `UNIQUE(platform,version)`. RLS on; public SELECT;
-inserts use **service_role** (release script) — no anon insert.
+inserts use **service_role** (release script) — no anon insert. **As of IDI-224 (2026-08-20),
+`file_url` is always a GitHub Releases URL** (`github.com/<repo>/releases/download/vX.Y.Z/<file>`) —
+never a Supabase Storage path; see `05-conventions.md` #50 for the release pipeline that writes these
+rows. The 9 stale pre-IDI-224 rows (dead Storage links + mismatched GitHub asset filenames) are cleared
+on ship.
 
 ### `transcriptions`, `devices`, `canvas` (MER-28, 2026-07: now have committed SQL)
 
@@ -199,6 +218,15 @@ double counting; insights cache is versioned `v:2` so existing installs re-read 
 desktop rows were backfilled from their stored 16 kHz mono PCM16 WAV sizes (32 bytes/ms); compressed
 mobile uploads (m4a/caf) can't be size-derived and stayed NULL. (This replaced the old
 "local-cache-only, never pushed" posture.)
+`app` text nullable (**2026-08-21**, live migration `transcriptions_app_and_org_breakdown` +
+`whisperflow/supabase_organizations_onboarding.sql`): the name of the frontmost application at the moment
+the dictation was captured, written by both desktops' `SyncClient.push(..., app_name)` from the
+**pre-injection** `target_app` (reading it after the paste would name whatever regained focus —
+`05-conventions.md` #37). Partial index `(user_id, app) where app is not null`. **Mobile never writes
+it** — a phone has no frontmost window to read — so these numbers describe desktop dictation only.
+Historic rows are NULL and **cannot be backfilled**: the frontmost app was never recorded anywhere else,
+so `org_app_breakdown` is empty until new dictations accumulate and every client that renders it says so
+explicitly rather than showing a zero state.
 
 **`devices`** — device registry/presence. `id` uuid PK · `user_id` text · `device_id` text (since IDI-177
 a STABLE per-install uuid — desktop `config.get_device_id()`, mobile `verbal_device_uuid` — never derived
@@ -240,6 +268,108 @@ realtime publication. **Write contract (IDI-173):** every write stamps `device_i
 columns it isn't changing (text edits never null the image); a clear is an explicit
 `{content:'', image_url:null}` write that receivers apply — empty content is never falsy-dropped.
 
+### Organization layer (IDI-216, Aug 2026) — `whisperflow/supabase_organizations.sql`
+
+The **first tables in this project with real `auth.uid()` RLS.** Everything else is `TO public` with a
+`USING (true)` policy (see §Security posture); these four are `TO authenticated` and keyed on
+`auth.uid()::text` from their first row. That is deliberate and is what let the team layer ship without
+applying `supabase_auth_uid_rls.sql` (IDI-29): nothing in the team feature reads another user's row in a
+legacy table, so the pairing trade-off that blocks that migration is not in the way here. Consequence to
+know: a paired-but-never-signed-in device sends the anon key, reads **zero** org rows, and simply has no
+team — the correct fail-closed outcome.
+
+**`organizations`** — `id` uuid PK · `name` text · `company_name` text `''` · `owner_user_id` text ·
+`plan` text `'team'` · `seats` int `5` · `leaderboard_enabled` bool `false` (the OWNER's org-wide switch
+for the member-visible ranking; never turns itself on) · `created_at` · `updated_at`.
+Read by any active member; written by owner/admin; deleted by owner only.
+
+**`organization_members`** — PK `(org_id, user_id)` · `email` · `display_name` · `role`
+(`owner`|`admin`|`member`) · `status` (`active`|`invited`|`removed`) · `usage_consent` bool `false` ·
+`leaderboard_opt_in` bool `false` · `joined_at` · `updated_at`. Partial unique index
+`(user_id) where status='active'` enforces **one team per user** in the DB, so a racing invite claim
+can't create a second membership. **SELECT-only over REST — there is no INSERT/UPDATE/DELETE policy on
+purpose**: Postgres RLS cannot restrict which COLUMNS a policy lets you write, so a "members may update
+their own row" policy would also let a member set their own `role` to `owner`. Every write goes through
+an RPC. Removal is SOFT (`status='removed'`, consent flags cleared), which keeps the unique-active index
+coherent and makes a re-invite a clean re-claim.
+
+**`organization_invites`** — `id` uuid PK · `org_id` · `email` · **`token_hash`** text (sha256 hex —
+the raw token exists only in the invite email and claim URL, so a leaked row cannot be replayed) ·
+`role` · `invited_by` · `status` (`pending`|`claimed`|`expired`|`revoked`) · `expires_at` (default
+now()+7 days) · `claimed_by` · `claimed_at` · `created_at`. Unique index on `token_hash`. Readable by
+owner/admin only; INSERTed only by the `invite-member` Edge Function with the service role; claimed
+through `org_claim_invite` (SECURITY DEFINER, because the claimer is by definition not a member yet).
+
+**`organization_dictionary`** — `org_id` uuid PK · `vocabulary`/`replacements`/`snippets` jsonb `'[]'` ·
+`updated_by` text · `updated_at`. **Deliberately the same SHAPE as `dictionary`** so both clients reuse
+`normalize()`/`merge_dictionary()` verbatim rather than growing a second data model. Read by every
+active member (they dictate with it), written by owner/admin, **CAS on `updated_at`** exactly like the
+personal row (IDI-174's pattern): write filtered on the last-witnessed value, 0 rows → refetch, merge,
+retry once, then report.
+
+**RLS recursion note.** A policy on `organization_members` that answers "is the caller a member of this
+org?" by selecting `organization_members` would recurse. Every policy instead calls
+**`public.org_member_role(p_org uuid)`**, a SECURITY DEFINER function that reads the table with RLS
+bypassed. It is the single definition of "who may see this org" — change it and every policy follows.
+
+**RPCs** (all SECURITY DEFINER; each re-derives the caller from `auth.uid()` and checks its own
+authorization, so the `authenticated` grant is the right to ASK, never the right to act on another org):
+`org_create` (org + owner membership + empty shared dictionary, atomically) · `org_claim_invite` ·
+`org_set_role` · `org_remove_member` · `org_set_consent` (the ONLY membership columns a non-admin can
+move, and an admin cannot move them for someone else) · `org_usage_summary` · `org_leaderboard` ·
+`org_usage_series` · `org_app_breakdown`.
+
+**`org_usage_series(p_org, p_days)`** — per-member per-day word counts, backing the Team screen's roster
+sparklines and per-member activity heatmap. One call for the whole org rather than one per member. Same
+counts-only contract as the two above, with one difference worth knowing: **visibility is role-split** —
+owner/admin get every consenting member's series, anyone else gets only their OWN row, so a member can
+see their own sparkline without this becoming a way to read colleagues' activity.
+
+**GRANT GOTCHA (learned applying this live).** `revoke all on function … from public` revokes from the
+PUBLIC pseudo-role and does NOT undo Supabase's `ALTER DEFAULT PRIVILEGES` grant of `EXECUTE` to
+**`anon`** on new functions in `public`. Every org RPC was briefly anon-callable because of it. Nothing
+leaked — each derives its caller from `auth.uid()`, which is NULL for anon, so they returned
+`not_authenticated` / `forbidden` / an empty set — but **revoke from `anon` BY NAME** on any future
+SECURITY DEFINER function rather than relying on the `public` revoke.
+
+**`org_app_breakdown(p_org, p_days)`** — per-member per-app dictation and word counts, one flat row per
+`(member, app)`, ordered by member then count desc. Backs "Where the team writes" on the team overview and
+"Where <name> writes" on each member page. Same role split as `org_usage_series` (owner/admin see every
+consenting member, anyone else only themselves) and the same `usage_consent` gate — which here applies to
+**everyone including a member asking about themselves**, so turning sharing off empties the panel rather
+than leaving a private-looking row that is still being aggregated. Rows with a NULL/blank `app` or empty
+`text` are excluded, so the counts are of *app-attributed* dictations, not of all of them.
+**This RPC WIDENS the privacy contract.** Everything else in the team layer is counts and durations; an
+app name is neither. It is still metadata — never the text, never the audio — but the product copy on
+every Team surface had to change from "only counts and durations" to name app names explicitly, and it
+did (team overview privacy card, member-page footnote, mobile usage footnote).
+
+**`org_usage_summary` serves a plain member their OWN row** (live migration
+`org_usage_summary_own_row_for_members`, 2026-08-21). It was originally hard admin-only, unlike
+`org_usage_series` and `org_app_breakdown` which both already carried `or m.user_id = v_uid`. Since every
+total on the Team overview is derived from these rows, a member's screen rendered zeroes across the board
+and blamed them on consent — the "team insights are always empty" report. The clients had a matching gate
+on the *request* (`organizations.usage_summary`'s `role not in (...)`, JS `if(teamAdmin())`), removed in
+the same change: fixing one layer alone would not have changed a pixel. Nothing widened — a member still
+gets exactly one row, their own, still `usage_consent`-gated.
+
+**`org_usage_summary(p_org, p_days)` / `org_leaderboard(p_org, p_days)` — the privacy contract.** Both
+read `transcriptions.text` to COUNT words and sum `duration_ms`, and return **only** aggregates
+(`dictations`, `words`, `speech_ms`, `last_active`). There is no column in either return type that could
+carry transcript content. A member without `usage_consent` is **absent from the result entirely** rather
+than returned as zeroes, so their silence is not itself a signal. `org_leaderboard` additionally
+requires `organizations.leaderboard_enabled` AND the member's own `leaderboard_opt_in`, and is readable
+by every active member (not just admins) — that is the deliberate Phase-5b design, gated behind two
+independent opt-ins.
+
+**`groq_check_rate_limit_org`** — `groq_check_rate_limit` (MER-30) plus a `p_user_id` used to look up the
+caller's org plan and RAISE their tier (`team` ×2, `enterprise` ×5; an unknown plan or no org leaves the
+default). Folded into the round trip the limiter already makes, so Phase-3 entitlements cost the hot path
+zero extra DB calls. A **separate name** rather than a replaced signature, so the original stays callable
+as `groq-proxy`'s fallback (it latches the org RPC off after one 404) and a rollback is a one-line client
+change. `EXECUTE` is revoked from `anon`/`authenticated` and granted only to `service_role` — the same
+lockdown MER-30's security-advisor pass established, for the same reason.
+
 ## Storage buckets
 
 - **`recordings`** (`supabase_recordings.sql` + `supabase_recordings_meeting_audio_private.sql`,
@@ -257,7 +387,11 @@ columns it isn't changing (text edits never null the image); a clear is an expli
   `supabase_canvas_images_policy.sql` (idempotent: ensures the bucket exists + public, and read/insert/update
   `TO public` scoped to `bucket_id='canvas-images'`). A missing/blocked policy → mobile's anon upload fails
   silently → the shared photo never reaches the other device (now surfaced as an "Image upload failed" toast).
-- **`releases`** — auto-update binaries, public SELECT. Stays public deliberately (app-update downloads).
+- **`releases`** — **deprecated/unused as of IDI-224 (2026-08-20).** Was meant to hold auto-update
+  binaries via a TUS upload from CI, but a live check found it had **zero objects, ever** — that upload
+  path never worked. Release binaries now live entirely on **GitHub Releases** (see `05-conventions.md`
+  #50); nothing writes to this bucket anymore. Left in place rather than deleted in case something else
+  references it; do not resurrect the TUS-upload path without first explaining why the bucket was empty.
 - **`meeting-audio`** (`supabase_meetings.sql` + `supabase_recordings_meeting_audio_private.sql`,
   MER-27, 2026-07) — meeting recordings, path **`<user_id>/<meeting_id>.wav`** (16 kHz mono, mic+system
   mixed). **Private** (was public), same signed-URL mechanism as `recordings` but with a much longer TTL
@@ -408,6 +542,17 @@ separate tombstone sweep).
   device calls the `claim_pairing` RPC (atomic guarded claim, server-side expiry — IDI-157) → adopts
   `user_id` via the paired override (IDI-156) → enables sync. Host polls `pairing_status`, cancel revokes
   via `cancel_pairing`.
+
+### Team dictionary in the sync model (IDI-216)
+
+The shared dictionary is pulled by `organizations.fetch()` (desktop) / `fetchOrg()` (mobile) into a
+LOCAL cache — `config['org']` and AsyncStorage `flume_org` respectively — and the dictation path reads
+only that cache, so adding a team costs the hot path no network call. The **sync toggle gates the shared
+dictionary but not team membership**: a user who turned sync off dictates with their personal dictionary
+only, exactly as before joining, while still being a member with a visible roster and role. Both caches
+are account-scoped and wiped on sign-out / account switch (`auth._clear_account_caches` sets
+`config['org']`; `clearAccountData` removes `flume_org` and calls `clearOrgCache()` for the in-memory
+mirror) — otherwise the next account on that machine would dictate with a team it was never in.
 
 ## Security posture (as implemented)
 

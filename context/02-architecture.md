@@ -108,6 +108,16 @@ separate users purely by `user_id` (the Supabase auth id after sign-in). Details
     `SharedDashboard.show()` now renders the **same** `flume_html()` the Mac uses (the old light-theme
     inline `_html()` is retired), giving Windows visual parity. Same pattern applies to the other Flume
     surfaces (`overlay_html`, `flume_popover_html`, `meeting_html`, `autolearn_widget`).
+- **Team layer (IDI-216):** `app/organizations.py` owns everything the desktop knows about the user's org
+  — membership, roster, invites, the SHARED dictionary, and the usage/ranking/app-mix aggregates. It caches
+  the whole thing in `config['org']` so `dictionary.effective()` (personal ∪ team) is a pure local read
+  and the dictation path still makes no network call. `DashboardApi`'s `get_team`/`invite_member`/… are
+  thin wrappers over it, so **Windows gets the Team screen for free** — both desktops render the same
+  `flume_html()` Team destination against the same backend class. The shared dictionary is *cached and
+  merged* here but *edited* on the Dictionary destination under a `Mine | <team>` scope — Team only links
+  to it. One extra write path leaves the client: `sync.py::push(..., app_name)` tags each dictation with
+  the **pre-injection** frontmost app (`transcriptions.app`), which is what `org_app_breakdown` aggregates
+  into the per-person app mix. iOS has no equivalent and writes nothing.
 - **Config:** `~/.verbal/config.json`, written by `config.py::save_config` — **atomic** (`tempfile.mkstemp`
   unique name + `os.replace`) under a module-level `_config_lock`. This is the desktop source of truth
   for user data/settings; cloud syncs on top.
@@ -170,6 +180,14 @@ bounded `config['meetings']` (`MEETINGS_CAP`). The HUD appears when the meeting 
   (Canvas/Settings/Snippets/Dictionary/Devices→PairDevice/Models — Canvas gained an `onBack` prop for
   this; Sign out lives in Settings). The tab bar is **hidden while a note or a
   meeting's full AI notes are open** (`NoteEditor`, `MeetingNotes`) so the screen owns the view.
+- **Back affordances (audited 2026-08-19):** iOS has no hardware back button, so **every non-root route
+  carries its own top-left `chevron-back`** — the invariant to preserve when adding a screen. The
+  intentional exceptions: the tab roots (Home, NotesList, HistoryList, Insights), the auth/first-run roots
+  (Welcome, Onboarding — the latter has Skip), and the two modals that dismiss via an explicit action
+  instead (`Recording` = ✕ Cancel `IconButton`, `Confirmation` = pinned Done). `InsightsScreen` takes
+  `onBack?` optionally and renders the button only when passed, because it doubles as a tab root.
+  Inside the single-route `Menu` modal stack, a leaf's `goBack()` finds nothing to pop and **bubbles to the
+  root navigator**, dismissing the modal — that is the intended destination, not a bug.
   Modals: `Recording`, `Confirmation`, `Menu` (stack only, no hub screen).
   Sub-stacks: Notes (→NoteEditor, →MeetingList…), History (→HistoryDetail).
 - **Singleton data stores (flow-audit B4/B5, 2026-08):** history, canvas, meetings, notes and devices
@@ -180,6 +198,12 @@ bounded `config['meetings']` (`MEETINGS_CAP`). The HUD appears when the meeting 
   (live toggle — see `05-conventions.md` #28). Cloud identity for writes is `storage.getCloudUserId()`
   (paired override ?? session, never a minted guest id); device identity is the per-install
   `verbal_device_uuid`.
+- **Team layer (IDI-216):** `lib/organizations.ts` mirrors `app/organizations.py` (edit one, edit the
+  other), cached in AsyncStorage `flume_org` with an in-memory mirror so the dictation path never awaits
+  storage. `flume-ui/hooks/useOrganization.ts` (+ its `.mock.ts` contract) backs
+  `flume-ui/screens/TeamScreen.tsx`, hosted in the `Menu` modal stack and reached from the SidePanel's
+  Tools group. `lib/pendingInvite.ts` parks a `verbal://team-invite?t=…` deep link until there is a
+  session to claim it with — the usual case, since the recipient taps the link before ever signing in.
 - **Layered architecture:** presentational **screens** (`flume-ui/screens/*.tsx`) receive callbacks as
   props → read data via **hooks** (`flume-ui/hooks/*.ts`) → hooks call **`lib/*.ts`** (Supabase, Groq,
   AsyncStorage). Theme tokens in `flume-ui/theme/` (colors/typography/spacing/shadow/motion).
@@ -219,9 +243,40 @@ bounded `config['meetings']` (`MEETINGS_CAP`). The HUD appears when the meeting 
   except **meeting notes**, which send `provider:"ollama"` and are forwarded to **Ollama Cloud
   `gpt-oss:120b`** (`OLLAMA_API_KEY` secret, OpenAI-compatible passthrough) with an automatic Groq
   `openai/gpt-oss-120b` fallback. See `04-data-model.md` and `05-conventions.md` Hard Rule #15.
+  `invite-member` (`supabase/functions/invite-member/index.ts`, IDI-216) mints a team invite and emails
+  the claim link via **Resend** (`RESEND_API_KEY` + `INVITE_FROM_EMAIL` secrets). `verify_jwt` on;
+  caller identity from the JWT, owner/admin re-checked against the DB; the row stores only the token's
+  sha256 and is DELETED again if the mail fails, so a "pending" invite always means one that was sent.
+  `download` (`supabase/functions/download/index.ts`, IDI-224) is the **ONE stable URL the website's
+  download button links to** — `verify_jwt` off (a public download link can't demand a JWT), it reads
+  `app_versions_latest`, HEAD-probes the target before redirecting (so a dead release reads as a
+  branded "gone missing" page/503 instead of raw storage XML), and 302s to it with a short
+  `Cache-Control`. `?json=1` returns `{ok,platform,version,url,reachable,size,sha256,changelog}` for a
+  website/CI to consume without redirecting. Shipping a release needs **no website change and no CI
+  change to this function** — see the release pipeline below.
   **Auth:** Google provider.
+
+- **Desktop release pipeline (IDI-224, 2026-08-20) — GitOps, GitHub-Releases-only, no human gate.**
+  `.github/workflows/auto-release-desktop.yml` watches pushes to `dev` **path-filtered to
+  `whisperflow/**`** (mobile changes never trigger it, and it never touches mobile), auto-bumps
+  `config.APP_VERSION`'s patch digit, commits, and pushes a `vX.Y.Z` tag. That tag push fires the
+  existing `.github/workflows/build-release.yml`, which builds mac+win **together** (one Python core,
+  one version — they never ship independently), publishes both installers as **GitHub Release**
+  assets under deterministic versioned filenames, registers both `app_versions` rows pointing at those
+  GitHub URLs, and self-verifies by curling the `download` function's `?json=1` endpoint for both
+  platforms before the job is allowed to succeed. Supabase Storage's `releases` bucket is no longer
+  used (its TUS-upload path never actually worked — see `04-data-model.md`). The mac build is
+  **code-signed (hardened runtime) and notarized** via a Developer ID Application cert + App Store
+  Connect API key; Windows is not yet signed. Full detail and the anti-loop guard are in
+  `05-conventions.md` #50.
 - **Access model:** both apps use the **anon key** for all REST/realtime; scoping is by `user_id` value
   (not JWT/RLS — that's a documented deferred hardening). Realtime over Phoenix WebSocket.
+  **The four `organization*` tables are the exception** (IDI-216): they are `TO authenticated` with real
+  `auth.uid()` policies from their first row, and cross-member reads (usage, leaderboard) go through
+  SECURITY DEFINER RPCs that check org membership themselves. That is deliberate — it is what let the
+  team layer ship WITHOUT applying `supabase_auth_uid_rls.sql` (IDI-29), whose pairing trade-off and
+  client-rollout window are still open. A paired-but-never-signed-in device sends the anon key, reads
+  zero org rows, and simply has no team: the correct fail-closed outcome, not a bug to route around.
 - Full schema, data shapes, auth flows, sync model, and the **schema-vs-code gaps** are in `04-data-model.md`.
 
 ## Cross-platform sharing
@@ -233,10 +288,13 @@ bounded `config['meetings']` (`MEETINGS_CAP`). The HUD appears when the meeting 
 - **Also shared across the two desktops:** the Flume HTML surfaces (`flume_dashboard_html.py` et al.)
   now render on both macOS (WKWebView + `_SHIM`) and Windows (pywebview/WebView2), plus the
   cross-platform pipeline modules (`recorder`, `transcriber`, `ai_cleanup`, `dictionary`, `recordings`,
-  `auth`, `sync`, `updater`, `meetings`).
+  `auth`, `sync`, `updater`, `meetings`, `paste_guard`).
 - **What's platform-specific:** the *host container* per surface (WKWebView `NSPanel`/`NSWindow` vs
   pywebview windows), the tray/menubar shell (`rumps` vs `pystray`), input/audio natives
-  (`injector`↔`win_injector`, `hotkey` NSEvent vs `pynput`, ScreenCaptureKit↔WASAPI loopback), and the
+  (`injector`↔`win_injector`, `hotkey` NSEvent vs `pynput`, ScreenCaptureKit↔WASAPI loopback — note
+  `paste_guard` is shared but its *blocker* is not: macOS gates paste on the Accessibility grant and can
+  pre-flight it, Windows gates on UIPI integrity level and can only detect it from `SendInput`'s count),
+  and the
   macOS AX features (file-tagging, auto-learn) whose Windows equivalents use UI Automation
   (`win_ax.py`/`win_editwatch.py`, planned — see `whisperflow/WINDOWS_PARITY_PLAN.md`); mobile's Expo
   screens/hooks and native audio (`expo-audio`); and, within mobile itself, the custom keyboard's native

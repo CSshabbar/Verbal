@@ -106,10 +106,91 @@ jobs:
           cd whisperflow
           pyinstaller whisperflow.spec --clean --noconfirm
 
+      # Import the Developer ID Application cert into a throwaway keychain
+      # scoped to this job — the runner is destroyed afterward, so nothing
+      # persists. MACOS_KEYCHAIN_PASSWORD can be any string; it only unlocks
+      # this ephemeral keychain for the life of the job. The signing identity
+      # is discovered from the imported cert rather than hardcoded as a
+      # secret, so a cert rename/renewal can't silently drift out of sync
+      # with a separately-stored identity string.
+      - name: Import signing certificate
+        env:
+          MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          MACOS_KEYCHAIN_PASSWORD: ${{ secrets.MACOS_KEYCHAIN_PASSWORD }}
+        run: |
+          KEYCHAIN=build.keychain
+          CERT_PATH="$RUNNER_TEMP/cert.p12"
+          echo "$MACOS_CERTIFICATE_P12" | base64 -D -o "$CERT_PATH"
+          security create-keychain -p "$MACOS_KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$MACOS_KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$CERT_PATH" -k "$KEYCHAIN" -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$MACOS_KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security list-keychains -d user -s "$KEYCHAIN" login.keychain
+          rm -f "$CERT_PATH"
+          IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN" | grep "Developer ID Application" | head -1 | sed -E 's/.*"(.+)"/\1/')
+          if [ -z "$IDENTITY" ]; then
+            echo "::error::No 'Developer ID Application' identity found in the imported certificate."
+            exit 1
+          fi
+          echo "Signing identity: $IDENTITY"
+          echo "MACOS_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
+
+      # Hardened runtime + notarization needs every nested Mach-O binary
+      # signed BEFORE the outer .app — `codesign --deep` is explicitly
+      # discouraged by Apple for exactly this (it can sign in the wrong
+      # order on a bundle this size, full of ctranslate2/numpy/scipy
+      # dylibs). Sign leaves-first, then the app itself.
+      - name: Code-sign the app bundle (hardened runtime)
+        run: |
+          cd whisperflow
+          APP=dist/Verbal.app
+          find "$APP" -type f \( -perm -111 -o -name "*.dylib" -o -name "*.so" \) -print0 \
+            | xargs -0 -I{} codesign --force --options runtime --timestamp \
+                --entitlements entitlements.plist --sign "$MACOS_IDENTITY" "{}"
+          codesign --force --options runtime --timestamp \
+            --entitlements entitlements.plist --sign "$MACOS_IDENTITY" "$APP"
+          codesign --verify --deep --strict --verbose=2 "$APP"
+
       - name: Create DMG
         run: |
           cd whisperflow
           hdiutil create -volname "Verbal" -srcfolder dist/Verbal.app -ov dist/Verbal.dmg
+          codesign --force --sign "$MACOS_IDENTITY" dist/Verbal.dmg
+
+      # Notarization is what actually satisfies Gatekeeper on someone else's
+      # Mac — a codesigned-but-unnotarized DMG still shows "Apple could not
+      # verify this app is free of malware" on first open. `--wait` blocks
+      # until Apple's service returns pass/fail (typically 1-5 min); stapling
+      # embeds the ticket so Gatekeeper can check it OFFLINE (a first-launch
+      # network check would otherwise be a silent failure point for anyone
+      # without connectivity at that exact moment).
+      - name: Notarize and staple
+        env:
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+        run: |
+          cd whisperflow
+          KEY_PATH="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
+          echo "$APPLE_API_KEY_P8" | base64 -D -o "$KEY_PATH"
+          NOTARY_AUTH=(--key "$KEY_PATH" --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER_ID")
+
+          SUBMIT_JSON=$(xcrun notarytool submit dist/Verbal.dmg "${NOTARY_AUTH[@]}" --wait --output-format json)
+          echo "$SUBMIT_JSON"
+          STATUS=$(echo "$SUBMIT_JSON" | python3 -c "import json,sys; print(json.load(sys.stdin)['status'])")
+          SUBMISSION_ID=$(echo "$SUBMIT_JSON" | python3 -c "import json,sys; print(json.load(sys.stdin)['id'])")
+
+          if [ "$STATUS" != "Accepted" ]; then
+            echo "::error::Notarization ${STATUS} — fetching Apple's rejection log"
+            xcrun notarytool log "$SUBMISSION_ID" "${NOTARY_AUTH[@]}"
+            rm -f "$KEY_PATH"
+            exit 1
+          fi
+
+          xcrun stapler staple dist/Verbal.dmg
+          rm -f "$KEY_PATH"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -117,7 +198,14 @@ jobs:
           name: Verbal-Mac
           path: whisperflow/dist/Verbal.dmg
 
-  # ── Upload to Supabase & Register Version ──────────────────────
+  # ── Register Release (GitHub Releases is the SOLE artifact host — IDI-224) ──
+  #
+  # Supabase Storage's TUS upload used to run here too. It never worked: the
+  # `releases` bucket had ZERO objects in it, ever, on a live check (2026-08-20),
+  # while GitHub Releases assets land correctly whenever this job runs. Rather
+  # than debug a write path with no evidence it ever succeeded, GitHub Releases
+  # (free, CDN-backed, immutable, already proven) is now the ONE place a release
+  # binary lives. `app_versions.file_url` always points here.
   release:
     needs: [build-windows, build-mac]
     runs-on: ubuntu-latest
@@ -135,6 +223,30 @@ jobs:
           fi
           echo "version=$VERSION" >> $GITHUB_OUTPUT
 
+      # The tag is what names the release; config.APP_VERSION is what the RUNNING
+      # app compares against app_versions to decide it needs updating. If they
+      # disagree, the publish "succeeds" and then either nobody is offered the
+      # update or everybody is offered it forever. conventions #33 called this out
+      # as release-process discipline the spec file cannot enforce — so enforce it
+      # here, where it is cheap and impossible to forget.
+      - name: Tag must match config.APP_VERSION
+        run: |
+          # grep/sed, not a python -c one-liner: nesting quotes inside a YAML
+          # block scalar inside a shell $( ) is how you get a syntax error that
+          # only shows up in CI. This has no nested quoting at all.
+          CFG=$(grep -m1 -E '^APP_VERSION[[:space:]]*=' whisperflow/app/config.py | sed -E 's/.*"([^"]+)".*/\1/')
+          if [ -z "$CFG" ]; then
+            echo "::error::Could not read APP_VERSION from whisperflow/app/config.py"
+            exit 1
+          fi
+          TAG="${{ steps.version.outputs.version }}"
+          echo "tag=$TAG  config.APP_VERSION=$CFG"
+          if [ "$CFG" != "$TAG" ]; then
+            echo "::error::Tag v$TAG does not match config.APP_VERSION ($CFG)."
+            echo "::error::Bump APP_VERSION in whisperflow/app/config.py, or retag."
+            exit 1
+          fi
+
       - name: Download Windows artifact
         uses: actions/download-artifact@v4
         with:
@@ -147,109 +259,55 @@ jobs:
           name: Verbal-Mac
           path: dist/
 
+      # Deterministic, versioned filenames — registered in app_versions BEFORE
+      # upload, so what we compute the hash/URL for is byte-identical to what
+      # gets published. Production had a live mismatch (win 1.0.9's row pointed
+      # at "Verbal-1.0.9-setup.exe", but the actual release asset was named
+      # "Verbal.exe") because the filename was hand-assembled in two different
+      # places that could drift. Renaming once, here, removes that whole class
+      # of bug.
+      - name: Rename artifacts to their versioned names
+        id: files
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          MAC_FILE="Verbal-${VERSION}-mac.dmg"
+          WIN_FILE="Verbal-${VERSION}-win-setup.exe"
+          mv dist/Verbal.dmg "dist/${MAC_FILE}"
+          mv dist/VerbalSetup.exe "dist/${WIN_FILE}"
+          echo "mac_file=${MAC_FILE}" >> $GITHUB_OUTPUT
+          echo "win_file=${WIN_FILE}" >> $GITHUB_OUTPUT
+
       - name: Compute hashes
         id: hashes
         run: |
-          # Windows release payload is the Inno installer (VerbalSetup.exe),
-          # which updater.py runs with silent switches.
-          WIN_HASH=$(sha256sum dist/VerbalSetup.exe | cut -d' ' -f1)
-          WIN_SIZE=$(stat -c%s dist/VerbalSetup.exe)
-          MAC_HASH=$(sha256sum dist/Verbal.dmg | cut -d' ' -f1)
-          MAC_SIZE=$(stat -c%s dist/Verbal.dmg)
+          WIN_HASH=$(sha256sum "dist/${{ steps.files.outputs.win_file }}" | cut -d' ' -f1)
+          WIN_SIZE=$(stat -c%s "dist/${{ steps.files.outputs.win_file }}")
+          MAC_HASH=$(sha256sum "dist/${{ steps.files.outputs.mac_file }}" | cut -d' ' -f1)
+          MAC_SIZE=$(stat -c%s "dist/${{ steps.files.outputs.mac_file }}")
           echo "win_hash=$WIN_HASH" >> $GITHUB_OUTPUT
           echo "win_size=$WIN_SIZE" >> $GITHUB_OUTPUT
           echo "mac_hash=$MAC_HASH" >> $GITHUB_OUTPUT
           echo "mac_size=$MAC_SIZE" >> $GITHUB_OUTPUT
 
-      - name: Install upload dependencies
-        run: pip install tuspy supabase
-
-      - name: Upload Windows build to Supabase Storage
+      # Release must exist BEFORE we register app_versions rows pointing at it —
+      # a row that outraces its own asset is exactly the "row with no file"
+      # failure mode this whole ticket is about.
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          files: |
+            dist/${{ steps.files.outputs.mac_file }}
+            dist/${{ steps.files.outputs.win_file }}
         env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
-        run: |
-          python3 << 'PYEOF'
-          import os
-          from tusclient import client as tus_client
-
-          supabase_url = os.environ['SUPABASE_URL']
-          service_key = os.environ['SUPABASE_SERVICE_KEY']
-          project_id = supabase_url.replace('https://', '').replace('.supabase.co', '')
-          tus_url = f'https://{project_id}.storage.supabase.co/storage/v1/upload/resumable'
-
-          file_path = 'dist/VerbalSetup.exe'
-          storage_path = f'win/Verbal-${{ steps.version.outputs.version }}-setup.exe'
-          file_size = os.path.getsize(file_path)
-          print(f'Uploading {file_path} ({file_size} bytes) via TUS...')
-
-          tus = tus_client.TusClient(
-              tus_url,
-              headers={
-                  'Authorization': f'Bearer {service_key}',
-                  'x-upsert': 'true',
-              },
-          )
-          with open(file_path, 'rb') as f:
-              uploader = tus.uploader(
-                  file_stream=f,
-                  chunk_size=6 * 1024 * 1024,
-                  metadata={
-                      'bucketName': 'releases',
-                      'objectName': storage_path,
-                      'contentType': 'application/octet-stream',
-                  },
-              )
-              uploader.upload()
-          print('Windows upload done')
-          PYEOF
-
-      - name: Upload Mac build to Supabase Storage
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
-        run: |
-          python3 << 'PYEOF'
-          import os
-          from tusclient import client as tus_client
-
-          supabase_url = os.environ['SUPABASE_URL']
-          service_key = os.environ['SUPABASE_SERVICE_KEY']
-          project_id = supabase_url.replace('https://', '').replace('.supabase.co', '')
-          tus_url = f'https://{project_id}.storage.supabase.co/storage/v1/upload/resumable'
-
-          file_path = 'dist/Verbal.dmg'
-          storage_path = f'mac/Verbal-${{ steps.version.outputs.version }}.dmg'
-          file_size = os.path.getsize(file_path)
-          print(f'Uploading {file_path} ({file_size} bytes) via TUS...')
-
-          tus = tus_client.TusClient(
-              tus_url,
-              headers={
-                  'Authorization': f'Bearer {service_key}',
-                  'x-upsert': 'true',
-              },
-          )
-          with open(file_path, 'rb') as f:
-              uploader = tus.uploader(
-                  file_stream=f,
-                  chunk_size=6 * 1024 * 1024,
-                  metadata={
-                      'bucketName': 'releases',
-                      'objectName': storage_path,
-                      'contentType': 'application/octet-stream',
-                  },
-              )
-              uploader.upload()
-          print('Mac upload done')
-          PYEOF
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Register Windows version
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: |
-          curl -s -X POST \
+          curl -sf -X POST \
             "${SUPABASE_URL}/rest/v1/app_versions" \
             -H "apikey: ${SUPABASE_SERVICE_KEY}" \
             -H "Authorization: Bearer ${SUPABASE_SERVICE_KEY}" \
@@ -259,7 +317,7 @@ jobs:
               \"platform\": \"win\",
               \"version\": \"${{ steps.version.outputs.version }}\",
               \"changelog\": \"Release ${{ steps.version.outputs.version }}\",
-              \"file_url\": \"${SUPABASE_URL}/storage/v1/object/public/releases/win/Verbal-${{ steps.version.outputs.version }}-setup.exe\",
+              \"file_url\": \"https://github.com/${{ github.repository }}/releases/download/v${{ steps.version.outputs.version }}/${{ steps.files.outputs.win_file }}\",
               \"file_hash\": \"${{ steps.hashes.outputs.win_hash }}\",
               \"file_size\": ${{ steps.hashes.outputs.win_size }}
             }"
@@ -269,7 +327,7 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: |
-          curl -s -X POST \
+          curl -sf -X POST \
             "${SUPABASE_URL}/rest/v1/app_versions" \
             -H "apikey: ${SUPABASE_SERVICE_KEY}" \
             -H "Authorization: Bearer ${SUPABASE_SERVICE_KEY}" \
@@ -279,17 +337,29 @@ jobs:
               \"platform\": \"mac\",
               \"version\": \"${{ steps.version.outputs.version }}\",
               \"changelog\": \"Release ${{ steps.version.outputs.version }}\",
-              \"file_url\": \"${SUPABASE_URL}/storage/v1/object/public/releases/mac/Verbal-${{ steps.version.outputs.version }}.dmg\",
+              \"file_url\": \"https://github.com/${{ github.repository }}/releases/download/v${{ steps.version.outputs.version }}/${{ steps.files.outputs.mac_file }}\",
               \"file_hash\": \"${{ steps.hashes.outputs.mac_hash }}\",
               \"file_size\": ${{ steps.hashes.outputs.mac_size }}
             }"
 
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: v${{ steps.version.outputs.version }}
-          files: |
-            dist/VerbalSetup.exe
-            dist/Verbal.dmg
+      # The whole point of IDI-224: a broken pipeline must be LOUD, not
+      # discovered by a user clicking "Download" and getting a 503. Hits the
+      # same public endpoint the website button does, for both platforms, and
+      # fails the job unless the fresh release is actually fetchable.
+      - name: Smoke test — verify the public download endpoint sees this release
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          fail=0
+          for platform in mac win; do
+            # Cache-bust: the endpoint sets a 60s Cache-Control, and this must see THIS release, not a response cached moments before it existed.
+            resp=$(curl -sf "${SUPABASE_URL}/functions/v1/download?platform=${platform}&json=1&_cb=${GITHUB_RUN_ID}-${platform}") || { echo "::error::download endpoint unreachable for ${platform}"; fail=1; continue; }
+            echo "${platform}: ${resp}"
+            ok=$(echo "$resp" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('ok') and d.get('reachable') and d.get('version')=='${VERSION}')")
+            if [ "$ok" != "True" ]; then
+              echo "::error::${platform} smoke test failed — expected ok+reachable version ${VERSION}, got: ${resp}"
+              fail=1
+            fi
+          done
+          exit $fail

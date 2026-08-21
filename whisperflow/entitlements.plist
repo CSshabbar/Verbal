@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Hardened Runtime, required for notarization (IDI-224). Verbal is NOT
+	     App-Sandboxed (Accessibility injection, ScreenCaptureKit, and hotkey
+	     capture are incompatible with the sandbox), so only the plain
+	     com.apple.security.cs.* exceptions below apply — sandbox-only keys
+	     like device.audio-input would be silent no-ops here. -->
+
+	<!-- PyInstaller's bootloader unpacks a pure-Python interpreter at
+	     runtime; without this, the hardened runtime kills it as unsigned
+	     executable memory before app/main.py ever runs. -->
+	<key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+	<true/>
+
+	<!-- ctranslate2/numpy/scipy ship compiled .so/.dylib files that are not
+	     signed by this Team ID. Hardened runtime otherwise refuses to dlopen
+	     them, which fails only at first Whisper-model load, not at launch. -->
+	<key>com.apple.security.cs.disable-library-validation</key>
+	<true/>
+
+	<!-- PyInstaller's onedir bootloader sets DYLD_LIBRARY_PATH at relaunch. -->
+	<key>com.apple.security.cs.allow-dyld-environment-variables</key>
+	<true/>
+
+	<key>com.apple.security.cs.allow-jit</key>
+	<true/>
+</dict>
+</plist>
