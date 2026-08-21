@@ -16,7 +16,13 @@ import PIL
 import websocket
 import httpx
 import pystray
-import pywebview
+# The PyPI package is named "pywebview" but its importable top-level module
+# is "webview" — confirmed by inspecting the actual wheel contents (it ships
+# a `webview/` dir, not `pywebview/`). `import pywebview` here was always
+# wrong and made every Windows build fail at spec-parse time with
+# ModuleNotFoundError; the real app code (win_main.py) already correctly
+# uses `import webview` and was never affected by this (2026-08-22).
+import webview
 import scipy
 
 fw_dir = os.path.dirname(faster_whisper.__file__)
@@ -57,7 +63,7 @@ a = Analysis(
         (os.path.dirname(websocket.__file__), 'websocket'),
         (os.path.dirname(httpx.__file__), 'httpx'),
         (os.path.dirname(pystray.__file__), 'pystray'),
-        (os.path.dirname(pywebview.__file__), 'pywebview'),
+        (os.path.dirname(webview.__file__), 'webview'),
         (os.path.dirname(scipy.__file__), 'scipy'),
     ],
     hiddenimports=[
@@ -85,6 +91,11 @@ a = Analysis(
         # Lazily imported (function-level) by win_main.py/shared_dashboard.py —
         # declared explicitly per Rule #30 rather than relying on bytecode scan.
         'app.insights',
+        # IDI-216 team layer. Imported at FUNCTION level from dictionary.py,
+        # shared_dashboard.py and auth.py, so bytecode analysis won't reach it —
+        # a frozen build without it would fail only when a user opens Team or
+        # dictates while in one (Hard Rule #30).
+        'app.organizations',
         # NOTE: app.theme is intentionally NOT listed — it imports AppKit/Foundation
         # at module load time and is macOS-only. Adding it would break the frozen
         # Windows exe. Windows uses fonts_css.py (base64 @font-face) instead.
