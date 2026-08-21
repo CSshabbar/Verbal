@@ -83,6 +83,14 @@ jobs:
           python -m pip install --upgrade pip
           pip install "setuptools<75" wheel
           pip install -r whisperflow/requirements.txt
+          # requirements.txt deliberately treats these as "install separately" —
+          # but whisperflow.spec imports both unconditionally just to locate
+          # their bundled data dirs, so PyInstaller fails at spec-parse time
+          # without them. This was missing here (while the Windows job below
+          # already had it) and is why every mac build since at least v1.0.5
+          # failed before ever reaching codesigning — confirmed by reproducing
+          # the exact CI steps locally (2026-08-22).
+          pip install faster-whisper
           pip install pyinstaller
 
       - name: Generate icons
