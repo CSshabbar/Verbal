@@ -16,16 +16,37 @@ jobs:
         with:
           python-version: "3.11"
 
+      # IDI-224 debugging aid: this is the cheap, mac-free way to iterate on
+      # Windows dependency/build issues — build-release.yml runs mac+windows
+      # together (~20 min of mac notarization per attempt), this workflow is
+      # windows-only and workflow_dispatch-only. Same fail-fast pattern as
+      # build-release.yml's build-windows job: PowerShell doesn't abort a
+      # multi-line run block on a failing command, so a real pip failure was
+      # getting silently swallowed and only surfacing 3 steps later out of
+      # PyInstaller as a confusing ModuleNotFoundError (2026-08-22).
       - name: Install dependencies
         shell: pwsh
         run: |
-          python -m pip install --upgrade pip
-          pip install "setuptools<75" wheel
+          function exe { & $args[0] @($args[1..($args.Length-1)]); if ($LASTEXITCODE -ne 0) { throw "$($args[0]) failed with exit code $LASTEXITCODE" } }
+          exe python -m pip install --upgrade pip
+          exe pip install "setuptools<75" wheel
           # Windows-pinned deps required by verbal-win.spec's hidden imports.
-          pip install -r whisperflow/requirements-win.txt
+          exe pip install -r whisperflow/requirements-win.txt
           # Offline transcription engine (see requirements note; spec imports it).
-          pip install faster-whisper
-          pip install pyinstaller numpy
+          exe pip install faster-whisper
+          exe pip install pyinstaller numpy
+
+      # Directly reproduces the exact statement verbal-win.spec fails on,
+      # BEFORE PyInstaller's own error handling gets a chance to obscure it —
+      # `pip install` succeeding doesn't guarantee `import pywebview` actually
+      # works (a missing runtime DLL for its pythonnet/.NET bridge would pass
+      # pip install and still fail here).
+      - name: Verify pywebview actually imports
+        shell: pwsh
+        run: |
+          pip show pywebview
+          pip show pythonnet
+          python -c "import pywebview; print('pywebview OK:', pywebview.__version__)"
 
       - name: Generate modern sounds
         shell: pwsh
