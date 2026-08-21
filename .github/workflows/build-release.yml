@@ -26,27 +26,51 @@ jobs:
         with:
           python-version: '3.11'
 
+      # $ErrorActionPreference = "Stop" is load-bearing on every multi-line
+      # pwsh block in this job. PowerShell (the default Windows runner shell)
+      # does NOT abort a script on a failing command the way bash -e does —
+      # it logs the error and keeps going, so the step's exit code is just
+      # whatever the LAST line returned. That's exactly how a real pywebview
+      # install failure went undetected for who-knows-how-many releases: it
+      # failed silently mid-`pip install -r requirements-win.txt`, the next
+      # line (`pip install faster-whisper`) succeeded on its own, "Install
+      # dependencies" reported green, and the real error only surfaced three
+      # steps later as a confusing ModuleNotFoundError out of PyInstaller
+      # (2026-08-22). Every run block below now fails fast and loud instead.
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install Pillow
+          $ErrorActionPreference = "Stop"
+          # $ErrorActionPreference alone governs PowerShell's own cmdlet
+          # errors, not necessarily a failing EXTERNAL process's exit code
+          # (pip.exe here) — that depends on the runner's exact pwsh version.
+          # Checking $LASTEXITCODE explicitly after each pip call is
+          # unambiguous regardless of version, which is what actually matters
+          # after being burned by a silently-swallowed pywebview install
+          # failure. exe() is a tiny helper so this isn't four copies of the
+          # same six lines below.
+          function exe { & $args[0] @($args[1..($args.Length-1)]); if ($LASTEXITCODE -ne 0) { throw "$($args[0]) failed with exit code $LASTEXITCODE" } }
+          exe python -m pip install --upgrade pip
+          exe pip install Pillow
           # Use the Windows-pinned deps (uiautomation, comtypes, soundcard,
           # winotify, scipy, etc.) that the frozen exe's hidden imports rely on.
-          pip install -r whisperflow/requirements-win.txt
+          exe pip install -r whisperflow/requirements-win.txt
           # Offline transcription engine — kept out of the requirements files per
           # the repo's "install separately" note, but the spec imports it.
-          pip install faster-whisper
-          pip install pyinstaller
+          exe pip install faster-whisper
+          exe pip install pyinstaller
 
       - name: Convert icon to ICO
         run: |
+          $ErrorActionPreference = "Stop"
           cd whisperflow
           python -c "from PIL import Image; img=Image.open('assets/icon.png'); img.save('assets/icon.ico', format='ICO', sizes=[(16,16),(32,32),(48,48),(64,64),(128,128),(256,256)])"
 
       - name: Build Windows EXE
         run: |
+          $ErrorActionPreference = "Stop"
           cd whisperflow
           pyinstaller verbal-win.spec --clean --noconfirm
+          if ($LASTEXITCODE -ne 0) { throw "pyinstaller failed with exit code $LASTEXITCODE" }
 
       # updater.py runs the release file with Inno Setup silent switches
       # (/SILENT /CLOSEAPPLICATIONS /SUPPRESSMSGBOXES /NORESTART), so the file we
@@ -56,8 +80,10 @@ jobs:
 
       - name: Build Windows installer
         run: |
+          $ErrorActionPreference = "Stop"
           cd whisperflow
           & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" verbal-setup.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC.exe failed with exit code $LASTEXITCODE" }
 
       # Publish the Inno installer as the Windows release artifact. (Verbal.exe is
       # bundled inside it; we no longer ship the bare exe as the update payload.)
