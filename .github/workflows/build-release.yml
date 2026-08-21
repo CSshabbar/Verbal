@@ -48,16 +48,23 @@ jobs:
           # after being burned by a silently-swallowed pywebview install
           # failure. exe() is a tiny helper so this isn't four copies of the
           # same six lines below.
+          # `python -m X` pins every command to the exact interpreter
+          # actions/setup-python configured — a bare `pip`/`pyinstaller` can
+          # resolve to a DIFFERENT Python on this runner's PATH than bare
+          # `python` does (windows-latest ships several), which is exactly
+          # what caused `pip show pywebview` to succeed while
+          # `python -c "import pywebview"` failed with ModuleNotFoundError,
+          # confirmed live via build-windows-exe.yml (2026-08-22).
           function exe { & $args[0] @($args[1..($args.Length-1)]); if ($LASTEXITCODE -ne 0) { throw "$($args[0]) failed with exit code $LASTEXITCODE" } }
           exe python -m pip install --upgrade pip
-          exe pip install Pillow
+          exe python -m pip install Pillow
           # Use the Windows-pinned deps (uiautomation, comtypes, soundcard,
           # winotify, scipy, etc.) that the frozen exe's hidden imports rely on.
-          exe pip install -r whisperflow/requirements-win.txt
+          exe python -m pip install -r whisperflow/requirements-win.txt
           # Offline transcription engine — kept out of the requirements files per
           # the repo's "install separately" note, but the spec imports it.
-          exe pip install faster-whisper
-          exe pip install pyinstaller
+          exe python -m pip install faster-whisper
+          exe python -m pip install pyinstaller
 
       - name: Convert icon to ICO
         run: |
@@ -69,7 +76,7 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           cd whisperflow
-          pyinstaller verbal-win.spec --clean --noconfirm
+          python -m PyInstaller verbal-win.spec --clean --noconfirm
           if ($LASTEXITCODE -ne 0) { throw "pyinstaller failed with exit code $LASTEXITCODE" }
 
       # updater.py runs the release file with Inno Setup silent switches

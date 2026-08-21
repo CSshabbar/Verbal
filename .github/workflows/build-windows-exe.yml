@@ -24,28 +24,34 @@ jobs:
       # multi-line run block on a failing command, so a real pip failure was
       # getting silently swallowed and only surfacing 3 steps later out of
       # PyInstaller as a confusing ModuleNotFoundError (2026-08-22).
+      # `pip show pywebview` succeeded while `python -c "import pywebview"`
+      # failed with ModuleNotFoundError (confirmed live, 2026-08-22) — that
+      # combination means bare `pip`/`pyinstaller` were resolving to a
+      # DIFFERENT Python install than bare `python` on this runner's PATH
+      # (windows-latest ships several). `python -m X` pins every command to
+      # the exact interpreter actions/setup-python configured, so packages
+      # installed and packages imported/bundled can never diverge again.
       - name: Install dependencies
         shell: pwsh
         run: |
           function exe { & $args[0] @($args[1..($args.Length-1)]); if ($LASTEXITCODE -ne 0) { throw "$($args[0]) failed with exit code $LASTEXITCODE" } }
           exe python -m pip install --upgrade pip
-          exe pip install "setuptools<75" wheel
+          exe python -m pip install "setuptools<75" wheel
           # Windows-pinned deps required by verbal-win.spec's hidden imports.
-          exe pip install -r whisperflow/requirements-win.txt
+          exe python -m pip install -r whisperflow/requirements-win.txt
           # Offline transcription engine (see requirements note; spec imports it).
-          exe pip install faster-whisper
-          exe pip install pyinstaller numpy
+          exe python -m pip install faster-whisper
+          exe python -m pip install pyinstaller numpy
 
       # Directly reproduces the exact statement verbal-win.spec fails on,
       # BEFORE PyInstaller's own error handling gets a chance to obscure it —
       # `pip install` succeeding doesn't guarantee `import pywebview` actually
-      # works (a missing runtime DLL for its pythonnet/.NET bridge would pass
-      # pip install and still fail here).
+      # works under the SAME interpreter PyInstaller will run under.
       - name: Verify pywebview actually imports
         shell: pwsh
         run: |
-          pip show pywebview
-          pip show pythonnet
+          python -m pip show pywebview
+          python -m pip show pythonnet
           python -c "import pywebview; print('pywebview OK:', pywebview.__version__)"
 
       - name: Generate modern sounds
@@ -58,7 +64,7 @@ jobs:
         shell: pwsh
         run: |
           cd whisperflow
-          pyinstaller verbal-win.spec --clean --noconfirm
+          python -m PyInstaller verbal-win.spec --clean --noconfirm
 
       - name: Install Inno Setup
         shell: pwsh
