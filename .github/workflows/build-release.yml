@@ -218,14 +218,33 @@ jobs:
           echo "$APPLE_API_KEY_P8" | base64 -D -o "$KEY_PATH"
           NOTARY_AUTH=(--key "$KEY_PATH" --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER_ID")
 
-          SUBMIT_JSON=$(xcrun notarytool submit dist/Verbal.dmg "${NOTARY_AUTH[@]}" --wait --output-format json)
+          # Submit and wait are deliberately SEPARATE calls. `submit --wait`
+          # bundles the (one-shot) DMG upload with a long-lived poll loop into
+          # one command — a transient network blip on the runner during that
+          # multi-minute wait (seen live: NSURLErrorDomain -1009, "Internet
+          # connection appears offline", 2026-08-22) kills the whole thing and
+          # would force a wasteful re-upload on retry. Submitting once and
+          # retrying only the `wait` means a network hiccup just costs a
+          # 30s pause, not the whole submission.
+          SUBMIT_JSON=$(xcrun notarytool submit dist/Verbal.dmg "${NOTARY_AUTH[@]}" --output-format json)
           echo "$SUBMIT_JSON"
-          STATUS=$(echo "$SUBMIT_JSON" | python3 -c "import json,sys; print(json.load(sys.stdin)['status'])")
           SUBMISSION_ID=$(echo "$SUBMIT_JSON" | python3 -c "import json,sys; print(json.load(sys.stdin)['id'])")
+          echo "Submission ID: $SUBMISSION_ID"
+
+          STATUS=""
+          for attempt in 1 2 3 4 5; do
+            if WAIT_JSON=$(xcrun notarytool wait "$SUBMISSION_ID" "${NOTARY_AUTH[@]}" --output-format json); then
+              echo "$WAIT_JSON"
+              STATUS=$(echo "$WAIT_JSON" | python3 -c "import json,sys; print(json.load(sys.stdin)['status'])")
+              break
+            fi
+            echo "::warning::notarytool wait attempt ${attempt} failed (likely a transient network blip) — retrying in 30s"
+            sleep 30
+          done
 
           if [ "$STATUS" != "Accepted" ]; then
-            echo "::error::Notarization ${STATUS} — fetching Apple's rejection log"
-            xcrun notarytool log "$SUBMISSION_ID" "${NOTARY_AUTH[@]}"
+            echo "::error::Notarization ${STATUS:-never completed after retries} — fetching Apple's rejection log"
+            xcrun notarytool log "$SUBMISSION_ID" "${NOTARY_AUTH[@]}" || true
             rm -f "$KEY_PATH"
             exit 1
           fi
