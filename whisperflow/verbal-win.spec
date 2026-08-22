@@ -51,12 +51,28 @@ a = Analysis(
         ('app/assets/fonts', 'app/assets/fonts'),
         (fw_dir, 'faster_whisper'),
         (ct2_dir, 'ctranslate2'),
-        # Include all dependencies
-        (os.path.dirname(sounddevice.__file__), 'sounddevice'),
-        (os.path.dirname(soundfile.__file__), 'soundfile'),
+        # sounddevice.py / soundfile.py are bare single-file modules sitting
+        # directly in site-packages (not package folders) — os.path.dirname()
+        # of either one's __file__ resolves to the WHOLE site-packages
+        # directory, not a per-package folder. That would have silently
+        # duplicated every installed dependency (numpy/scipy/ctranslate2
+        # included) into these two datas entries, likely enough extra
+        # gigabytes to risk a disk-space or timeout failure on the runner —
+        # found by inspecting __file__ paths directly rather than waiting for
+        # that to surface as its own confusing failure (2026-08-22). Both
+        # libraries actually only need their own native-binary sidecar
+        # package (`import _sounddevice_data` / `import _soundfile_data` —
+        # confirmed by reading their source), so bundle exactly that.
+        (os.path.join(os.path.dirname(sounddevice.__file__), '_sounddevice_data'), '_sounddevice_data'),
+        (os.path.join(os.path.dirname(soundfile.__file__), '_soundfile_data'), '_soundfile_data'),
         (os.path.dirname(numpy.__file__), 'numpy'),
         (os.path.dirname(groq.__file__), 'groq'),
-        (os.path.dirname(google.__file__), 'google'),
+        # `google` is a PEP 420 namespace package (no single __init__.py, so
+        # __file__ is None — confirmed live: TypeError, "expected str, bytes
+        # or os.PathLike object, not NoneType", 2026-08-22). Go through the
+        # concrete `google.generativeai` submodule instead and step up two
+        # directories to reach the namespace folder that actually holds it.
+        (os.path.dirname(os.path.dirname(google.generativeai.__file__)), 'google'),
         (os.path.dirname(pyperclip.__file__), 'pyperclip'),
         (os.path.dirname(pyautogui.__file__), 'pyautogui'),
         (os.path.dirname(PIL.__file__), 'PIL'),
@@ -150,7 +166,6 @@ a = Analysis(
         'websocket',
         'httpx',
         'pystray',
-        'pywebview',
         'scipy',
         'scipy.signal',
         'scipy.fftpack',
