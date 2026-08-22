@@ -55,7 +55,10 @@ jobs:
         run: |
           python -m pip show pywebview
           python -m pip show pythonnet
-          python -c "import webview; print('webview OK:', webview.__version__)"
+          # webview doesn't expose __version__ (confirmed live: AttributeError
+          # here, 2026-08-22) — importing successfully is the actual thing
+          # this step checks, not printing a version string.
+          python -c "import webview; print('webview import OK')"
 
       - name: Generate modern sounds
         shell: pwsh
