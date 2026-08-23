@@ -71,6 +71,7 @@ jobs:
         run: |
           cd whisperflow
           python -m PyInstaller verbal-win.spec --clean --noconfirm
+          if ($LASTEXITCODE -ne 0) { throw "pyinstaller failed with exit code $LASTEXITCODE" }
 
       - name: Install Inno Setup
         shell: pwsh
@@ -82,7 +83,12 @@ jobs:
         shell: pwsh
         run: |
           cd whisperflow
-          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" verbal-setup.iss
+          # verbal-setup.iss's AppVersion must be passed explicitly — see
+          # build-release.yml's Windows job for why (2026-08-23).
+          $VERSION = (Select-String -Path 'app\config.py' -Pattern '^APP_VERSION\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
+          if (-not $VERSION) { throw "Could not read APP_VERSION from app/config.py" }
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "/DMyAppVersion=$VERSION" verbal-setup.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC.exe failed with exit code $LASTEXITCODE" }
 
       - name: Upload Windows EXE
         uses: actions/upload-artifact@v4

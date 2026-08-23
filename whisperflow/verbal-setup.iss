@@ -2,12 +2,25 @@
 ; Builds a silent-install capable .exe that auto-updates the app
 
 #define MyAppName "Verbal"
-#define MyAppVersion "1.0.10"
+; MyAppVersion is passed in from CI via `ISCC.exe /DMyAppVersion=X.Y.Z` (kept
+; in sync with config.APP_VERSION, same source of truth the release pipeline
+; already enforces — see build-release.yml's "Tag must match config.APP_VERSION"
+; check). #ifndef guards the local/manual-build case where no /D is passed.
+#ifndef MyAppVersion
+  #define MyAppVersion "0.0.0-dev"
+#endif
 #define MyAppPublisher "Verbal"
 #define MyAppExeName "Verbal.exe"
 
 [Setup]
-AppId={{E2A1B8C3-4D5E-6F7G-8H9I-0J1K2L3M4N5O}
+; This GUID is the installer's permanent identity — Windows uses it to
+; recognize "this is an upgrade of the same app" across versions. It must
+; NEVER change again once set. The previous value here was a placeholder
+; that was never actually filled in with a real GUID (it contained the
+; letters G-O, which aren't valid hex — Inno Setup would reject it outright).
+; This is a genuinely random, freshly generated GUID (2026-08-23), not a
+; template value, and must stay exactly this from now on.
+AppId={{0F0305B3-E5F2-4102-9D1F-54542A135659}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}

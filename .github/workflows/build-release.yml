@@ -89,7 +89,14 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           cd whisperflow
-          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" verbal-setup.iss
+          # verbal-setup.iss hardcoded MyAppVersion="1.0.10" forever — every
+          # installer's "Programs and Features" entry claimed to be 1.0.10
+          # regardless of the actual build. Pass the real version explicitly
+          # so it can never drift from config.APP_VERSION again (2026-08-23).
+          $VERSION = (Select-String -Path 'app\config.py' -Pattern '^APP_VERSION\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
+          if (-not $VERSION) { throw "Could not read APP_VERSION from app/config.py" }
+          Write-Host "Building installer for version $VERSION"
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "/DMyAppVersion=$VERSION" verbal-setup.iss
           if ($LASTEXITCODE -ne 0) { throw "ISCC.exe failed with exit code $LASTEXITCODE" }
 
       # Publish the Inno installer as the Windows release artifact. (Verbal.exe is
