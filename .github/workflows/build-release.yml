@@ -425,13 +425,23 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # `on_conflict=platform,version` is load-bearing, not decoration. Without
+      # it, PostgREST's upsert targets the PRIMARY KEY (id — always new on an
+      # INSERT) rather than the UNIQUE(platform,version) constraint, so a
+      # second registration of the SAME version (e.g. re-running this workflow
+      # to fix a bad artifact without bumping the version) hits a real 409
+      # conflict instead of updating the existing row. `curl -f` reports that
+      # as a bare "exit code 22" with no visible body, which is exactly what
+      # happened re-releasing v1.0.14 to ship a DMG fix (2026-08-24) — every
+      # prior release happened to dodge this because it always used a brand
+      # new version number.
       - name: Register Windows version
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: |
           curl -sf -X POST \
-            "${SUPABASE_URL}/rest/v1/app_versions" \
+            "${SUPABASE_URL}/rest/v1/app_versions?on_conflict=platform,version" \
             -H "apikey: ${SUPABASE_SERVICE_KEY}" \
             -H "Authorization: Bearer ${SUPABASE_SERVICE_KEY}" \
             -H "Content-Type: application/json" \
@@ -451,7 +461,7 @@ jobs:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: |
           curl -sf -X POST \
-            "${SUPABASE_URL}/rest/v1/app_versions" \
+            "${SUPABASE_URL}/rest/v1/app_versions?on_conflict=platform,version" \
             -H "apikey: ${SUPABASE_SERVICE_KEY}" \
             -H "Authorization: Bearer ${SUPABASE_SERVICE_KEY}" \
             -H "Content-Type: application/json" \
