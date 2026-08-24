@@ -218,7 +218,18 @@ jobs:
       - name: Create DMG
         run: |
           cd whisperflow
-          hdiutil create -volname "Flume" -srcfolder dist/Flume.app -ov dist/Flume.dmg
+          # The DMG used to contain ONLY Flume.app — opening it just showed the
+          # bare app icon with nothing to drag it onto, unlike every other mac
+          # app's DMG (Chrome, Slack, etc. all show the app + an Applications
+          # shortcut side by side). Building from a staging folder that also
+          # has an /Applications symlink fixes that with zero extra tooling —
+          # Finder renders a symlink to a folder as that folder's normal icon.
+          STAGING=dist/dmg_staging
+          rm -rf "$STAGING"
+          mkdir -p "$STAGING"
+          cp -R dist/Flume.app "$STAGING/"
+          ln -s /Applications "$STAGING/Applications"
+          hdiutil create -volname "Flume" -srcfolder "$STAGING" -ov dist/Flume.dmg
           codesign --force --sign "$MACOS_IDENTITY" dist/Flume.dmg
 
       # Notarization is what actually satisfies Gatekeeper on someone else's

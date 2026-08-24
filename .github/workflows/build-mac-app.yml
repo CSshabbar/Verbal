@@ -93,7 +93,14 @@ jobs:
       - name: Create DMG
         run: |
           cd whisperflow
-          hdiutil create -volname "Flume" -srcfolder dist/Flume.app -ov dist/Flume.dmg
+          # See build-release.yml's build-mac job for why: bare-app-only DMGs
+          # give the user nothing to drag the app onto.
+          STAGING=dist/dmg_staging
+          rm -rf "$STAGING"
+          mkdir -p "$STAGING"
+          cp -R dist/Flume.app "$STAGING/"
+          ln -s /Applications "$STAGING/Applications"
+          hdiutil create -volname "Flume" -srcfolder "$STAGING" -ov dist/Flume.dmg
           codesign --force --sign "$MACOS_IDENTITY" dist/Flume.dmg
 
       - name: Notarize and staple
