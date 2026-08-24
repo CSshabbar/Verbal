@@ -1079,10 +1079,34 @@ delta, fail-closed paths). Both spec files declare `app.insights` in `hiddenimpo
   (15 checks driving the real `_handle_event` with fake events). TOGGLE mode is unchanged.
 - **Onboarding:** dashboard JS flow; `DashboardApi.complete_onboarding` sets `config['onboarded']`. Mobile:
   `OnboardingScreen` (3 slides) + AsyncStorage `flume_onboarded`.
-- **Updater** (`updater.py`): polls Supabase `app_versions` per platform, downloads to temp with sha256
-  verify, installs (`.dmg`/silent `.exe`) then exits. Binaries in `releases` bucket.
+- **Updater** (`updater.py`): polls Supabase `app_versions_latest` per platform, downloads to temp with
+  sha256 verify, installs (`.dmg`/silent `.exe`) then exits. Binaries are GitHub Release assets, not
+  Supabase Storage (IDI-224, 2026-08 — see `05-conventions.md` #50).
+  **Persistent "update available" UI (2026-08-23):** a one-shot alert used to be the only signal, so
+  dismissing it lost the update until the next periodic check happened to re-alert. Now a small
+  terracotta badge dot composites onto the menu-bar icon (mac, `main.py::_badged_icon_path` — rendered
+  as a non-template image since NSStatusItem template images are flattened to one solid tint and can't
+  show a distinct badge color) / tray icon (Windows, `win_main.py::_create_icon_image(badge=True)`) the
+  moment a newer version is found, plus a persistent "Update available (vX.Y.Z)" menu row — both survive
+  a "Later" dismissal for the rest of the session (gated by a per-version seen-dialog flag, not a
+  blanket suppression) and only clear once a still-newer version supersedes them or the app relaunches
+  post-update. Windows' `auto_update=True` mode deliberately skips the badge/menu entirely — a silent
+  unattended update has no "declined" state for a badge to represent.
 - **Permissions** (`permissions.py`): accessibility / microphone / system-audio / notifications status +
   request, surfaced via `DashboardApi.get_permissions/request_permission`.
+  **Mic permission is now actually requested on the path a real user takes (2026-08-23).** Previously
+  `request_microphone()` (mac) / the Windows Settings deep-link were only reachable from a
+  Settings/Permissions screen nobody visits on first install — the hotkey record-start path just opened
+  the mic directly and failed silently if TCC hadn't granted access yet, which is why Flume never showed
+  a permission pop-up the way apps like Zoom do. Mac's `_on_record_start` now calls
+  `_ensure_mic_permission()` first (checks/requests, caches a `'granted'` result forever so the hot path
+  stays fast, and shows a one-time `rumps.alert` with a Settings deep-link if denied). Windows has no
+  programmatic request API at all (access is gated entirely by Settings > Privacy > Microphone with no
+  OS prompt ever appearing for a blocked desktop app), so its fix is detection instead: a failed mic open
+  now shows a one-time native toast (winotify, with a `ms-settings:privacy-microphone` action) via
+  `win_main.py::_notify_mic_permission_blocked`, gated by `config['mic_permission_notified']` (same
+  anti-nag shape as `autolearn_declined`, Rule #9) and cleared automatically the next time the mic opens
+  successfully so a later regression is reported again.
 - **Sounds** (`sounds.py`): `afplay` system AIFFs — `play_start`(Tink), `play_stop`(Pop), `play_done`(Glass),
   `play_added`(Hero, the auto-learn confirm chime).
 

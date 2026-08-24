@@ -1358,6 +1358,41 @@
     something that resolves itself quickly (a toast, an animation); for a state with no time bound (paused
     can last indefinitely), tie the reveal to the USER'S ATTENTION (hover) instead, or it reads as stuck.
 
+59. **The product is branded "Flume" everywhere user-facing (renamed from "Verbal", 2026-08-23) — but
+    every internal identity string stays "Verbal"/`com.verbal.app`, deliberately.** App bundle/executable
+    name, window/dialog titles, the installer name, tray/menu text, and dashboard copy all say "Flume"
+    now. Left UNCHANGED on purpose: macOS `bundle_identifier='com.verbal.app'` (`whisperflow.spec`), the
+    mobile `bundleIdentifier`/`package`/URL `scheme` (all `com.verbal.app`/`verbal` in `app.json`), the
+    Windows installer's AppId GUID (`verbal-setup.iss` — see #50's sibling note there), and the Windows
+    single-instance mutex name (`win_main.py`, `"VerbalSingletonMutex_v1"`). Every one of those is a
+    machine identity, not a display string: changing any of them would make macOS/Windows treat an
+    existing install as a brand-new, never-authorized app — losing every already-granted TCC permission
+    (mic/accessibility/screen-recording), breaking the updater's "is this a newer version of the same
+    app" detection, and orphaning old Windows Programs-and-Features entries. That migration is a real
+    product decision, not a rename, and stays out of scope until deliberately planned.
+
+60. **`assets/icon.png` is a 44x44 flat black mic silhouette for the menu-bar/tray glyph
+    (`generate_menu_icon()` in `scripts/generate_icons.py`) — it is NEVER the real app icon, and every
+    icon-conversion step must read `assets/app_icon.png` instead.** Both the mac (`sips`+`iconutil` →
+    `.icns`) and Windows (PIL → `.ico`) build pipelines read `assets/icon.png` for years, which is why
+    the Dock/Finder/DMG/installer icon looked blank/wrong the whole time (found and fixed 2026-08-23,
+    alongside the Flume rebrand) — a 44px monochrome glyph scaled up to a 512px app icon just looks like
+    a smudge. The real app icon is generated separately: `whisperflow/scripts/generate_app_icon_flume.py`
+    → `assets/app_icon.png` (1024x1024, terracotta background + Geist Bold "F"); every `sips`/PIL
+    conversion step in `.github/workflows/build-release.yml`, `build-mac-app.yml`,
+    `build-windows-exe.yml`, and the inline conversion in `verbal-win.spec` must point at that file, not
+    `assets/icon.png`. **A second, separate icon-conversion step existed and had to be fixed too** —
+    `build-release.yml`'s Windows job has its own standalone "Convert icon to ICO" CI step that runs
+    BEFORE PyInstaller and pre-creates `assets/icon.ico`; `verbal-win.spec`'s own inline conversion only
+    fires `if not os.path.exists(icon_ico)`, so fixing only the spec file left that earlier CI step
+    silently overriding the fix back to the wrong source — check for every place an icon gets converted,
+    not just the first one you find. Mobile had the analogous bug: `verbal-mobile/assets/icon.png` was
+    literally Expo's unreplaced default placeholder template (grid lines + guide circles) the whole time;
+    fixed via `verbal-mobile/scripts/generate_app_icons.py`, which also correctly follows Expo's actual
+    per-platform convention (a full-bleed opaque square for iOS/`icon`, vs. a transparent-background
+    foreground-only layer sized to the ~66% safe zone for Android's `adaptiveIcon.foregroundImage`) rather
+    than reusing one image for both, which was the mobile app's second bug.
+
 ## Design system (Flume)
 
 Single source: desktop `app/theme.py` + `app/fonts_css.py`; mobile `flume-ui/theme/`. Also
