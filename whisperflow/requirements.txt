@@ -46,3 +46,16 @@ pywebview>=5.3
 # qr_svg builds the SVG by hand from get_matrix(), so no pil/png extras.
 qrcode>=8.2
 pyobjc-framework-WebKit; sys_platform == 'darwin'
+# permissions.py's check_microphone()/request_microphone() `from AVFoundation
+# import ...` has silently failed since this file was written — never listed
+# here, never installed in ANY environment that's actually been checked (not
+# even ad hoc in a dev venv, unlike the scipy/qrcode instances of this same
+# bug class). request_microphone() catches the resulting ImportError with a
+# bare `except Exception: pass` and falls through to just opening System
+# Settings directly — which is EXACTLY the reported symptom ("hotkey opens
+# the Microphone settings tab, but Flume isn't in the list"): the real
+# TCC-registering API call never actually ran, so macOS has no record of the
+# app ever asking. Confirmed live, 2026-08-25: `from AVFoundation import
+# AVCaptureDevice, AVMediaTypeAudio` raised ModuleNotFoundError before this;
+# works immediately once this line is installed.
+pyobjc-framework-AVFoundation; sys_platform == 'darwin'

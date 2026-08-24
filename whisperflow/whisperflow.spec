@@ -57,6 +57,13 @@ a = Analysis(
         'Quartz',
         'ScreenCaptureKit',
         'CoreMedia',
+        # permissions.py's mic check/request (`from AVFoundation import
+        # AVCaptureDevice, AVMediaTypeAudio`) is a lazy, function-level import
+        # PyInstaller's static analysis doesn't reliably trace — explicit here
+        # for the same reason app.organizations/app.insights are (Rule #30),
+        # and because this exact class of bug (present locally, missing from
+        # the frozen build) already happened once for scipy this same day.
+        'AVFoundation',
         'app.flume_web_dashboard',
         # app.flume_popover is gone (IDI-183 — the menubar is a real NSMenu now).
         # flume_popover_html stays: flume_dashboard_html imports _mark_data_uri

@@ -45,7 +45,12 @@ def check_microphone():
     try:
         from AVFoundation import AVCaptureDevice, AVMediaTypeAudio
         st = AVCaptureDevice.authorizationStatusForMediaType_(AVMediaTypeAudio)
-        return {3: "granted", 2: "denied", 1: "denied"}.get(st, "unknown")  # 0 = not determined
+        # 0 was falling through to the "unknown" default instead of its own
+        # label — harmless today (main.py's _ensure_mic_permission treats
+        # 'not_determined' and 'unknown' identically, both firing the
+        # request), but worth naming correctly rather than relying on two
+        # call sites' handling happening to coincide.
+        return {0: "not_determined", 3: "granted", 2: "denied", 1: "denied"}.get(st, "unknown")
     except Exception:
         return "unknown"
 
