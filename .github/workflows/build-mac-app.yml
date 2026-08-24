@@ -91,6 +91,7 @@ jobs:
           codesign --force --sign "$MACOS_IDENTITY" dist/Verbal.dmg
 
       - name: Notarize and staple
+        timeout-minutes: 40
         env:
           APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
@@ -101,20 +102,42 @@ jobs:
           echo "$APPLE_API_KEY_P8" | base64 -D -o "$KEY_PATH"
           NOTARY_AUTH=(--key "$KEY_PATH" --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER_ID")
 
-          SUBMIT_JSON=$(xcrun notarytool submit dist/Verbal.dmg "${NOTARY_AUTH[@]}" --output-format json)
+          # See build-release.yml's build-mac job for why this exists: a
+          # retried `notarytool wait` hung silently for the full 6-hour
+          # GitHub Actions default job timeout instead of erroring (confirmed
+          # live, 2026-08-23). macOS doesn't ship GNU coreutils' `timeout` by
+          # default, so this is a small manual implementation.
+          run_with_timeout() {
+            local secs=$1; shift
+            "$@" &
+            local pid=$!
+            ( sleep "$secs" && kill -TERM "$pid" 2>/dev/null ) &
+            local watcher=$!
+            wait "$pid" 2>/dev/null
+            local rc=$?
+            kill "$watcher" 2>/dev/null
+            wait "$watcher" 2>/dev/null
+            return $rc
+          }
+
+          if ! SUBMIT_JSON=$(run_with_timeout 300 xcrun notarytool submit dist/Verbal.dmg "${NOTARY_AUTH[@]}" --output-format json); then
+            echo "::error::notarytool submit timed out (5 min) or failed"
+            rm -f "$KEY_PATH"
+            exit 1
+          fi
           echo "$SUBMIT_JSON"
           SUBMISSION_ID=$(echo "$SUBMIT_JSON" | python3 -c "import json,sys; print(json.load(sys.stdin)['id'])")
           echo "Submission ID: $SUBMISSION_ID"
 
           STATUS=""
           for attempt in 1 2 3 4 5; do
-            if WAIT_JSON=$(xcrun notarytool wait "$SUBMISSION_ID" "${NOTARY_AUTH[@]}" --output-format json); then
+            if WAIT_JSON=$(run_with_timeout 240 xcrun notarytool wait "$SUBMISSION_ID" "${NOTARY_AUTH[@]}" --output-format json); then
               echo "$WAIT_JSON"
               STATUS=$(echo "$WAIT_JSON" | python3 -c "import json,sys; print(json.load(sys.stdin)['status'])")
               break
             fi
-            echo "::warning::notarytool wait attempt ${attempt} failed (likely a transient network blip) — retrying in 30s"
-            sleep 30
+            echo "::warning::notarytool wait attempt ${attempt} timed out (4 min) or failed — retrying in 20s"
+            sleep 20
           done
 
           if [ "$STATUS" != "Accepted" ]; then
