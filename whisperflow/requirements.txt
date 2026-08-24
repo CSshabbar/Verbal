@@ -3,6 +3,29 @@ pynput>=1.7.6
 sounddevice>=0.4.6
 soundfile>=0.12.0
 numpy>=1.24.0
+# recorder.py does `from scipy import signal` unconditionally at module load —
+# a HARD dependency for every dictation, not optional. Missing here (only
+# requirements-win.txt had it) the same way qrcode was missing below: present
+# ad hoc on the dev Mac, so `pyinstaller` + local testing never caught it, but
+# a genuinely fresh `pip install -r requirements.txt` (a real CI runner, or
+# any other clean machine) has no scipy at all — the frozen app then crashes
+# immediately on launch with "ModuleNotFoundError: No module named 'scipy'"
+# before any of the app's own logging even initializes (confirmed live via
+# `log show`, 2026-08-24 — app.log stayed silent because the crash happens
+# before Python gets far enough to open it). No upper pin: unlike Windows
+# (Python 3.11, numpy 1.x pinned — see requirements-win.txt's note), mac's
+# numpy above is already an open range, so scipy stays open too for the same
+# reason.
+# Pinned, not open-ended: scipy 1.17.1 (whatever an unpinned install resolves
+# to today) has internal restructuring (scipy._external.array_api_compat)
+# that PyInstaller's bundled hook doesn't fully capture yet — the frozen app
+# built fine but crashed on launch with
+# "No module named 'scipy._external.array_api_compat.numpy.fft'"
+# (confirmed live, 2026-08-24, in a real frozen-build launch test, not just
+# `pip install` succeeding). 1.14.1 is the same version requirements-win.txt
+# already pins and has verified working frozen — use the same one here
+# instead of separately re-discovering PyInstaller compatibility per platform.
+scipy==1.14.1
 # faster-whisper is optional - only needed for offline transcription
 # Install separately if needed: pip install faster-whisper
 # Note: May have dependency conflicts on Python 3.14+
