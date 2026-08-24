@@ -19,6 +19,7 @@ import {
   PairDeviceScreen,
   DevicesScreen,
   SnippetsScreen,
+  TeamScreen,
   InsightsScreen,
   ModelsScreen,
   NotesListScreen,
@@ -210,6 +211,7 @@ function MenuNavigator() {
       <MenuStack.Screen name="Settings">
         {({ navigation }) => (
           <SettingsScreen
+            onBack={() => navigation.goBack()}
             onOpenDevices={() => navigation.navigate('Devices')}
             onOpenSnippets={() => navigation.navigate('Snippets')}
             onOpenModels={() => navigation.navigate('Models')}
@@ -219,6 +221,11 @@ function MenuNavigator() {
       <MenuStack.Screen name="Dictionary">
         {({ navigation }) => (
           <DictionaryScreen onBack={() => navigation.goBack()} />
+        )}
+      </MenuStack.Screen>
+      <MenuStack.Screen name="Team">
+        {({ navigation }) => (
+          <TeamScreen onBack={() => navigation.goBack()} />
         )}
       </MenuStack.Screen>
       <MenuStack.Screen name="Snippets">
@@ -392,9 +399,17 @@ function MainWithPanel({ navigation }: { navigation: any }) {
     setPanelOpen(false);
     switch (dest) {
       case 'canvas':     navigation.navigate('Menu', { screen: 'Canvas' }); break;
-      case 'meetings':   navigation.navigate('Main', { screen: 'NotesTab', params: { screen: 'MeetingList' } }); break;
+      // `initial: false` is load-bearing. Without it, a nested navigate seeds the
+      // Notes stack with MeetingList as its ONLY route (core/useNavigationBuilder
+      // getStateFromParams: `params?.initial !== false`), so MeetingList's Back
+      // has nothing to pop, bubbles to the tab navigator, and its default
+      // backBehavior:'firstRoute' throws you to Home — leaving NotesTab parked on
+      // MeetingList with NotesList unreachable. With it, NotesList sits underneath
+      // and Back means "up to the notes list", same as entering via Notes → Meetings.
+      case 'meetings':   navigation.navigate('Main', { screen: 'NotesTab', params: { screen: 'MeetingList', initial: false } }); break;
       case 'dictionary': navigation.navigate('Menu', { screen: 'Dictionary' }); break;
       case 'snippets':   navigation.navigate('Menu', { screen: 'Snippets' }); break;
+      case 'team':       navigation.navigate('Menu', { screen: 'Team' }); break;
       case 'devices':    navigation.navigate('Menu', { screen: 'Devices' }); break;
       case 'settings':   navigation.navigate('Menu', { screen: 'Settings' }); break;
     }

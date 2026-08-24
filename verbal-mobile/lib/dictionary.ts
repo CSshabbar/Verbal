@@ -53,12 +53,18 @@ function normalizeSnippet(s: any): Snippet | null {
     expansion,
     label: String(s?.label ?? '').trim(),
     used: Number.isFinite(usedNum) && usedNum > 0 ? Math.floor(usedNum) : 0,
-    createdAt: String(s?.createdAt ?? '').trim() || now,
-    updatedAt: String(s?.updatedAt ?? '').trim() || now,
+    // Accept BOTH casings. This module writes camelCase, but the desktop
+    // (`whisperflow/app/dictionary.py`) writes snake_case into the very same
+    // jsonb column — on the personal `dictionary` row and, since IDI-216, on the
+    // shared `organization_dictionary` row too. Reading only camelCase silently
+    // regenerated every desktop-authored snippet's timestamps on each load,
+    // which is what the snippet merge compares on.
+    createdAt: String(s?.createdAt ?? s?.created_at ?? '').trim() || now,
+    updatedAt: String(s?.updatedAt ?? s?.updated_at ?? '').trim() || now,
   };
 }
 
-function normalize(d: any): Dictionary {
+export function normalize(d: any): Dictionary {
   const vocabulary = Array.isArray(d?.vocabulary)
     ? d.vocabulary.map((w: any) => String(w).trim()).filter(Boolean)
     : [];
@@ -71,6 +77,71 @@ function normalize(d: any): Dictionary {
     ? (d.snippets.map(normalizeSnippet).filter(Boolean) as Snippet[])
     : [];
   return { vocabulary, replacements, snippets };
+}
+
+// ── team dictionary (IDI-216 Phase 4) ────────────────────────────────────────
+// A user in a team dictates with personal ∪ team. The merge rule (IDI-216 open
+// decision #3): the UNION is what applies — nothing is dropped from either set —
+// and only a genuine same-key collision needs a tiebreak, where PERSONAL wins:
+// identical vocabulary word (case-insensitive), identical replacement `from`,
+// identical snippet `trigger`. Personal-wins is the non-destructive choice —
+// joining a team can never silently change what your existing snippet trigger
+// expands to, or how a word you taught Flume yourself is spelled.
+//
+// ORDERING is not incidental. Team entries go FIRST and personal entries LAST so
+// that buildPrompt's tail-keeping (Whisper conditions on the last ~224 tokens and
+// trimming happens from the front) still protects the terms this user taught it
+// most recently. Backwards, joining a team would quietly evict your own
+// vocabulary from the bias prompt.
+//
+// Mirrors whisperflow/app/dictionary.py::merge_with_team / effective().
+
+function unionFirstWins<T>(team: T[], personal: T[], key: (x: T) => string): T[] {
+  const mine = new Set(personal.map(key));
+  return [...team.filter((t) => !mine.has(key(t))), ...personal];
+}
+
+/** PURE — no storage, no network — so the rule is testable on its own. */
+export function mergeWithTeam(personal: Dictionary, team: Dictionary): Dictionary {
+  const p = normalize(personal);
+  const t = normalize(team);
+  return {
+    vocabulary: unionFirstWins(t.vocabulary, p.vocabulary, (w) => w.trim().toLowerCase()),
+    replacements: unionFirstWins(t.replacements, p.replacements, (r) => r.from.trim().toLowerCase()),
+    snippets: unionFirstWins(t.snippets ?? [], p.snippets ?? [], (s) => s.trigger.trim().toLowerCase()),
+  };
+}
+
+/**
+ * What dictation applies: the user's dictionary merged with their team's.
+ *
+ * `organizations` is reached through a DYNAMIC import because organizations.ts
+ * statically imports this module — the same cycle-avoidance rule as
+ * groq.ts → keyboardBridge (conventions #28). Fails closed to the personal
+ * dictionary: a team lookup must never be able to break dictation (Hard Rule #1).
+ */
+export async function getEffectiveDictionary(): Promise<Dictionary> {
+  const personal = await getDictionary();
+  try {
+    const { teamDictionary } = await import('./organizations');
+    const team = await teamDictionary();
+    if (!team.vocabulary.length && !team.replacements.length && !(team.snippets ?? []).length) {
+      return personal;
+    }
+    return mergeWithTeam(personal, team);
+  } catch {
+    return personal;
+  }
+}
+
+/** Snippets that should EXPAND — personal ∪ team. The Snippets screen uses
+ *  getSnippets() (personal only); this is the apply-time set. */
+export async function getEffectiveSnippets(): Promise<Snippet[]> {
+  try {
+    return (await getEffectiveDictionary()).snippets ?? [];
+  } catch {
+    return await getSnippets();
+  }
 }
 
 export async function getDictionary(): Promise<Dictionary> {

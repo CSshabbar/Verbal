@@ -362,6 +362,9 @@ def cleanup_with_groq(text: str, api_key: str, context: str = "") -> str | None:
             temperature=0.0,   # deterministic — no creative additions
             max_tokens=2048,
             timeout=10,
+            reasoning_effort="low",   # mechanical reformatting, not a reasoning task —
+                                      # gpt-oss defaults to "medium" and silently burns
+                                      # hundreds of hidden thinking tokens otherwise
         )
         result = response.choices[0].message.content.strip()
         return result if result else None
@@ -474,6 +477,10 @@ def build_chain_spec(config: dict, active_app: str | None = None) -> dict | None
             "user": build_dictation_user_message("{{TEXT}}", context),
             "model": SPEED_CLEANUP_MODEL if fast else "openai/gpt-oss-120b",
             "replace": rules,
+            # Both models here are gpt-oss (reasoning models) — see the
+            # SPEED_CLEANUP_MODEL comment above process_text() for the measured cost
+            # of leaving this at Groq's "medium" default on a mechanical task.
+            "reasoning_effort": "low",
         }
     except Exception as e:
         logger.debug("chain spec unavailable — formatting locally: %s", e)
@@ -550,7 +557,8 @@ def process_text(text: str, config: dict, active_app: str | None = None,
     try:
         from app.groq_proxy import chat_via_proxy
         start = time.time()
-        result = chat_via_proxy(messages, config, model=_model, max_tokens=2048, timeout=10)
+        result = chat_via_proxy(messages, config, model=_model, max_tokens=2048, timeout=10,
+                                reasoning_effort="low")
         if result:
             logger.info(f"{'speed_mode' if fast else 'Groq LLaMA'} formatting (proxy) "
                         f"took {time.time()-start:.2f}s [{_model}, "

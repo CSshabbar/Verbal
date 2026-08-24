@@ -13,6 +13,7 @@ import { getSpokenLanguage, setSpokenLanguage, SPOKEN_LANGUAGES } from '../../li
 import { colors, radius, type, pressedStyle } from '../theme';
 import { useAuth } from '../hooks/useAuth';
 import { useSyncEnabled, setSyncEnabled } from '../hooks/useSyncEnabled';
+import { useOrganization } from '../hooks/useOrganization';
 import {
   getDeviceName, setDeviceName,
   getUserId, setUserId, setPairedUserId, getStoredUserId, clearAccountData,
@@ -23,15 +24,26 @@ import {
   getTransformEnabled, setTransformEnabled,
 } from '../../lib/storage';
 
-type Props = { onOpenDevices: () => void; onOpenSnippets: () => void;
-               onOpenModels: () => void };
+type Props = { onBack: () => void; onOpenDevices: () => void;
+               onOpenSnippets: () => void; onOpenModels: () => void };
 
 /**
  * Settings — keys & preferences, in the Flume visual language.
  * Reads/writes the local settings store directly (lib/storage).
  */
-export const SettingsScreen: React.FC<Props> = ({ onOpenDevices, onOpenSnippets, onOpenModels }) => {
+export const SettingsScreen: React.FC<Props> = ({ onBack, onOpenDevices, onOpenSnippets, onOpenModels }) => {
   const insets = useSafeAreaInsets();
+  const team = useOrganization();
+
+  const leaveTeam = async () => {
+    const ok = await confirm({
+      title: 'Leave this team?',
+      message: 'You keep your own dictionary and history; the shared ones stop applying.',
+      confirmLabel: 'Leave',
+      destructive: true,
+    });
+    if (ok) await team.leave();
+  };
   const { user, signOut, deleteAccount } = useAuth();
   const [deletingAccount, setDeletingAccount] = useState(false);
 
@@ -226,8 +238,29 @@ export const SettingsScreen: React.FC<Props> = ({ onOpenDevices, onOpenSnippets,
 
   return (
     <View style={[styles.root, { paddingTop: insets.top + 12 }]}>
-      <Text variant="titleSm" style={{ marginBottom: 2 }}>Settings</Text>
-      <Text variant="bodyXs" color={colors.textMuted}>Keys & preferences</Text>
+      {/* Settings is a leaf of the Menu modal stack, reached from the SidePanel.
+          It had NO back affordance — a swipe-down on the modal was the only way
+          out, which iPhone users have no reason to guess (and there is no
+          hardware back button to fall back on). Same chevron-back topBar every
+          other secondary screen uses. `onBack` is goBack(), which finds nothing
+          to pop inside this single-route stack and so bubbles to the root
+          navigator, dismissing the modal — the intended destination. */}
+      <View style={styles.topBar}>
+        <Pressable
+          onPress={onBack}
+          style={({ pressed }) => pressed && pressedStyle}
+          accessibilityRole="button"
+          accessibilityLabel="Back"
+          hitSlop={8}
+        >
+          <Ionicons name="chevron-back" size={24} color={colors.textSecondary} />
+        </Pressable>
+        <Text variant="titleSm">Settings</Text>
+        <View style={{ width: 24 }} />
+      </View>
+      <Text variant="bodyXs" color={colors.textMuted} style={{ textAlign: 'center' }}>
+        Keys & preferences
+      </Text>
 
       <ScrollView
         style={{ flex: 1 }}
@@ -243,6 +276,58 @@ export const SettingsScreen: React.FC<Props> = ({ onOpenDevices, onOpenSnippets,
             trailing={null}
           />
         </Section>
+
+        {/* Team privacy — the toggles used to live on the Team screen, which meant
+            "where do I turn that off?" had two answers. Rendered only when the user
+            is actually on a team; a privacy section about a team you are not in is
+            a section nobody needed. */}
+        {team.hasTeam && (
+          <Section label="TEAM PRIVACY">
+            <ListRow
+              icon="stats-chart-outline"
+              title="Let admins see my counts"
+              subtitle={`What ${team.org.name || 'your team'}'s admins can see about your dictation`}
+              trailing={
+                <Switch
+                  value={team.org.usage_consent}
+                  onValueChange={(v) => { void team.saveConsent(v, team.org.leaderboard_opt_in); }}
+                  trackColor={{ false: colors.surface3, true: colors.primary }}
+                  thumbColor="#fff"
+                />
+              }
+            />
+            <ListRow
+              icon="trophy-outline"
+              title="Show me on the ranking"
+              subtitle="Separate from the above, and off until you opt in"
+              trailing={
+                <Switch
+                  value={team.org.leaderboard_opt_in}
+                  onValueChange={(v) => { void team.saveConsent(true, v); }}
+                  trackColor={{ false: colors.surface3, true: colors.primary }}
+                  thumbColor="#fff"
+                />
+              }
+            />
+            <Card padding={14}>
+              <Text variant="bodyXs" color={colors.textMuted}>
+                What you dictate — the text, the audio, your notes — is never shared with your team,
+                whatever these are set to. Admins see counts, durations and the names of the apps you
+                dictate into — never what you said in them. Turning the first off hides all of it and
+                turns the second off too, and nobody else can turn either back on for you.
+              </Text>
+              {/* An owner genuinely cannot leave — org_remove_member returns
+                  cannot_remove_owner — so don't offer a button that always fails. */}
+              {team.isOwner ? (
+                <Text variant="bodyXs" color={colors.textMuted} style={{ marginTop: 10 }}>
+                  You own {team.org.name || 'this team'}. An owner cannot leave — hand it over first.
+                </Text>
+              ) : (
+                <Button label="Leave team" variant="ghost" onPress={leaveTeam} style={{ marginTop: 12 }} />
+              )}
+            </Card>
+          </Section>
+        )}
 
         {/* Voice — spoken language + snippets (spoken phrase → full text) */}
         <Section label="VOICE">
@@ -539,6 +624,10 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: colors.bgScreen,
     paddingHorizontal: 18,
+  },
+  topBar: {
+    flexDirection: 'row', alignItems: 'center',
+    justifyContent: 'space-between', marginBottom: 2,
   },
   snippetCard: {
     flexDirection: 'row', alignItems: 'center', gap: 14,

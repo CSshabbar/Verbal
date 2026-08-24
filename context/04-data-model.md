@@ -417,7 +417,8 @@ lockdown MER-30's security-advisor pass established, for the same reason.
   (`rawContent`, `audioSegments`, `conflict`, `conflictOf`).
 - **Latency flags** (`config.py::DEFAULT_CONFIG`, desktop-only, both **default `False`** so an existing
   install behaves exactly as before the 2026-08-14 latency pass; picked up by the `setdefault` backfill):
-  `speed_mode` (skip the LLM under 8 words + lean prompt + `llama-3.1-8b-instant`) and `chained_mode`
+  `speed_mode` (skip the LLM under 8 words + lean prompt + `SPEED_CLEANUP_MODEL`, `openai/gpt-oss-20b` as
+  of 2026-08-18 — `llama-3.1-8b-instant` before that, retired by Groq) and `chained_mode`
   (transcribe+format in ONE round trip via `groq-proxy` v10). Independent and composable — see
   03 §Models pane. Read through `config.feature_flag()`, never `config.get()` directly. Both are listed in
   `config.PIPELINE_FLAGS` and are the ONLY store for the Settings pipeline radio, which derives its
@@ -425,7 +426,9 @@ lockdown MER-30's security-advisor pass established, for the same reason.
 - **`chain_*` multipart fields** (desktop → `groq-proxy`, only when `chained_mode` is on):
   `chain="1"`, `chain_model`, `chain_system`, `chain_user` (contains `{{TEXT}}`, the transcript slot),
   `chain_replace` (JSON `[{from,to}]`, the dictionary rules — applied server-side BEFORE formatting; capped
-  at 500 rules server-side). All are deleted from the form before it is forwarded to Groq, which rejects
+  at 500 rules server-side), `chain_reasoning_effort` (2026-08-22, optional — `"low"` for every current
+  caller, since both gpt-oss tiers default to `"medium"` and burn hidden reasoning tokens on this
+  mechanical task otherwise). All are deleted from the form before it is forwarded to Groq, which rejects
   unknown fields. Response gains `chain:{ok, formatted, model, fmt_ms, asr_ms, usage, error?}`.
 - **`asr_provider` / `asr_alt_model`** (desktop → `groq-proxy`, only when `asr_model` picks a non-Groq
   model): `asr_provider` is `eleven` | `assembly`, `asr_alt_model` the provider's own model id

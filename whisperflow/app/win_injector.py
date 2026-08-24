@@ -30,6 +30,8 @@ import time
 
 import pyperclip
 
+from app import paste_guard
+
 logger = logging.getLogger("verbal.injector")
 
 user32 = ctypes.windll.user32
@@ -293,16 +295,48 @@ def _press_return():
     _send_inputs([up])
 
 
-def _paste_chunk(chunk: str):
+def _press_ctrl_v() -> bool:
+    """Send Ctrl+V via SendInput, reporting whether Windows actually took it.
+
+    Replaces `pyautogui.hotkey("ctrl", "v")`, which throws away SendInput's
+    return value. That mattered: under UIPI, Windows silently refuses synthetic
+    input aimed at a window owned by a higher-integrity process (anything
+    started as administrator) and inserts **0** events. Discarding the count
+    turned that refusal into a paste that reported success and did nothing —
+    the Windows twin of the macOS missing-Accessibility bug (app/paste_guard.py).
+
+    The key-ups are sent unconditionally, even when the downs were refused, so a
+    partial delivery can never leave a phantom Ctrl held down in the session.
+    """
+    VK_CONTROL, VK_V = 0x11, 0x56
+
+    def _vk(vk, up=False):
+        inp = _INPUT()
+        inp.type = INPUT_KEYBOARD
+        inp.ki = _KEYBDINPUT(wVk=vk, wScan=0,
+                             dwFlags=(KEYEVENTF_KEYUP if up else 0),
+                             time=0, dwExtraInfo=0)
+        return inp
+
+    sent = _send_inputs([_vk(VK_CONTROL), _vk(VK_V)])
+    time.sleep(0.02)
+    sent += _send_inputs([_vk(VK_V, True), _vk(VK_CONTROL, True)])
+    if sent != 4:
+        logger.warning("SendInput delivered %s/4 Ctrl+V events (UIPI?)", sent)
+        return False
+    return True
+
+
+def _paste_chunk(chunk: str) -> bool:
     """Clipboard-paste a plain text chunk (fast and reliable for arbitrary
-    text). Ctrl+V is layout-independent."""
+    text). Ctrl+V is layout-independent. Returns False if Windows refused it."""
     if not chunk:
-        return
+        return True
     pyperclip.copy(chunk)
     time.sleep(0.04)
-    import pyautogui
-    pyautogui.hotkey("ctrl", "v")
+    ok = _press_ctrl_v()
     time.sleep(0.06)
+    return ok
 
 
 # ── Mention injection (parity with injector._inject_with_mentions) ───────
@@ -320,7 +354,11 @@ def _inject_with_mentions(text: str) -> bool:
     mentions    = _MENTION_RE.findall(text) # N '@name.ext' tokens
 
     for i, chunk in enumerate(plain_parts):
-        _paste_chunk(chunk)
+        if not _paste_chunk(chunk):
+            # The window is refusing synthetic input — typing the mention
+            # queries into it would be equally futile, so stop and report.
+            paste_guard.report_blocked(paste_guard.REASON_UIPI, _previous_app_name)
+            return False
         if i < len(mentions):
             query = mentions[i][1:]         # strip leading '@'
             _type_unicode("@")              # open mention picker (layout-safe)
@@ -364,8 +402,11 @@ def inject_text(text: str, allow_mentions: bool = False) -> bool:
         pyperclip.copy(text)
         _clip_ms = _await_clipboard(text) * 1000
         restore_focused_app()          # now returns once focus has actually landed
-        import pyautogui
-        pyautogui.hotkey("ctrl", "v")
+        if not _press_ctrl_v():
+            # Text is on the clipboard, so nothing is lost — tell the user why
+            # it didn't land and offer the elevated relaunch that fixes it.
+            paste_guard.report_blocked(paste_guard.REASON_UIPI, _previous_app_name)
+            return False
         logger.info("Pasted: '%s...' (clipboard %.0fms, was a flat 50ms + 150ms)",
                     text[:40], _clip_ms)
         return True

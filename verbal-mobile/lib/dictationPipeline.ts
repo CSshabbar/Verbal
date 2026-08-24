@@ -30,7 +30,7 @@
 // transcription means (mobile marks the entry 'failed' and keeps the audio).
 
 import { transcribeAudio, formatText } from './groq';
-import { getSnippets, applySnippets } from './dictionary';
+import { getEffectiveSnippets, applySnippets } from './dictionary';
 
 export type DictationOptions = {
   /** Run the LLM cleanup pass (formatText). Default false — the shape the two
@@ -79,7 +79,9 @@ export async function runDictation(
 
   if (expandSnippets) {
     try {
-      const snippets = await getSnippets();
+      // Personal ∪ team (IDI-216 Phase 4) — a shared snippet expands for every
+      // member, while a personal trigger of the same name still wins.
+      const snippets = await getEffectiveSnippets();
       if (snippets.length) text = applySnippets(text, snippets);
     } catch {
       // fail closed — keep the text as-is

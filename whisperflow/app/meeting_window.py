@@ -23,6 +23,7 @@ process (05-conventions Rule #18 lesson).
 """
 import json
 import logging
+import time
 
 from AppKit import (
     NSPanel, NSScreen, NSBackingStoreBuffered, NSApplication, NSColor,
@@ -44,7 +45,9 @@ logger = logging.getLogger("verbal.meetingwin")
 
 NSNonactivatingPanelMask = 1 << 7
 
-BAR_W, BAR_H = 500, 54   # must comfortably fit: dot·title·wave·timer·3 buttons
+BAR_W, BAR_H = 560, 54   # must comfortably fit: dot·title·wave·timer·PAUSED tag·4 buttons —
+# the previous 500 only accounted for 3 buttons and never the PAUSED tag, so the
+# widest real state (paused, with cancel added) clipped the last button (Rule #56).
 WIN_W, WIN_H = 880, 620
 MIN_W, MIN_H = 700, 480
 
@@ -109,6 +112,7 @@ class MeetingWindow:
         self._webview = None
         self._bridge = None
         self._delegate = None
+        self._ui_delegate = None
         self._api = None
         self._layout = "expanded"       # 'bar' | 'expanded'
         # Events emitted before the page's JS is ready are BUFFERED and flushed
@@ -121,6 +125,13 @@ class MeetingWindow:
             self._target_device_id = app.config.get("sync_target_device_id", "__all__") or "__all__"
         except Exception:
             self._target_device_id = "__all__"
+        # Hover→reveal for the short bar (title/waveform/quick-actions), same
+        # recipe as overlay.py: a global mouse monitor, because CSS :hover never
+        # fires for a background, non-activating panel (05-conventions Rule #40).
+        # Only runs while the layout is 'bar' — see set_layout()/_on_resign_key().
+        self._hover_mon = None
+        self._hover_t = 0.0
+        self._hover_inside = False
 
     # ── helpers ───────────────────────────────────────────────────────────────
     def _recording_active(self):
@@ -171,7 +182,7 @@ class MeetingWindow:
             WKWebView, WKWebViewConfiguration, WKUserContentController,
             WKUserScript,
         )
-        from app.flume_web_dashboard import _Bridge, _SHIM
+        from app.flume_web_dashboard import _Bridge, _SHIM, _ui_delegate_class
         from app.shared_dashboard import DashboardApi
 
         self._api = DashboardApi(self)
@@ -199,6 +210,16 @@ class MeetingWindow:
         cr = self._window.contentView().bounds()
         self._webview = _webview_class().alloc().initWithFrame_configuration_(cr, config)
         self._webview.setAutoresizingMask_(0x02 | 0x10)
+        # Without a WKUIDelegate, WebKit resolves confirm() with the default —
+        # FALSE, silently, with nothing drawn — which would make cancelMeeting()'s
+        # confirm() gate a permanent no-op (same bug as flume_web_dashboard.py's
+        # _ui_delegate_class() docstring; retained on self, since UIDelegate is
+        # a weak reference).
+        try:
+            self._ui_delegate = _ui_delegate_class().alloc().init()
+            self._webview.setUIDelegate_(self._ui_delegate)
+        except Exception as e:
+            logger.error("could not install JS dialog delegate: %s", e)
         for _ in (1,):
             try:
                 self._webview.setValue_forKey_(False, "drawsBackground")
@@ -284,6 +305,10 @@ class MeetingWindow:
                 if layout == self._layout and self._window.isVisible():
                     return
                 self._layout = layout
+                if layout == "bar":
+                    self._start_hover_monitor()
+                else:
+                    self._stop_hover_monitor()
                 # tell the page first so the content cross-fades during the morph
                 self._eval_now("if(window.VerbalMeeting)window.VerbalMeeting('layout', %s);"
                                % json.dumps({"layout": layout}))
@@ -332,6 +357,68 @@ class MeetingWindow:
     def collapse(self):
         if self._recording_active():
             self.set_layout("bar")
+
+    # ── hover → reveal (short bar) ───────────────────────────────────────────
+    def _start_hover_monitor(self):
+        """Watch the cursor globally while the bar is up — see the note by
+        `_hover_mon`'s declaration for why this can't just be CSS `:hover`."""
+        if self._hover_mon is not None:
+            return
+        try:
+            from AppKit import NSEvent
+            NSEventMaskMouseMoved = 1 << 5
+            NSEventMaskLeftMouseDragged = 1 << 7
+
+            def _handler(ev):
+                try:
+                    self._on_global_mouse()
+                except Exception:
+                    pass      # a hover glitch must never touch the meeting
+
+            self._hover_mon = NSEvent.addGlobalMonitorForEventsMatchingMask_handler_(
+                NSEventMaskMouseMoved | NSEventMaskLeftMouseDragged, _handler)
+        except Exception as e:
+            logger.debug("bar hover monitor unavailable (%s); bar stays collapsed", e)
+
+    def _stop_hover_monitor(self):
+        mon, self._hover_mon = self._hover_mon, None
+        if mon is None:
+            return
+        try:
+            from AppKit import NSEvent
+            NSEvent.removeMonitor_(mon)
+        except Exception:
+            pass
+        self._hover_inside = False
+
+    def _on_global_mouse(self):
+        if self._layout != "bar" or not (self._window and self._webview):
+            return
+        from AppKit import NSEvent
+        loc = NSEvent.mouseLocation()
+        f = self._window.frame()
+        x = loc.x - f.origin.x
+        # AppKit screen coords are bottom-up; CSS is top-down.
+        y = (f.origin.y + f.size.height) - loc.y
+        inside = (0 <= x <= f.size.width) and (0 <= y <= f.size.height)
+        if not inside:
+            if self._hover_inside:
+                self._hover_inside = False
+                self._hover_js(-1, -1)
+            return
+        now = time.time()
+        if self._hover_inside and (now - self._hover_t) < 0.04:
+            return
+        self._hover_t = now
+        self._hover_inside = True
+        self._hover_js(x, y)
+
+    def _hover_js(self, x, y):
+        js = "if(window.VerbalMeetingHover)window.VerbalMeetingHover(%.0f,%.0f);" % (x, y)
+        try:
+            self._webview.evaluateJavaScript_completionHandler_(js, None)
+        except Exception as e:
+            logger.debug("bar hover eval failed: %s", e)
 
     def _on_resign_key(self):
         """Recording + expanded + lost focus → become the ambient bar."""
@@ -424,6 +511,7 @@ class MeetingWindow:
             return False
 
     def hide(self):
+        self._stop_hover_monitor()
         try:
             if self._window:
                 self._window.orderOut_(None)

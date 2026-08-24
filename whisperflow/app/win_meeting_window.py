@@ -26,7 +26,9 @@ from app.shared_dashboard import DashboardApi
 
 logger = logging.getLogger("verbal.meetingwin.win")
 
-BAR_W, BAR_H = 500, 54
+BAR_W, BAR_H = 560, 54   # keep in sync with app/meeting_window.py's BAR_W — both
+# host the same meeting_html(), whose `.barOpt` cap needs this width to avoid
+# clipping the trailing button (05-conventions.md Rule #56).
 WIN_W, WIN_H = 880, 620
 MIN_W, MIN_H = 700, 480
 WIN_TITLE = "Flume Meeting"

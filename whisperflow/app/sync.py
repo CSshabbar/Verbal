@@ -156,7 +156,7 @@ class SyncClient:
 
     def push(self, text: str, target_device_id: str | None = None,
              audio_url: str = "", status: str = "", entry_id: str = "",
-             duration_ms: int = 0):
+             duration_ms: int = 0, app_name: str = ""):
         """Insert transcription via REST. If target_device_id set, only that device receives it.
 
         IDI-172: `audio_url` / `status` are part of the push shape now — the row
@@ -165,17 +165,22 @@ class SyncClient:
         even though both columns already existed.
         2026-08-16: `duration_ms` rides along too — it feeds the account-wide
         WPM on the Insights pages (mobile has no other duration source for
-        rows dictated elsewhere)."""
+        rows dictated elsewhere).
+        2026-08-21: so does `app_name` — the app the text was injected into. It is
+        the only way a TEAM can see where its people dictate; Insights' per-app
+        chart reads local `stats_daily`, which never leaves the device. Must be the
+        pre-injection `target_app` (conventions #37): a post-paste read names
+        whatever got focus back, not where the words went."""
         logger.info(f"Sync push request: target={target_device_id}")
         threading.Thread(
             target=self._push_rest,
-            args=(text, target_device_id, audio_url, status, entry_id, duration_ms),
+            args=(text, target_device_id, audio_url, status, entry_id, duration_ms, app_name),
             daemon=True,
         ).start()
 
     def _push_rest(self, text: str, target_device_id: str | None = None,
                    audio_url: str = "", status: str = "", entry_id: str = "",
-                   duration_ms: int = 0):
+                   duration_ms: int = 0, app_name: str = ""):
         from app.auth import auth_header
         try:
             payload = {
@@ -194,6 +199,11 @@ class SyncClient:
                 logger.debug("Broadcasting to all devices")
             # Only send what we actually have — never overwrite a column with
             # an empty value just because this call didn't know it.
+            # Trimmed and capped: this lands in a shared org aggregate, and a
+            # window title masquerading as an app name would both skew the chart
+            # and leak document names into it.
+            if app_name and str(app_name).strip():
+                payload["app"] = str(app_name).strip()[:64]
             if audio_url:
                 payload["audio_url"] = audio_url
             if status:

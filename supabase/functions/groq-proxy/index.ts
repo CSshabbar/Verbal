@@ -117,26 +117,50 @@ const WINDOW_SECONDS = 60;
 // lib/groq.ts / the keyboard extensions).
 const TOKEN_ESTIMATE: Record<string, number> = { transcription: 500, chat: 2048, chained: 2548 };
 
+// IDI-216 Phase 3: team entitlements ride the limiter's EXISTING round trip.
+// `groq_check_rate_limit_org` is `groq_check_rate_limit` plus a `p_user_id` the
+// function uses to look up the caller's org plan and RAISE their tier — so a team
+// seat gets a bigger budget without the hot path paying for a second DB call
+// (Hard Rule #15's whole reason for being DB-backed in the first place). If that
+// RPC is missing — i.e. supabase_organizations.sql hasn't been applied yet — we
+// fall back to the original function, so this deploy is safe in either order.
+let ORG_RPC_AVAILABLE = true;
+
 // Returns null if the request is allowed, or the seconds the caller should wait
 // before retrying. Never throws — any internal error (network, DB, bad response)
 // fails OPEN (returns null) so the limiter itself can never take the pipeline down.
-async function checkRateLimit(identity: string, kindGuess: "transcription" | "chat" | "chained"): Promise<number | null> {
+async function checkRateLimit(
+  identity: string,
+  kindGuess: "transcription" | "chat" | "chained",
+  userId: string | null = null,
+): Promise<number | null> {
   try {
     const url = Deno.env.get("SUPABASE_URL");
     const svc = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
     if (!url || !svc) return null;
-    const resp = await fetch(`${url}/rest/v1/rpc/groq_check_rate_limit`, {
+    const args: Record<string, unknown> = {
+      p_identity: identity,
+      p_window_seconds: WINDOW_SECONDS,
+      p_max_requests: RATE_LIMIT_PER_MINUTE,
+      p_token_estimate: TOKEN_ESTIMATE[kindGuess],
+      p_max_tokens: RATE_LIMIT_TOKENS_PER_MINUTE,
+    };
+    const useOrg = ORG_RPC_AVAILABLE && userId !== null;
+    const fn = useOrg ? "groq_check_rate_limit_org" : "groq_check_rate_limit";
+    if (useOrg) args.p_user_id = userId;
+
+    const resp = await fetch(`${url}/rest/v1/rpc/${fn}`, {
       method: "POST",
       headers: { apikey: svc, Authorization: `Bearer ${svc}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        p_identity: identity,
-        p_window_seconds: WINDOW_SECONDS,
-        p_max_requests: RATE_LIMIT_PER_MINUTE,
-        p_token_estimate: TOKEN_ESTIMATE[kindGuess],
-        p_max_tokens: RATE_LIMIT_TOKENS_PER_MINUTE,
-      }),
+      body: JSON.stringify(args),
     });
     if (!resp.ok) {
+      // 404 = the org RPC isn't deployed. Latch it off and retry on the original
+      // so we don't pay a wasted round trip on every subsequent request.
+      if (useOrg && resp.status === 404) {
+        ORG_RPC_AVAILABLE = false;
+        return await checkRateLimit(identity, kindGuess, null);
+      }
       console.warn("groq-proxy rate limiter RPC error (failing open):", resp.status, await resp.text());
       return null;
     }
@@ -255,6 +279,7 @@ async function chainFormat(
   systemPrompt: string,
   userTemplate: string,
   replaceRules: Array<{ from: string; to: string }> = [],
+  reasoningEffort?: string,
 ): Promise<Record<string, unknown>> {
   const t0 = Date.now();
   try {
@@ -265,18 +290,26 @@ async function chainFormat(
     const userMsg = userTemplate.includes("{{TEXT}}")
       ? userTemplate.replace("{{TEXT}}", transcript)
       : `${userTemplate}\n\n${transcript}`;
+    // gpt-oss models default reasoning_effort to "medium" and silently burn hundreds
+    // of hidden thinking tokens on a purely mechanical formatting request — measured
+    // in ai_cleanup.py's SPEED_CLEANUP_MODEL comment as ~2x the latency and 8x the
+    // output tokens of the old (Groq-retired) llama instant tier. The client passes
+    // "low" for this task; only include the field when it does, so an omitted value
+    // still gets Groq's own default rather than us silently picking one here.
+    const body: Record<string, unknown> = {
+      model,
+      temperature: 0,
+      max_tokens: 2048,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userMsg },
+      ],
+    };
+    if (reasoningEffort) body.reasoning_effort = reasoningEffort;
     const r = await fetch(`${GROQ_BASE}/chat/completions`, {
       method: "POST",
       headers: { Authorization: `Bearer ${groqKey}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model,
-        temperature: 0,
-        max_tokens: 2048,
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: userMsg },
-        ],
-      }),
+      body: JSON.stringify(body),
     });
     const fmt_ms = Date.now() - t0;
     if (!r.ok) {
@@ -304,7 +337,7 @@ Deno.serve(async (req) => {
   // and identity only needs headers (never transcription/chat content itself,
   // which must never appear in the limiter per the analytics-exclusion rule).
   const { identity, userId } = identityFromReq(req);
-  const retryAfter = await checkRateLimit(identity, isMultipart ? "transcription" : "chat");
+  const retryAfter = await checkRateLimit(identity, isMultipart ? "transcription" : "chat", userId);
   if (retryAfter !== null) {
     return json(
       { error: { message: `Rate limit exceeded. Retry in ${retryAfter}s.` } },
@@ -327,6 +360,7 @@ Deno.serve(async (req) => {
       const chainModel = String(form.get("chain_model") ?? "openai/gpt-oss-20b");
       const chainSystem = String(form.get("chain_system") ?? "");
       const chainUser = String(form.get("chain_user") ?? "{{TEXT}}");
+      const chainReasoningEffort = String(form.get("chain_reasoning_effort") ?? "") || undefined;
       // Dictionary rules as JSON. Malformed -> no rules, never an error: losing a
       // name correction is bad, failing the dictation is worse.
       let chainReplace: Array<{ from: string; to: string }> = [];
@@ -344,7 +378,7 @@ Deno.serve(async (req) => {
       const asrProvider = String(form.get("asr_provider") ?? "groq");
       const asrAltModel = String(form.get("asr_alt_model") ?? "universal-2");
       for (const k of ["chain", "chain_model", "chain_system", "chain_user", "chain_replace",
-                       "asr_provider", "asr_alt_model"]) {
+                       "chain_reasoning_effort", "asr_provider", "asr_alt_model"]) {
         form.delete(k);
       }
 
@@ -377,6 +411,7 @@ Deno.serve(async (req) => {
         if (wantChain && chainSystem) {
           const chain = await chainFormat(
             groqKey, String(res.text).trim(), chainModel, chainSystem, chainUser, chainReplace,
+            chainReasoningEffort,
           );
           return json({ ...alt, chain: { ...chain, asr_ms } });
         }
@@ -417,7 +452,7 @@ Deno.serve(async (req) => {
         // unchained formatting see exactly the same input.
         const chain = await chainFormat(
           groqKey, String(asrJson.text ?? "").trim(), chainModel, chainSystem, chainUser,
-          chainReplace,
+          chainReplace, chainReasoningEffort,
         );
         logUsage(identity, userId, kind).catch(() => {});
         return json({ ...asrJson, chain: { ...chain, asr_ms } });

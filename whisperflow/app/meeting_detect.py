@@ -43,7 +43,28 @@ _BROWSERS = {
 }
 
 # A Google-Meet call code looks like abc-defg-hij.
-_MEET_CODE = re.compile(r"[a-z]{3}-[a-z]{4}-[a-z]{3}", re.I)
+#
+# The boundaries are load-bearing. Without them this matched any 3-4-3 letter run
+# INSIDE a longer hyphenated string, and since it was searched against EVERY
+# on-screen browser window title, an ordinary Chrome tab containing
+# "…axo-data-and…" was reported as a live Google Meet call — 7 "Take notes"
+# prompts in one evening with no meeting anywhere (2026-08-19, key
+# `gmeet:axo-data-and` in app.log). A real code is a standalone token, so reject a
+# neighbouring letter, digit or hyphen on either side.
+_MEET_CODE = re.compile(r"(?<![a-z0-9-])[a-z]{3}-[a-z]{4}-[a-z]{3}(?![a-z0-9-])", re.I)
+
+# "meet" as its own word. A bare code is WEAK evidence even when well-delimited —
+# three short hyphenated words are common in article titles and slugs — so it now
+# needs this corroboration. Google Meet always carries "Meet" in the tab title,
+# which is why requiring it costs no real detection.
+_MEET_WORD = re.compile(r"\bmeet\b", re.I)
+
+# "… — Google Meet" as the TRAILING site name, which is how a named call renders
+# ("Weekly standup - Google Meet") — a case the old code missed entirely, since it
+# has no call code and doesn't start with "Meet". Anchored to the end after a
+# separator so an article *about* Meet ("How to use Google Meet - YouTube", which
+# ends in the site's own name) is not mistaken for being in one.
+_MEET_SITE = re.compile(r"(?:^|[|\-–—]\s*)google meet\s*$", re.I)
 
 
 def _meet_in_browser(owner: str, title: str):
@@ -56,7 +77,12 @@ def _meet_in_browser(owner: str, title: str):
     # or the bare host. Guard the prefix with a code/host so a doc named "Meet ..."
     # doesn't trigger.
     m = _MEET_CODE.search(title)
-    if m or "meet.google.com" in low or re.match(r"\s*meet\s*[-–]\s+\S", low):
+    # Ordered by strength: the host itself is proof; a call code counts only when
+    # the title also says "Meet"; the "Meet - <name>" prefix stands on its own.
+    if ("meet.google.com" in low
+            or (m and _MEET_WORD.search(title))
+            or _MEET_SITE.search(title)
+            or re.match(r"\s*meet\s*[-–]\s+\S", low)):
         code = m.group(0).lower() if m else "meet"
         return (browser, f"gmeet:{code}")
     # Zoom in the browser
@@ -80,7 +106,11 @@ def _native_app(owner: str, title: str):
             return ("Teams", "teams")
         return None
     if "webex" in owner.lower():
-        if "meeting" in low or "webex" in low:
+        # `or "webex" in low` used to be here, which made EVERY Webex window a
+        # detected call — the owner check above already guarantees it's Webex, and
+        # its windows carry the product name whether or not you're in a call. The
+        # module's whole premise is "an in-call window, not just an open app".
+        if "meeting" in low:
             return ("Webex", "webex")
         return None
     if owner == "FaceTime" and "facetime" in low:

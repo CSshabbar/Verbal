@@ -60,6 +60,13 @@ _IC = {
     "dots":   '<circle cx="5" cy="12" r=".9"/><circle cx="12" cy="12" r=".9"/><circle cx="19" cy="12" r=".9"/>',
     # Insights: a dictation pulse.
     "pulse":  '<path d="M3 12h3.5l2.5-6 4 12 2.5-6H21"/>',
+    # Team (IDI-216): three figures — distinct from "meet", which is two.
+    "team":   '<circle cx="8.5" cy="8" r="3"/><path d="M2.5 19c.6-3 2.8-4.6 6-4.6s5.4 1.6 6 4.6"/><circle cx="17.5" cy="7.5" r="2.4"/><path d="M16.4 13.2c2.4.2 4.1 1.7 5.1 4.6"/>',
+    "arrow":  '<path d="M5 12h14"/><path d="m13 6 6 6-6 6"/>',
+    "mail":   '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/>',
+    # Used wherever the privacy contract is stated — the one place a padlock is
+    # the honest glyph rather than decoration.
+    "lock":   '<rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>',
 }
 
 
@@ -167,7 +174,11 @@ body{background:var(--bg);font-family:'Geist',-apple-system,system-ui,sans-serif
 .filters .filt.active{color:var(--tx);font-weight:600}
 .fcount{margin-left:auto;color:var(--sub);font:500 12px 'Geist'}
 .devlist{display:flex;flex-direction:column;gap:12px;padding:2px 10px}
-.devrow{display:flex;align-items:center;gap:10px;font:400 12.5px 'Geist';color:var(--tx)}.devrow.off{color:var(--mut)}
+.devrow{display:flex;align-items:center;gap:10px;font:400 12.5px 'Geist';color:var(--tx);cursor:pointer;
+  border-radius:8px;padding:4px 6px;margin:0 -6px;transition:background .12s ease}
+.devrow:hover{background:rgba(240,240,240,.05)}
+.devrow.off{color:var(--mut)}
+.devrow .dtgt{margin-left:auto;color:var(--acc);font:600 9px 'JetBrains Mono';letter-spacing:.08em;opacity:.9}
 .ddot{width:7px;height:7px;border-radius:50%;background:var(--sub)}.ddot.on{background:var(--on)}
 .sfooter{margin-top:auto;display:flex;align-items:center;gap:11px;padding:12px 6px 2px;border-top:1px solid var(--bd)}
 .avatar{width:30px;height:30px;border-radius:50%;background:var(--acc);color:#fff5ea;display:flex;align-items:center;justify-content:center;font:600 13px 'Geist'}
@@ -403,6 +414,20 @@ body{background:var(--bg);font-family:'Geist',-apple-system,system-ui,sans-serif
 .tgtpill{border:1px solid var(--bd2);background:transparent;color:var(--mut);border-radius:999px;padding:7px 14px;cursor:pointer;font:500 12.5px 'Geist'}
 .tgtpill:hover{color:var(--tx)}
 .tgtpill.on{background:var(--acc-soft);border-color:var(--acc-bd);color:var(--acc)}
+/* ── Sync-target popover (click a device row, or the Home pill) ─────────────
+   A small hover panel with the SAME send-target controls as the Devices
+   screen's selector, so you don't have to leave Home (or the sidebar) to
+   redirect where dictation lands. */
+.homeSyncPill{display:inline-flex;align-items:center;gap:7px;padding:6px 13px;border-radius:999px;
+  border:1px solid var(--bd2);background:transparent;color:var(--mut);cursor:pointer;
+  font:500 12px 'Geist';margin-top:9px}
+.homeSyncPill:hover{color:var(--tx);border-color:var(--acc-bd)}
+.homeSyncPill .tdot{width:5px;height:5px;border-radius:50%;background:#4ad15a;display:inline-block;flex:none}
+#syncPop{position:fixed;z-index:85;display:none;background:var(--card);border:1px solid var(--bd);
+  border-radius:14px;padding:14px;box-shadow:0 20px 48px rgba(0,0,0,.45);min-width:220px;max-width:280px}
+#syncPop .tgtwrap{margin-bottom:0}
+#syncPop .tgtpills{gap:6px}
+#syncPop .tgtpill{padding:6px 12px;font-size:12px}
 .dcard{display:flex;align-items:center;gap:14px;background:var(--card);border:1px solid var(--bd);border-radius:16px;padding:14px}
 .dtile{width:46px;height:46px;border-radius:10px;background:rgba(240,240,240,.06);color:var(--tx);display:flex;align-items:center;justify-content:center}.dtile svg{width:20px;height:20px}
 .dinfo{flex:1}.dname{font:600 15px 'Geist';display:flex;align-items:center;gap:10px}
@@ -1109,6 +1134,250 @@ mark.hl{background:rgba(200,90,62,.32);color:inherit;border-radius:3px;padding:0
   background:none;border:0;color:var(--mut);font:600 12px 'Geist';cursor:pointer;
   padding:4px 8px 4px 0;margin-bottom:2px}
 #mtgDetail .mtgBack:hover,#mtgNotes .mtgBack:hover{color:var(--tx)}
+
+/* ── Team (IDI-216) ─────────────────────────────────────────────────────────
+   Deliberately reuses the Insights vocabulary — .inshero/.itile/.inscard/.inshm
+   are the house style for "numbers about you", and a Team screen that invented
+   its own would read as a different product. Only the pieces Insights has no
+   equivalent for live here: the roster column, the contribution ring, and the
+   onboarding screens. */
+.teampane{display:grid;grid-template-columns:268px minmax(0,1fr);height:100vh;padding:0;overflow:hidden}
+.teampane.solo{grid-template-columns:minmax(0,1fr)}
+.tmroster{display:flex;flex-direction:column;border-right:1px solid var(--bd);overflow:hidden}
+.tmrhead{padding:22px 18px 14px}
+.tmrlist{flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain;padding:0 10px}
+.tmrfoot{padding:12px;border-top:1px solid var(--bd)}
+.tmdetail{padding:22px 24px;overflow-y:auto;overscroll-behavior:contain;min-height:0}
+
+/* roster rows */
+.tmrow{display:flex;align-items:center;gap:11px;padding:9px 10px;border-radius:10px;cursor:pointer;
+  border:0;background:transparent;width:100%;text-align:left}
+.tmrow:hover{background:rgba(240,240,240,.04)}
+.tmrow.on{background:rgba(240,240,240,.07)}
+.tmav{width:34px;height:34px;border-radius:11px;background:var(--raised);display:flex;align-items:center;
+  justify-content:center;font:600 13px 'Geist';flex:none;color:var(--tx)}
+.tmav.me{background:var(--acc);color:#0e1012}
+.tmav.all{background:var(--acc-soft);border:1px solid var(--acc-bd);color:var(--acc)}
+.tmav.all svg,.tmav.pend svg{width:16px;height:16px}
+.tmav.pend{border:1px dashed rgba(240,240,240,.16);background:transparent}
+.tmbody{flex:1;min-width:0}
+.tmname{display:flex;align-items:baseline;justify-content:space-between;gap:8px}
+.tmname span:first-child{font:500 12.5px 'Geist';color:rgba(240,240,240,.9);overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap}
+.tmrow.on .tmname span:first-child{font-weight:600;color:var(--tx)}
+.tmnum{font:500 10.5px 'JetBrains Mono';color:var(--dim);flex:none}
+.tmsub{font:400 10.5px 'Geist';color:var(--faint);margin-top:3px}
+.tmspark{display:flex;align-items:flex-end;gap:2px;height:15px;margin-top:5px}
+.tmspark i{flex:1;border-radius:1.5px;background:rgba(200,90,62,.45);min-height:2px}
+.tmrow.on .tmspark i{background:var(--acc)}
+.tmspark.off i{background:rgba(240,240,240,.07)}
+.tmrhead .tmco{font:400 11px 'Geist';color:var(--mut);margin-bottom:5px}
+.tmrhead .tmnm{font:600 20px 'Geist';letter-spacing:-.01em}
+.tmseat{font:400 10.5px 'Geist';color:var(--faint);margin-top:8px;text-align:center}
+
+/* inline invite field (roster foot + onboarding) */
+.tmfield{display:flex;align-items:center;gap:8px;background:rgba(240,240,240,.04);
+  border:1px solid var(--bd);border-radius:10px;padding:5px 5px 5px 12px}
+.tmfield input,.tmfield select{background:none;border:0;color:var(--tx);font:400 12px 'Geist';
+  flex:1;min-width:0;outline:none}
+.tmfield select{flex:none;color:var(--mut)}
+.tmfield button{border:0;border-radius:8px;background:#f2f2f2;color:#0e1012;font:600 11.5px 'Geist';
+  padding:7px 12px;cursor:pointer;flex:none}
+.tmfield button[disabled]{opacity:.5;cursor:default}
+
+/* detail header */
+.tmdhead{display:flex;align-items:center;gap:13px;margin-bottom:16px}
+.tmdhead .tmav{width:42px;height:42px;border-radius:13px;font-size:17px}
+.tmdname{font:600 20px 'Geist';letter-spacing:-.01em}
+.tmdmeta{font:400 11.5px 'JetBrains Mono';color:var(--mut);margin-top:2px}
+.tmsel{background:rgba(240,240,240,.04);border:1px solid var(--bd2);color:var(--tx);border-radius:9px;
+  font:500 12px 'Geist';padding:8px 10px;cursor:pointer}
+.tmghost{background:transparent;border:1px solid var(--bd2);color:var(--mut);border-radius:9px;
+  font:500 12px 'Geist';padding:8px 12px;cursor:pointer}
+.tmghost:hover{color:var(--tx)}
+
+/* contribution ring — the team's answer to the Insights WPM gauge */
+.tmring{position:relative;background:var(--card);border:1px solid var(--bd);border-radius:20px;
+  padding:22px 20px;display:flex;align-items:center;gap:26px;margin-bottom:14px}
+.tmringtx{flex:1;min-width:0}
+.tmbadge{font:600 12px 'Geist';color:#0e1012;background:#f2f2f2;border-radius:999px;padding:7px 16px;
+  display:inline-block}
+.tmlead{font:400 14px/1.6 'Geist';color:var(--tx2);margin-top:13px}
+.tmlead b{color:var(--tx);font-weight:600}
+.tmlegend{display:flex;flex-wrap:wrap;gap:16px;margin-top:15px}
+.tmlegend div{display:flex;align-items:center;gap:7px;font:400 11.5px 'Geist';color:var(--tx2)}
+.tmlegend i{width:8px;height:8px;border-radius:2.5px;flex:none}
+.tmlegend em{font:500 11px 'JetBrains Mono';color:var(--dim);font-style:normal}
+
+/* privacy footer — say what an admin can and cannot see, where they are looking */
+/* Leaderboard — a ranked table, not a bar chart. People compare themselves to
+   the person one row up, so rank, name and number must sit on one readable line
+   with the bar as a background wash rather than a separate column. */
+.tmboard{display:flex;flex-direction:column;gap:2px;margin-top:4px}
+.tmbrow{position:relative;display:grid;grid-template-columns:26px 30px minmax(0,1fr) auto;
+  align-items:center;gap:11px;padding:10px 12px;border-radius:12px;overflow:hidden;
+  border:1px solid transparent;transition:border-color .12s,background .12s;cursor:pointer}
+.tmbrow:hover{border-color:var(--bd2)}
+.tmbrow.me{background:rgba(200,90,62,.07);border-color:var(--acc-bd)}
+.tmbrow i.fill{position:absolute;left:0;top:0;bottom:0;background:rgba(240,240,240,.045);
+  border-radius:12px;z-index:0;transition:width .5s cubic-bezier(.22,1,.36,1)}
+.tmbrow.p1 i.fill{background:rgba(200,90,62,.16)}
+.tmbrow>*{position:relative;z-index:1}
+.tmbrank{font:600 13px 'JetBrains Mono';color:var(--dim);text-align:center}
+.tmbrow.p1 .tmbrank{color:var(--acc)}
+.tmbrow .tmav{width:30px;height:30px;border-radius:10px;font-size:13px}
+.tmbwho{min-width:0}
+.tmbwho b{display:block;font:600 13.5px 'Geist';color:var(--tx);white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis}
+.tmbwho span{font:400 11px 'JetBrains Mono';color:var(--dim);letter-spacing:.01em}
+.tmbnum{text-align:right;font:600 15px 'JetBrains Mono';color:var(--tx);white-space:nowrap}
+.tmbnum em{display:block;font:400 10.5px 'JetBrains Mono';color:var(--dim);font-style:normal;
+  letter-spacing:.04em;text-transform:uppercase;margin-top:2px}
+
+/* Per-person app mix. A stacked strip beats a pie at this size and reads as one
+   glance: "mostly Slack, some Cursor". */
+.tmapps{display:flex;flex-direction:column;gap:14px;margin-top:2px}
+.tmapprow{display:flex;flex-direction:column;gap:7px}
+.tmapphd{display:flex;align-items:baseline;justify-content:space-between;gap:10px}
+.tmapphd b{font:600 12.5px 'Geist';color:var(--tx2)}
+.tmapphd span{font:400 11px 'JetBrains Mono';color:var(--dim)}
+.tmappbar{display:flex;height:9px;border-radius:999px;overflow:hidden;background:rgba(240,240,240,.05)}
+.tmappbar i{height:100%;transition:width .5s cubic-bezier(.22,1,.36,1)}
+.tmapplg{display:flex;flex-wrap:wrap;gap:6px 14px}
+.tmapplg em{display:flex;align-items:center;gap:6px;font:400 11px 'Geist';color:var(--dim);font-style:normal}
+.tmapplg em i{width:7px;height:7px;border-radius:2px;flex:none}
+.tmapplg em b{font:500 11px 'Geist';color:var(--tx2)}
+.tmnote{display:flex;align-items:flex-start;gap:10px;margin-top:14px;padding:12px 16px;border-radius:12px;
+  background:var(--subtle-alt);border:1px solid var(--bd-faint)}
+.tmnote svg{width:15px;height:15px;flex:none;margin-top:1px;color:var(--dim)}
+.tmnote span{font:400 11.5px/1.55 'Geist';color:var(--dim)}
+
+/* onboarding (no team / just created) */
+.tmstart{display:flex;flex-direction:column;align-items:center;justify-content:center;
+  min-height:100%;padding:40px 28px}
+.tmstartin{width:100%;max-width:640px}
+.tmhero{display:flex;flex-direction:column;align-items:center;text-align:center}
+.tmhero .bigico{width:64px;height:64px;border-radius:50%;background:var(--acc-soft);
+  border:1px solid var(--acc-bd);display:flex;align-items:center;justify-content:center;
+  color:var(--acc);margin-bottom:18px}
+.tmhero .bigico svg{width:26px;height:26px}
+.tmhero h2{font:700 22px 'Geist';letter-spacing:-.01em;margin:0 0 8px}
+.tmhero p{font:400 13px/1.6 'Geist';color:var(--mut);margin:0;max-width:430px}
+.tmdemo{background:var(--card);border:1px solid var(--bd);border-radius:18px;padding:18px 20px;
+  margin:26px 0 22px}
+.tmdemogrid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.tmdemo .col{border:1px solid var(--bd);border-radius:12px;padding:14px 15px}
+.tmdemo .col.win{border-color:var(--acc-bd);background:var(--acc-softer)}
+.tmdemo .lab{display:flex;align-items:center;gap:7px;margin-bottom:10px;
+  font:500 9.5px 'JetBrains Mono';letter-spacing:.14em;color:var(--dim)}
+.tmdemo .col.win .lab{color:var(--acc-txt)}
+.tmdemo .lab i{width:6px;height:6px;border-radius:50%;background:rgba(240,240,240,.25)}
+.tmdemo .col.win .lab i{background:var(--acc)}
+.tmdemo .say{font:400 15px 'Geist';color:var(--mut)}
+.tmdemo .col.win .say{color:var(--tx)}
+.tmdemo .bad{text-decoration:line-through;text-decoration-color:rgba(224,80,73,.7);
+  text-decoration-thickness:1.5px}
+.tmcreate{display:flex;gap:10px}
+.tmcreate input{flex:1;min-width:0;background:rgba(240,240,240,.04);border:1px solid var(--bd2);
+  border-radius:12px;padding:13px 15px;color:var(--tx);font:400 13.5px 'Geist';outline:none}
+.tmcreate button{border:0;border-radius:12px;background:#f2f2f2;color:#0e1012;font:600 12.5px 'Geist';
+  padding:13px 22px;cursor:pointer;flex:none;display:flex;align-items:center;gap:8px}
+.tmcreate button svg{width:14px;height:14px}
+.tmfine{font:400 11px 'Geist';color:var(--faint);margin-top:10px;text-align:center}
+.tmor{display:flex;align-items:center;gap:14px;margin:26px 0 18px}
+.tmor div{flex:1;height:1px;background:var(--bd)}
+.tmor span{font:500 9.5px 'JetBrains Mono';letter-spacing:.16em;color:var(--faint)}
+.tmjoin{display:flex;align-items:center;gap:12px;background:var(--subtle-alt);border:1px solid var(--bd);
+  border-radius:12px;padding:12px 14px}
+.tmjoin svg{width:17px;height:17px;flex:none;color:var(--dim)}
+.tmjoin .jt{flex:1;min-width:0}
+.tmjoin .jt b{font:500 12.5px 'Geist';display:block}
+.tmjoin .jt span{font:400 11px 'Geist';color:var(--dim);margin-top:2px;display:block}
+
+/* setup steps (just-created) */
+.tmstep{background:var(--card);border:1px solid var(--bd);border-radius:18px;padding:18px 20px;
+  margin-bottom:12px;display:flex;align-items:flex-start;gap:13px}
+.tmstep .n{width:24px;height:24px;border-radius:8px;background:var(--raised);color:var(--mut);
+  display:flex;align-items:center;justify-content:center;font:600 11px 'JetBrains Mono';flex:none;margin-top:1px}
+.tmstep .n.live{background:var(--acc-soft);border:1px solid var(--acc-bd);color:var(--acc)}
+.tmstep .b{flex:1;min-width:0}
+.tmstep h4{font:600 14px 'Geist';margin:0 0 4px}
+.tmstep p{font:400 12px/1.55 'Geist';color:var(--mut);margin:0}
+.tmstep p b{color:var(--tx);font-weight:600}
+.tmseats{display:flex;align-items:center;gap:9px;margin-top:12px}
+.tmseats .dots{display:flex;gap:5px}
+.tmseats .dots i{width:22px;height:22px;border-radius:7px;border:1px dashed rgba(240,240,240,.16);
+  display:block}
+.tmseats .dots i.taken{border:0;background:var(--acc)}
+.tmseats span{font:400 11px 'Geist';color:var(--dim)}
+.tmskip{background:transparent;border:0;color:var(--dim);font:500 12px 'Geist';cursor:pointer;padding:8px}
+.tmskip:hover{color:var(--tx)}
+/* IDI-222 pending-invite banner — the recovery path when an emailed link never
+   reached the app. Deliberately at the TOP of the no-team screen: someone who was
+   invited should not have to read a pitch for creating their own team first. */
+.tmpendbox{display:flex;align-items:center;gap:13px;padding:14px 16px;border-radius:14px;
+  background:var(--acc-soft);border:1px solid var(--acc-bd);margin-bottom:22px}
+.tmpendbox .pbico{width:34px;height:34px;border-radius:11px;background:rgba(200,90,62,.18);
+  color:var(--acc);display:flex;align-items:center;justify-content:center;flex:none}
+.tmpendbox .pbico svg{width:17px;height:17px}
+.tmpendbox .pbtx{flex:1;min-width:0}
+.tmpendbox .pbtx b{font:600 13.5px 'Geist';display:block}
+.tmpendbox .pbtx span{font:400 11.5px 'Geist';color:var(--tx2);margin-top:2px;display:block}
+
+/* ── modals ────────────────────────────────────────────────────────────────
+   The dashboard had no modal vocabulary — only toasts — so inviting happened in
+   an inline field that read as an afterthought. Rendered into #tmModalHost so it
+   sits above every screen and can also fire on sign-in. */
+.tmmodal{position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;
+  justify-content:center;z-index:900;padding:28px}
+.tmmodalbox{width:100%;max-width:460px;background:var(--card);border:1px solid var(--bd2);
+  border-radius:20px;padding:24px;box-shadow:0 24px 70px rgba(0,0,0,.5)}
+.tmmodalbox.wide{max-width:520px}
+.tmmhead{display:flex;align-items:flex-start;gap:13px;margin-bottom:18px}
+.tmmico{width:40px;height:40px;border-radius:13px;background:var(--acc-soft);border:1px solid var(--acc-bd);
+  color:var(--acc);display:flex;align-items:center;justify-content:center;flex:none}
+.tmmico svg{width:19px;height:19px}
+.tmmico.cream{background:#EADFCE;border-color:#EADFCE;color:#2a1f18}
+.tmmtitle{flex:1;min-width:0}
+.tmmtitle h3{font:700 17px 'Geist';letter-spacing:-.01em;margin:0 0 4px}
+.tmmtitle p{font:400 12px/1.55 'Geist';color:var(--mut);margin:0}
+.tmmx{background:0;border:0;color:var(--dim);cursor:pointer;font:400 18px 'Geist';padding:0 2px;flex:none}
+.tmmx:hover{color:var(--tx)}
+.tmmlabel{font:500 9.5px 'JetBrains Mono';letter-spacing:.16em;color:var(--mut);margin:0 0 7px}
+.tmminput{width:100%;background:rgba(240,240,240,.04);border:1px solid var(--bd2);border-radius:11px;
+  padding:12px 14px;color:var(--tx);font:400 13.5px 'Geist';outline:none}
+.tmminput:focus{border-color:var(--acc-bd)}
+.tmmrow{display:flex;gap:10px;align-items:center}
+.tmmroles{display:flex;gap:6px;background:rgba(240,240,240,.04);border-radius:9px;padding:3px}
+.tmmroles button{border:0;background:transparent;color:var(--mut);font:600 11.5px 'Geist';
+  padding:7px 12px;border-radius:6px;cursor:pointer}
+.tmmroles button.on{background:rgba(240,240,240,.1);color:var(--tx)}
+.tmmfoot{display:flex;align-items:center;gap:10px;margin-top:20px}
+.tmmfoot .grow{flex:1}
+.tmmnote{font:400 11px/1.55 'Geist';color:var(--faint);margin-top:12px}
+.tmmseat{display:flex;align-items:center;gap:8px;margin-top:14px;padding:10px 12px;border-radius:10px;
+  background:var(--subtle-alt);border:1px solid var(--bd-faint)}
+.tmmseat .d{display:flex;gap:4px}
+.tmmseat .d i{width:18px;height:18px;border-radius:6px;border:1px dashed rgba(240,240,240,.18);display:block}
+.tmmseat .d i.taken{border:0;background:var(--acc)}
+.tmmseat span{font:400 11px 'Geist';color:var(--dim)}
+/* resend / revoke on a pending row */
+.tmpendacts{display:flex;align-items:center;gap:4px;flex:none}
+.tmpendacts button{background:0;border:0;color:var(--dim);cursor:pointer;font:600 10.5px 'Geist';
+  padding:5px 7px;border-radius:6px}
+.tmpendacts button:hover{color:var(--tx);background:rgba(240,240,240,.06)}
+/* Remove-from-roster. ALWAYS VISIBLE.
+   This first shipped hover-revealed (opacity:0 until :hover) to keep the list
+   calm. That was wrong: it was reported as "I still don't see how to remove the
+   person" twice, by the person who owns the team. Hover-to-discover fails anyone
+   who does not already know the control exists — which is everyone, once. A
+   destructive action can be quiet without being hidden, so it sits at reduced
+   contrast and only turns red on hover. */
+.tmrowx{background:0;border:0;color:var(--dim);cursor:pointer;padding:5px 6px;border-radius:7px;
+  flex:none;display:flex;align-items:center;gap:5px;font:600 10.5px 'Geist'}
+.tmrowx svg{width:14px;height:14px;display:block}
+.tmrowx:hover{color:var(--rec);background:rgba(224,80,73,.1)}
+.tmrowx:focus-visible{outline:1px solid var(--bd2)}
 """
 
 
@@ -1132,6 +1401,7 @@ def flume_html() -> str:
         {_nav("pulse","Insights","insights")}
         {_nav("book","Dictionary","dictionary")}
         {_nav("bolt","Snippets","snippets")}
+        {_nav("team","Team","team")}
       </nav>
       <div class="navhead devhead">DEVICES<button class="devadd" onclick="show('devices')" title="Pair a device">+</button></div>
       <div class="devlist" id="sideDevices"></div>
@@ -1180,8 +1450,12 @@ def flume_html() -> str:
       <section class="screen" id="scr-dictionary" hidden><div class="main" id="dictionaryMain"></div></section>
       <section class="screen" id="scr-snippets" hidden><div class="main" id="snippetsMain"></div></section>
       <section class="screen" id="scr-devices" hidden><div class="main" id="devicesMain"></div></section>
+      <section class="screen" id="scr-team" hidden><div class="teampane" id="teamMain"></div></section>
       <section class="screen" id="scr-settings" hidden><div class="main" id="settingsMain"></div></section>
-    </div>"""
+    </div>
+    <!-- Modal host: a sibling of .app, not a child, so a modal is never clipped by
+         the grid's pinned 100vh row (conventions #23's height chain). -->
+    <div id="tmModalHost"></div>"""
 
     js = r"""
 <script>
@@ -1243,6 +1517,10 @@ function show(id){
   // lands somewhere that displays it (stale-list bug).
   if(id==='meetings' || id==='home') loadMeets();
   if(id==='insights') loadInsights();
+  // The team cache is refreshed from the network on every visit, not once:
+  // membership, roles and the shared dictionary all change from other people's
+  // devices, so a load-once guard would show a stale roster indefinitely.
+  if(id==='team') loadTeam(true);
 }
 function renderActive(){
   try {
@@ -1255,6 +1533,7 @@ function renderActive(){
     else if(ACTIVE==='dictionary') renderDictionary();
     else if(ACTIVE==='snippets') renderSnippets();
     else if(ACTIVE==='devices') renderDevices();
+    else if(ACTIVE==='team') renderTeam();
     else if(ACTIVE==='settings') renderSettings();
   } catch(e){
     const box = document.querySelector('#scr-'+ACTIVE+' .main') || document.querySelector('#scr-'+ACTIVE+' .threepane') || document.body;
@@ -1267,9 +1546,12 @@ function renderSidebar(){
   document.getElementById('userName').textContent = name;
   document.getElementById('avatarInitial').textContent = (name[0]||'V').toUpperCase();
   const devs = STATE.devices||[];
+  const target = STATE.target_device_id||'__all__';
   document.getElementById('sideDevices').innerHTML = devs.length
-    ? devs.map(d=>`<div class="devrow${d.online?'':' off'}"><span class="ddot${d.online?' on':''}"></span>${esc(d.device_name||'Device')}</div>`).join('')
-    : `<div class="devrow"><span class="ddot on"></span>This Mac</div>`;
+    ? devs.map(d=>`<div class="devrow${d.online?'':' off'}" onclick="toggleSyncPop(event,this)">
+        <span class="ddot${d.online?' on':''}"></span>${esc(d.device_name||'Device')}
+        ${d.device_id===target?'<span class="dtgt">SYNC</span>':''}</div>`).join('')
+    : `<div class="devrow" onclick="toggleSyncPop(event,this)"><span class="ddot on"></span>This Mac</div>`;
   renderDeadBanner();
 }
 function statusPill(){
@@ -1387,8 +1669,13 @@ function renderHome(){
       <span class="tag ${tagCls(e.app)}">${esc(e.app||'Local')}</span>
       <button class="cbtn" onclick="api('copy_text', ${esc(JSON.stringify(e.text))})">${SVG.copy}</button></div>`).join('')
     || '<div class="empty">Nothing yet — hold your hotkey to record.</div>';
+  const devs = STATE.devices||[];
+  const target = STATE.target_device_id||'__all__';
   document.getElementById('homeMain').innerHTML = `
-    <div class="mhead"><div><div class="eyebrow">Welcome back</div><h1 class="title">${esc(name)}</h1></div>${statusPill()}</div>
+    <div class="mhead"><div><div class="eyebrow">Welcome back</div><h1 class="title">${esc(name)}</h1>
+      <div class="homeSyncPill" onclick="toggleSyncPop(event,this)" title="Change where dictation lands">
+        <span class="tdot"></span>Sync: ${esc(syncTargetLabel(target, devs))}</div>
+    </div>${statusPill()}</div>
     <div class="features">
       <div class="fcard cream" style="cursor:pointer" onclick="show('insights')"><div class="disc">${SVG.mic}</div><div class="fnum">${STATE.daily_words||0}</div><div class="flabel">Words today</div><div class="fsub">${STATE.total_transcriptions||0} all time &middot; Insights &rarr;</div></div>
       <div class="fcard sage"><div class="disc">${SVG.grid}</div><div class="fnum">Canvas</div><div class="flabel">Shared clipboard</div><div class="fsub">${STATE.sync_connected?'Synced':'Local only'}</div></div>
@@ -3457,7 +3744,9 @@ function finishImport(title, content){
 // runs a single time; the open buttons stopPropagation so they don't self-close).
 document.addEventListener('click', ()=>{
   document.querySelectorAll('.nmenu').forEach(m=>{ if(!m.hidden) m.hidden=true; });
+  closeSyncPop();
 });
+document.addEventListener('keydown', (e)=>{ if(e.key==='Escape') closeSyncPop(); });
 // The WebView's built-in right-click menu offers "Reload" — which blanks the
 // window, since the dashboard is loaded from a string, not a URL (2026-08-15,
 // Windows/WebView2; WKWebView has the same item). Keep the native menu only
@@ -4155,14 +4444,9 @@ function renderDevices(){
   const pairBtn = PAIR.active ? '' :
     `${pairErr}<button class="btn primary" style="width:150px" onclick="startPairing()">${SVG.plus}Pair a device</button>`;
   const target = (STATE&&STATE.target_device_id)||'__all__';
-  const opts = [{id:'__all__',name:'All devices',online:false}].concat(
-    devs.map(d=>({id:d.device_id,name:d.device_name||'Device',online:!!d.online})));
   // A green dot on the live targets: picking a device that has been dark for
   // three weeks is almost never what you meant.
-  const selector = devs.length ? `<div class="tgtwrap">
-    <div class="tgtlabel">SEND MY TRANSCRIPTIONS TO</div>
-    <div class="tgtpills">${opts.map(o=>`<button class="tgtpill${o.id===target?' on':''}" onclick='setTarget(${JSON.stringify(o.id)})'>${o.online?'<span class="tdot"></span>':''}${esc(o.name)}</button>`).join('')}</div>
-  </div>` : '';
+  const selector = devs.length ? syncSelectorHTML(target, devs) : '';
   const countLine = devs.length
     ? `${devs.length} paired · ${online.length} online now`
     : 'No other devices';
@@ -4190,8 +4474,63 @@ function removeAllOffline(btn){
   });
 }
 
+// ── shared "send my transcriptions to" controls — used by the full Devices
+// screen selector AND the small popover opened from a sidebar device row or
+// the Home pill, so there is exactly one implementation of the pill list. ──
+function syncTargetOptions(devs){
+  return [{id:'__all__',name:'All devices',online:false}].concat(
+    (devs||[]).map(d=>({id:d.device_id,name:d.device_name||'Device',online:!!d.online})));
+}
+function syncTargetLabel(target, devs){
+  if(!target || target==='__all__') return 'All devices';
+  if(target==='__none__') return 'This device only';
+  const d=(devs||[]).find(x=>x.device_id===target);
+  return d ? (d.device_name||'Device') : 'All devices';
+}
+function syncSelectorHTML(target, devs){
+  const opts = syncTargetOptions(devs);
+  return `<div class="tgtwrap">
+    <div class="tgtlabel">SEND MY TRANSCRIPTIONS TO</div>
+    <div class="tgtpills">${opts.map(o=>`<button class="tgtpill${o.id===target?' on':''}" onclick='event.stopPropagation();setTarget(${JSON.stringify(o.id)})'>${o.online?'<span class="tdot"></span>':''}${esc(o.name)}</button>`).join('')}</div>
+  </div>`;
+}
+// Popover host — one shared floating panel, positioned near whichever
+// element (device row / Home pill) triggered it. Same anchored-panel recipe
+// as insTip(), but interactive (pointer-events) and click-toggled rather than
+// hover-shown, since it holds real controls, not just a label.
+let SYNC_POP_ANCHOR=null;
+function openSyncPop(el){
+  let pop=document.getElementById('syncPop');
+  if(!pop){ pop=document.createElement('div'); pop.id='syncPop'; document.body.appendChild(pop); }
+  const target=(STATE&&STATE.target_device_id)||'__all__';
+  const devs=(STATE&&STATE.devices)||[];
+  pop.innerHTML = syncSelectorHTML(target, devs);
+  pop.style.display='block';
+  const r=el.getBoundingClientRect();
+  const pr=pop.getBoundingClientRect();
+  pop.style.left=Math.max(6,Math.min(window.innerWidth-pr.width-6, r.left))+'px';
+  pop.style.top=Math.max(6,Math.min(window.innerHeight-pr.height-6, r.bottom+8))+'px';
+}
+function closeSyncPop(){
+  const pop=document.getElementById('syncPop');
+  if(pop) pop.style.display='none';
+  SYNC_POP_ANCHOR=null;
+}
+function toggleSyncPop(ev, el){
+  if(ev) ev.stopPropagation();
+  const pop=document.getElementById('syncPop');
+  if(pop && pop.style.display==='block' && SYNC_POP_ANCHOR===el){ closeSyncPop(); return; }
+  SYNC_POP_ANCHOR=el;
+  openSyncPop(el);
+}
 function setTarget(id){
-  api('set_target_device', id).then(()=>{ if(STATE) STATE.target_device_id=id; renderDevices(); });
+  api('set_target_device', id).then(()=>{
+    if(STATE) STATE.target_device_id=id;
+    renderDevices();
+    renderSidebar();
+    if(ACTIVE==='home') renderHome();
+    closeSyncPop();
+  });
 }
 
 // IDI-177. Honest label: this deletes the `devices` row, it does not sign the
@@ -4265,6 +4604,9 @@ function stopPairing(){
 // this screen every ~30s and must not throw you back to the first group.
 const SETTINGS_GROUPS=[
   {id:'account',    label:'Account',     lede:'Who you are signed in as — and what leaving takes with it.'},
+  // Only rendered when the user is actually on a team — see renderSettings().
+  // A privacy group that says "you have no team" is a group nobody needed.
+  {id:'privacy',    label:'Team privacy', lede:'What your team can and cannot see about your dictation.'},
   {id:'models',     label:'Models',      lede:'Which engine hears you, and how many trips it takes to get the words back.'},
   {id:'dictionary', label:'Dictionary',  lede:'Teach Flume names and terms so they transcribe correctly.'},
   {id:'transform',  label:'Transform',   lede:''},
@@ -4388,6 +4730,7 @@ function settingsBadge(id){
     const s=(STATE&&STATE.settings)||{};
     if(id==='dictionary') return DICT.vocabulary.length+' · '+DICT.replacements.length;
     if(id==='data')       return s.sync_enabled?'on':'off';
+    if(id==='privacy')    return (TEAM&&TEAM.usage_consent)?'sharing':'private';
     if(id==='notes'){
       const keys=['notes_search_enabled','notes_autotitle_enabled',
                   'notes_structure_detection_enabled','notes_audio_linkage_enabled'];
@@ -4404,8 +4747,12 @@ function renderSettings(){
   const shell=document.getElementById('settingsMain');
   if(!shell) return;
   shell.classList.add('setshell');
-  const g=SETTINGS_GROUPS.find(x=>x.id===SETTINGS_GROUP)||SETTINGS_GROUPS[0];
-  const rail=SETTINGS_GROUPS.map(x=>{
+  // Leaving a team while sitting on its privacy group must not strand you on a
+  // pane about a team you are no longer in.
+  const groups=SETTINGS_GROUPS.filter(x=>x.id!=='privacy'||hasTeam());
+  if(SETTINGS_GROUP==='privacy' && !hasTeam()) SETTINGS_GROUP='account';
+  const g=groups.find(x=>x.id===SETTINGS_GROUP)||groups[0];
+  const rail=groups.map(x=>{
     const b=settingsBadge(x.id);
     return '<button class="sritem '+(x.id===g.id?'on':'')+'" '+
            'onclick="setSettingsGroup(\''+x.id+'\')" '+
@@ -4463,6 +4810,54 @@ function settingsPane(id){
             <div class="sdesc">Permanently erases your account and all cloud data. Cannot be undone.</div></div>
           <button id="deleteAcctBtn" class="btn ghost sdanger" onclick="deleteAccount()">Delete account</button>
         </div></div>`;
+  }
+
+  if(id==='privacy'){
+    // hasTeam() is re-checked because a heartbeat can repaint Settings in the
+    // moment between leaving a team and the rail rebuilding.
+    if(!hasTeam()) return `
+      <div class="ssection"><div class="scard"><div class="ssub" style="margin:0">
+        You are not on a team, so nobody is seeing anything.</div></div></div>`;
+    return `
+      <div class="ssection"><h3>What ${esc(TEAM.name||'your team')} can see</h3>
+        <p class="ssub">Sharing your dictation counts is <b style="color:var(--tx)">on by default</b> &mdash;
+          switch it off and your numbers vanish from every admin view immediately. The ranking is
+          separate and stays off until you opt in.</p>
+        <div class="scard">
+          <div class="saverow"><button class="toggle ${TEAM.usage_consent?'on':''}"
+              aria-label="Let admins see my dictation counts"
+              onclick="setTeamConsent(${TEAM.usage_consent?'false':'true'}, ${TEAM.leaderboard_opt_in?'true':'false'})"></button>
+            <span style="font:500 13px Geist">Let admins see my dictation counts</span></div>
+          <div class="saverow" style="margin-top:9px"><button class="toggle ${TEAM.leaderboard_opt_in?'on':''}"
+              aria-label="Show me on the team ranking"
+              onclick="setTeamConsent(true, ${TEAM.leaderboard_opt_in?'false':'true'})"></button>
+            <span style="font:500 13px Geist">Show me on the team ranking</span></div>
+        </div>
+        <div class="tmnote" style="margin-top:14px">${SVG.lock}
+          <span>What you dictate &mdash; the text, the audio, your notes &mdash; is never shared with your
+          team, whatever these are set to. Admins see counts, durations and
+          <b style="color:var(--tx2)">the names of the apps you dictate into</b> &mdash; never what you said
+          in them. Turning the first off hides all of it and turns the second off too, and nobody else can
+          turn either back on for you.</span></div>
+        <div class="tmnote" style="margin-top:8px">${SVG.pulse}
+          <span>Your team&rsquo;s numbers count <b style="color:var(--tx2)">synced dictations in the last
+          ${TEAM_DAYS} days</b>. Your own <button class="tmskip" style="padding:0;color:var(--acc)"
+          onclick="show('insights')">Insights</button> page counts everything you have ever dictated,
+          including takes that never reached the cloud &mdash; so it will always read higher.</span></div>
+      </div>
+
+      <div class="ssection"><h3>Membership</h3>
+        <div class="scard row">
+          <div class="grow"><div class="sname">${esc(TEAM.name||'Your team')}</div>
+            <div class="sdesc">You are ${TEAM.role==='owner'?'the owner':TEAM.role==='admin'?'an admin':'a member'}.
+              ${teamOwner()
+                ? 'An owner cannot leave &mdash; hand the team over first.'
+                : 'You keep your own dictionary and history; the shared ones stop applying.'}</div></div>
+          ${teamOwner()?'' : '<button class="btn ghost" onclick="leaveTeam()">Leave team</button>'}
+        </div>
+        <div class="saverow" style="margin-top:12px"><button class="tmskip" style="padding:0;color:var(--acc)"
+          onclick="show('team')">Open the team &rarr;</button></div>
+      </div>`;
   }
 
   if(id==='models') return `
@@ -4693,13 +5088,70 @@ function toggleTfSetting(key, el){
   api('set_transform_setting', key, val);
 }
 
+// Which dictionary the screen is editing. The TEAM's shared set used to live on
+// the Team screen, which was the wrong home: it is a dictionary, people look for
+// dictionaries under Dictionary, and it meant two places to learn for one concept.
+let DICT_SCOPE='personal';
+function setDictScope(v){ DICT_SCOPE=v; renderDictionary(); }
+
+function dictScopeTabs(){
+  if(!hasTeam()) return '';
+  return `<span class="insseg" style="float:none;margin-left:12px">
+    <button class="${DICT_SCOPE==='personal'?'on':''}" onclick="setDictScope('personal')">Mine</button>
+    <button class="${DICT_SCOPE==='team'?'on':''}" onclick="setDictScope('team')">${esc(TEAM.name||'Team')}</button>
+  </span>`;
+}
+
+function renderTeamDictionary(){
+  const admin=teamAdmin(), d=tdict();
+  const ro = admin ? '' : ' tmreadonly';
+  const vocab = d.vocabulary.map((w,i)=>`<span class="dchip">${esc(w)}${admin?`<button onclick="tdRmWord(${i})" title="Remove">✕</button>`:''}</span>`).join('')
+    || '<span class="ssub" style="margin:0">No shared words yet.</span>';
+  const reps = d.replacements.map((r,i)=>`<div class="reprow"><span class="rfrom">${esc(r.from)}</span><span class="rarrow">→</span><span class="rto">${esc(r.to)}</span>${admin?`<button onclick="tdRmRep(${i})" title="Remove">✕</button>`:''}</div>`).join('')
+    || '<span class="ssub" style="margin:0">No shared rules yet.</span>';
+  const snips = d.snippets.map((sn,i)=>`<div class="reprow"><span class="rfrom">${esc(sn.trigger)}</span><span class="rarrow">→</span><span class="rto">${esc(String(sn.expansion||'').slice(0,90))}${String(sn.expansion||'').length>90?'…':''}</span>${admin?`<button onclick="tdRmSnip(${i})" title="Remove">✕</button>`:''}</div>`).join('')
+    || '<span class="ssub" style="margin:0">No shared snippets yet.</span>';
+  const personal=DICT.vocabulary.length;
+  document.getElementById('dictionaryMain').innerHTML = `
+    <div class="mhead"><div><div class="eyebrow">Transcription</div>
+      <h1 class="title">Dictionary ${dictScopeTabs()}</h1></div>
+      <span class="notesave" id="dictState"></span></div>
+    <p class="ssub" style="margin:-8px 0 18px">${admin
+      ? `Everyone on ${esc(TEAM.name||'the team')} dictates with these on top of their own.`
+      : `Your admins maintain these. They apply on top of your own words.`}
+      Your own entries always win a clash — same word, same rule, same trigger.</p>
+    ${admin&&personal?`<div class="tmnote" style="margin:0 0 18px">${SVG.team}
+      <span>You have <b style="color:var(--tx2)">${personal} personal word${personal===1?'':'s'}</b> that could be shared.
+      <button class="tmskip" style="padding:0;color:var(--acc)" onclick="seedTeamDict()">Copy mine to the team</button></span></div>`:''}
+    <div class="dictgrid">
+      <div class="dictcol${ro}">
+        <div class="dcolhead"><h3>Shared vocabulary</h3><p class="ssub">Names &amp; jargon the whole team should spell right.</p></div>
+        <div class="dictchips">${vocab}</div>
+        ${admin?`<div class="dictadd"><input id="tdWord" placeholder="Add a shared word…" onkeydown="if(event.key==='Enter'){event.preventDefault();tdAddWord();}"/><button class="btn primary" style="flex:none;width:80px" onclick="tdAddWord()">Add</button></div>`:''}
+      </div>
+      <div class="dictcol${ro}">
+        <div class="dcolhead"><h3>Shared rules</h3><p class="ssub">Always rewrite a misheard word, for everyone.</p></div>
+        <div class="reprows">${reps}</div>
+        ${admin?`<div class="dictadd"><input id="tdFrom" placeholder="heard…" style="flex:1"/><span class="rarrow">→</span><input id="tdTo" placeholder="correct…" style="flex:1"/><button class="btn primary" style="flex:none;width:80px" onclick="tdAddRep()">Add</button></div>`:''}
+      </div>
+    </div>
+    <div class="dictcol${ro}" style="margin-top:18px">
+      <div class="dcolhead"><h3>Shared snippets</h3><p class="ssub">A spoken phrase everyone can expand.</p></div>
+      <div class="reprows">${snips}</div>
+      ${admin?`<div class="dictadd"><input id="tdTrig" placeholder="say this…" style="flex:1"/><span class="rarrow">→</span><input id="tdExp" placeholder="expands to…" style="flex:2"/><button class="btn primary" style="flex:none;width:80px" onclick="tdAddSnip()">Add</button></div>`:''}
+    </div>`;
+}
+
 function renderDictionary(){
+  // Team scope renders a different page entirely; the tabs live in both heads.
+  if(DICT_SCOPE==='team' && hasTeam()){ renderTeamDictionary(); return; }
   const vocab = DICT.vocabulary.map((w,i)=>`<span class="dchip">${esc(w)}<button onclick="removeWord(${i})" title="Remove">✕</button></span>`).join('')
     || '<span class="ssub" style="margin:0">No words yet — add names, products, acronyms, anything Flume mishears.</span>';
   const reps = DICT.replacements.map((r,i)=>`<div class="reprow"><span class="rfrom">${esc(r.from)}</span><span class="rarrow">→</span><span class="rto">${esc(r.to)}${r.auto?' <span title="Auto-learned from a correction" style="opacity:.75">✨</span>':''}</span><button onclick="removeRep(${i})" title="Remove">✕</button></div>`).join('')
     || '<span class="ssub" style="margin:0">No rules yet — or edit a transcription in History and Flume learns one automatically.</span>';
   document.getElementById('dictionaryMain').innerHTML = `
-    <div class="mhead"><div><div class="eyebrow">Transcription</div><h1 class="title">Dictionary</h1></div>
+    <div class="mhead"><div><div class="eyebrow">Transcription</div>
+      <h1 class="title">Dictionary ${dictScopeTabs()}</h1></div>
       <span class="notesave" id="dictState"></span></div>
     <div class="dictgrid">
       <div class="dictcol">
@@ -5023,6 +5475,15 @@ window.VerbalNative = function(event, payload){
   // the Python side until `dashboard_page_ready`, so this also works when the
   // window was built by this very click (the meeting bar's handoff).
   else if(event==='openMeeting'){ openMeetingDetail(payload); }
+  // Periodic device-presence refresh (SharedDashboard._device_refresh_loop,
+  // every 30s) — previously dropped client-side (no handler), so the sidebar/
+  // popover/Home pill only ever reflected the device list from page load.
+  else if(event==='devices'){
+    if(STATE){ STATE.devices=payload.devices||[]; STATE.target_device_id=payload.target_device_id||'__all__'; }
+    renderSidebar();
+    if(ACTIVE==='devices') renderDevices();
+    if(ACTIVE==='home') renderHome();
+  }
 };
 document.addEventListener('paste', function(e){
   if(ACTIVE!=='canvas') return;
@@ -5173,6 +5634,9 @@ function renderWizard(){
 
 let LOAD_STARTED=false;
 async function load(){
+  // Probe for a waiting invite at startup, not just when Team is opened —
+  // otherwise the sign-in popup only fires for people who already went looking.
+  loadTeam(true);
   LOAD_STARTED=true;
   // MER-46 handshake. VerbalNative is installed by now (it is assigned at parse
   // time) and the bridge is live (pywebviewready fired, or the backstop ran), so
@@ -5189,6 +5653,986 @@ async function load(){
 // Explicit navigation always lands on a screen's TOP level: clicking Meetings
 // while reading one meeting goes back to the list (MER-46), where an
 // openMeeting event (which sets the sub-route first) must not be reset.
+// ── Team / Organization (IDI-216) ─────────────────────────────────────────
+// Four views off one screen: no team, just-created setup, the team, one member.
+// The last two deliberately reuse the INSIGHTS vocabulary (.inshero gauge,
+// .itile pastel band, .inshm heatmap) — "numbers about you" already has a house
+// style here, and a Team screen that invented its own would read as a different
+// product. Everything fails closed: get_team returns the same no-org shape for a
+// user with no team, an unapplied migration and a dead network alike.
+let TEAM=null, TEAM_INV=[], TEAM_USAGE=null, TEAM_BOARD=null;
+let TEAM_SERIES={}, TEAM_PERSONAL=null, TEAM_SETUP=true;
+let TEAM_SEL='all', TEAM_DAYS=30, TEAM_ERR='', TEAM_PENDING=[], TM_JOIN_SHOWN=false;
+let TEAM_APPS={};   // {user_id: [{app,dictations,words}]} — see get_team_apps
+
+const hasTeam   = () => !!(TEAM && TEAM.org_id);
+const teamAdmin = () => hasTeam() && (TEAM.role==='owner' || TEAM.role==='admin');
+const teamOwner = () => hasTeam() && TEAM.role==='owner';
+const teamMe    = () => (STATE && STATE.settings && STATE.settings.sync_user_id) || '';
+function tmInit(m){ return ((m.display_name||m.email||'?').trim()[0]||'?').toUpperCase(); }
+function tmMins(ms){ const m=Math.round((ms||0)/60000); return m>=60 ? (m/60).toFixed(1)+'h' : m+'m'; }
+function tmWhen(iso){
+  if(!iso) return '—';
+  const t=Date.parse(iso); if(isNaN(t)) return '—';
+  const d=Math.floor((Date.now()-t)/86400000);
+  return d<=0?'today':d===1?'yesterday':d+'d ago';
+}
+// Words ÷ minutes of speech. Only shown when there is enough measured audio to
+// mean anything — duration_ms is NULL on older rows, so a thin sample would
+// invent a number rather than report one.
+function tmWpm(u){
+  if(!u || !u.speech_ms || u.speech_ms < 120000) return null;
+  return Math.round((u.words||0) / (u.speech_ms/60000));
+}
+function tmUsageFor(uid){ return ((TEAM_USAGE&&TEAM_USAGE.rows)||[]).find(r=>r.user_id===uid) || null; }
+
+// ── data ────────────────────────────────────────────────────────────────────
+function loadTeam(refresh){
+  return api('get_team', !!refresh).then(r=>{
+    if(r&&r.ok){
+      TEAM=r.team||null; TEAM_ERR=r.sync_error||'';
+      TEAM_SETUP=r.setup_done!==false; TEAM_PERSONAL=r.personal||null;
+      if(hasTeam()) loadTeamExtras(); else { TEAM_INV=[]; TEAM_USAGE=null; TEAM_BOARD=null; TEAM_SERIES={}; TEAM_APPS={}; }
+      // IDI-222: an invite whose emailed link never reached the app is still
+      // recoverable by matching the signed-in address server-side.
+      api('get_pending_invites').then(p=>{
+        if(p&&p.ok){
+          TEAM_PENDING=p.invites||[];
+          teamRepaint();
+          // Surface it wherever the user happens to be. Once per app run, and only
+          // when they are not already in a team — an invitation you have to go
+          // looking for is one you never see.
+          if(TEAM_PENDING.length && !hasTeam() && !TM_JOIN_SHOWN){ TM_JOIN_SHOWN=true; tmOpenJoin(); }
+        }
+      });
+    } else { TEAM=null; TEAM_ERR=(r&&r.error)||''; }
+    teamRepaint();
+  });
+}
+// Each payload paints on its own — a failing leaderboard must never blank a
+// roster that already loaded.
+function loadTeamExtras(){
+  api('get_team_series', 98).then(r=>{ if(r&&r.ok){ TEAM_SERIES=r.series||{}; teamRepaint(); } });
+  api('get_team_leaderboard', 7).then(r=>{ if(r&&r.ok){ TEAM_BOARD=r; teamRepaint(); } });
+  // Usage and app-mix are fetched for EVERYONE. The RPCs decide what comes back —
+  // an owner/admin gets every consenting member, a plain member gets exactly their
+  // own row. Gating the *request* on teamAdmin() was why a member's Team screen
+  // was all zeroes: every total on that page is derived from these rows.
+  api('get_team_usage', TEAM_DAYS).then(r=>{ if(r&&r.ok){ TEAM_USAGE=r; teamRepaint(); } });
+  api('get_team_apps', TEAM_DAYS).then(r=>{ if(r&&r.ok){ TEAM_APPS=r.apps||{}; teamRepaint(); } });
+  // Invites are genuinely admin-only — there is no member-scoped version.
+  if(teamAdmin()){
+    api('list_team_invites').then(r=>{ if(r&&r.ok){ TEAM_INV=r.invites||[]; teamRepaint(); } });
+  }
+}
+// The team payload backs the Team screen AND Settings' Team privacy group, and
+// the roster rail's badge. Paint whichever is on screen; painting the other is a
+// no-op because both bail on a missing container.
+function teamRepaint(){
+  if(ACTIVE==='team') renderTeam();
+  else if(ACTIVE==='settings' && SETTINGS_GROUP==='privacy') renderSettings();
+}
+function teamDays(v){
+  TEAM_DAYS=parseInt(v,10)||30;
+  api('get_team_usage',TEAM_DAYS).then(r=>{ if(r&&r.ok){ TEAM_USAGE=r; renderTeam(); } });
+  api('get_team_apps',TEAM_DAYS).then(r=>{ if(r&&r.ok){ TEAM_APPS=r.apps||{}; renderTeam(); } });
+}
+// Mutations always repaint from what the backend returned, never from an
+// optimistic local edit — roles and membership are other people's data too.
+function teamApply(r, okMsg){
+  if(r && r.busy) return false;
+  if(r && r.ok){
+    if(r.team) TEAM=r.team;
+    if(r.invites) TEAM_INV=r.invites;
+    if(okMsg) toast(okMsg);
+    loadTeamExtras(); teamRepaint(); return true;
+  }
+  toast((r&&r.error)||'Something went wrong.', true); teamRepaint(); return false;
+}
+
+function createTeam(){
+  const el=document.getElementById('tmName'); const name=(el&&el.value||'').trim();
+  if(!name){ toast('Give the team a name.', true); return; }
+  busyGuard('team', ()=>api('create_team', name, '')).then(r=>{
+    if(r && r.busy) return;
+    if(r&&r.ok){ TEAM_SETUP=false; TEAM_SEL='all'; loadTeam(true); toast('Team created'); }
+    else toast((r&&r.error)||'Could not create the team.', true);
+  });
+}
+function claimTeamInvite(confirmed){
+  const el=document.getElementById('tmToken');
+  // Keep the pasted value across the confirm round trip — re-rendering the screen
+  // would otherwise clear the field out from under the user.
+  const v = (typeof confirmed === 'string') ? confirmed : ((el&&el.value||'').trim());
+  if(!v){ toast('Paste your invite link or code.', true); return; }
+  const isConfirm = arguments.length > 1 && arguments[1] === true;
+  busyGuard('team', ()=>api('claim_team_invite', v, isConfirm)).then(r=>{
+    if(r && r.busy) return;
+    if(r&&r.ok){ TEAM_SEL='all'; loadTeam(true); toast(r.already?'You were already on this team':'Welcome to the team'); return; }
+    // IDI-223: the token is the source of truth, so a wrong-account claim is a
+    // QUESTION, not a refusal — "Sign in with Apple" hands back a privaterelay
+    // address and strict equality would lock that person out permanently.
+    // Only ever prompt ONCE. If a confirmed retry still comes back needing
+    // confirmation, something is wrong server-side — showing the dialog again
+    // would loop forever (it did, in the harness).
+    if(r && r.needs_confirm && !isConfirm){
+      const msg = 'This invite was sent to '+(r.invited_email||'another address')
+        + ', but you are signed in as '+(r.current_email||'this account')+'.'
+        + '\n\nJoin as '+(r.current_email||'this account')+' anyway?';
+      if(confirm(msg)) claimTeamInvite(v, true);
+      return;
+    }
+    if(r && r.needs_confirm && isConfirm){
+      toast('Could not join with this account. Sign in as '+(r.invited_email||'the invited address')+'.', true);
+      return;
+    }
+    toast((r&&r.error)||'That invite could not be used.', true);
+  });
+}
+function declineTeamInvite(){
+  const el=document.getElementById('tmToken'); const v=(el&&el.value||'').trim();
+  if(!v){ toast('Paste the invite link first.', true); return; }
+  if(!confirm('Decline this invite? The team will see that you turned it down.')) return;
+  busyGuard('team', ()=>api('decline_team_invite', v)).then(r=>{
+    if(r && r.busy) return;
+    if(r&&r.ok){ if(el) el.value=''; TEAM_PENDING=[]; toast('Invite declined'); renderTeam(); }
+    else toast((r&&r.error)||'Could not decline that invite.', true);
+  });
+}
+function acceptPendingInvite(orgId){
+  busyGuard('team', ()=>api('accept_pending_invite', orgId)).then(r=>{
+    if(r && r.busy) return;
+    if(r&&r.ok){ TEAM_PENDING=[]; TEAM_SEL='all'; loadTeam(true); toast('Welcome to the team'); }
+    else toast((r&&r.error)||'That invite could not be used.', true);
+  });
+}
+function setTeamAutoJoin(on){
+  busyGuard('team', ()=>api('set_team_auto_join', on)).then(r=>teamApply(r, on?'Domain joining on':'Domain joining off'));
+}
+function inviteMember(fieldId){
+  const e=document.getElementById(fieldId||'tmEmail');
+  const r0=document.getElementById((fieldId||'tmEmail')+'Role');
+  const email=(e&&e.value||'').trim();
+  if(!email){ toast('Enter an email address.', true); return; }
+  busyGuard('team', ()=>api('invite_member', email, (r0&&r0.value)||'member')).then(r=>{
+    if(r && r.busy) return;
+    if(r&&r.ok){
+      TEAM_INV=r.invites||TEAM_INV; TEAM_SETUP=true;
+      if(e) e.value='';
+      toast((r.reissued?'Invite resent to ':'Invite sent to ')+email);
+      if(r.link){ try{ navigator.clipboard.writeText(r.link); }catch(_){} }
+      renderTeam();
+    } else toast((r&&r.error)||'Could not send the invite.', true);
+  });
+}
+// The shared dictionary is edited on the Dictionary screen (scope = team), not on
+// Team. TEAM.dictionary is the authoritative copy the sync gave us; every mutator
+// writes through the backend and repaints from what came back, because this is a
+// document several admins can be editing at once (save_team_dictionary is a CAS
+// on updated_at and will refuse a stale write).
+function tdict(){
+  const d=(TEAM&&TEAM.dictionary)||{};
+  return {vocabulary:d.vocabulary||[], replacements:d.replacements||[], snippets:d.snippets||[]};
+}
+function tdSave(next, msg){
+  busyGuard('team', ()=>api('save_team_dictionary', next.vocabulary, next.replacements, next.snippets))
+    .then(r=>{
+      if(r && r.busy) return;
+      if(r&&r.ok){
+        if(r.team) TEAM=r.team; else if(TEAM) TEAM.dictionary=next;
+        dictSetState('Shared with the team');
+        setTimeout(()=>dictSetState(''), 2200);
+        if(msg) toast(msg);
+      } else toast((r&&r.error)||'Could not save the shared dictionary.', true);
+      renderDictionary();
+    });
+}
+function tdAddWord(){
+  const el=document.getElementById('tdWord'); const w=(el&&el.value||'').trim();
+  if(!w) return;
+  const d=tdict();
+  if(d.vocabulary.some(x=>x.toLowerCase()===w.toLowerCase())){ toast('Already shared.', true); return; }
+  d.vocabulary=d.vocabulary.concat([w]); if(el) el.value='';
+  tdSave(d, '"'+w+'" shared with the team');
+}
+function tdRmWord(i){ const d=tdict(); const w=d.vocabulary[i]; d.vocabulary=d.vocabulary.filter((_,k)=>k!==i); tdSave(d, w?'Removed "'+w+'"':''); }
+function tdAddRep(){
+  const a=document.getElementById('tdFrom'), b=document.getElementById('tdTo');
+  const from=(a&&a.value||'').trim(), to=(b&&b.value||'').trim();
+  if(!from||!to){ toast('Both sides are needed.', true); return; }
+  const d=tdict();
+  if(d.replacements.some(r=>(r.from||'').toLowerCase()===from.toLowerCase())){ toast('A shared rule already covers that.', true); return; }
+  d.replacements=d.replacements.concat([{from:from,to:to}]);
+  if(a) a.value=''; if(b) b.value='';
+  tdSave(d, 'Shared rule added');
+}
+function tdRmRep(i){ const d=tdict(); d.replacements=d.replacements.filter((_,k)=>k!==i); tdSave(d, 'Shared rule removed'); }
+function tdAddSnip(){
+  const a=document.getElementById('tdTrig'), b=document.getElementById('tdExp');
+  const trigger=(a&&a.value||'').trim(), expansion=(b&&b.value||'').trim();
+  if(!trigger||!expansion){ toast('A trigger and an expansion are needed.', true); return; }
+  const d=tdict();
+  if(d.snippets.some(sn=>(sn.trigger||'').toLowerCase()===trigger.toLowerCase())){ toast('That trigger is already shared.', true); return; }
+  d.snippets=d.snippets.concat([{trigger:trigger, expansion:expansion}]);
+  if(a) a.value=''; if(b) b.value='';
+  tdSave(d, 'Shared snippet added');
+}
+function tdRmSnip(i){ const d=tdict(); d.snippets=d.snippets.filter((_,k)=>k!==i); tdSave(d, 'Shared snippet removed'); }
+
+function seedTeamDict(){
+  busyGuard('team', ()=>api('seed_team_dictionary')).then(r=>{
+    if(r && r.busy) return;
+    if(r&&r.ok){
+      const a=r.added||{};
+      TEAM_SETUP=true;
+      toast('Shared '+(a.vocabulary||0)+' words with the team');
+      loadTeam(true);
+    } else toast((r&&r.error)||'Could not copy your dictionary.', true);
+  });
+}
+function skipTeamSetup(){ TEAM_SETUP=true; api('dismiss_team_setup'); renderTeam(); }
+function revokeInvite(id){ busyGuard('team', ()=>api('revoke_team_invite', id)).then(r=>teamApply(r,'Invite revoked')); }
+function setMemberRole(uid, role){ busyGuard('team', ()=>api('set_member_role', uid, role)).then(r=>teamApply(r,'Role updated')); }
+function removeMember(uid, name){
+  const who = name || 'this member';
+  if(!confirm('Remove '+who+' from the team?\n\n'
+    + 'They keep their own dictionary, history and recordings — only the shared ones stop applying. '
+    + 'The seat frees up immediately, and you can invite them again with the same email whenever you like.')) return;
+  busyGuard('team', ()=>api('remove_team_member', uid)).then(r=>{
+    if(teamApply(r, who+' removed')) TEAM_SEL='all';
+  });
+}
+function leaveTeam(){
+  if(!confirm('Leave this team? You keep your own dictionary and history; the shared ones stop applying.')) return;
+  busyGuard('team', ()=>api('leave_team')).then(r=>{
+    if(teamApply(r,'You left the team')){ TEAM_INV=[]; TEAM_USAGE=null; TEAM_BOARD=null; TEAM_SERIES={}; TEAM_APPS={}; TEAM_SEL='all'; }
+  });
+}
+function toggleTeamBoard(){ busyGuard('team', ()=>api('set_team_settings', {leaderboard_enabled: !TEAM.leaderboard_enabled})).then(r=>teamApply(r,'Saved')); }
+function setTeamConsent(u,b){ busyGuard('team', ()=>api('set_team_consent', u, b)).then(r=>teamApply(r,'Preference saved')); }
+function selectMember(uid){ TEAM_SEL=uid; renderTeam(); }
+
+// ── series helpers ──────────────────────────────────────────────────────────
+function tmDayKeys(n){
+  const out=[], now=new Date();
+  for(let i=n-1;i>=0;i--){
+    const d=new Date(now.getTime()-i*86400000);
+    out.push(d.toISOString().slice(0,10));
+  }
+  return out;
+}
+function tmSparkHtml(uid){
+  const ser=TEAM_SERIES[uid];
+  const days=tmDayKeys(14);
+  if(!ser){ return '<div class="tmspark off">'+days.map(()=>'<i style="height:20%"></i>').join('')+'</div>'; }
+  const vals=days.map(d=>ser[d]||0);
+  const mx=Math.max(1,...vals);
+  return '<div class="tmspark">'+vals.map(v=>'<i style="height:'+Math.max(8,Math.round(v/mx*100))+'%"></i>').join('')+'</div>';
+}
+const TM_STEPS=['#1f2225','#4a2d24','#7a4030','#a84b33','#C85A3E','#E88D6A'];
+function tmHeatHtml(uid){
+  const ser=TEAM_SERIES[uid]||{};
+  const days=tmDayKeys(98);
+  const first=new Date(days[0]+'T00:00:00');
+  const pad=first.getDay();
+  const cells=[];
+  for(let i=0;i<pad;i++) cells.push(null);
+  days.forEach(d=>cells.push([d, ser[d]||0]));
+  const mx=Math.max(1,...cells.filter(Boolean).map(c=>c[1]));
+  let best=null;
+  cells.forEach(c=>{ if(c && (!best || c[1]>best[1])) best=c; });
+  const html=cells.map(c=>{
+    if(!c) return '<i style="visibility:hidden"></i>';
+    let idx=0;
+    if(c[1]>0){ const f=c[1]/mx; idx=f<.15?1:f<.35?2:f<.6?3:f<.85?4:5; }
+    return '<i style="background:'+TM_STEPS[idx]+'"'
+      +' onmouseenter="insTip(this,\'' + c[0] + ' <span class=tmut>&middot;</span> ' + fmtN(c[1]) + ' words\')"'
+      +' onmouseleave="insTip(null)"></i>';
+  }).join('');
+  const legend=TM_STEPS.map(c=>'<i style="background:'+c+'"></i>').join('');
+  const foot = (best && best[1]>0)
+    ? 'Busiest day <b>'+esc(best[0])+'</b> — <b>'+fmtN(best[1])+'</b> words'
+    : 'Every square is a day they dictated.';
+  return '<div class="inscard"><div class="chd"><span>Activity</span><span class="csub">day by day</span></div>'
+    +'<div class="inshm tmhm">'+html+'</div>'
+    +'<div class="inshmfoot"><span>'+foot+'</span>'
+    +'<span class="inshmleg">less '+legend+' more</span></div></div>';
+}
+// Sizes the heatmap cells to the pane, same job as insHeatmap() does for Insights.
+function tmSizeHeat(){
+  const box=document.querySelector('#teamMain .tmhm');
+  if(!box) return;
+  const n=box.children.length, weeks=Math.ceil(n/7), gap=3;
+  let cell=Math.floor(((box.clientWidth||760)-(weeks-1)*gap)/weeks);
+  cell=Math.max(8, Math.min(14, cell));
+  box.style.gridTemplateRows='repeat(7,'+cell+'px)';
+  [].forEach.call(box.children, el=>{ el.style.width=cell+'px'; el.style.height=cell+'px'; });
+}
+
+// Contribution ring — the team's answer to the Insights WPM gauge. One number in
+// the middle, the split around it, so an unbalanced team is visible at a glance.
+function tmRingSvg(parts, total){
+  const R=62, C=2*Math.PI*R, S=150;
+  let off=0, segs='';
+  parts.forEach(p=>{
+    const len=Math.max(0, (p.pct/100)*C - (parts.length>1?3:0));
+    if(len<=0) return;
+    segs+='<circle cx="75" cy="75" r="'+R+'" fill="none" stroke="'+p.col+'" stroke-width="13"'
+       +' stroke-linecap="round" stroke-dasharray="'+len.toFixed(1)+' '+(C-len).toFixed(1)+'"'
+       +' stroke-dashoffset="'+(-off).toFixed(1)+'" transform="rotate(-90 75 75)"></circle>';
+    off += (p.pct/100)*C;
+  });
+  return '<svg width="'+S+'" height="'+S+'" viewBox="0 0 150 150" style="flex:none">'
+    +'<circle cx="75" cy="75" r="'+R+'" fill="none" stroke="rgba(240,240,240,.05)" stroke-width="13"></circle>'
+    +segs
+    +'<text x="75" y="70" text-anchor="middle" style="font:600 26px Geist;letter-spacing:-.03em" fill="#f2f2f2">'+fmtN(total)+'</text>'
+    +'<text x="75" y="88" text-anchor="middle" style="font:500 8.5px \'JetBrains Mono\';letter-spacing:.18em" fill="rgba(240,240,240,.55)">WORDS</text>'
+    +'</svg>';
+}
+// The same semicircular gauge Insights draws for WPM.
+function tmGaugeSvg(wpm){
+  const W=200,H=108,cx=100,cy=100,r=86;
+  const P=a=>({x:cx+r*Math.cos(a), y:cy+r*Math.sin(a)});
+  const arc=(a0,a1,col)=>{
+    const p0=P(a0), p1=P(a1);
+    return '<path d="M '+p0.x.toFixed(1)+' '+p0.y.toFixed(1)+' A '+r+' '+r+' 0 '
+      +((a1-a0)>Math.PI?1:0)+' 1 '+p1.x.toFixed(1)+' '+p1.y.toFixed(1)+'" stroke="'+col
+      +'" stroke-width="13" fill="none" stroke-linecap="round"/>';
+  };
+  let s='<svg width="'+W+'" height="'+H+'" viewBox="0 0 '+W+' '+H+'">';
+  s+=arc(Math.PI, 2*Math.PI, 'rgba(240,240,240,.08)');
+  if(wpm){
+    s+=arc(Math.PI, Math.PI+Math.PI*Math.min(1,wpm/200), '#C85A3E');
+    const t=P(Math.PI+Math.PI*(52/200));
+    s+='<circle cx="'+t.x.toFixed(1)+'" cy="'+t.y.toFixed(1)+'" r="4" fill="#0e1012" stroke="rgba(240,240,240,.6)" stroke-width="1.5"><title>Average typist — 52 wpm</title></circle>';
+  }
+  return s+'</svg>';
+}
+
+// ── modals ──────────────────────────────────────────────────────────────────
+let TM_MODAL=null, TM_INV_ROLE='member', TM_INV_BUSY=false, TM_INV_ERR='';
+
+function tmCloseModal(){ TM_MODAL=null; TM_INV_ERR=''; tmRenderModal(); }
+function tmOpenInvite(){ TM_MODAL='invite'; TM_INV_ROLE='member'; TM_INV_ERR=''; tmRenderModal();
+  setTimeout(()=>{ const el=document.getElementById('tmmEmail'); if(el) el.focus(); },0); }
+// Fires after sign-in when an invite is waiting, from anywhere in the app — an
+// invitation the user has to go hunting for is an invitation they never see.
+function tmOpenJoin(){ TM_MODAL='join'; tmRenderModal(); }
+
+function tmRenderModal(){
+  const host=document.getElementById('tmModalHost');
+  if(!host) return;
+  if(!TM_MODAL){ host.innerHTML=''; return; }
+  if(TM_MODAL==='invite') host.innerHTML=tmInviteModalHtml();
+  else if(TM_MODAL==='join') host.innerHTML=tmJoinModalHtml();
+}
+
+function tmInviteModalHtml(){
+  const seats=(TEAM&&TEAM.seats)||0, used=((TEAM&&TEAM.members)||[]).length;
+  const pending=TEAM_INV.length;
+  let dots='';
+  for(let i=0;i<Math.max(seats,used);i++) dots+='<i class="'+(i<used?'taken':'')+'"></i>';
+  return `
+  <div class="tmmodal" onclick="if(event.target===this) tmCloseModal()">
+    <div class="tmmodalbox">
+      <div class="tmmhead">
+        <div class="tmmico">${SVG.team}</div>
+        <div class="tmmtitle"><h3>Add a teammate</h3>
+          <p>They get a one-time link that expires in 7 days and only works for the address you send it to.</p></div>
+        <button class="tmmx" onclick="tmCloseModal()">&times;</button>
+      </div>
+      <div class="tmmlabel">EMAIL ADDRESS</div>
+      <input class="tmminput" id="tmmEmail" placeholder="name@company.com" autocomplete="off"
+             onkeydown="if(event.key==='Enter'){event.preventDefault();tmSubmitInvite();}"/>
+      <div class="tmmlabel" style="margin-top:16px">THEY JOIN AS</div>
+      <div class="tmmroles">
+        <button class="${TM_INV_ROLE==='member'?'on':''}" onclick="TM_INV_ROLE='member';tmRenderModal()">Member</button>
+        <button class="${TM_INV_ROLE==='admin'?'on':''}" onclick="TM_INV_ROLE='admin';tmRenderModal()">Admin</button>
+      </div>
+      <div class="tmmnote">${TM_INV_ROLE==='admin'
+        ? 'Admins can invite people, change roles and edit the shared dictionary.'
+        : 'Members dictate with the shared dictionary and manage their own privacy.'}</div>
+      <div class="tmmseat"><div class="d">${dots}</div>
+        <span>${used} of ${seats} seats used${used?' (including you)':''}${pending?` &middot; ${pending} invite${pending===1?'':'s'} out`:''}</span></div>
+      ${TM_INV_ERR?`<div class="tmmnote" style="color:var(--acc-txt)">${esc(TM_INV_ERR)}</div>`:''}
+      <div class="tmmfoot">
+        <span class="grow"></span>
+        <button class="btn ghost" style="flex:none;width:auto;padding:11px 16px" onclick="tmCloseModal()">Cancel</button>
+        <button class="btn primary" style="flex:none;width:auto;padding:11px 20px" id="tmmSend"
+                onclick="tmSubmitInvite()">${TM_INV_BUSY?'Sending…':'Send invite'}</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+function tmSubmitInvite(){
+  if(TM_INV_BUSY) return;
+  const el=document.getElementById('tmmEmail');
+  const email=(el&&el.value||'').trim();
+  if(!email){ TM_INV_ERR='Enter an email address.'; tmRenderModal(); return; }
+  TM_INV_BUSY=true; TM_INV_ERR=''; tmRenderModal();
+  api('invite_member', email, TM_INV_ROLE).then(r=>{
+    TM_INV_BUSY=false;
+    if(r&&r.ok){
+      TEAM_INV=r.invites||TEAM_INV;
+      TEAM_SETUP=true; TM_MODAL=null; tmRenderModal();
+      toast((r.reissued?'Invite resent to ':'Invite sent to ')+email);
+      if(r.link){ try{ navigator.clipboard.writeText(r.link); }catch(_){} }
+      renderTeam();
+    } else {
+      // Errors stay INSIDE the modal. A toast behind a dialog is a dead end —
+      // the user is still looking at the form that failed.
+      TM_INV_ERR=(r&&r.error)||'Could not send the invite.';
+      tmRenderModal();
+    }
+  });
+}
+
+function tmJoinModalHtml(){
+  const p=TEAM_PENDING[0]||{};
+  return `
+  <div class="tmmodal" onclick="if(event.target===this) tmCloseModal()">
+    <div class="tmmodalbox wide">
+      <div class="tmmhead">
+        <div class="tmmico cream">${SVG.mail}</div>
+        <div class="tmmtitle"><h3>${esc(p.org_name||'A team')} invited you</h3>
+          <p>Join as ${esc(p.role||'member')} and their shared dictionary and snippets start working on your next dictation.</p></div>
+        <button class="tmmx" onclick="tmCloseModal()">&times;</button>
+      </div>
+      <div class="tmmnote" style="margin-top:0">
+        Your own dictionary stays yours and still wins if the two ever disagree.
+        Nothing you dictate is shared with the team.
+      </div>
+      <div class="tmmfoot">
+        <span class="grow"></span>
+        <button class="btn ghost" style="flex:none;width:auto;padding:11px 16px" onclick="tmDismissJoin()">Not now</button>
+        <button class="btn primary" style="flex:none;width:auto;padding:11px 20px"
+                onclick="tmAcceptJoin(${esc(JSON.stringify(p.org_id||''))})">Join ${esc(p.org_name||'team')}</button>
+      </div>
+    </div>
+  </div>`;
+}
+function tmDismissJoin(){ TM_MODAL=null; tmRenderModal(); }
+function tmAcceptJoin(orgId){
+  api('accept_pending_invite', orgId).then(r=>{
+    if(r&&r.ok){ TEAM_PENDING=[]; TM_MODAL=null; tmRenderModal(); TEAM_SEL='all';
+      loadTeam(true); toast('Welcome to the team'); navTo('team'); }
+    else { TM_MODAL=null; tmRenderModal(); toast((r&&r.error)||'That invite could not be used.', true); }
+  });
+}
+function resendInvite(email, role){
+  busyGuard('team', ()=>api('invite_member', email, role||'member')).then(r=>{
+    if(r && r.busy) return;
+    if(r&&r.ok){ TEAM_INV=r.invites||TEAM_INV; toast('Invite resent to '+email); renderTeam(); }
+    else toast((r&&r.error)||'Could not resend that invite.', true);
+  });
+}
+
+// ── views ───────────────────────────────────────────────────────────────────
+function teamStartHtml(){
+  const p=TEAM_PERSONAL||{vocabulary:0,replacements:0,snippets:0};
+  const have=(p.vocabulary||0)+(p.replacements||0);
+  return `
+  <div class="tmstart"><div class="tmstartin">
+    ${TEAM_PENDING.map(p=>`
+      <div class="tmpendbox">
+        <div class="pbico">${SVG.mail}</div>
+        <div class="pbtx">
+          <b>${esc(p.org_name||'A team')} invited you</b>
+          <span>Waiting for you as ${esc(p.role||'member')} &middot; no link needed</span>
+        </div>
+        <button class="btn primary" style="flex:none;width:auto;padding:10px 16px" onclick="acceptPendingInvite(${esc(JSON.stringify(p.org_id))})">Accept</button>
+      </div>`).join('')}
+    <div class="tmhero">
+      <div class="bigico">${SVG.team}</div>
+      <h2>Teach Flume your words once</h2>
+      <p>A team shares one dictionary and one set of snippets. Your colleagues' first dictation already knows your product names, your clients and your jargon.</p>
+    </div>
+    <div class="tmdemo">
+      <div class="chd" style="margin-bottom:15px">A NEW TEAMMATE SAYS &ldquo;IDIAZ NEEDS A NEW ONE&rdquo;</div>
+      <div class="tmdemogrid">
+        <div class="col"><div class="lab"><i></i>ON THEIR OWN</div>
+          <div class="say">&ldquo;<span class="bad">Ideas</span> needs a new one.&rdquo;</div></div>
+        <div class="col win"><div class="lab"><i></i>ON YOUR TEAM</div>
+          <div class="say">&ldquo;<b>Idiaz</b> needs a new one.&rdquo;</div></div>
+      </div>
+      ${have?`<div class="tmfine" style="text-align:left;margin-top:13px">You already have <b style="color:var(--tx2)">${p.vocabulary} word${p.vocabulary===1?'':'s'} and ${p.replacements} rule${p.replacements===1?'':'s'}</b> Flume could share with them.</div>`:''}
+    </div>
+    <div class="tmcreate">
+      <input id="tmName" placeholder="Name your team…" onkeydown="if(event.key==='Enter'){event.preventDefault();createTeam();}"/>
+      <button onclick="createTeam()">Create team${SVG.arrow}</button>
+    </div>
+    <div class="tmfine">You'll be the owner &middot; 5 seats included &middot; add your company name later</div>
+    <div class="tmor"><div></div><span>OR</span><div></div></div>
+    <div class="tmjoin">${SVG.mail}
+      <div class="jt"><b>Someone invited you?</b><span>Paste the link from your invite email — it only works for the address it was sent to.</span></div>
+      <div class="tmfield" style="flex:none;width:300px">
+        <input id="tmToken" placeholder="Invite link or code…" onkeydown="if(event.key==='Enter'){event.preventDefault();claimTeamInvite();}"/>
+        <button class="tmskip" style="padding:6px 8px" onclick="declineTeamInvite()">Decline</button>
+        <button onclick="claimTeamInvite()">Join</button>
+      </div>
+    </div>
+    ${TEAM_ERR?`<div class="tmfine" style="margin-top:18px">Couldn't reach your team just now — ${esc(TEAM_ERR)}</div>`:''}
+  </div></div>`;
+}
+
+function teamSetupHtml(){
+  const p=TEAM_PERSONAL||{vocabulary:0,replacements:0,snippets:0,sample:[]};
+  const have=(p.vocabulary||0)+(p.replacements||0)+(p.snippets||0);
+  const seats=TEAM.seats||5, used=(TEAM.members||[]).length;
+  let dots='';
+  for(let i=0;i<seats;i++) dots+='<i class="'+(i<used?'taken':'')+'"></i>';
+  const chips=(p.sample||[]).map(w=>`<span class="dchip">${esc(w)}</span>`).join('')
+    + (p.vocabulary>(p.sample||[]).length ? `<span class="tmfine" style="margin:0;align-self:center">+${p.vocabulary-(p.sample||[]).length} more</span>` : '');
+  return `
+  <div class="tmstart"><div class="tmstartin">
+    <div style="display:flex;align-items:center;gap:15px;margin-bottom:26px">
+      <div class="tmav" style="width:52px;height:52px;border-radius:16px;background:#EADFCE;color:#2a1f18;font-size:21px">${esc((TEAM.name||'T')[0].toUpperCase())}</div>
+      <div style="flex:1;min-width:0">
+        <h2 style="font:700 22px 'Geist';letter-spacing:-.01em;margin:0 0 4px">${esc(TEAM.name)} is yours.</h2>
+        <p style="font:400 13px 'Geist';color:var(--mut);margin:0">Two things make it useful. Both take a minute.</p>
+      </div>
+    </div>
+    <div class="tmstep">
+      <div class="n live">1</div>
+      <div class="b">
+        <h4>Share the words you've already taught Flume</h4>
+        ${have
+          ? `<p>Your dictionary has <b>${p.vocabulary} word${p.vocabulary===1?'':'s'}</b>, <b>${p.replacements} rule${p.replacements===1?'':'s'}</b> and <b>${p.snippets} snippet${p.snippets===1?'':'s'}</b>. Copy them into the team's and everyone starts where you are.</p>
+             <div class="dictchips" style="margin:12px 0 14px">${chips}</div>
+             <button class="btn primary" style="width:auto;padding:10px 16px" onclick="seedTeamDict()">Copy to the team</button>
+             <div class="tmfine" style="text-align:left;margin-top:10px">Your own dictionary keeps working exactly as it does now — and still wins if the two ever disagree.</div>`
+          : `<p>You haven't taught Flume any words yet. Add some in <b>Dictionary</b> and you'll be able to share them here.</p>`}
+      </div>
+    </div>
+    <div class="tmstep">
+      <div class="n">2</div>
+      <div class="b">
+        <h4>Bring the first person in</h4>
+        <p>They get a one-time link that expires in 7 days and only works for the address you send it to.</p>
+        <div class="tmfield" style="margin-top:13px">
+          <input id="tmSetupEmail" placeholder="name@company.com" onkeydown="if(event.key==='Enter'){event.preventDefault();inviteMember('tmSetupEmail');}"/>
+          <select id="tmSetupEmailRole"><option value="member">Member</option><option value="admin">Admin</option></select>
+          <button onclick="inviteMember('tmSetupEmail')">Send</button>
+        </div>
+        <div class="tmseats"><div class="dots">${dots}</div>
+          <span>${seats-used} of your ${seats} seats ${seats-used===1?'is':'are'} open</span></div>
+      </div>
+    </div>
+    <div style="display:flex;justify-content:center;margin-top:22px">
+      <button class="tmskip" onclick="skipTeamSetup()">Skip for now — I'll do this later</button>
+    </div>
+  </div></div>`;
+}
+
+function teamRosterHtml(){
+  const me=teamMe();
+  const seats=TEAM.seats||0, used=(TEAM.members||[]).length;
+  const sharing=(TEAM.members||[]).filter(m=>m.usage_consent).length;
+  const rows=(TEAM.members||[]).map(m=>{
+    const u=tmUsageFor(m.user_id);
+    const isMe=m.user_id===me;
+    const consented=!!m.usage_consent;
+    const canRemove = teamAdmin() && m.role !== 'owner';
+    return `<div class="tmrow${TEAM_SEL===m.user_id?' on':''}" role="button" tabindex="0"
+      onclick="selectMember(${esc(JSON.stringify(m.user_id))})">
+      <div class="tmav${isMe?' me':''}">${esc(tmInit(m))}</div>
+      <div class="tmbody">
+        <div class="tmname"><span>${esc(m.display_name||m.email||'Member')}${isMe?' (you)':''}</span>
+          <span class="tmnum">${u?fmtK(u.words):'—'}</span></div>
+        ${consented ? tmSparkHtml(m.user_id) : '<div class="tmsub">Not sharing numbers</div>'}
+      </div>
+      ${canRemove?`<button class="tmrowx" title="Remove ${esc(m.display_name||m.email||'this member')} from the team"
+        onclick="event.stopPropagation();removeMember(${esc(JSON.stringify(m.user_id))}, ${esc(JSON.stringify(m.display_name||m.email||''))})">${SVG.trash}Remove</button>`:''}
+    </div>`;
+  }).join('');
+  const pending=(teamAdmin()?TEAM_INV:[]).map(iv=>`
+    <div class="tmrow" style="cursor:default">
+      <div class="tmav pend"></div>
+      <div class="tmbody">
+        <div class="tmname"><span style="font-family:'JetBrains Mono';font-size:11.5px;color:var(--dim)">${esc(iv.email)}</span></div>
+        <div class="tmsub">Invited &middot; expires ${esc(tmWhen(iv.expires_at).replace(' ago',''))}</div>
+      </div>
+      <div class="tmpendacts">
+        <button title="Send the invite again" onclick="resendInvite(${esc(JSON.stringify(iv.email))}, ${esc(JSON.stringify(iv.role||'member'))})">Resend</button>
+        <button title="Revoke" onclick="revokeInvite(${esc(JSON.stringify(iv.id))})">${SVG.trash}</button>
+      </div>
+    </div>`).join('');
+  return `
+  <div class="tmroster">
+    <div class="tmrhead">
+      ${TEAM.company_name?`<div class="tmco">${esc(TEAM.company_name)}</div>`:'<div class="tmco">Team</div>'}
+      <div class="tmnm">${esc(TEAM.name||'Team')}</div>
+    </div>
+    <div class="tmrlist">
+      <button class="tmrow${TEAM_SEL==='all'?' on':''}" onclick="selectMember('all')">
+        <div class="tmav all">${SVG.team}</div>
+        <div class="tmbody"><div class="tmname"><span>Everyone</span></div>
+          <div class="tmsub">${used} ${used===1?'person':'people'} &middot; ${sharing} sharing</div></div>
+      </button>
+      <div class="navhead" style="margin:16px 10px 6px">MEMBERS</div>
+      ${rows}${pending}
+    </div>
+    ${teamAdmin()?`<div class="tmrfoot">
+      <button class="btn primary" style="width:100%" onclick="tmOpenInvite()">${SVG.plus}Add teammate</button>
+      <div class="tmseat">${used} of ${seats} seats used, including you${
+        TEAM_INV.length?` &middot; ${TEAM_INV.length} invite${TEAM_INV.length===1?'':'s'} out`:''}</div>
+    </div>`:''}
+  </div>`;
+}
+
+// A ranking needs a source of truth about who is in front. Two exist and they are
+// not interchangeable:
+//   TEAM_USAGE  — admin-only, gated on each member's usage_consent (on by default)
+//   TEAM_BOARD  — team-visible, gated on leaderboard_opt_in (off by default)
+// Admins rank from usage because it is the fuller set and already theirs to see;
+// everyone else sees the opt-in board. Same rows, same order, different audience.
+function tmBoardRows(){
+  if(teamAdmin()){
+    return ((TEAM_USAGE&&TEAM_USAGE.rows)||[]).slice()
+      .sort((a,b)=>(b.words||0)-(a.words||0));
+  }
+  if(!TEAM.leaderboard_enabled) return null;
+  return ((TEAM_BOARD&&TEAM_BOARD.rows)||[]).slice()
+    .sort((a,b)=>(b.words||0)-(a.words||0));
+}
+function tmAppsFor(uid){ return (TEAM_APPS&&TEAM_APPS[uid])||[]; }
+function tmTopApp(uid){ const a=tmAppsFor(uid)[0]; return a?a.app:''; }
+
+// One person's app mix, for their own page. Same data as tmAppsCard(), ranked and
+// listed rather than stacked — with a single subject there is room to name every
+// app and its share instead of colour-coding them.
+function tmMemberAppsHtml(uid, m){
+  const apps=tmAppsFor(uid);
+  const who=(m && (m.display_name||m.email||'').split(' ')[0]) || 'They';
+  if(!apps.length){
+    return `<div class="inscard">
+      <div class="chd"><span>Where ${esc(who)} writes</span></div>
+      <p class="ssub" style="margin:0">No app data yet. Flume started recording which app a dictation
+      went into on <b style="color:var(--tx)">21 Aug 2026</b>; this fills in from their next dictation
+      on that version or newer. Dictations from the phone never carry an app &mdash; there is no
+      frontmost window to read on iOS.</p></div>`;
+  }
+  const tot=apps.reduce((a,b)=>a+(b.dictations||0),0)||1;
+  const rows=apps.slice(0,8).map((a,i)=>`<div class="insabar">
+      <div class="arow"><span class="an">${esc(a.app)}</span>
+        <span class="av">${Math.round(a.dictations/tot*100)}% &middot; ${fmtN(a.dictations)}</span></div>
+      <div class="atr"><i style="width:${Math.max(1,Math.round(a.dictations/tot*100))}%;background:${
+        i===0?'#C85A3E':'rgba(240,240,240,.18)'}"></i></div>
+    </div>`).join('');
+  return `<div class="inscard">
+    <div class="chd"><span>Where ${esc(who)} writes</span>
+      <span class="tmfine" style="margin:0;text-transform:none;letter-spacing:.02em">last ${TEAM_DAYS} days</span></div>
+    ${rows}
+    ${apps.length>8?`<div class="tmfine" style="text-align:left;margin-top:10px">+${apps.length-8} more app${apps.length-8===1?'':'s'}</div>`:''}
+  </div>`;
+}
+
+function tmLeaderboardCard(){
+  const rows=tmBoardRows();
+  const me=teamMe();
+  const enable = teamOwner() && !TEAM.leaderboard_enabled
+    ? `<div class="saverow" style="margin-top:14px"><button class="toggle" onclick="toggleTeamBoard()"></button>
+        <span style="font:500 13px Geist">Show this ranking to the whole team</span></div>`
+    : (teamOwner() ? `<div class="saverow" style="margin-top:14px"><button class="toggle on" onclick="toggleTeamBoard()"></button>
+        <span style="font:500 13px Geist">Visible to the whole team</span></div>` : '');
+
+  if(rows===null){
+    return `<div class="inscard"><div class="chd"><span>Ranking</span></div>
+      <p class="ssub" style="margin:0">Your team owner hasn&rsquo;t turned the ranking on, so there is nobody
+      to compare against. Your own numbers are above, and everything you have ever dictated is on your
+      <button class="tmskip" style="padding:0;color:var(--acc)" onclick="show('insights')">Insights</button> page.</p></div>`;
+  }
+  if(!rows.length){
+    return `<div class="inscard"><div class="chd"><span>Ranking</span></div>
+      <p class="ssub" style="margin:0">Nobody has dictated in the last ${TEAM_DAYS} days${teamAdmin()?' — or nobody is sharing their counts yet':''}.</p>
+      ${enable}</div>`;
+  }
+  const bmax=Math.max(1,...rows.map(r=>r.words||0));
+  const body=rows.map((r,i)=>{
+    const uid=r.user_id||'';
+    const wpm=tmWpm(r);
+    const app=tmTopApp(uid);
+    const m=(TEAM.members||[]).find(x=>x.user_id===uid);
+    const name=r.display_name||(m&&(m.display_name||m.email))||'Member';
+    const sub=[ (r.dictations||0)+' dictation'+((r.dictations||0)===1?'':'s'),
+                wpm?wpm+' wpm':'', app?'mostly '+app:'' ].filter(Boolean).join('  ·  ');
+    return `<div class="tmbrow${i===0?' p1':''}${uid===me?' me':''}"${uid?` onclick="selectMember('${uid}')"`:''}>
+      <i class="fill" style="width:${Math.max(3,Math.round((r.words||0)/bmax*100))}%"></i>
+      <div class="tmbrank">${i+1}</div>
+      <div class="tmav${uid===me?' me':''}">${esc((name.trim()[0]||'?').toUpperCase())}</div>
+      <div class="tmbwho"><b>${esc(name)}${uid===me?' <span style="font-weight:400;color:var(--dim)">(you)</span>':''}</b>
+        <span>${esc(sub)}</span></div>
+      <div class="tmbnum">${fmtN(r.words||0)}<em>words</em></div>
+    </div>`;
+  }).join('');
+  const gap = (TEAM.members||[]).length - rows.length;
+  return `<div class="inscard">
+    <div class="chd"><span>Ranking &middot; last ${TEAM_DAYS} days</span>
+      <span class="tmfine" style="margin:0;text-transform:none;letter-spacing:.02em">by words dictated</span></div>
+    <div class="tmboard">${body}</div>
+    ${gap>0?`<div class="tmfine" style="text-align:left;margin-top:12px">${gap} member${gap===1?' is':'s are'} not ${teamAdmin()?'sharing their counts':'on the ranking'}.</div>`:''}
+    ${enable}</div>`;
+}
+
+// Which app each person actually dictates into. The `app` column shipped on
+// 2026-08-21 and older rows are NULL forever, so an empty panel here usually
+// means "not enough new dictations yet", not "nobody uses anything" — say that
+// rather than rendering a convincing zero.
+function tmAppsCard(){
+  const cols=['#C85A3E','#EADFCE','#A8BCA1','#C3AECB','#8a7d74','#4a2d24'];
+  // A member's TEAM_APPS holds exactly their own row, so the same card works for
+  // both audiences — it just has one bar in it, and says "you" instead of a name.
+  const solo=!teamAdmin();
+  const mem=(TEAM.members||[])
+    .filter(m=>!solo || m.user_id===teamMe())
+    .filter(m=>tmAppsFor(m.user_id).length);
+  if(!mem.length){
+    return `<div class="inscard"><div class="chd"><span>${solo?'Where you write':'Where the team writes'}</span></div>
+      <p class="ssub" style="margin:0">Nothing here yet. Flume only started recording which app a dictation went into
+      on <b style="color:var(--tx)">21 Aug 2026</b>, and only on a build from that day or newer — this fills in as
+      ${solo?'you dictate':'the team dictates'}. Nothing from before then can be recovered, and dictations from
+      the phone never carry an app.</p></div>`;
+  }
+  const body=mem.map(m=>{
+    const apps=tmAppsFor(m.user_id);
+    const tot=apps.reduce((a,b)=>a+(b.dictations||0),0)||1;
+    const top=apps.slice(0,5);
+    const rest=apps.slice(5).reduce((a,b)=>a+(b.dictations||0),0);
+    const segs=top.map((a,i)=>`<i style="width:${(a.dictations/tot*100).toFixed(1)}%;background:${cols[i]}"></i>`).join('')
+      + (rest?`<i style="width:${(rest/tot*100).toFixed(1)}%;background:rgba(240,240,240,.14)"></i>`:'');
+    const lg=top.map((a,i)=>`<em><i style="background:${cols[i]}"></i><b>${esc(a.app)}</b> ${Math.round(a.dictations/tot*100)}%</em>`).join('')
+      + (rest?`<em><i style="background:rgba(240,240,240,.14)"></i>other ${Math.round(rest/tot*100)}%</em>`:'');
+    return `<div class="tmapprow">
+      <div class="tmapphd"><b>${solo?'You':esc(m.display_name||m.email||'Member')}</b>
+        <span>${esc(apps[0].app)} &middot; ${fmtN(tot)} dictation${tot===1?'':'s'}</span></div>
+      <div class="tmappbar">${segs}</div>
+      <div class="tmapplg">${lg}</div>
+    </div>`;
+  }).join('');
+  const missing=solo ? 0 : (TEAM.members||[]).length-mem.length;
+  return `<div class="inscard">
+    <div class="chd"><span>${solo?'Where you write':'Where the team writes'}</span>
+      <span class="tmfine" style="margin:0;text-transform:none;letter-spacing:.02em">share of dictations, last ${TEAM_DAYS} days</span></div>
+    <div class="tmapps">${body}</div>
+    ${missing>0?`<div class="tmfine" style="text-align:left;margin-top:14px">No app data for ${missing} member${missing===1?'':'s'} yet — they need a build from 21 Aug 2026 or later.</div>`:''}
+  </div>`;
+}
+
+// One jump, so the pointer on Team lands on the shared set and not on the user's
+// own words — arriving at the wrong scope makes the move look like a dead end.
+function openTeamDictionary(){ DICT_SCOPE='team'; show('dictionary'); }
+// Same idea for consent: land on the pane that owns it, not on Settings' first
+// group, or the pointer is a dead end.
+function showTeamPrivacy(){ SETTINGS_GROUP='privacy'; show('settings'); }
+
+function teamEveryoneHtml(){
+  const rows=((TEAM_USAGE&&TEAM_USAGE.rows)||[]).slice().sort((a,b)=>(b.words||0)-(a.words||0));
+  const total=rows.reduce((a,b)=>a+(b.words||0),0);
+  const cols=['#C85A3E','#a84b33','#7a4030','#4a2d24'];
+  const parts=rows.map((r,i)=>({name:r.display_name||r.email||'Member', pct: total?((r.words||0)/total*100):0, col:cols[i]||cols[3]}));
+  const notSharing=(TEAM.members||[]).length - rows.length;
+  const ms=rows.reduce((a,b)=>a+(b.speech_ms||0),0);
+  const savedMin=Math.round(total/40) - Math.round(ms/60000);   // vs 40wpm typing
+  const top=parts[0];
+  // A plain member's `rows` contains exactly ONE row — their own (the RPCs do that
+  // split, not this code). Presenting that as "the team spoke N words" would be a
+  // straight-up lie, and a contribution ring with one segment always reads 100%.
+  // So the whole hero switches voice for a member.
+  const mine=!teamAdmin();
+  const heroTx = mine
+    ? (total
+        ? `You spoke <b>${fmtN(total)} words</b> on ${esc(TEAM.name||'this team')} in the last ${TEAM_DAYS} days.`
+        : `You haven't dictated in the last ${TEAM_DAYS} days. Your own numbers show up here; the team's totals stay with the admins.`)
+    : (total
+        ? `${esc(TEAM.name)} spoke <b>${fmtN(total)} words</b> in the last ${TEAM_DAYS} days`
+          + (rows.length>1&&top ? ` — <b>${esc(top.name.split(' ')[0])}</b> carried <b>${Math.round(top.pct)}%</b> of them.` : '.')
+        : (TEAM_USAGE
+            ? 'Nobody on the team has dictated in this window yet.'
+            : 'No shared numbers yet — usage appears here as people turn sharing on.'));
+  const dictN=(TEAM.dictionary&&TEAM.dictionary.vocabulary||[]).length;
+  const repN=(TEAM.dictionary&&TEAM.dictionary.replacements||[]).length;
+  const snipN=(TEAM.dictionary&&TEAM.dictionary.snippets||[]).length;
+  const dicts=rows.reduce((a,b)=>a+(b.dictations||0),0);
+  const pace=ms>=120000 ? Math.round(total/(ms/60000)) : null;
+  return `
+  <div class="tmdetail">
+    <div class="mhead"><div><div class="eyebrow">Team</div><h1 class="title">${mine ? `You on ${esc(TEAM.name||'the team')}` : `How ${esc(TEAM.name||'the team')} flows`}</h1></div>
+      <span class="insseg" style="float:none">
+        <button class="${TEAM_DAYS===7?'on':''}" onclick="teamDays(7)">7 days</button>
+        <button class="${TEAM_DAYS===30?'on':''}" onclick="teamDays(30)">30 days</button>
+        <button class="${TEAM_DAYS===90?'on':''}" onclick="teamDays(90)">90 days</button></span></div>
+
+    <div class="tmring">
+      ${mine ? '' : tmRingSvg(parts, total)}
+      <div class="tmringtx">
+        ${savedMin>0?`<div class="tmbadge">&asymp; ${fmtMin(savedMin)} of typing saved</div>`:''}
+        <div class="tmlead">${heroTx}</div>
+        ${mine ? `<div class="tmfine" style="text-align:left;margin-top:12px">
+            Only your own numbers appear on this page. Your admins see the team&rsquo;s totals; you can
+            switch even your own off under <button class="tmskip" style="padding:0;color:var(--acc)"
+            onclick="showTeamPrivacy()">Settings &rarr; Team privacy</button>.</div>`
+          : `<div class="tmlegend">
+          ${parts.map(p=>`<div><i style="background:${p.col}"></i>${esc(p.name)}<em>${Math.round(p.pct)}%</em></div>`).join('')}
+          ${notSharing>0?`<div><i style="background:rgba(240,240,240,.12)"></i>Not sharing<em>${notSharing}</em></div>`:''}
+        </div>`}
+      </div>
+    </div>
+
+    <div class="insband">
+      <div class="itile cream"><div class="tk">${mine?'Your words':'Words spoken'}</div>
+        <div class="tv">${fmtN(total)}</div>
+        <div class="ts">last ${TEAM_DAYS} days${mine?'':` &middot; ${rows.length} of ${(TEAM.members||[]).length} sharing`}</div></div>
+      <div class="itile sage"><div class="tk">Dictations</div>
+        <div class="tv">${fmtN(dicts)}</div>
+        <div class="ts">${dicts?`${Math.round(total/Math.max(1,dicts))} words each`:'nothing yet'}</div></div>
+      <div class="itile"><div class="tk">${mine?'Your pace':'Team pace'}</div>
+        <div class="tv">${pace?pace:'&mdash;'}<em style="font-size:14px;font-style:normal;color:var(--dim)">${pace?' wpm':''}</em></div>
+        <div class="ts">${pace?`${fmtMin(Math.round(ms/60000))} of speech`:'needs 2 min of audio'}</div></div>
+      <div class="itile plum"><div class="tk">Seats</div>
+        <div class="tv">${(TEAM.members||[]).length} / ${TEAM.seats||0}</div>
+        <div class="ts">${esc(TEAM.plan||'team')} plan${TEAM_INV.length?` &middot; ${TEAM_INV.length} invited`:''}${
+          TEAM_INV.length && ((TEAM.members||[]).length + TEAM_INV.length > (TEAM.seats||0))
+            ? ' &middot; over seats' : ''}</div></div>
+    </div>
+
+    ${tmLeaderboardCard()}
+    ${tmAppsCard()}
+
+    <div class="inscard">
+      <div class="chd"><span>Shared dictionary</span>
+        <button class="tmskip" style="padding:0;color:var(--acc);text-transform:none;letter-spacing:.02em" onclick="openTeamDictionary()">Open in Dictionary &rarr;</button></div>
+      <p class="ssub" style="margin:0">${dictN+repN+snipN
+        ? `<b style="color:var(--tx)">${dictN} word${dictN===1?'':'s'}</b>, ${repN} rule${repN===1?'':'s'} and ${snipN} snippet${snipN===1?'':'s'} apply to everyone on ${esc(TEAM.name||'the team')}.`
+        : `Nothing shared yet. Names, jargon and product words the whole team should get right belong here.`}
+        It lives with your own words under <b style="color:var(--tx)">Dictionary</b> &rarr; ${esc(TEAM.name||'Team')}.</p>
+    </div>
+
+    <div class="inscard">
+      <div class="chd"><span>Your privacy</span>
+        <button class="tmskip" style="padding:0;color:var(--acc);text-transform:none;letter-spacing:.02em"
+          onclick="showTeamPrivacy()">Open in Settings &rarr;</button></div>
+      <p class="ssub" style="margin:0">You are ${TEAM.usage_consent
+        ? `<b style="color:var(--tx)">sharing your dictation counts</b> with admins${TEAM.leaderboard_opt_in?' and appearing on the ranking':', and staying off the ranking'}.`
+        : `<b style="color:var(--tx)">not sharing anything</b> — your numbers appear in no admin view.`}
+        What you dictate is never shared either way. Change it under
+        <b style="color:var(--tx)">Settings</b> &rarr; Team privacy.</p>
+    </div>
+
+    ${teamOwner()?`<div class="inscard">
+      <div class="chd"><span>Joining by domain</span></div>
+      ${TEAM.is_generic_domain
+        ? `<div class="ssub" style="margin:0">${esc(TEAM.name)} was created on a personal email domain, so anyone could claim it. Domain joining is only offered on a company domain — invites are the way in.</div>`
+        : `<p class="ssub" style="margin-bottom:12px">Anyone signing up with an <b style="color:var(--tx)">@${esc(TEAM.domain||'')}</b> address can ask to join instead of waiting for an invite. Requests still need your approval.</p>
+           <div class="saverow"><button class="toggle ${TEAM.auto_join_enabled?'on':''}" onclick="setTeamAutoJoin(${TEAM.auto_join_enabled?'false':'true'})"></button>
+             <span style="font:500 13px Geist">Let @${esc(TEAM.domain||'')} colleagues find this team</span></div>`}
+      <div class="tmnote" style="margin-top:14px">${SVG.lock}
+        <span>This is the opposite of a restriction — it lets people in <b style="color:var(--tx2)">without</b> an invite. Invites already work for any address, including personal ones, which is how you would add a contractor.</span></div>
+    </div>`:''}
+    ${TEAM_ERR?`<div class="tmfine" style="text-align:left;margin-top:14px">Last sync problem: ${esc(TEAM_ERR)}</div>`:''}
+  </div>`;
+}
+
+function teamMemberHtml(uid){
+  const m=(TEAM.members||[]).find(x=>x.user_id===uid);
+  if(!m){ TEAM_SEL='all'; return teamEveryoneHtml(); }
+  const isMe=uid===teamMe();
+  const u=tmUsageFor(uid);
+  const wpm=tmWpm(u);
+  const consented=!!m.usage_consent;
+  const isOwner=m.role==='owner';
+  const allWpm=((TEAM_USAGE&&TEAM_USAGE.rows)||[]).map(tmWpm).filter(Boolean);
+  const best=allWpm.length?Math.max(...allWpm):null;
+  const bestRow=best?((TEAM_USAGE.rows||[]).find(r=>tmWpm(r)===best)):null;
+  const ctl = (teamAdmin() && !isOwner)
+    ? `<select class="tmsel" onchange="setMemberRole(${esc(JSON.stringify(uid))}, this.value)">
+         <option value="member"${m.role==='member'?' selected':''}>Member</option>
+         <option value="admin"${m.role==='admin'?' selected':''}>Admin</option></select>
+       <button class="tmghost" onclick="removeMember(${esc(JSON.stringify(uid))}, ${esc(JSON.stringify(m.display_name||m.email||''))})">Remove from team</button>`
+    : `<span class="tmrole ${esc(m.role)}" style="font:500 10px 'JetBrains Mono';letter-spacing:.14em;padding:6px 10px;border-radius:6px;background:var(--raised);color:var(--mut)">${esc(m.role).toUpperCase()}</span>`;
+  if(!consented){
+    return `
+    <div class="tmdetail">
+      <div class="tmdhead">
+        <div class="tmav${isMe?' me':''}">${esc(tmInit(m))}</div>
+        <div style="flex:1;min-width:0"><div class="tmdname">${esc(m.display_name||m.email||'Member')}${isMe?' (you)':''}</div>
+          <div class="tmdmeta">${esc(m.email||'')}${m.joined_at?` &middot; joined ${esc(tmWhen(m.joined_at))}`:''}</div></div>
+        ${ctl}
+      </div>
+      <div class="inscard insempty" style="padding:60px 20px">
+        <div class="bigmic">${SVG.lock}</div>
+        <h2>${isMe?'You haven&rsquo;t turned sharing on':'Nothing to show here'}</h2>
+        <p>${isMe
+          ? 'Your dictation counts stay private until you switch sharing on. Nothing you dictate is ever shared either way.'
+          : esc((m.display_name||'They').split(' ')[0])+' hasn&rsquo;t turned usage sharing on. Only they can change that — an admin can&rsquo;t do it for them.'}</p>
+        ${isMe?`<button class="btn primary" style="width:auto;padding:11px 18px;margin-top:18px" onclick="setTeamConsent(true, ${TEAM.leaderboard_opt_in?'true':'false'})">Share my counts</button>`:''}
+      </div>
+    </div>`;
+  }
+  return `
+  <div class="tmdetail">
+    <div class="tmdhead">
+      <div class="tmav${isMe?' me':''}">${esc(tmInit(m))}</div>
+      <div style="flex:1;min-width:0"><div class="tmdname">${esc(m.display_name||m.email||'Member')}${isMe?' (you)':''}</div>
+        <div class="tmdmeta">${esc(m.email||'')}${m.joined_at?` &middot; joined ${esc(tmWhen(m.joined_at))}`:''}</div></div>
+      ${ctl}
+    </div>
+
+    ${wpm ? `
+    <div class="inshero">
+      ${tmGaugeSvg(wpm)}
+      <div class="hnum">${wpm}</div>
+      <div class="hunit">WORDS PER MINUTE</div>
+      <div class="hbadge">${(wpm/52).toFixed(1)}&times; the average typist</div>
+      <div class="hsub">${bestRow && tmWpm(bestRow)>wpm
+            ? `Fastest on the team is <b>${esc((bestRow.display_name||'a teammate').split(' ')[0])}</b> at <b>${best}</b>.`
+            : 'Fastest on the team.'}</div>
+    </div>` : `
+    <!-- A blank gauge is the largest element on the page and reads as "broken" or
+         "still loading" — which is exactly how a brand-new member's page looked.
+         So when there is not enough measured audio to state a speed honestly, the
+         hero says what IS true instead of showing a dash. -->
+    <div class="inscard insempty" style="padding:34px 20px">
+      <div class="bigmic">${SVG.mic}</div>
+      <h2>${(u&&u.dictations) ? 'Just getting started' : `${esc((m.display_name||'They').split(' ')[0])} hasn't dictated yet`}</h2>
+      <p>${(u&&u.dictations)
+        ? `${fmtN(u.dictations)} dictation${u.dictations===1?'':'s'} so far &mdash; ${fmtN(u.words)} words. Speaking speed needs a couple of minutes of recorded audio before it means anything, so it appears here once there is enough.`
+        : 'Numbers appear here from their first dictation. Nothing is missing &mdash; there is just nothing to show yet.'}</p>
+    </div>`}
+
+    <div class="insband">
+      <div class="itile cream"><div class="tk">Words dictated</div>
+        <div class="tv">${fmtN(u?u.words:0)}</div>
+        <div class="ts">${fmtN(u?u.dictations:0)} dictation${(u&&u.dictations===1)?'':'s'}${u&&u.dictations?` &middot; avg ${Math.round(u.words/u.dictations)} words`:''}</div></div>
+      <div class="itile sage"><div class="tk">Time speaking</div>
+        <div class="tv">${tmMins(u?u.speech_ms:0)}</div>
+        <div class="ts">last ${TEAM_DAYS} days</div></div>
+      <div class="itile plum"><div class="tk">Last active</div>
+        <div class="tv" style="font-size:20px">${esc(tmWhen(u?u.last_active:null))}</div>
+        <div class="ts">on this team</div></div>
+    </div>
+
+    ${tmHeatHtml(uid)}
+    ${tmMemberAppsHtml(uid, m)}
+
+    <div class="tmnote">${SVG.lock}
+      <span>${isMe
+        ? 'These are your own numbers. Your admins see the same counts, durations and app names — never a word of what you dictated, and never your audio.'
+        : esc((m.display_name||'They').split(' ')[0])+' chose to share these and can switch them off at any time. You are seeing counts, durations and the names of the apps they dictate into — never a word of what they dictated, and never their audio.'}</span></div>
+  </div>`;
+}
+
+function renderTeam(){
+  const box=document.getElementById('teamMain');
+  if(!box) return;
+  const solo = !hasTeam() || !TEAM_SETUP;
+  box.classList.toggle('solo', solo);
+  if(!hasTeam()){ box.innerHTML=teamStartHtml(); return; }
+  if(!TEAM_SETUP){ box.innerHTML=teamSetupHtml(); return; }
+  box.innerHTML = teamRosterHtml() + (TEAM_SEL==='all' ? teamEveryoneHtml() : teamMemberHtml(TEAM_SEL));
+  tmSizeHeat();
+}
+
 function navTo(id){
   if(id==='meetings'){ mntAbandon(); MVIEW='list'; MROW=null; MSUBNOTES=false; MSPK=null; MEET_ASK_SCOPE=null; MEET_ASK=null; }
   show(id);

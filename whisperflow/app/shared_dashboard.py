@@ -1097,6 +1097,24 @@ class DashboardApi:
         m = self._meetings()
         return m.stop_async() if m else {"ok": False, "error": "unavailable"}
 
+    def cancel_meeting(self):
+        """Discard the live meeting outright — no save, no summary, no history
+        row. Distinct from stop_meeting, which finalizes the meeting and hands
+        off to the dashboard; the JS side already gates this behind a
+        confirm() dialog since it's irreversible."""
+        try:
+            m = self._meetings()
+            if not (m and m.active):
+                return {"ok": False, "error": "No active meeting."}
+            r = m.cancel_active()
+            if r.get("ok"):
+                win = self._meeting_win()
+                if win:
+                    self.app._on_main(win.hide)
+            return r
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
     def pause_meeting(self):
         try:
             m = self._meetings()
@@ -1618,6 +1636,201 @@ class DashboardApi:
         dictionary.remove_snippet(self.app.config, snippet_id, save_config)
         return _ok(snippets=dictionary.get_snippets(self.app.config),
                    sync_error=dictionary.last_sync_error())
+
+    # ── team / organization (IDI-216) ─────────────────────────────────────────
+    # Every method below is a thin wrapper over `app/organizations.py`, which owns
+    # the fail-closed behavior: no team, a network blip and an unapplied migration
+    # all return the same "no org" shape, and nothing here can raise into the JS
+    # bridge. `get_team` is the only one the page calls on load.
+    def get_team(self, refresh=False):
+        from app import organizations
+        from app import dictionary
+        cfg = self.app.config
+        org = (organizations.fetch(cfg, save_config) if refresh
+               else organizations.get(cfg))
+        d = dictionary.get(cfg)
+        return _ok(team=org, can_admin=org.get("role") in ("owner", "admin"),
+                   # Drives the "just created" screen. Local-only config key —
+                   # this is a per-device onboarding nudge, not account state, so
+                   # it must not become a Supabase column.
+                   setup_done=bool(cfg.get("org_setup_done")),
+                   personal={"vocabulary": len(d["vocabulary"]),
+                             "replacements": len(d["replacements"]),
+                             "snippets": len(d["snippets"]),
+                             "sample": d["vocabulary"][-6:]},
+                   sync_error=organizations.last_error())
+
+    def dismiss_team_setup(self):
+        cfg = self.app.config
+        cfg["org_setup_done"] = True
+        save_config(cfg)
+        return _ok()
+
+    def get_team_series(self, days=98):
+        from app import organizations
+        return _ok(**organizations.usage_series(self.app.config, days))
+
+    def seed_team_dictionary(self):
+        """Copy this user's own dictionary into the team's (onboarding step 1)."""
+        from app import organizations
+        res = organizations.seed_team_dictionary_from_personal(self.app.config, save_config)
+        if not res.get("ok"):
+            return _err(res.get("error", "Couldn't copy your dictionary"))
+        cfg = self.app.config
+        cfg["org_setup_done"] = True
+        save_config(cfg)
+        return _ok(added=res.get("added") or {}, team=organizations.get(cfg))
+
+    def create_team(self, name, company=""):
+        from app import organizations
+        res = organizations.create(self.app.config, name, company, save_config)
+        if not res.get("ok"):
+            return _err(res.get("error", "Couldn't create the team"))
+        # A brand-new team lands on the setup screen, not on an empty roster.
+        cfg = self.app.config
+        cfg["org_setup_done"] = False
+        save_config(cfg)
+        return _ok(**res)
+
+    def invite_member(self, email, role="member"):
+        from app import organizations
+        res = organizations.invite(self.app.config, email, role)
+        if not res.get("ok"):
+            msg = res.get("error", "Couldn't send the invite")
+            detail = res.get("detail") or ""
+            return _err(f"{msg} — {detail}" if detail else msg)
+        cfg = self.app.config
+        cfg["org_setup_done"] = True   # first invite sent — setup is done
+        save_config(cfg)
+        return _ok(invite=res.get("invite") or {}, link=res.get("link") or "",
+                   # IDI-220: a repeat invite updates the existing row rather than
+                   # minting a second one, so the UI says "resent", not "sent".
+                   reissued=bool(res.get("reissued")),
+                   seats=res.get("seats") or {},
+                   invites=organizations.list_invites(cfg))
+
+    def list_team_invites(self):
+        from app import organizations
+        return _ok(invites=organizations.list_invites(self.app.config))
+
+    def revoke_team_invite(self, invite_id):
+        from app import organizations
+        res = organizations.revoke_invite(self.app.config, invite_id)
+        if not res.get("ok"):
+            return _err(res.get("error", "Couldn't revoke that invite"))
+        return _ok(invites=organizations.list_invites(self.app.config))
+
+    def claim_team_invite(self, token, confirm_mismatch=False):
+        """IDI-223: a wrong-account claim comes back as `needs_confirm` with both
+        addresses rather than a flat refusal, so the page can ask before binding the
+        invite to whoever happens to be signed in."""
+        from app import organizations
+        res = organizations.claim_invite(self.app.config, token, save_config,
+                                         confirm_mismatch=bool(confirm_mismatch))
+        if res.get("ok"):
+            return _ok(team=res.get("org"), already=bool(res.get("already")))
+        if res.get("needs_confirm"):
+            return {"ok": False, "needs_confirm": True,
+                    "invited_email": res.get("invited_email", ""),
+                    "current_email": res.get("current_email", ""),
+                    "error": res.get("error", "")}
+        return _err(res.get("error", ""))
+
+    def preview_team_invite(self, token):
+        from app import organizations
+        res = organizations.invite_preview(self.app.config, token)
+        return _ok(**{k: v for k, v in res.items() if k != "ok"}) if res.get("ok") \
+            else _err(res.get("error", ""))
+
+    def decline_team_invite(self, token):
+        from app import organizations
+        res = organizations.decline_invite(self.app.config, token)
+        return _ok() if res.get("ok") else _err(res.get("error", ""))
+
+    def get_pending_invites(self):
+        """IDI-222 fallback — surfaced as a banner on the Team screen so an invite
+        is recoverable even when the emailed link never reached the app."""
+        from app import organizations
+        return _ok(invites=organizations.pending_invites_for_me(self.app.config))
+
+    def accept_pending_invite(self, org_id):
+        from app import organizations
+        res = organizations.accept_pending(self.app.config, org_id, save_config)
+        return _ok(team=res.get("org")) if res.get("ok") else _err(res.get("error", ""))
+
+    def set_team_auto_join(self, enabled):
+        from app import organizations
+        res = organizations.set_auto_join(self.app.config, enabled, save_config)
+        return _ok(team=res.get("org")) if res.get("ok") else _err(res.get("error", ""))
+
+    def set_member_role(self, user_id, role):
+        from app import organizations
+        res = organizations.set_role(self.app.config, user_id, role, save_config)
+        return _ok(team=res.get("org")) if res.get("ok") else _err(res.get("error", ""))
+
+    def remove_team_member(self, user_id):
+        from app import organizations
+        res = organizations.remove_member(self.app.config, user_id, save_config)
+        return _ok(team=res.get("org")) if res.get("ok") else _err(res.get("error", ""))
+
+    def leave_team(self):
+        from app import organizations
+        uid = self.app.config.get("sync_user_id", "")
+        if not uid:
+            return _err("Not signed in")
+        res = organizations.remove_member(self.app.config, uid, save_config)
+        return _ok(team=res.get("org")) if res.get("ok") else _err(res.get("error", ""))
+
+    def set_team_settings(self, fields):
+        from app import organizations
+        res = organizations.set_org_settings(self.app.config, save_config, **(fields or {}))
+        return _ok(team=res.get("org")) if res.get("ok") else _err(res.get("error", ""))
+
+    def set_team_consent(self, usage, leaderboard):
+        from app import organizations
+        res = organizations.set_consent(self.app.config, usage, leaderboard, save_config)
+        return _ok(team=res.get("org")) if res.get("ok") else _err(res.get("error", ""))
+
+    def get_team_dictionary(self):
+        """The SHARED set, for the team editor. Distinct from get_dictionary(),
+        which is this user's own — the two are merged only at dictation time."""
+        from app import organizations
+        org = organizations.get(self.app.config)
+        d = org.get("dictionary") or {}
+        return _ok(vocabulary=d.get("vocabulary") or [],
+                   replacements=d.get("replacements") or [],
+                   snippets=d.get("snippets") or [],
+                   can_edit=org.get("role") in ("owner", "admin"))
+
+    def save_team_dictionary(self, vocabulary, replacements, snippets=None):
+        from app import organizations
+        current = organizations.get(self.app.config).get("dictionary") or {}
+        payload = {
+            "vocabulary": vocabulary or [],
+            "replacements": replacements or [],
+            # Omitting snippets must not wipe the sibling array off the shared row
+            # — the same trap dictionary.save() guards against for the personal one.
+            "snippets": current.get("snippets") or [] if snippets is None else snippets,
+        }
+        res = organizations.save_team_dictionary(self.app.config, payload, save_config)
+        if not res.get("ok"):
+            return _err(res.get("error", "Couldn't save the team dictionary"))
+        d = res.get("dictionary") or {}
+        return _ok(vocabulary=d.get("vocabulary") or [],
+                   replacements=d.get("replacements") or [],
+                   snippets=d.get("snippets") or [])
+
+    def get_team_usage(self, days=30):
+        from app import organizations
+        return _ok(**organizations.usage_summary(self.app.config, days))
+
+    def get_team_apps(self, days=30):
+        from app import organizations
+        return _ok(**organizations.app_breakdown(self.app.config, days))
+
+    def get_team_leaderboard(self, days=7):
+        from app import organizations
+        return _ok(**organizations.leaderboard(self.app.config, days))
 
     # ── auto-learn from corrections ─────────────────────────────────────────────
     def get_autolearn_enabled(self):

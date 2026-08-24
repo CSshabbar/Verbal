@@ -923,6 +923,77 @@ class MeetingSession:
             self._emit_state()
             self._persist_local()
 
+    def cancel(self):
+        """Discard the meeting outright: stop capture immediately and erase
+        anything already persisted, skipping transcription drain, upload and
+        summary entirely. Unlike stop(), the recording is thrown away — only
+        call this once the user has confirmed. Runs on a daemon thread
+        (MeetingManager.cancel_active)."""
+        try:
+            self._cancel_impl()
+        except Exception as e:
+            logger.error("meeting cancel failed: %s", e)
+            self.state = "failed"
+            self.error = str(e)
+            self._emit_state()
+
+    def _cancel_impl(self):
+        if self.state not in ("preparing", "recording", "paused"):
+            return
+        try:
+            if self._mic_stream:
+                self._mic_stream.stop()
+                self._mic_stream.close()
+        except Exception:
+            pass
+        self._mic_stream = None
+        try:
+            if self._sys_cap:
+                self._sys_cap.stop()
+        except Exception:
+            pass
+        self._sys_cap = None
+        # No drain, no upload, no summary — the whole point of Cancel. Just
+        # unblock the transcribe worker so it exits its loop.
+        with self._queue_lock:
+            self._queue = []
+        self._stop_evt.set()
+        self._queue_evt.set()
+        self.state = "cancelled"
+        self._emit_state()
+        self._discard()
+
+    def _discard(self):
+        """Erase every trace of a cancelled meeting — cloud row, cloud audio,
+        local WAV, local meta list. Same cleanup as MeetingManager.delete(),
+        but callable mid-flight: delete() refuses while a meeting is still in
+        an active/processing state, which Cancel needs to override."""
+        try:
+            cfg = self.app.config
+            user_id = cfg.get("sync_user_id", "")
+            if user_id and _cloud_gate(cfg):
+                try:
+                    import httpx
+                    from app.sync import SUPABASE_URL, SUPABASE_KEY
+                    from app.auth import auth_header
+                    storage_hdrs = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}
+                    httpx.delete(f"{SUPABASE_URL}/rest/v1/meetings?id=eq.{self.id}",
+                                 headers=auth_header(cfg), timeout=10)
+                    httpx.delete(f"{SUPABASE_URL}/storage/v1/object/meeting-audio/"
+                                 f"{user_id}/{self.id}.wav", headers=storage_hdrs, timeout=10)
+                except Exception as e:
+                    logger.debug("cancelled-meeting cloud cleanup failed: %s", e)
+            try:
+                p = os.path.join(MEETINGS_DIR, f"{self.id}.wav")
+                if os.path.exists(p):
+                    os.remove(p)
+            except Exception:
+                pass
+            cfg["meetings"] = [m for m in cfg.get("meetings", []) if m.get("id") != self.id]
+            save_config(cfg)
+        except Exception as e:
+            logger.debug("cancelled-meeting local cleanup failed: %s", e)
+
     def _stop_impl(self):
         if self.state not in ("recording", "paused", "preparing"):
             return
@@ -1582,6 +1653,20 @@ class MeetingManager:
             if not s:
                 return {"ok": False, "error": "No active meeting."}
             threading.Thread(target=s.stop, daemon=True).start()
+            return {"ok": True, "id": s.id}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def cancel_active(self):
+        """Discard the live meeting — see MeetingSession.cancel(). `active`
+        already excludes any state cancel() would set (`cancelled`), so no
+        extra bookkeeping is needed here to free the manager up for a new
+        meeting once the thread flips the state."""
+        try:
+            s = self.active
+            if not s:
+                return {"ok": False, "error": "No active meeting."}
+            threading.Thread(target=s.cancel, daemon=True).start()
             return {"ok": True, "id": s.id}
         except Exception as e:
             return {"ok": False, "error": str(e)}

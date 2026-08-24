@@ -9,6 +9,7 @@
  */
 import { useState, useCallback, useEffect } from 'react';
 import { Linking } from 'react-native';
+import { isInviteUrl, tokenFromUrl, setPendingInvite, claimPendingInvite } from '../../lib/pendingInvite';
 import * as WebBrowser from 'expo-web-browser';
 import * as QueryParams from 'expo-auth-session/build/QueryParams';
 import { supabase, SUPABASE_URL, SUPABASE_ANON_KEY } from '../../lib/supabase';
@@ -163,6 +164,12 @@ async function afterSignIn(session: any) {
   // already removed by clearAccountData above.)
   try { await setPairedUserId(null); } catch { /* ignore */ }
   await setUserId(uid);
+  // A team invite deep-linked BEFORE sign-in is claimed here, now that there is a
+  // session for the RPC to check the invited address against. Fail-closed and
+  // fire-and-forget: a failed claim must never block or break sign-in.
+  claimPendingInvite()
+    .then((res) => { if (res.error) notify('Team invite', res.error); })
+    .catch(() => {});
   // Register this device, reconcile THIS device's sync flag from its cloud row,
   // then show the devices sheet when the account is already on other devices.
   try {
@@ -232,6 +239,26 @@ export function useAuth() {
     // via the link rather than resolving openAuthSessionAsync).
     const handleUrl = (url: string | null) => {
       if (!url) return;
+      // A team invite (IDI-216) can land before the recipient has ever signed in
+      // — that's the usual path: tap the link in the email, land on Welcome, sign
+      // in with Google, and only THEN can the claim RPC check the address match.
+      // So park the token and let afterSignIn claim it; if a session already
+      // exists, claim right away.
+      if (isInviteUrl(url)) {
+        const token = tokenFromUrl(url);
+        if (token) {
+          setPendingInvite(token)
+            .then(async () => {
+              const { data } = await supabase.auth.getSession();
+              if (!data.session) return;
+              const res = await claimPendingInvite();
+              if (res.claimed) notify('Team', "You've joined the team.");
+              else if (res.error) notify('Team invite', res.error);
+            })
+            .catch(() => {});
+        }
+        return;
+      }
       const isAuth = url.indexOf('auth-callback') !== -1
         || url.indexOf('code=') !== -1 || url.indexOf('access_token=') !== -1;
       if (!isAuth) return;
