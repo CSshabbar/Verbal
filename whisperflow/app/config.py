@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 # refresh, dashboard) never race on the same temp file.
 _config_lock = threading.Lock()
 
-APP_VERSION = "1.0.17"
+APP_VERSION = "1.0.18"
 PLATFORM = "mac" if platform.system() == "Darwin" else "win" if platform.system() == "Windows" else "linux"
 
 CONFIG_DIR = Path.home() / ".verbal"
