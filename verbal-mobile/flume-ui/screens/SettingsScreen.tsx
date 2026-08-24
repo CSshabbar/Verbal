@@ -488,7 +488,7 @@ export const SettingsScreen: React.FC<Props> = ({ onOpenDevices, onOpenSnippets,
 
         {/* Account actions + about */}
         <Section label="ABOUT">
-          <ListRow icon="information-circle-outline" title="Verbal" subtitle="v1.0 · Voice dictation" trailing={null} />
+          <ListRow icon="information-circle-outline" title="Flume" subtitle="v1.0 · Voice dictation" trailing={null} />
           <View style={{ height: 12 }} />
           <Button label="Sign out" variant="ghost" onPress={confirmSignOut} />
           <View style={{ height: 8 }} />

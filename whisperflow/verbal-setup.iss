@@ -1,7 +1,7 @@
-; Inno Setup Script for Verbal Windows Installer
+; Inno Setup Script for Flume Windows Installer
 ; Builds a silent-install capable .exe that auto-updates the app
 
-#define MyAppName "Verbal"
+#define MyAppName "Flume"
 ; MyAppVersion is passed in from CI via `ISCC.exe /DMyAppVersion=X.Y.Z` (kept
 ; in sync with config.APP_VERSION, same source of truth the release pipeline
 ; already enforces — see build-release.yml's "Tag must match config.APP_VERSION"
@@ -9,8 +9,10 @@
 #ifndef MyAppVersion
   #define MyAppVersion "0.0.0-dev"
 #endif
-#define MyAppPublisher "Verbal"
-#define MyAppExeName "Verbal.exe"
+#define MyAppPublisher "Flume"
+; Must match `name=` in the EXE(...) call of verbal-win.spec — that is what
+; actually names the frozen PyInstaller output (dist\Flume.exe).
+#define MyAppExeName "Flume.exe"
 
 [Setup]
 ; This GUID is the installer's permanent identity — Windows uses it to
@@ -24,11 +26,11 @@ AppId={{0F0305B3-E5F2-4102-9D1F-54542A135659}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
-DefaultDirName={autopf}\Verbal
+DefaultDirName={autopf}\Flume
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 OutputDir=dist
-OutputBaseFilename=VerbalSetup
+OutputBaseFilename=FlumeSetup
 SetupIconFile=assets\icon.ico
 Compression=lzma
 SolidCompression=yes
@@ -43,7 +45,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
 [Files]
-Source: "dist\Verbal.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "dist\Flume.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "assets\*"; DestDir: "{app}\assets"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "assets\sounds\*"; DestDir: "{app}\assets\sounds"; Flags: ignoreversion recursesubdirs createallsubdirs
 
@@ -55,9 +57,21 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: de
 ; Install the Edge WebView2 Evergreen runtime if it's absent. pywebview's
 ; edgechromium backend requires it. The bootstrapper is downloaded during the
 ; wizard (see [Code] below) to {tmp}. Runs silently and waits for completion so
-; the runtime exists before Verbal first launches.
+; the runtime exists before Flume first launches.
 Filename: "{tmp}\MicrosoftEdgeWebview2Setup.exe"; Parameters: "/silent /install"; StatusMsg: "Installing Edge WebView2 runtime..."; Flags: waituntilterminated; Check: WebView2Missing
-Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
+; No `skipifsilent` here (deliberately, as of the tray "update available"
+; work): app/updater.py::install_update ALWAYS passes /SILENT to ISCC —
+; even the "user clicked Yes in the update dialog" path, not just the
+; auto_update-silent path — so `skipifsilent` was skipping this relaunch on
+; EVERY app-triggered update install, silent or not, leaving the user to
+; reopen Flume by hand every single time. Per Inno Setup's own semantics, a
+; `postinstall`-flagged entry WITHOUT `skipifsilent` still runs automatically
+; at the end of a /SILENT or /VERYSILENT install (there's no wizard "finish"
+; checkbox to honor, so it just runs) — for a normal *interactive* manual
+; install (someone double-clicking FlumeSetup.exe with no switches) this is
+; unchanged: it still shows as the checked-by-default "Launch Flume" box on
+; the wizard's final page.
+Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall
 
 [InstallDelete]
 Type: filesandordirs; Name: "{app}\*"
@@ -114,7 +128,7 @@ begin
   Result := True;
   { On the Ready page, fetch the bootstrapper if the runtime isn't present.
     Failure to download is non-fatal: the [Run] Check still fires, but the file
-    may be absent — Verbal falls back to whatever runtime is available. }
+    may be absent — Flume falls back to whatever runtime is available. }
   if (CurPageID = wpReady) and WebView2Missing() then begin
     DownloadPage.Clear;
     DownloadPage.Add(WV2_URL, 'MicrosoftEdgeWebview2Setup.exe', '');

@@ -76,10 +76,88 @@ MODE_TOGGLE = "toggle"
 # so the clip is discarded. Applied against the recorder's real sample rate.
 MIN_RECORDING_SECONDS = 1.0
 
+# How often the background update check re-runs after the startup poll
+# (`_start_app`'s one-shot check + `updater.check_for_update`'s own 30s
+# startup suppression already cover "just launched"). 4h is frequent enough
+# that a release is discovered same-day without hammering the
+# `app_versions_latest` endpoint from every idle desktop.
+UPDATE_CHECK_INTERVAL = 4 * 60 * 60
+
+_UPDATE_BADGE_CACHE = {}   # (base_path, dark) -> temp PNG path, rendered once per process
+
+
+def _menu_bar_is_dark():
+    """Best-effort read of the CURRENT menu bar appearance. Used only to
+    manually reproduce rumps' `template=True` light/dark tinting for the
+    update-badge icon variant (see `_badged_icon_path` for why that variant
+    can't just use template mode itself). Fails closed to light/black —
+    matches the glyph's normal default and is the safer guess since a black
+    glyph is still legible on translucency in either menu bar, whereas
+    guessing 'dark' wrong on a light bar can wash the glyph out entirely."""
+    try:
+        from AppKit import NSApp
+        appearance = NSApp.effectiveAppearance()
+        name = appearance.bestMatchFromAppearancesWithNames_(
+            ["NSAppearanceNameAqua", "NSAppearanceNameDarkAqua"])
+        return name == "NSAppearanceNameDarkAqua"
+    except Exception:
+        return False
+
+
+def _badged_icon_path(base_path, dark=None):
+    """Composite a small terracotta "update available" dot onto the
+    top-right corner of `base_path` (ICON_PATH or ICON_ACTIVE_PATH) and
+    return a path to the rendered PNG, cached per (base_path, appearance)
+    for the life of the process — the source icons never change at runtime.
+
+    Deliberately NOT rendered as a rumps `template` image. NSStatusItem
+    template images are pure alpha masks: the WHOLE image is tinted one
+    solid color for the current appearance, so a colored dot composited
+    into a template image would just get flattened to the same monochrome
+    as the rest of the icon — never actually appear terracotta/red. So this
+    variant opts OUT of template mode (`VerbalApp._set_menubar_icon` flips
+    `self.template` accordingly) and manually recolors the glyph to match
+    the current menu bar appearance, reproducing what template mode would
+    have done automatically. Caveat: if the user flips System Settings'
+    appearance while a badge is showing, the glyph only picks up the new
+    tint on the next icon swap (next record start/stop or update check),
+    not live — an accepted, purely cosmetic edge case.
+    """
+    if dark is None:
+        dark = _menu_bar_is_dark()
+    cache_key = (base_path, dark)
+    cached = _UPDATE_BADGE_CACHE.get(cache_key)
+    if cached and os.path.exists(cached):
+        return cached
+    from PIL import Image, ImageDraw
+    import tempfile
+    img = Image.open(base_path).convert("RGBA")
+    # Recolor the glyph's shape (its alpha mask) to a flat tint matching
+    # what `template=True` would have picked for this appearance, since
+    # we're rendering as a normal (non-template) color image below.
+    tint = (255, 255, 255, 255) if dark else (0, 0, 0, 255)
+    alpha = img.split()[3]
+    solid = Image.new("RGBA", img.size, tint)
+    solid.putalpha(alpha)
+    img = solid
+    w, h = img.size
+    draw = ImageDraw.Draw(img)
+    r = max(3, int(round(min(w, h) * 0.32)))
+    cx, cy = w - r - 1, r + 1
+    # A thin ring in the tint color first, so the terracotta dot reads as a
+    # distinct badge instead of blending into the glyph on either menu bar.
+    draw.ellipse([cx - r - 2, cy - r - 2, cx + r + 2, cy + r + 2], fill=tint)
+    draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=(200, 90, 62, 255))
+    fd, tmp_path = tempfile.mkstemp(suffix=".png", prefix="flume_update_badge_")
+    os.close(fd)
+    img.save(tmp_path, "PNG")
+    _UPDATE_BADGE_CACHE[cache_key] = tmp_path
+    return tmp_path
+
 
 class VerbalApp(rumps.App):
     def __init__(self):
-        super().__init__("Verbal", icon=ICON_PATH, template=True)
+        super().__init__("Flume", icon=ICON_PATH, template=True)
 
         self.config = load_config()
         self.recorder = Recorder()
@@ -114,6 +192,26 @@ class VerbalApp(rumps.App):
         # One-shot informational message for the SAME pane (IDI-170) — e.g.
         # "Your account has been deleted." Cleared when a new sign-in starts.
         self._auth_notice = ""
+
+        # Mic permission gate (the "no permission pop-up like Zoom" fix).
+        # True once `_ensure_mic_permission` has observed a real 'granted'
+        # read — TCC doesn't flip granted->not_determined mid-run, so one
+        # confirmed read is good for the rest of the process's life and this
+        # keeps the check off the hot path (`_on_record_start` fires on every
+        # hotkey press). `_mic_denied_alerted` throttles the heavyweight
+        # rumps.alert to once per launch once the user has already been told.
+        self._mic_permission_cached = False
+        self._mic_denied_alerted = False
+
+        # Persistent "update available" state (menu-bar badge + menu row).
+        # Set once a check finds a newer version and held until either a
+        # still-newer version supersedes it or the app relaunches post-update
+        # — see `_check_update`/`_refresh_update_badge`. `_update_dismissed_version`
+        # is the version the user last clicked "Later" on, so the periodic
+        # background check can keep badging without popping the alert again
+        # for that same version.
+        self._update_available = None
+        self._update_dismissed_version = None
 
         # Running totals. WRITE-ONLY on macOS since IDI-183 — the menu header
         # takes its number from get_daily_words() instead — but they must stay:
@@ -195,7 +293,14 @@ class VerbalApp(rumps.App):
         # currently being prompted so we ask once per call and reset when it ends.
         self.meeting_prompt = None        # lazy MeetingPrompt
         self._md_active_key = None        # the call key currently on screen
-        self._md_handled = set()          # call keys already prompted/dismissed
+        self._md_handled = set()          # call keys already prompted this sighting
+        # Keys the user explicitly said "not now" to. Kept SEPARATE from
+        # _md_handled because that set is cleared whenever the call disappears for
+        # two polls (so the next call prompts fresh) — which also erased the
+        # dismissal, so a detection that merely flickered off-screen for 10s came
+        # back and asked again. The log showed 7 prompts for one key. A dismissal
+        # is durable for the session, like `autolearn_declined` (conventions #9).
+        self._md_dismissed = set()
         self._md_empty = 0                # consecutive polls with no call detected
         self._md_source = ""              # last detected source label
         self._md_scanning = False         # a background window scan is in flight
@@ -209,6 +314,13 @@ class VerbalApp(rumps.App):
         # `get_nowait` on an empty queue, which is negligible next to the audio and
         # webview timers this app already runs.
         self._ui_timer = rumps.Timer(self._drain_ui_queue, 0.04)
+
+        # Periodic background re-check for the persistent update badge/menu
+        # row (Task: "a small update icon... if a new update is launched
+        # automatically that shows a popup and a small bubble icon"). The
+        # one-shot `_check_update()` call in `_start_app` covers "just
+        # launched"; this covers "left running for days".
+        self._update_check_timer = rumps.Timer(self._periodic_update_check, UPDATE_CHECK_INTERVAL)
 
     def _on_hotkey_toggle(self):
         """Called by HotkeyListener when the toggle key is pressed."""
@@ -275,7 +387,7 @@ class VerbalApp(rumps.App):
             logger.warning(f"Could not install Edit menu: {e}")
 
     def _start_app(self, _=None):
-        logger.info("Starting Verbal")
+        logger.info("Starting Flume")
         self.overlay.setup()
         self.hotkey_listener.start()
         self._ui_timer.start()
@@ -285,8 +397,18 @@ class VerbalApp(rumps.App):
             self._meeting_detect_timer.start()
         threading.Thread(target=self._preload_model, daemon=True).start()
         threading.Thread(target=self._check_update, daemon=True).start()
+        self._update_check_timer.start()
         threading.Thread(target=self._load_dictionary_once, daemon=True).start()
         threading.Thread(target=self._presence_loop, daemon=True).start()
+
+        # Make a paste the OS refuses visible instead of silent (paste_guard.py).
+        # Registered here rather than at import time so the hook is only live
+        # once there is a main-thread UI queue to hop onto.
+        try:
+            from app import paste_guard
+            paste_guard.set_prompt_hook(self._prompt_paste_blocked)
+        except Exception as e:
+            logger.debug("paste-blocked prompt hook not installed: %s", e)
 
         # No bare accessibility prompt at launch (IDI-166): the onboarding
         # wizard's permission step asks for Accessibility WITH context
@@ -481,8 +603,13 @@ class VerbalApp(rumps.App):
         """Paste synced text into the currently focused app."""
         try:
             from app.injector import inject_text
-            inject_text(text)
-            self.overlay.show_briefly(brief, duration=2.5)
+            # Respect the result: a blocked paste (no Accessibility grant) must
+            # not report "Pasted" — paste_guard has just told the user why, and a
+            # contradicting pill would undo that.
+            if inject_text(text):
+                self.overlay.show_briefly(brief, duration=2.5)
+            else:
+                self.overlay.show_briefly("In clipboard · paste with ⌘V", duration=2.5)
         except Exception as e:
             logger.error(f"Sync paste failed: {e}")
 
@@ -963,8 +1090,8 @@ class VerbalApp(rumps.App):
                 return
             self._md_empty = 0
             key = info.get("key") or ""
-            if key in self._md_handled:
-                return  # already asked (or dismissed) for this call
+            if key in self._md_handled or key in self._md_dismissed:
+                return  # already asked this sighting, or dismissed for the session
             self._md_active_key = key
             self._md_source = info.get("source") or ""
             self._md_handled.add(key)   # ask once per call
@@ -986,6 +1113,11 @@ class VerbalApp(rumps.App):
     def _meeting_detect_result(self, take: bool):
         """Pill button result: True = start capturing this call now."""
         if not take:
+            # Remember the refusal so this call can't re-prompt when the window
+            # flickers off-screen and back (see _md_dismissed).
+            if self._md_active_key:
+                self._md_dismissed.add(self._md_active_key)
+                logger.info("meeting prompt dismissed for key=%s", self._md_active_key)
             return
         try:
             source = self._md_source or ""
@@ -1134,6 +1266,101 @@ class VerbalApp(rumps.App):
         except Exception as e:
             logger.warning(f"sign-in prompt failed: {e}")
 
+    def _ensure_mic_permission(self):
+        """Gate every record-start on the real macOS microphone permission.
+
+        This is the fix for "I don't get the permission pop-up like Zoom
+        does": before this, the hotkey path went straight to
+        `self.recorder.start()`, which just silently produced no audio if
+        TCC hadn't decided yet — `permissions.request_microphone()` (the
+        function that actually fires `AVCaptureDevice.
+        requestAccessForMediaType_completionHandler_`, i.e. the real system
+        prompt) was ONLY ever called from the dashboard's buried Settings
+        screen, which a first-time user has no reason to open.
+
+        Cached once granted so this is a fast no-op on the hot path
+        (`_on_record_start` fires on every hotkey press) — TCC doesn't flip
+        granted back to not-determined mid-run, so one confirmed 'granted'
+        read is good for the rest of the process's life.
+
+        Returns True to let the record-start proceed, False to abort it
+        (Hard Rule #1: fail VISIBLY, never silently proceed into a mic
+        stream that can't capture anything, and never crash/hang the hotkey
+        path over a permissions check).
+        """
+        if self._mic_permission_cached:
+            return True
+        try:
+            from app import permissions
+            status = permissions.check_microphone()
+        except Exception as e:
+            # The PROBE itself failing must never block a working setup —
+            # proceed and let recorder.start() be the real judge.
+            logger.debug(f"mic permission probe failed, proceeding: {e}")
+            return True
+
+        if status == "granted":
+            self._mic_permission_cached = True
+            return True
+
+        if status == "denied":
+            # macOS never re-prompts once denied — calling requestAccess
+            # again would be a silent no-op. Say so clearly instead of
+            # opening a mic stream that will capture nothing.
+            self._prompt_mic_denied()
+            return False
+
+        # 'not_determined' (first-ever recording) or 'unknown' (the pyobjc
+        # probe couldn't tell). Fire the REAL TCC prompt right now, on the
+        # actual record attempt — Zoom-style — instead of only from the
+        # buried Settings screen. requestAccess's completion handler is
+        # async and can take as long as the user takes to click Allow/Don't
+        # Allow, so this does NOT block the hotkey press waiting on it (that
+        # would freeze the whole rumps run loop for however long the system
+        # dialog sits there): it fires the prompt and lets this recording
+        # attempt proceed optimistically. A still-undetermined mic stream
+        # either raises (caught by `_on_record_start`'s own except, which
+        # already cleans up the pill) or opens silent; either way the VERY
+        # NEXT press re-checks and will either go fast ('granted', cached)
+        # or show the clear denied prompt above if they declined.
+        try:
+            permissions.request_microphone()
+        except Exception as e:
+            logger.debug(f"mic permission request failed: {e}")
+        return True
+
+    def _prompt_mic_denied(self):
+        """Native, visible alert for an already-denied mic — same
+        `rumps.alert` pattern as `_show_update_prompt`/`_prompt_paste_blocked`.
+        Throttled to once per launch: after the first alert, later presses
+        while still denied just flash the overlay instead of re-popping the
+        modal, so a user who keeps hitting the hotkey isn't nagged with a
+        dialog on every single press — but they still get SOME visible
+        feedback every time (never a silent no-op)."""
+        if self._mic_denied_alerted:
+            try:
+                self.overlay.show_briefly("Mic access needed — check Settings", duration=1.6)
+            except Exception:
+                pass
+            return
+        self._mic_denied_alerted = True
+        try:
+            from app import permissions
+            resp = rumps.alert(
+                title="Microphone access needed",
+                message=(
+                    "Flume needs Microphone access to record your dictation.\n\n"
+                    "Open System Settings → Privacy & Security → Microphone "
+                    "and turn Flume on, then try again."
+                ),
+                ok="Open Settings",
+                cancel="Not now",
+            )
+            if resp == 1:
+                permissions._open_settings("Privacy_Microphone")
+        except Exception as e:
+            logger.error(f"mic-denied prompt failed: {e}")
+
     def _toggle_recording(self, _):
         if self._is_recording:
             self._on_record_stop()
@@ -1149,6 +1376,9 @@ class VerbalApp(rumps.App):
         if not self._signed_in():
             logger.info("dictation blocked: not signed in")
             self._prompt_sign_in()
+            return
+        if not self._ensure_mic_permission():
+            logger.info("dictation blocked: microphone permission not granted")
             return
         try:
             save_focused_app()  # Remember where user was typing
@@ -1209,8 +1439,7 @@ class VerbalApp(rumps.App):
                 self._stream = None
             play_start()
 
-            if os.path.exists(ICON_ACTIVE_PATH):
-                self.icon = ICON_ACTIVE_PATH
+            self._set_menubar_icon(ICON_ACTIVE_PATH)
             # The menu header derives "Recording" + its timer from this.
             self._rec_started_at = time.time()
             self._status_note("")
@@ -1247,8 +1476,7 @@ class VerbalApp(rumps.App):
             self._detach_meeting_tap()
             play_stop()
 
-            if os.path.exists(ICON_PATH):
-                self.icon = ICON_PATH
+            self._set_menubar_icon(ICON_PATH)
             self.record_btn.title = "Start Recording"
             self.dashboard.update_recording_state(False)
 
@@ -1596,7 +1824,7 @@ class VerbalApp(rumps.App):
                     threading.Thread(
                         target=self._sync.push,
                         args=(result, push_target, entry.get("audio_url") or "",
-                              "done", rec_id, _push_ms),
+                              "done", rec_id, _push_ms, target_app or ""),
                         daemon=True,
                     ).start()
 
@@ -1615,6 +1843,31 @@ class VerbalApp(rumps.App):
             self._on_main(self._reset_to_ready)
         finally:
             self._processing = False
+
+    def _prompt_paste_blocked(self, reason, target_app):
+        """Popup for a paste macOS refused, with a button that opens the setting.
+
+        Called from the dictation worker thread, so the alert has to hop to the
+        main thread: rumps.alert spins a modal NSAlert and must never run off it
+        (conventions #4). Throttling lives in paste_guard — by the time this is
+        called, it has already decided the user should be asked.
+        """
+        from app import paste_guard
+        ok, cancel = paste_guard.buttons(reason)
+        title = paste_guard.title(reason)
+        body = paste_guard.message(reason, target_app)
+
+        def _show():
+            try:
+                # This alert deliberately activates Verbal — unlike the overlay
+                # and auto-learn panels (conventions #8), stealing focus is
+                # harmless here because the paste has already failed.
+                if rumps.alert(title=title, message=body, ok=ok, cancel=cancel) == 1:
+                    paste_guard.open_fix(reason)
+            except Exception as e:
+                logger.error(f"paste-blocked prompt failed: {e}")
+
+        self._on_main(_show)
 
     def _show_result(self, brief):
         try:
@@ -1709,8 +1962,7 @@ class VerbalApp(rumps.App):
             # life of one dictation it means exactly "this one was cancelled".
             self._status_note("")
             self.overlay.hide()
-            if os.path.exists(ICON_PATH):
-                self.icon = ICON_PATH
+            self._set_menubar_icon(ICON_PATH)
             self.record_btn.title = "Start Recording"
             self.dashboard.update_recording_state(False)
         except Exception as e:
@@ -1725,28 +1977,102 @@ class VerbalApp(rumps.App):
         self.config["whisper_model"] = model_name
         save_config(self.config)
 
+    def _set_menubar_icon(self, base_path):
+        """The one place that assigns `self.icon` — so the persistent
+        update-available badge (a small terracotta dot in the corner)
+        applies uniformly no matter which base icon (idle vs. recording) is
+        showing. Fails closed to the plain icon: a badge render failure must
+        never leave the menu bar with no icon at all.
+        """
+        if self._update_available:
+            try:
+                badged = _badged_icon_path(base_path)
+            except Exception as e:
+                logger.debug(f"update badge render failed, using plain icon: {e}")
+                badged = None
+            if badged and os.path.exists(badged):
+                # The badge variant can't be a rumps `template` image (see
+                # `_badged_icon_path`'s docstring for why) — flip out of
+                # template mode only while a badge is actually showing.
+                if self.template is not False:
+                    self.template = False
+                self.icon = badged
+                return
+        if self.template is not True:
+            self.template = True
+        if os.path.exists(base_path):
+            self.icon = base_path
+
+    def _refresh_update_badge(self):
+        """Re-apply whichever base icon is currently showing, so a change to
+        `_update_available` (found/cleared) is reflected immediately instead
+        of waiting for the next record start/stop to happen to swap icons."""
+        try:
+            base = ICON_ACTIVE_PATH if self._is_recording else ICON_PATH
+            self._set_menubar_icon(base)
+        except Exception as e:
+            logger.debug(f"update badge refresh failed: {e}")
+
     def _check_update(self, announce_current=False):
-        """Background update poll. `check_for_update()` returns None both when
-        we're current AND when the check fails, so a MANUAL check has to say
-        something either way — silence reads as a broken menu item."""
+        """Background update poll — both the one-shot startup check
+        (`_start_app`) and the periodic re-check (`_update_check_timer`,
+        every `UPDATE_CHECK_INTERVAL`) land here. `check_for_update()`
+        returns None both when we're current AND when the check fails, so a
+        MANUAL check has to say something either way — silence reads as a
+        broken menu item.
+
+        Persistence (the discoverable badge/menu-row this feeds): finding an
+        update sets `_update_available` and stays set — surfaced via the
+        badge + "Update available" menu row — until either a newer version
+        supersedes it or the user actually updates. The popup itself,
+        though, is throttled to once per version: if the user already hit
+        "Later" for this exact version, later periodic checks keep the badge
+        current but don't pop the alert again (`_update_dismissed_version`)
+        — only a genuinely newer version, or the user manually re-opening
+        the prompt from the menu row, shows it again.
+        """
         from app.updater import check_for_update
         update = check_for_update()
         if update:
-            self._on_main(lambda: self._show_update_prompt(update))
-        elif announce_current:
-            from app.config import APP_VERSION
-            self._on_main(lambda: rumps.alert(
-                "You're up to date",
-                f"Verbal v{APP_VERSION} is the latest version."))
+            is_new_version = update["version"] != self._update_dismissed_version
+            self._update_available = update
+            self._on_main(self._refresh_update_badge)
+            if is_new_version:
+                self._on_main(lambda: self._show_update_prompt(update))
+        else:
+            had_one = self._update_available is not None
+            self._update_available = None
+            self._update_dismissed_version = None
+            if had_one:
+                self._on_main(self._refresh_update_badge)
+            if announce_current:
+                from app.config import APP_VERSION
+                self._on_main(lambda: rumps.alert(
+                    "You're up to date",
+                    f"Flume v{APP_VERSION} is the latest version."))
 
     def _check_update_now(self, _=None):
         """Menubar 'Check for Updates…' — same path as the startup poll."""
         threading.Thread(target=self._check_update, args=(True,), daemon=True).start()
 
+    def _periodic_update_check(self, _timer=None):
+        """`_update_check_timer` callback (runs on the main thread, like every
+        rumps.Timer) — hops the actual network call to a daemon thread so a
+        slow/hung request never stalls the UI queue."""
+        threading.Thread(target=self._check_update, daemon=True).start()
+
+    def _open_update_prompt(self, _=None):
+        """'Update available (vX.Y.Z) ↑' menu row — re-shows the same dialog
+        for whatever update is currently pending, without re-hitting the
+        network (the badge already told us it's there)."""
+        update = self._update_available
+        if update:
+            self._show_update_prompt(update)
+
     def _show_update_prompt(self, update):
         changelog = update.get('changelog', 'Bug fixes and improvements')
         resp = rumps.alert(
-            f"Verbal {update['version']} available",
+            f"Flume {update['version']} available",
             f"{changelog}\n\nDownload and install now?",
             ok="Update",
             cancel="Later",
@@ -1754,6 +2080,12 @@ class VerbalApp(rumps.App):
         if resp == 1:
             self._status_note("Downloading update…")
             threading.Thread(target=self._do_update, args=(update,), daemon=True).start()
+        else:
+            # "Later": keep the badge/menu row alive (this version is still
+            # not installed), just stop nagging with a fresh popup for it —
+            # the periodic check will alert again only once something newer
+            # ships.
+            self._update_dismissed_version = update.get("version")
 
     def _do_update(self, update):
         from app.updater import download_update, install_update
@@ -1767,7 +2099,7 @@ class VerbalApp(rumps.App):
     def _about(self, _):
         from app.config import APP_VERSION
         rumps.alert(
-            f"Verbal v{APP_VERSION}",
+            f"Flume v{APP_VERSION}",
             "Voice to text, instantly.\n\n"
             "Hold Right Command to record (Hold mode)\n"
             "or press once to start/stop (Toggle mode).\n"

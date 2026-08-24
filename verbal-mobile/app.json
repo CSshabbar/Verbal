@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "Verbal",
+    "name": "Flume",
     "slug": "verbal-mobile",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -16,10 +16,10 @@
       "supportsTablet": false,
       "bundleIdentifier": "com.verbal.app",
       "infoPlist": {
-        "NSMicrophoneUsageDescription": "Verbal needs microphone access to record your voice for transcription.",
-        "NSSpeechRecognitionUsageDescription": "Verbal uses speech recognition to transcribe your voice.",
-        "NSCameraUsageDescription": "Verbal needs your camera to scan a pairing code on your computer.",
-        "NSPhotoLibraryUsageDescription": "Verbal needs photo access so you can send images to your computer."
+        "NSMicrophoneUsageDescription": "Flume needs microphone access to record your voice for transcription.",
+        "NSSpeechRecognitionUsageDescription": "Flume uses speech recognition to transcribe your voice.",
+        "NSCameraUsageDescription": "Flume needs your camera to scan a pairing code on your computer.",
+        "NSPhotoLibraryUsageDescription": "Flume needs photo access so you can send images to your computer."
       },
       "entitlements": {
         "com.apple.security.application-groups": [
@@ -47,13 +47,13 @@
       [
         "expo-audio",
         {
-          "microphonePermission": "Verbal needs microphone access to record your voice."
+          "microphonePermission": "Flume needs microphone access to record your voice."
         }
       ],
       [
         "expo-image-picker",
         {
-          "photosPermission": "Verbal needs photo library access to share images via Canvas."
+          "photosPermission": "Flume needs photo library access to share images via Canvas."
         }
       ],
       "expo-font",
@@ -62,7 +62,7 @@
       [
         "expo-camera",
         {
-          "cameraPermission": "Verbal needs your camera to scan a pairing code on your computer."
+          "cameraPermission": "Flume needs your camera to scan a pairing code on your computer."
         }
       ],
       "expo-web-browser",

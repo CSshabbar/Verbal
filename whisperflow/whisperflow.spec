@@ -98,7 +98,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='Verbal',
+    name='Flume',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -115,7 +115,7 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name='Verbal',
+    name='Flume',
 )
 
 # Deliberately unsigned here (no codesign_identity/entitlements_file) — CI
@@ -126,12 +126,24 @@ coll = COLLECT(
 # hardened runtime needs, so don't add codesign_identity to this call.
 app = BUNDLE(
     coll,
-    name='Verbal.app',
+    name='Flume.app',
     icon='assets/Verbal.icns',
+    # Intentionally UNCHANGED: 'com.verbal.app' stays the bundle identifier
+    # even though the product is now branded "Flume". macOS keys TCC grants
+    # (mic/accessibility/screen-recording) and Sparkle/our own updater's
+    # "same app, new version" logic off this identifier, not off the display
+    # name. Changing it would make every existing install look like a brand
+    # new, never-authorized app: users would lose their already-granted
+    # permissions and the in-app updater would appear to be migrating
+    # between two unrelated apps. That's a product decision bigger than a
+    # rename, so it's deliberately out of scope here — 'CFBundleName'/
+    # 'CFBundleDisplayName' below carry the actual user-visible rebrand.
     bundle_identifier='com.verbal.app',
     info_plist={
-        'NSMicrophoneUsageDescription': 'Verbal needs microphone access for voice dictation.',
-        'NSAccessibilityUsageDescription': 'Verbal needs accessibility access to inject text into apps.',
+        'CFBundleName': 'Flume',
+        'CFBundleDisplayName': 'Flume',
+        'NSMicrophoneUsageDescription': 'Flume needs microphone access for voice dictation.',
+        'NSAccessibilityUsageDescription': 'Flume needs accessibility access to inject text into apps.',
         'LSUIElement': False,
         'CFBundleShortVersionString': APP_VERSION,
         'CFBundleVersion': APP_VERSION,

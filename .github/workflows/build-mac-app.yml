@@ -33,15 +33,21 @@ jobs:
           cd whisperflow
           python3 scripts/generate_icons.py
           mkdir -p assets/icon.iconset
-          sips -z 16 16 assets/icon.png --out assets/icon.iconset/icon_16x16.png
-          sips -z 32 32 assets/icon.png --out assets/icon.iconset/icon_16x16@2x.png
-          sips -z 32 32 assets/icon.png --out assets/icon.iconset/icon_32x32.png
-          sips -z 64 64 assets/icon.png --out assets/icon.iconset/icon_32x32@2x.png
-          sips -z 128 128 assets/icon.png --out assets/icon.iconset/icon_128x128.png
-          sips -z 256 256 assets/icon.png --out assets/icon.iconset/icon_128x128@2x.png
-          sips -z 256 256 assets/icon.png --out assets/icon.iconset/icon_256x256.png
-          sips -z 512 512 assets/icon.png --out assets/icon.iconset/icon_256x256@2x.png
-          sips -z 512 512 assets/icon.png --out assets/icon.iconset/icon_512x512.png
+          # NOTE: these sips calls MUST read assets/app_icon.png (the real
+          # 1024x1024 Flume app icon), NOT assets/icon.png — the latter is a
+          # tiny 44x44 flat black mic silhouette meant only for the menu bar
+          # (generate_menu_icon() in scripts/generate_icons.py, consumed by
+          # ICON_PATH/ICON_ACTIVE_PATH in app/main.py). Reading icon.png here
+          # was the root cause of the Dock/Finder/DMG icon looking wrong/blank.
+          sips -z 16 16 assets/app_icon.png --out assets/icon.iconset/icon_16x16.png
+          sips -z 32 32 assets/app_icon.png --out assets/icon.iconset/icon_16x16@2x.png
+          sips -z 32 32 assets/app_icon.png --out assets/icon.iconset/icon_32x32.png
+          sips -z 64 64 assets/app_icon.png --out assets/icon.iconset/icon_32x32@2x.png
+          sips -z 128 128 assets/app_icon.png --out assets/icon.iconset/icon_128x128.png
+          sips -z 256 256 assets/app_icon.png --out assets/icon.iconset/icon_128x128@2x.png
+          sips -z 256 256 assets/app_icon.png --out assets/icon.iconset/icon_256x256.png
+          sips -z 512 512 assets/app_icon.png --out assets/icon.iconset/icon_256x256@2x.png
+          sips -z 512 512 assets/app_icon.png --out assets/icon.iconset/icon_512x512.png
           iconutil -c icns assets/icon.iconset -o assets/Verbal.icns
 
       - name: Build Mac .app
@@ -76,7 +82,7 @@ jobs:
       - name: Code-sign the app bundle (hardened runtime)
         run: |
           cd whisperflow
-          APP=dist/Verbal.app
+          APP=dist/Flume.app
           find "$APP" -type f \( -perm -111 -o -name "*.dylib" -o -name "*.so" \) -print0 \
             | xargs -0 -I{} codesign --force --options runtime --timestamp \
                 --entitlements entitlements.plist --sign "$MACOS_IDENTITY" "{}"
@@ -87,8 +93,8 @@ jobs:
       - name: Create DMG
         run: |
           cd whisperflow
-          hdiutil create -volname "Verbal" -srcfolder dist/Verbal.app -ov dist/Verbal.dmg
-          codesign --force --sign "$MACOS_IDENTITY" dist/Verbal.dmg
+          hdiutil create -volname "Flume" -srcfolder dist/Flume.app -ov dist/Flume.dmg
+          codesign --force --sign "$MACOS_IDENTITY" dist/Flume.dmg
 
       - name: Notarize and staple
         timeout-minutes: 40
@@ -120,7 +126,7 @@ jobs:
             return $rc
           }
 
-          if ! SUBMIT_JSON=$(run_with_timeout 300 xcrun notarytool submit dist/Verbal.dmg "${NOTARY_AUTH[@]}" --output-format json); then
+          if ! SUBMIT_JSON=$(run_with_timeout 300 xcrun notarytool submit dist/Flume.dmg "${NOTARY_AUTH[@]}" --output-format json); then
             echo "::error::notarytool submit timed out (5 min) or failed"
             rm -f "$KEY_PATH"
             exit 1
@@ -147,11 +153,11 @@ jobs:
             exit 1
           fi
 
-          xcrun stapler staple dist/Verbal.dmg
+          xcrun stapler staple dist/Flume.dmg
           rm -f "$KEY_PATH"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Verbal-Mac
-          path: whisperflow/dist/Verbal.dmg
+          name: Flume-Mac
+          path: whisperflow/dist/Flume.dmg

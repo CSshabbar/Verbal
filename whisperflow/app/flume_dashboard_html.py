@@ -1444,7 +1444,7 @@ function insTip(el, html){
 function copyRecap(btn){
   if(!INS) return;
   const L=[];
-  L.push('My Verbal insights —');
+  L.push('My Flume insights —');
   L.push(fmtN(INS.total_words)+' words dictated ('+fmtN(INS.total_dictations)+' dictations)');
   if(INS.wpm) L.push(INS.wpm+' words/min — top '+fmtPct(INS.wpm_percentile)+'% of typists');
   if(INS.saved_month_min) L.push(fmtMin(INS.saved_month_min)+' saved this month vs typing');
@@ -3172,7 +3172,7 @@ function renderNoteList(){
       listEl.innerHTML = `<div class="nempty">
         <div class="disc">${SVG.mic}</div>
         <div class="t">Speak your first note</div>
-        <div class="s">Dictate a thought and Verbal turns it into a clean, titled note — checklists included.</div>
+        <div class="s">Dictate a thought and Flume turns it into a clean, titled note — checklists included.</div>
         <button class="btn primary" style="width:auto" onclick="dictateNewNote()">Dictate a note</button>
         <span class="link" onclick="newNote()">or start typing</span></div>`;
     }
@@ -3325,7 +3325,7 @@ function noteEditorHtml(n){
         ${body}
       </div>
       <div class="dictbar" id="dictBar">
-        <span class="dtx" id="dictTx">Dictate into this note — Verbal cleans and formats it</span>
+        <span class="dtx" id="dictTx">Dictate into this note — Flume cleans and formats it</span>
         <span class="notesave" id="noteSaveState"></span>
         <button class="dfab" id="dictFab" aria-label="Start dictation" onclick="toggleDictate()">${SVG.mic}</button>
       </div>`;
@@ -3807,7 +3807,7 @@ function updateDictateBtn(){
       <button class="dfab" aria-label="Stop and transcribe" onclick="toggleDictate()"><span class="dstop"></span></button>`;
   } else {
     bar.innerHTML=`
-      <span class="dtx" id="dictTx">Dictate into this note — Verbal cleans and formats it</span>
+      <span class="dtx" id="dictTx">Dictate into this note — Flume cleans and formats it</span>
       <span class="notesave" id="noteSaveState"></span>
       <button class="dfab" id="dictFab" aria-label="Start dictation" onclick="toggleDictate()">${SVG.mic}</button>`;
   }

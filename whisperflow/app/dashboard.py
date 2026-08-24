@@ -985,7 +985,7 @@ class DashboardWindow:
                  NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable)
         self._window = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
             NSMakeRect(x, y, WIN_W, WIN_H), style, NSBackingStoreBuffered, False)
-        self._window.setTitle_("Verbal")
+        self._window.setTitle_("Flume")
         self._window.setMinSize_(NSMakeSize(700, 500))
         self._window.setBackgroundColor_(H_BG)
 

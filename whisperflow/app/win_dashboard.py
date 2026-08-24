@@ -23,7 +23,7 @@ WIN_PIPELINES = [
     ("hybrid", "Hybrid",          "starts working while you talk"),
     ("one",    "One round trip",  "best all-round, same words sooner"),
     ("two",    "Two round trips", "the older, slower route"),
-    ("old",    "Original",        "how Verbal used to sound"),
+    ("old",    "Original",        "how Flume used to sound"),
 ]
 # (config value, label). Labels are what the combobox shows and are mapped back on save.
 WIN_ASR_MODELS = [
@@ -94,7 +94,7 @@ class WinDashboard:
 
     def _build_and_run(self):
         self._window = tk.Tk()
-        self._window.title("Verbal")
+        self._window.title("Flume")
         self._window.geometry("640x520")
         self._window.configure(bg=BG)
         self._window.resizable(True, True)
@@ -129,7 +129,7 @@ class WinDashboard:
         header.pack(fill="x")
         header.pack_propagate(False)
 
-        tk.Label(header, text="Verbal", font=("Segoe UI", 22, "normal"),
+        tk.Label(header, text="Flume", font=("Segoe UI", 22, "normal"),
                  fg=TEXT_LIGHT, bg=BG).pack(pady=(16, 0))
 
         self._status_label = tk.Label(header, text="Ready", font=("Segoe UI", 11),
@@ -366,7 +366,7 @@ class WinDashboard:
         ).pack(pady=20)
 
         # Version
-        tk.Label(scroll_frame, text=f"Verbal v{APP_VERSION} | Windows",
+        tk.Label(scroll_frame, text=f"Flume v{APP_VERSION} | Windows",
                  font=("Segoe UI", 9), fg=MUTED, bg=SHEET_BG).pack(pady=(0, 20))
 
     def _save_settings(self, groq_var, gemini_var, model_var, mode_var,

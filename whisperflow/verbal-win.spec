@@ -28,8 +28,12 @@ import scipy
 fw_dir = os.path.dirname(faster_whisper.__file__)
 ct2_dir = os.path.dirname(ctranslate2.__file__)
 
-# Convert PNG icon to ICO for Windows
-icon_src = 'assets/icon.png'
+# Convert PNG icon to ICO for Windows. `assets/icon.png` is a tiny 44x44
+# flat black mic silhouette meant for the menu-bar-style tray glyph
+# (generate_menu_icon() in scripts/generate_icons.py), not a real app icon —
+# using it here produced a blank/tiny-looking .exe and installer icon.
+# `assets/app_icon.png` is the real 1024x1024 Flume brand icon.
+icon_src = 'assets/app_icon.png'
 icon_ico = 'assets/icon.ico'
 if os.path.exists(icon_src) and not os.path.exists(icon_ico):
     from PIL import Image
@@ -185,7 +189,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='Verbal',
+    name='Flume',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

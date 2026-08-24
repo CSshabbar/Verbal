@@ -70,7 +70,15 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           cd whisperflow
-          python -c "from PIL import Image; img=Image.open('assets/icon.png'); img.save('assets/icon.ico', format='ICO', sizes=[(16,16),(32,32),(48,48),(64,64),(128,128),(256,256)])"
+          # Must read assets/app_icon.png (the real 1024x1024 Flume app icon),
+          # NOT assets/icon.png (a tiny 44x44 flat black mic silhouette meant
+          # only for the menu-bar-style tray glyph — generate_menu_icon() in
+          # scripts/generate_icons.py). This step pre-creates assets/icon.ico
+          # BEFORE verbal-win.spec runs, and the spec's own inline conversion
+          # only fires when icon.ico does NOT already exist — so if this step
+          # reads the wrong source, the spec's fix is silently skipped and the
+          # frozen exe/installer still ends up with the tiny blank-looking icon.
+          python -c "from PIL import Image; img=Image.open('assets/app_icon.png'); img.save('assets/icon.ico', format='ICO', sizes=[(16,16),(32,32),(48,48),(64,64),(128,128),(256,256)])"
 
       - name: Build Windows EXE
         run: |
@@ -81,7 +89,7 @@ jobs:
 
       # updater.py runs the release file with Inno Setup silent switches
       # (/SILENT /CLOSEAPPLICATIONS /SUPPRESSMSGBOXES /NORESTART), so the file we
-      # publish for Windows MUST be the Inno installer, not the bare Verbal.exe.
+      # publish for Windows MUST be the Inno installer, not the bare Flume.exe.
       - name: Install Inno Setup
         run: choco install innosetup -y
 
@@ -99,13 +107,13 @@ jobs:
           & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "/DMyAppVersion=$VERSION" verbal-setup.iss
           if ($LASTEXITCODE -ne 0) { throw "ISCC.exe failed with exit code $LASTEXITCODE" }
 
-      # Publish the Inno installer as the Windows release artifact. (Verbal.exe is
+      # Publish the Inno installer as the Windows release artifact. (Flume.exe is
       # bundled inside it; we no longer ship the bare exe as the update payload.)
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Verbal-Windows
-          path: whisperflow/dist/VerbalSetup.exe
+          name: Flume-Windows
+          path: whisperflow/dist/FlumeSetup.exe
 
   # ── Mac Build ──────────────────────────────────────────────────
   build-mac:
@@ -138,15 +146,21 @@ jobs:
           cd whisperflow
           python3 scripts/generate_icons.py
           mkdir -p assets/icon.iconset
-          sips -z 16 16 assets/icon.png --out assets/icon.iconset/icon_16x16.png
-          sips -z 32 32 assets/icon.png --out assets/icon.iconset/icon_16x16@2x.png
-          sips -z 32 32 assets/icon.png --out assets/icon.iconset/icon_32x32.png
-          sips -z 64 64 assets/icon.png --out assets/icon.iconset/icon_32x32@2x.png
-          sips -z 128 128 assets/icon.png --out assets/icon.iconset/icon_128x128.png
-          sips -z 256 256 assets/icon.png --out assets/icon.iconset/icon_128x128@2x.png
-          sips -z 256 256 assets/icon.png --out assets/icon.iconset/icon_256x256.png
-          sips -z 512 512 assets/icon.png --out assets/icon.iconset/icon_256x256@2x.png
-          sips -z 512 512 assets/icon.png --out assets/icon.iconset/icon_512x512.png
+          # NOTE: these sips calls MUST read assets/app_icon.png (the real
+          # 1024x1024 Flume app icon), NOT assets/icon.png — the latter is a
+          # tiny 44x44 flat black mic silhouette meant only for the menu bar
+          # (generate_menu_icon() in scripts/generate_icons.py, consumed by
+          # ICON_PATH/ICON_ACTIVE_PATH in app/main.py). Reading icon.png here
+          # was the root cause of the Dock/Finder/DMG icon looking wrong/blank.
+          sips -z 16 16 assets/app_icon.png --out assets/icon.iconset/icon_16x16.png
+          sips -z 32 32 assets/app_icon.png --out assets/icon.iconset/icon_16x16@2x.png
+          sips -z 32 32 assets/app_icon.png --out assets/icon.iconset/icon_32x32.png
+          sips -z 64 64 assets/app_icon.png --out assets/icon.iconset/icon_32x32@2x.png
+          sips -z 128 128 assets/app_icon.png --out assets/icon.iconset/icon_128x128.png
+          sips -z 256 256 assets/app_icon.png --out assets/icon.iconset/icon_128x128@2x.png
+          sips -z 256 256 assets/app_icon.png --out assets/icon.iconset/icon_256x256.png
+          sips -z 512 512 assets/app_icon.png --out assets/icon.iconset/icon_256x256@2x.png
+          sips -z 512 512 assets/app_icon.png --out assets/icon.iconset/icon_512x512.png
           iconutil -c icns assets/icon.iconset -o assets/Verbal.icns
 
       - name: Build Mac .app
@@ -193,7 +207,7 @@ jobs:
       - name: Code-sign the app bundle (hardened runtime)
         run: |
           cd whisperflow
-          APP=dist/Verbal.app
+          APP=dist/Flume.app
           find "$APP" -type f \( -perm -111 -o -name "*.dylib" -o -name "*.so" \) -print0 \
             | xargs -0 -I{} codesign --force --options runtime --timestamp \
                 --entitlements entitlements.plist --sign "$MACOS_IDENTITY" "{}"
@@ -204,8 +218,8 @@ jobs:
       - name: Create DMG
         run: |
           cd whisperflow
-          hdiutil create -volname "Verbal" -srcfolder dist/Verbal.app -ov dist/Verbal.dmg
-          codesign --force --sign "$MACOS_IDENTITY" dist/Verbal.dmg
+          hdiutil create -volname "Flume" -srcfolder dist/Flume.app -ov dist/Flume.dmg
+          codesign --force --sign "$MACOS_IDENTITY" dist/Flume.dmg
 
       # Notarization is what actually satisfies Gatekeeper on someone else's
       # Mac — a codesigned-but-unnotarized DMG still shows "Apple could not
@@ -256,7 +270,7 @@ jobs:
           # would force a wasteful re-upload on retry. Submitting once and
           # retrying only the `wait` means a network hiccup just costs a
           # bounded pause, not the whole submission.
-          if ! SUBMIT_JSON=$(run_with_timeout 300 xcrun notarytool submit dist/Verbal.dmg "${NOTARY_AUTH[@]}" --output-format json); then
+          if ! SUBMIT_JSON=$(run_with_timeout 300 xcrun notarytool submit dist/Flume.dmg "${NOTARY_AUTH[@]}" --output-format json); then
             echo "::error::notarytool submit timed out (5 min) or failed"
             rm -f "$KEY_PATH"
             exit 1
@@ -287,14 +301,14 @@ jobs:
             exit 1
           fi
 
-          xcrun stapler staple dist/Verbal.dmg
+          xcrun stapler staple dist/Flume.dmg
           rm -f "$KEY_PATH"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Verbal-Mac
-          path: whisperflow/dist/Verbal.dmg
+          name: Flume-Mac
+          path: whisperflow/dist/Flume.dmg
 
   # ── Register Release (GitHub Releases is the SOLE artifact host — IDI-224) ──
   #
@@ -348,13 +362,13 @@ jobs:
       - name: Download Windows artifact
         uses: actions/download-artifact@v4
         with:
-          name: Verbal-Windows
+          name: Flume-Windows
           path: dist/
 
       - name: Download Mac artifact
         uses: actions/download-artifact@v4
         with:
-          name: Verbal-Mac
+          name: Flume-Mac
           path: dist/
 
       # Deterministic, versioned filenames — registered in app_versions BEFORE
@@ -368,10 +382,10 @@ jobs:
         id: files
         run: |
           VERSION="${{ steps.version.outputs.version }}"
-          MAC_FILE="Verbal-${VERSION}-mac.dmg"
-          WIN_FILE="Verbal-${VERSION}-win-setup.exe"
-          mv dist/Verbal.dmg "dist/${MAC_FILE}"
-          mv dist/VerbalSetup.exe "dist/${WIN_FILE}"
+          MAC_FILE="Flume-${VERSION}-mac.dmg"
+          WIN_FILE="Flume-${VERSION}-win-setup.exe"
+          mv dist/Flume.dmg "dist/${MAC_FILE}"
+          mv dist/FlumeSetup.exe "dist/${WIN_FILE}"
           echo "mac_file=${MAC_FILE}" >> $GITHUB_OUTPUT
           echo "win_file=${WIN_FILE}" >> $GITHUB_OUTPUT
 

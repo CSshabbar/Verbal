@@ -441,6 +441,22 @@ class MenuController(NSObject):
         if self.header is not None:
             self.header.view.setNeedsDisplay_(True)
 
+        # Update-available row: deliberately independent of the sign-in gate
+        # below — a pending update should stay discoverable even for a
+        # signed-out user, and it must not require opening the app to learn
+        # about (the whole point of the persistent badge/menu-row pairing).
+        try:
+            update = getattr(app, "_update_available", None)
+            item = getattr(app, "update_item", None)
+            if item is not None:
+                if update:
+                    item.title = "Update available (v%s) ↑" % update.get("version", "")
+                    item.hidden = False
+                else:
+                    item.hidden = True
+        except Exception:
+            pass
+
         # Sign-in gate. Flume requires an account, so signed out the menu offers
         # exactly three things: sign in, open the window (which renders the
         # sign-in wall), and the app-level rows — About / Check for Updates /
@@ -494,7 +510,7 @@ class MenuController(NSObject):
         except Exception:
             pass
         try:
-            app.model_menu.title = "Whisper Model: %s" % cfg.get("whisper_model", "base")
+            app.model_menu.title = "Offline Model: %s" % cfg.get("whisper_model", "base")
         except Exception:
             pass
         try:
@@ -624,6 +640,13 @@ def build(app):
     ctl.header = HeaderMenuItem(app)
     app._menu_ctl = ctl
 
+    # Persistent "update available" row (hidden until a background check
+    # finds one — `MenuController.refresh` toggles `.hidden`/`.title`).
+    # Placed right under the header so it's the first thing anyone sees on
+    # open, matching the badge on the icon itself.
+    app.update_item = rumps.MenuItem("Update available", callback=app._open_update_prompt)
+    app.update_item.hidden = True
+
     app.record_btn = rumps.MenuItem("Start Recording", callback=app._toggle_recording)
     app.meeting_btn = rumps.MenuItem("Start Meeting", callback=app._toggle_meeting)
 
@@ -638,7 +661,14 @@ def build(app):
     app.mode_menu.add(app.mode_hold)
     app.mode_menu.add(app.mode_toggle)
 
-    app.model_menu = rumps.MenuItem("Whisper Model: base")
+    # "Offline Model", not "Whisper Model". `whisper_model` is read in exactly one
+    # place — transcriber._transcribe_local, the THIRD-priority fallback that only
+    # runs when the Groq proxy AND Gemini have both failed. Labelled as the model,
+    # sitting at the top of the menubar, it read as "the engine that hears you", so
+    # switching tiny↔medium looked broken: every dictation was going to Groq and the
+    # setting could not possibly change speed. The engine actually in use is
+    # `asr_model` (Dashboard → Settings → Models).
+    app.model_menu = rumps.MenuItem("Offline Model: base")
     app.model_items = {}
     for name in ("tiny", "base", "small", "medium"):
         # `_change_model` reads `sender.title`, so these titles are load-bearing.
@@ -675,6 +705,7 @@ def build(app):
 
     items = [
         ctl.header,
+        app.update_item,
         None,
         app.record_btn,
         app.meeting_btn,

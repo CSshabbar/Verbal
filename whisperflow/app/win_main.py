@@ -127,6 +127,13 @@ class VerbalWinApp:
         self._last_toggle_time = 0.0
         self._sync = None
         self._tray_icon = None
+        # Persistent "update available" state (Task: tray badge + menu item).
+        # Holds the update dict from updater.check_for_update() once a newer
+        # version is found in manual-update mode (auto_update handles its own
+        # update silently and never sets this — see _check_update). None ==
+        # no known update, the tray icon carries no badge and the menu item
+        # is hidden.
+        self._pending_update = None
 
         # Menu item references for dynamic updates
         self._menu_status = None
@@ -224,7 +231,11 @@ class VerbalWinApp:
             pystray.MenuItem("Toggle On/Off", self._tray_set_mode_toggle, checked=lambda item: self._mode == MODE_TOGGLE, enabled=gated),
         )
 
-        # Whisper Model submenu
+        # Offline Model submenu — `whisper_model` feeds ONLY
+        # transcriber._transcribe_local, the third-priority fallback after the Groq
+        # proxy and Gemini. Named "Whisper Model" it read as the active engine, so
+        # switching it looked broken. The real engine is `asr_model` (Settings →
+        # Models). Same relabel as the macOS menubar.
         model_menu = pystray.Menu(
             *[pystray.MenuItem(m, self._tray_change_model, checked=lambda item, mn=m: self.config.get("whisper_model", "base") == mn, enabled=gated) for m in ["tiny", "base", "small", "medium"]]
         )
@@ -236,23 +247,43 @@ class VerbalWinApp:
             "Open Flume", self._tray_open_popover, default=True,
         )
 
+        # Persistent "update available" row — hidden (visible=False) until
+        # _offer_update() sets self._pending_update. Clicking it re-opens the
+        # same update dialog on demand, which is the whole point of pairing
+        # this with the tray icon's badge dot (_create_icon_image/
+        # _update_tray_icon): once a user dismisses the popup with "No", the
+        # badge + this menu item are the only remaining discoverability path
+        # for that update, so both must persist across the session no matter
+        # how many times the popup itself was declined.
+        self._menu_update = pystray.MenuItem(
+            lambda item: (
+                f"Update available (v{self._pending_update['version']}) ↑"
+                if self._pending_update else ""
+            ),
+            self._tray_open_update,
+            visible=lambda item: self._pending_update is not None,
+        )
+
         self._menu_items = pystray.Menu(
+            self._menu_update,
             self._menu_open_popover,
             self._menu_status,
             self._menu_record,
             pystray.Menu.SEPARATOR,
-            # "Open Verbal" stays enabled while signed out — it renders the
-            # sign-in wall, so it is part of the way back in.
-            pystray.MenuItem("Open Verbal", self._tray_open_dashboard),
+            # "Open Dashboard" stays enabled while signed out — it renders the
+            # sign-in wall, so it is part of the way back in. Named distinctly
+            # from the "Open Flume" popover item above (self._menu_open_popover)
+            # since they open two different surfaces.
+            pystray.MenuItem("Open Dashboard", self._tray_open_dashboard),
             pystray.MenuItem("Open Canvas", self._tray_open_canvas, enabled=gated),
             pystray.MenuItem("Open Notes", self._tray_open_notes, enabled=gated),
             pystray.MenuItem("Settings...", self._tray_open_settings, enabled=gated),
             pystray.MenuItem("Recording Mode", mode_menu, enabled=gated),
-            pystray.MenuItem("Whisper Model", model_menu, enabled=gated),
+            pystray.MenuItem("Offline Model", model_menu, enabled=gated),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem(lambda item: self._auth_menu_label(), self._tray_toggle_auth),
             pystray.Menu.SEPARATOR,
-            pystray.MenuItem(lambda item: f"Verbal v{APP_VERSION}", self._tray_about),
+            pystray.MenuItem(lambda item: f"Flume v{APP_VERSION}", self._tray_about),
             pystray.MenuItem("Quit", self._tray_quit),
         )
 
@@ -260,16 +291,27 @@ class VerbalWinApp:
 
     def start(self):
         logger.info(f"=== VERBAL v{APP_VERSION} STARTING (Windows) ===")
+        # Make a paste Windows refuses visible instead of silent (paste_guard.py).
+        try:
+            from app import paste_guard
+            paste_guard.set_prompt_hook(self._prompt_paste_blocked)
+        except Exception as e:
+            logger.debug("paste-blocked prompt hook not installed: %s", e)
         self._start_hotkey()
         threading.Thread(target=self._check_update, daemon=True).start()
         threading.Thread(target=self._presence_loop, daemon=True).start()
 
         import pystray
 
-        icon_image = self._create_icon_image(False)
+        # _check_update() runs on its own thread started just above and may
+        # already have set self._pending_update by the time we get here
+        # (network round-trip vs. this thread's icon-image construction is a
+        # genuine race either way) — read it now so a fast update check
+        # doesn't get its badge silently dropped by this initial image.
+        icon_image = self._create_icon_image(False, badge=self._pending_update is not None)
         self._tray_icon = pystray.Icon(
-            "Verbal", icon_image,
-            f"Verbal v{APP_VERSION}",
+            "Flume", icon_image,
+            f"Flume v{APP_VERSION}",
             menu=self._build_tray_menu(),
         )
 
@@ -335,7 +377,7 @@ class VerbalWinApp:
             # dictation still works. Block until the tray exits.
             tray_thread.join()
 
-    def _create_icon_image(self, recording: bool):
+    def _create_icon_image(self, recording: bool, badge: bool = False):
         from PIL import Image, ImageDraw
         img = Image.new("RGBA", (32, 32), (0, 0, 0, 0))
         draw = ImageDraw.Draw(img)
@@ -343,6 +385,17 @@ class VerbalWinApp:
         draw.ellipse([4, 4, 28, 28], fill=color)
         draw.ellipse([10, 8, 22, 20], fill=(26, 25, 23, 255))
         draw.rectangle([14, 20, 18, 26], fill=(26, 25, 23, 255))
+        if badge:
+            # "Update available" notification dot, composited onto whichever
+            # base icon is currently active (idle or recording) — pystray
+            # supports live-swapping `.icon` on a running Icon instance
+            # (Icon.icon has a setter that calls _update_icon() while
+            # visible), so _update_tray_icon() can apply this at any time
+            # without tearing down/recreating the tray icon. A dark ring
+            # keeps the dot legible against both the cream idle color and
+            # the terracotta recording color.
+            draw.ellipse([20, 0, 32, 12], fill=(26, 25, 23, 255))
+            draw.ellipse([22, 2, 30, 10], fill=(58, 166, 92, 255))
         return img
 
     def _status_text(self):
@@ -358,8 +411,9 @@ class VerbalWinApp:
     def _update_tray_icon(self, recording: bool):
         try:
             if self._tray_icon:
-                self._tray_icon.icon = self._create_icon_image(recording)
-                self._tray_icon.title = "Verbal - Recording..." if recording else f"Verbal v{APP_VERSION}"
+                badge = self._pending_update is not None
+                self._tray_icon.icon = self._create_icon_image(recording, badge=badge)
+                self._tray_icon.title = "Flume - Recording..." if recording else f"Flume v{APP_VERSION}"
         except Exception:
             pass
 
@@ -438,6 +492,30 @@ class VerbalWinApp:
         save_config(self.config)
         self._update_tray_menu()
 
+    def _prompt_paste_blocked(self, reason, target_app):
+        """Popup for a paste Windows refused (UIPI), offering the elevated restart.
+
+        tkinter needs its own throwaway root — the same withdraw/destroy dance
+        every other dialog in this file does. Throttling lives in paste_guard.
+        """
+        try:
+            from app import paste_guard
+            import tkinter as tk
+            from tkinter import messagebox
+            root = tk.Tk()
+            root.withdraw()
+            yes = messagebox.askyesno(paste_guard.title(reason),
+                                      paste_guard.message(reason, target_app))
+            root.destroy()
+            if yes and paste_guard.open_fix(reason):
+                # The elevated copy is starting and the singleton mutex has been
+                # released — this process has to go now, or the new one sees the
+                # name still taken and exits instead.
+                logger.info("quitting for the elevated relaunch")
+                self._tray_quit()
+        except Exception as e:
+            logger.error(f"paste-blocked prompt failed: {e}")
+
     def _tray_quit(self, icon=None, item=None):
         if self._tray_icon:
             self._tray_icon.stop()
@@ -449,7 +527,7 @@ class VerbalWinApp:
         root = tk.Tk()
         root.withdraw()
         messagebox.showinfo(
-            f"Verbal v{APP_VERSION}",
+            f"Flume v{APP_VERSION}",
             "Voice to text, instantly.\n\n"
             "Hold Right Alt to record (Hold mode)\n"
             "or press once to start/stop (Toggle mode).\n"
@@ -457,6 +535,15 @@ class VerbalWinApp:
             "Powered by Whisper + Gemini"
         )
         root.destroy()
+
+    def _tray_open_update(self, icon=None, item=None):
+        """Tray menu row shown only while an update is pending (see
+        _menu_update). Re-opens the SAME dialog _offer_update shows on the
+        original check, ignoring the "already seen this version" gate —
+        an explicit click here is the user asking to see it again, not the
+        periodic check nagging them."""
+        if self._pending_update:
+            self._offer_update(self._pending_update, force_dialog=True)
 
     # ── Sign-in gate (IDI-183, mirrors main.py on macOS) ──────────────────
     # Flume requires an account, so nothing account-shaped may run without one.
@@ -882,6 +969,72 @@ class VerbalWinApp:
         elif self._is_recording:
             self._cancel_recording()
 
+    def _notify_mic_permission_blocked(self):
+        """Tell the user, clearly and ONCE, that recording failed — likely
+        because Microphone access is blocked in Windows Settings.
+
+        Windows has no macOS-TCC-style programmatic "request access" call a
+        desktop (non-UWP) app can make to trigger a fresh permission dialog:
+        access is gated entirely by Settings > Privacy > Microphone, and if
+        it's blocked, opening the mic stream just fails with no OS prompt
+        ever appearing. So the fix here isn't "trigger a prompt" (not
+        possible) — it's detecting the failure and surfacing it immediately,
+        instead of the previous silent `recorder.start()` failure that left
+        the user with no idea why the hotkey did nothing.
+
+        Gated by config['mic_permission_notified'] (anti-nag pattern, same
+        shape as config['autolearn_declined'] — see conventions #9): shown
+        once, then suppressed on every subsequent failed hotkey press until
+        `_on_record_start` sees the mic open successfully again, at which
+        point it clears the flag so a later regression is reported again.
+
+        Fail-closed throughout (Hard Rule #1) — this must never raise back
+        into the record-start path; the caller already wraps this call too.
+        """
+        if self.config.get("mic_permission_notified", False):
+            return
+        title = "Flume couldn't start recording"
+        msg = ("Microphone access looks blocked in Windows. Click to open "
+               "Settings > Privacy > Microphone and allow desktop apps.")
+        notified = False
+        # 1. winotify (lightweight, no COM server thread) — the only backend
+        # here that supports an action button, so it can deep-link straight
+        # to the Settings page. Same backend/order as
+        # shared_dashboard.py::_notify_native's canvas toast.
+        try:
+            from winotify import Notification
+            toast = Notification(app_id="Flume", title=title, msg=msg)
+            toast.add_actions(label="Open Microphone Settings",
+                               launch="ms-settings:privacy-microphone")
+            toast.show()
+            notified = True
+        except Exception as e:
+            logger.debug(f"mic-permission winotify unavailable: {e}")
+        # 2. win10toast (no action-button support, but still visible)
+        if not notified:
+            try:
+                from win10toast import ToastNotifier
+                ToastNotifier().show_toast(title, msg, duration=8, threaded=True)
+                notified = True
+            except Exception as e:
+                logger.debug(f"mic-permission win10toast unavailable: {e}")
+        # 3. Fall back to the pystray tray icon's own notify(), if available.
+        if not notified:
+            try:
+                icon = getattr(self, "_tray_icon", None)
+                if icon is not None and hasattr(icon, "notify"):
+                    icon.notify(msg, title)
+                    notified = True
+            except Exception as e:
+                logger.debug(f"mic-permission tray notify unavailable: {e}")
+        if not notified:
+            logger.warning(f"mic permission blocked, no toast backend available: {msg}")
+        self.config["mic_permission_notified"] = True
+        try:
+            save_config(self.config)
+        except Exception as e:
+            logger.debug(f"mic-permission flag save failed: {e}")
+
     def _on_record_start(self):
         if self._processing:
             return
@@ -930,7 +1083,21 @@ class VerbalWinApp:
                 self.overlay.hide()      # never leave "Starting..." stranded
             except Exception:
                 pass
+            try:
+                self._notify_mic_permission_blocked()
+            except Exception as ne:
+                logger.debug(f"mic-permission notify failed: {ne}")
             return
+        # The mic just opened successfully — if we'd previously warned about a
+        # blocked microphone, the block is gone (Settings changed, device came
+        # back, etc.). Clear the one-time flag so a LATER regression is
+        # reported again instead of staying silent forever.
+        if self.config.get("mic_permission_notified", False):
+            try:
+                self.config["mic_permission_notified"] = False
+                save_config(self.config)
+            except Exception as e:
+                logger.debug(f"mic-permission flag reset failed: {e}")
         # Hybrid pipeline: open the streaming socket and tap the mic, so a long
         # dictation is transcribed by the time you stop. Mirrors main.py; fully
         # guarded, so a failure here just means this take goes the ordinary way.
@@ -1310,7 +1477,7 @@ class VerbalWinApp:
                     threading.Thread(
                         target=self._sync.push,
                         args=(result, push_target, entry.get("audio_url") or "",
-                              "done", rec_id, _push_ms),
+                              "done", rec_id, _push_ms, target_app or ""),
                         daemon=True,
                     ).start()
 
@@ -1621,7 +1788,7 @@ class VerbalWinApp:
         if hasattr(self, '_update_checked') and self._update_checked:
             return
 
-        from app.updater import check_for_update, download_update, install_update
+        from app.updater import check_for_update
         update = check_for_update()
         self._update_checked = True  # Mark that we've checked
 
@@ -1630,6 +1797,15 @@ class VerbalWinApp:
         try:
             auto_update = self.config.get("auto_update", True)
             if auto_update:
+                # Auto-update replaces the running app silently and
+                # unattended — there's no "dismissed for now" state to
+                # discover later, so the persistent badge/menu item (which
+                # exist specifically so a DECLINED update stays findable)
+                # would have nothing meaningful to point at here. Skip them
+                # entirely in this mode; a failed silent download/install
+                # just falls through to the existing log-only error handling
+                # below, same as before this change.
+                from app.updater import download_update, install_update
                 logger.info(f"Auto-update: downloading {update['version']}")
                 self.overlay.show_briefly(f"Updating to v{update['version']}...", duration=3.0)
                 path = download_update(update)
@@ -1637,22 +1813,59 @@ class VerbalWinApp:
                     install_update(path, silent=True)
                 return
 
-            import tkinter as tk
-            from tkinter import messagebox
-            root = tk.Tk()
-            root.withdraw()
-            changelog = update.get("changelog", "Bug fixes and improvements")
-            resp = messagebox.askyesno(
-                f"Verbal {update['version']} available",
-                f"{changelog}\n\nDownload and install now?",
-            )
-            root.destroy()
-            if resp:
-                path = download_update(update)
-                if path:
-                    install_update(path)
+            # Manual mode: the popup is the discoverability path on FIRST
+            # sight of a version; the persistent tray badge + "Update
+            # available" menu item (_menu_update) are what carry that same
+            # information forward after the user dismisses it, so declining
+            # once doesn't mean losing track of the update for the rest of
+            # the session.
+            self._offer_update(update)
         except Exception as e:
             logger.error(f"Update failed: {e}")
+
+    def _offer_update(self, update, force_dialog=False):
+        """Show (or re-show) the update-available dialog and keep the
+        persistent tray badge + menu item (_menu_update) in sync with it.
+
+        Always sets self._pending_update and refreshes the tray icon/menu —
+        that's what makes the badge and menu row persist regardless of what
+        the user does with the popup. The popup itself is gated by
+        config['update_dialog_seen_version'] so periodic/repeat calls for a
+        version the user already answered ("Later"/"No") don't nag with the
+        same dialog again; `force_dialog=True` (from the tray menu's explicit
+        click — an intentional re-ask, not a nag) bypasses that gate.
+        """
+        self._pending_update = update
+        try:
+            self._update_tray_icon(self._is_recording)
+            self._update_tray_menu()
+        except Exception as e:
+            logger.debug(f"update badge refresh failed: {e}")
+
+        already_seen = self.config.get("update_dialog_seen_version") == update.get("version")
+        if already_seen and not force_dialog:
+            return
+
+        from app.updater import download_update, install_update
+        import tkinter as tk
+        from tkinter import messagebox
+        root = tk.Tk()
+        root.withdraw()
+        changelog = update.get("changelog", "Bug fixes and improvements")
+        resp = messagebox.askyesno(
+            f"Flume {update['version']} available",
+            f"{changelog}\n\nDownload and install now?",
+        )
+        root.destroy()
+        self.config["update_dialog_seen_version"] = update.get("version")
+        try:
+            save_config(self.config)
+        except Exception as e:
+            logger.debug(f"update-seen flag save failed: {e}")
+        if resp:
+            path = download_update(update)
+            if path:
+                install_update(path)
 
 
 def _acquire_single_instance_mutex():

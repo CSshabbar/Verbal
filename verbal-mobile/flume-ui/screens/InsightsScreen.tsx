@@ -47,7 +47,7 @@ export const InsightsScreen: React.FC<Props> = ({ onBack }) => {
   const shareRecap = async () => {
     if (!data) return;
     const L = [
-      'My Verbal insights —',
+      'My Flume insights —',
       `${fmtN(data.totalWords)} words dictated (${fmtN(data.totalDictations)} dictations)`,
     ];
     if (data.wpm) L.push(`${data.wpm} words/min — top ${fmtPct(data.wpmPercentile)}% of typists`);
@@ -299,6 +299,12 @@ const Devices: React.FC<{ data: Insights }> = ({ data }) => {
   );
 };
 
+// Tick labels under the 24-hour bars. The two '6's are 6AM and 6PM — different
+// ticks that legitimately render the same text, so these MUST be keyed by index:
+// `key={t}` made React see two children with key `6` and warn "Encountered two
+// children with the same key". Hoisted out of render so it isn't rebuilt per frame.
+const HOUR_TICKS = ['12AM', '6', 'NOON', '6', '11PM'];
+
 const Rhythm: React.FC<{ data: Insights }> = ({ data }) => {
   const mx = Math.max(1, ...data.hours);
   return (
@@ -312,8 +318,8 @@ const Rhythm: React.FC<{ data: Insights }> = ({ data }) => {
         ))}
       </View>
       <View style={styles.hourAxis}>
-        {['12AM', '6', 'NOON', '6', '11PM'].map(t => (
-          <Text key={t} variant="metaSm" color={colors.textSubtle} style={{ fontSize: 9 }}>{t}</Text>
+        {HOUR_TICKS.map((t, i) => (
+          <Text key={i} variant="metaSm" color={colors.textSubtle} style={{ fontSize: 9 }}>{t}</Text>
         ))}
       </View>
       <Text variant="caption" color={colors.textSubtle} style={{ marginTop: 10, fontSize: 12 }}>
