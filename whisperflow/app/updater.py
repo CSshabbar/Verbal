@@ -9,6 +9,7 @@ import hashlib
 import logging
 import os
 import platform
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -123,8 +124,49 @@ def install_update(file_path: str, silent: bool = False):
             creationflags=0x00000008 | 0x00000200,  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
         )
     else:
-        subprocess.Popen(["open", file_path])
+        _install_update_mac(file_path)
     sys.exit(0)
+
+
+def _install_update_mac(dmg_path: str):
+    """`open`-ing a .dmg only mounts it in Finder — nothing actually replaces
+    the installed app or relaunches it, so "Update" looked like it did
+    nothing (confirmed live, 2026-08-25: user reports "shows option to
+    update but doesn't restart the update"). Spawn a detached helper script
+    that waits for this process to fully exit, then mounts the dmg, copies
+    the new .app over the CURRENTLY INSTALLED one (wherever that actually is
+    — derived from sys.executable rather than assuming /Applications, so a
+    dev/manually-relocated install still gets replaced in place), unmounts,
+    and relaunches. Falls back to the old "just open the dmg" behavior at
+    any step that fails, so a user can still finish the install by hand
+    instead of being left with nothing.
+    """
+    # Frozen layout: <App>.app/Contents/MacOS/<exe> — walk up three levels.
+    target_app = os.path.dirname(os.path.dirname(os.path.dirname(sys.executable)))
+    if not target_app.endswith(".app") or not os.path.isdir(target_app):
+        logger.warning(f"Can't resolve installed app bundle from {sys.executable!r}; "
+                        "falling back to opening the dmg")
+        subprocess.Popen(["open", dmg_path])
+        return
+
+    pid = os.getpid()
+    mount_dir = tempfile.mkdtemp(prefix="flume_update_")
+    dmg_q, mount_q, target_q = (shlex.quote(p) for p in (dmg_path, mount_dir, target_app))
+    script = f"""
+    while kill -0 {pid} 2>/dev/null; do sleep 0.3; done
+    if hdiutil attach {dmg_q} -mountpoint {mount_q} -nobrowse -quiet; then
+        SRC_APP=$(find {mount_q} -maxdepth 1 -name '*.app' -print -quit)
+        if [ -n "$SRC_APP" ] && rm -rf {target_q} && ditto "$SRC_APP" {target_q}; then
+            hdiutil detach {mount_q} -quiet
+            rm -f {dmg_q}
+            open {target_q}
+            exit 0
+        fi
+        hdiutil detach {mount_q} -quiet
+    fi
+    open {dmg_q}
+    """
+    subprocess.Popen(["/bin/bash", "-c", script], start_new_session=True)
 
 
 def _is_newer(remote: str, current: str) -> bool:
