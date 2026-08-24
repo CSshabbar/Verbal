@@ -79,6 +79,10 @@ a = Analysis(
         # a frozen build without it would fail only when a user opens Team or
         # dictates while in one (Hard Rule #30).
         'app.organizations',
+        # main.py's paste-blocked prompt (`from app import paste_guard`) is a
+        # FUNCTION-level import too — declared explicitly per Rule #30 rather than
+        # relying on bytecode scan.
+        'app.paste_guard',
         'app.autolearn',
         'app.filetags',
         'app.auth',
