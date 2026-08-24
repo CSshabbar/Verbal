@@ -99,23 +99,47 @@ body.lay-bar #permWrap,body.lay-bar #preWrap,body.lay-bar #liveRoot{display:none
 /* native traffic lights overlay the top-left in expanded mode (hidden titlebar) */
 body.lay-expanded .mhead{padding-left:86px}
 /* ── the ambient meeting bar ── */
-#barRoot{display:none;position:fixed;inset:0;padding:5px 6px}
+/* Short by default: at rest the bar carries only what's LIVE — the dot
+   and the clock — same "Capsule" recipe as the dictation overlay (overlay_html.py
+   .opt). Title, waveform and the quick actions live in `.barOpt`, collapsed to
+   zero width until hover reveals them. `#barHandoff` reuses `.barPill` but stays
+   full-width — it's a one-shot message ("Notes ready →"), not a live indicator,
+   so there's nothing to collapse. */
+#barRoot{display:none;position:fixed;inset:0;padding:5px 6px;align-items:center;justify-content:center}
 body.lay-bar #barRoot{display:flex}
 @keyframes barIn{from{opacity:0;transform:translateY(-8px) scale(.97)}to{opacity:1;transform:none}}
-.barPill{flex:1;display:flex;align-items:center;gap:10px;padding:0 8px 0 14px;border-radius:999px;
+.barPill{display:flex;align-items:center;gap:10px;padding:0 8px 0 14px;border-radius:999px;
   background:rgba(13,15,17,.86);-webkit-backdrop-filter:blur(20px) saturate(1.3);
   backdrop-filter:blur(20px) saturate(1.3);
   border:1px solid rgba(240,240,240,.1);cursor:pointer;
   box-shadow:0 12px 36px rgba(0,0,0,.45), inset 0 1px 0 rgba(255,255,255,.05)}
+#barHandoff{flex:1}
 .barPill:hover{border-color:rgba(240,240,240,.16)}
 .barDot{width:8px;height:8px;border-radius:50%;background:var(--rec);flex:none;
   animation:mpulse 1.4s ease-in-out infinite;box-shadow:0 0 10px rgba(224,80,73,.8)}
 .barPill.paused .barDot{background:var(--faint);animation:none;box-shadow:none}
+/* the collapsed cluster: zero width until hover/peek, clipped so nothing shows
+   through at rest. `.peek` is toggled from Python (meeting_window.py) since a
+   background, non-activating panel never gets a real :hover on macOS — same
+   reasoning as overlay_html.py's `.pill.peek`. Deliberately NOT keyed off
+   `.paused` (dropped, Rule #58) — a paused meeting used to force this open
+   permanently, so the pill never shrank back to dot+timer for as long as it
+   stayed paused, however long that was. The dot alone (below, greyed + no
+   pulse when paused) is enough of a signal at rest; hover still reveals the
+   full row exactly like every other state, paused included. */
+#barPill .barOpt{display:flex;align-items:center;gap:10px;max-width:0;opacity:0;overflow:hidden;
+  transition:max-width .22s cubic-bezier(.2,.8,.2,1),opacity .16s linear}
+/* 340 clipped the trailing button (usually stop) whenever the PAUSED tag was
+   also showing: title(150)+PAUSED(~50)+wave(40)+4 buttons(28 each)+6 gaps(10
+   each) = ~432 at the true worst case, well past 340. 440 covers it with a
+   few px to spare; BAR_W was widened to match (Rule #56). Still the right
+   budget post-Rule-#58: hovering a PAUSED pill is exactly this worst case. */
+#barPill:hover>.barOpt,#barPill.peek>.barOpt{max-width:440px;opacity:1}
 .barTitle{font:600 12px 'Geist';color:var(--tx);overflow:hidden;text-overflow:ellipsis;
   white-space:nowrap;max-width:150px;flex:none}
 .barTimer{font:500 12.5px 'JetBrains Mono';color:var(--tx);font-variant-numeric:tabular-nums;
   letter-spacing:-.02em;flex:none}
-.barWave{display:flex;align-items:center;gap:3px;height:16px;flex:1;justify-content:center;min-width:40px}
+.barWave{display:flex;align-items:center;gap:3px;height:16px;flex:none;justify-content:center;min-width:40px}
 .barWave i{width:1.5px;border-radius:2px;background:var(--tx);height:3px;opacity:.9;
   transition:height .4s cubic-bezier(.4,0,.2,1)}
 .barPill.paused .barWave i{background:var(--faint);height:3px !important}
@@ -488,6 +512,7 @@ def _live_screen():
       </span>
       <span class="mtimer mono" id="mTimer">0:00</span>
       <div class="mact">
+        <button class="iconbtn" id="mCancelBtn" title="Cancel meeting (discard, no save)" onclick="cancelMeeting()">{_svg('trash', 13)}</button>
         <button class="iconbtn accent" id="mStarBtn" title="Mark this moment (⌘.)" onclick="api('mark_moment','')">{_svg('star', 13)}<span class="stN" id="stN"></span></button>
         <button class="iconbtn" title="Pause (⌘P)" id="mPauseBtn" onclick="api('pause_meeting')">{_svg('pause', 13)}</button>
         <button class="iconbtn" title="Collapse to bar" onclick="api('collapse_meeting_window')">{_svg('collapse', 13)}</button>
@@ -530,13 +555,17 @@ def _bar():
   <div id="barRoot">
     <div class="barPill" id="barPill" onclick="barExpand(event)">
       <span class="barDot"></span>
-      <span class="barTitle" id="barTitle">Meeting</span>
-      <span class="barPausedTag">PAUSED</span>
-      <span class="barWave" id="barWave"><i></i><i></i><i></i><i></i><i></i><i></i></span>
       <span class="barTimer mono" id="barTimer">0:00</span>
-      <button class="barBtn accent" id="barStarBtn" title="Mark moment" onclick="event.stopPropagation();api('mark_moment','')">{_svg('star', 12)}</button>
-      <button class="barBtn" id="barPause" title="Pause / resume" onclick="event.stopPropagation();api('pause_meeting')">{_svg('pause', 12)}</button>
-      <button class="barBtn stop" title="Stop meeting" onclick="event.stopPropagation();api('stop_meeting')">{_svg('stop', 11)}</button>
+      <span class="barOpt">
+        <span class="barTitle" id="barTitle">Meeting</span>
+        <span class="barPausedTag">PAUSED</span>
+        <span class="barWave" id="barWave"><i></i><i></i><i></i><i></i><i></i><i></i></span>
+        <button class="barBtn" id="barCancel" title="Cancel meeting (discard, no save)"
+                onclick="event.stopPropagation();cancelMeeting()">{_svg('trash', 12)}</button>
+        <button class="barBtn accent" id="barStarBtn" title="Mark moment" onclick="event.stopPropagation();api('mark_moment','')">{_svg('star', 12)}</button>
+        <button class="barBtn" id="barPause" title="Pause / resume" onclick="event.stopPropagation();api('pause_meeting')">{_svg('pause', 12)}</button>
+        <button class="barBtn stop" title="Stop meeting" onclick="event.stopPropagation();api('stop_meeting')">{_svg('stop', 11)}</button>
+      </span>
     </div>
     <div class="barPill handoff" id="barHandoff" onclick="handoffOpen(event)">
       <span class="hoDot" id="hoDot"></span>
@@ -576,6 +605,9 @@ function applyLayout(){
   document.body.className='lay-'+LAYOUT
     + (HANDOFF ? ' handoff ho-'+(HANDOFF.state==='ready'?'ready':
         HANDOFF.state==='failed'?'failed':'working') : '');
+  // a stale reveal must not carry across a morph — leaving the bar collapses
+  // it again next time (Python only re-sends hover on the next mouse move).
+  if(LAYOUT!=='bar'){ const p=document.getElementById('barPill'); if(p) p.classList.remove('peek'); }
 }
 function renderHandoff(){
   applyLayout();
@@ -596,6 +628,23 @@ function handoffOpen(ev){
 function barExpand(ev){
   api('expand_meeting_window');
 }
+
+// Hover → reveal the bar's title/waveform/quick-actions, driven from Python
+// (meeting_window.py::_on_global_mouse) with the exact reasoning as the
+// dictation overlay's VerbalHover (05-conventions.md Rule #40): this panel is a
+// background, non-activating window while a meeting runs, so real CSS :hover
+// never fires reliably on macOS. `:hover` stays in the CSS as a bonus for when
+// Flume IS the active app (also covers Windows, which has no such restriction).
+window.VerbalMeetingHover = function(x, y){
+  const p = document.getElementById('barPill');
+  if(!p || LAYOUT!=='bar') return;
+  let on = false;
+  if(x >= 0){
+    const r = p.getBoundingClientRect();
+    on = x >= r.left - 3 && x <= r.right + 3 && y >= r.top - 3 && y <= r.bottom + 3;
+  }
+  p.classList.toggle('peek', on);
+};
 function renderBar(){
   const pill=document.getElementById('barPill');
   if(!pill) return;
@@ -848,6 +897,13 @@ function jumpToLive(){
   document.getElementById('jumpLive').className='jumpLive';
 }
 function liveStop(){ api('stop_meeting'); }
+// Cancel is destructive (no save, no summary, no history row) — unlike Stop,
+// which finalizes the meeting — so it is gated behind a real confirm(), same
+// as every other irreversible action in this codebase.
+function cancelMeeting(){
+  if(!confirm('Discard this meeting? The recording and transcript will not be saved.')) return;
+  api('cancel_meeting');
+}
 
 // ── ScratchpadPane ─────────────────────────────────────────────────────────────
 let SPAD_TIMER=null, DICTATING=false;

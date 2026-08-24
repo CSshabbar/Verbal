@@ -22,8 +22,9 @@ from AppKit import (
     NSWindowStyleMaskTitled, NSWindowStyleMaskClosable,
     NSWindowStyleMaskResizable, NSWindowStyleMaskMiniaturizable,
     NSColor,
+    NSApplicationDidHideNotification, NSApplicationDidUnhideNotification,
 )
-from Foundation import NSMakeRect, NSMakeSize, NSObject
+from Foundation import NSMakeRect, NSMakeSize, NSObject, NSNotificationCenter
 import objc
 
 from app import theme as _theme  # noqa: F401  — registers Geist/JBM for WKWebView
@@ -44,7 +45,27 @@ def _delegate_class():
     Without reverting this on close, the very first time a user opens the
     dashboard (main.py calls dashboard.show() at every launch) silently
     degrades the overlay for the rest of the session — reported as "the
-    recording pill doesn't show up over full-screen apps"."""
+    recording pill doesn't show up over full-screen apps".
+
+    windowDidMiniaturize_ covers the other way a window can leave the screen
+    without ever closing: clicking the yellow button. That doesn't fire
+    windowWillClose_, so without this the policy stayed Regular for the rest
+    of the session (fixed only by quitting) — reported as "the pill works
+    right after restarting the app, then disappears over full-screen apps
+    after a while." windowDidDeminiaturize_ puts Regular back so Cmd+Tab/Dock
+    keep working once the dashboard is visible again.
+
+    applicationDidHide_/applicationDidUnhide_ cover a THIRD way the dashboard
+    can leave the screen without closing or miniaturizing: Cmd+H. Hiding the
+    app doesn't fire either handler above, so the policy stayed stuck on
+    Regular until quit — and unlike the full-screen-Space case, a Regular app
+    that's been Cmd+H'd also fails to reliably re-show its OWN non-activating
+    panels afterward (orderFrontRegardless() on the recording overlay is a
+    no-op while NSApp itself is hidden), which is why this one reproduced even
+    with no full-screen app involved. These are NSApplication notifications,
+    not NSWindow delegate methods, so they're wired via NSNotificationCenter
+    below rather than relying on this object being NSApp's delegate (rumps
+    already owns that role)."""
     global _DELEGATE_CLS
     if _DELEGATE_CLS is None:
         class _FlumeDashboardDelegate(objc.lookUpClass("NSObject")):
@@ -53,6 +74,37 @@ def _delegate_class():
                     NSApplication.sharedApplication().setActivationPolicy_(1)  # Accessory
                 except Exception as e:
                     logger.debug("revert activation policy failed: %s", e)
+
+            def windowDidMiniaturize_(self, note):
+                try:
+                    NSApplication.sharedApplication().setActivationPolicy_(1)  # Accessory
+                except Exception as e:
+                    logger.debug("revert activation policy failed: %s", e)
+
+            def windowDidDeminiaturize_(self, note):
+                try:
+                    NSApplication.sharedApplication().setActivationPolicy_(0)  # Regular
+                except Exception as e:
+                    logger.debug("restore activation policy failed: %s", e)
+
+            def applicationDidHide_(self, note):
+                try:
+                    NSApplication.sharedApplication().setActivationPolicy_(1)  # Accessory
+                except Exception as e:
+                    logger.debug("revert activation policy failed: %s", e)
+
+            def applicationDidUnhide_(self, note):
+                try:
+                    dash = getattr(self, "_dash", None)
+                    win = getattr(dash, "_window", None) if dash else None
+                    # Only restore Regular if the dashboard was actually the
+                    # thing that got hidden (still open/visible) — otherwise
+                    # an unrelated hide/unhide would wrongly flip an already-
+                    # Accessory app back to Regular.
+                    if win is not None and win.isVisible():
+                        NSApplication.sharedApplication().setActivationPolicy_(0)  # Regular
+                except Exception as e:
+                    logger.debug("restore activation policy failed: %s", e)
 
         _DELEGATE_CLS = _FlumeDashboardDelegate
     return _DELEGATE_CLS
@@ -115,6 +167,81 @@ class _Bridge(NSObject):
         method = msg.get("method", "")
         args = msg.get("args", []) or []
         self._dash._dispatch(mid, method, args)
+
+
+# ── JS dialogs (WKUIDelegate) ────────────────────────────────────────────────
+# WKWebView does NOT implement window.alert/confirm/prompt for you. With no
+# WKUIDelegate, WebKit resolves them immediately with the default — `confirm()`
+# returns FALSE without ever drawing anything — so every guarded action in the
+# dashboard silently did nothing on macOS. That is 16 call sites, including
+# "Delete note", "Clear history", "Remove offline devices", "Delete your account"
+# and "Remove from team", which is how it was finally noticed.
+#
+# Windows was unaffected: pywebview/WebView2 provides these natively, which is why
+# the bug survived the Windows-parity work.
+#
+# The delegate must be RETAINED — WKWebView holds `UIDelegate` weakly, so a
+# locally-scoped instance is collected and the panels quietly stop working again.
+def _ui_delegate_class():
+    from AppKit import NSAlert, NSAlertFirstButtonReturn, NSCriticalAlertStyle
+
+    def _split(msg: str):
+        """Our confirm() copy is "Title?\n\nDetail" — map that onto NSAlert's
+        two-field shape instead of dumping one blob into the title."""
+        text = str(msg or "")
+        if "\n\n" in text:
+            head, _, rest = text.partition("\n\n")
+            return head.strip(), rest.strip()
+        return text.strip(), ""
+
+    def _run(msg, buttons, destructive=False):
+        head, detail = _split(msg)
+        a = NSAlert.alloc().init()
+        a.setMessageText_(head or "Flume")
+        if detail:
+            a.setInformativeText_(detail)
+        for b in buttons:
+            a.addButtonWithTitle_(b)
+        if destructive:
+            try:
+                a.setAlertStyle_(NSCriticalAlertStyle)
+            except Exception:
+                pass
+        return a.runModal()
+
+    _DANGER = ("delete", "remove", "clear", "erase", "permanently", "cannot be undone")
+
+    class _FlumeUIDelegate(objc.lookUpClass("NSObject")):
+        def webView_runJavaScriptAlertPanelWithMessage_initiatedByFrame_completionHandler_(
+                self, webview, message, frame, handler):
+            try:
+                _run(message, ["OK"])
+            except Exception as e:
+                logger.debug("alert panel failed: %s", e)
+            handler()
+
+        def webView_runJavaScriptConfirmPanelWithMessage_initiatedByFrame_completionHandler_(
+                self, webview, message, frame, handler):
+            ok = False
+            try:
+                low = str(message or "").lower()
+                rc = _run(message, ["OK", "Cancel"],
+                          destructive=any(w in low for w in _DANGER))
+                ok = (rc == NSAlertFirstButtonReturn)
+            except Exception as e:
+                # Fail CLOSED: an alert we could not draw must read as "cancelled",
+                # never as consent to a destructive action.
+                logger.debug("confirm panel failed: %s", e)
+                ok = False
+            handler(ok)
+
+        def webView_runJavaScriptTextInputPanelWithPrompt_defaultText_initiatedByFrame_completionHandler_(
+                self, webview, prompt, default_text, frame, handler):
+            # Nothing in the dashboard uses prompt(); answering None = cancelled,
+            # which is the safe reading if something ever does.
+            handler(None)
+
+    return _FlumeUIDelegate
 
 
 class FlumeWebDashboard:
@@ -235,7 +362,17 @@ class FlumeWebDashboard:
         self._window.setBackgroundColor_(
             NSColor.colorWithCalibratedRed_green_blue_alpha_(14/255, 16/255, 18/255, 1.0))
         self._delegate = _delegate_class().alloc().init()
+        self._delegate._dash = self
         self._window.setDelegate_(self._delegate)
+        # applicationDidHide_/applicationDidUnhide_ are NSApplication notifications,
+        # not NSWindow delegate callbacks — AppKit only invokes them automatically on
+        # NSApp's own delegate (rumps owns that slot), so subscribe explicitly instead.
+        # One-time registration: _build() is guarded to run once per process.
+        nc = NSNotificationCenter.defaultCenter()
+        nc.addObserver_selector_name_object_(
+            self._delegate, "applicationDidHide:", NSApplicationDidHideNotification, None)
+        nc.addObserver_selector_name_object_(
+            self._delegate, "applicationDidUnhide:", NSApplicationDidUnhideNotification, None)
 
         ucc = WKUserContentController.alloc().init()
         self._bridge = _Bridge.alloc().initWithDashboard_(self)
@@ -250,6 +387,13 @@ class FlumeWebDashboard:
         cr = self._window.contentView().bounds()
         self._webview = WKWebView.alloc().initWithFrame_configuration_(cr, config)
         self._webview.setAutoresizingMask_(0x02 | 0x10)  # width+height flexible
+        # Retained on self: UIDelegate is a WEAK reference, so a local would be
+        # collected and confirm() would go back to silently returning false.
+        try:
+            self._ui_delegate = _ui_delegate_class().alloc().init()
+            self._webview.setUIDelegate_(self._ui_delegate)
+        except Exception as e:
+            logger.error("could not install JS dialog delegate: %s", e)
         try:
             self._webview.setValue_forKey_(False, "drawsBackground")  # transparent → our bg
         except Exception:

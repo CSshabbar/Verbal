@@ -1323,6 +1323,17 @@
     minimized the dashboard at some point in the session, which is why it took "a lot of use" to notice).
     Fixed by adding `windowDidMiniaturize_` (revert to Accessory) and `windowDidDeminiaturize_` (restore
     Regular) to the same delegate.
+    **A third leak (2026-08): Cmd+H.** Hiding the app doesn't fire `windowWillClose_` or the miniaturize
+    pair either, so the policy stuck at Regular the same way — and this one reproduced with NO full-screen
+    app involved, matching a later report of the pill failing "even on the desktop where there is no full
+    screen app": a Regular-policy app that's been Cmd+H'd also fails to reliably re-show its OWN
+    non-activating panels afterward, so `overlay.py`'s `orderFrontRegardless()` became a no-op until the
+    user quit and relaunched. `applicationDidHide_`/`applicationDidUnhide_` are NSApplication notifications,
+    not NSWindow delegate methods — rumps already owns the `NSApp.delegate` slot, so they're wired via
+    `NSNotificationCenter.defaultCenter().addObserver_selector_name_object_(...)` in `_build()` instead of
+    assuming AppKit will call them automatically. `applicationDidUnhide_` only restores Regular if
+    `self._window.isVisible()` — otherwise an unrelated hide/unhide (the dashboard already closed) would
+    wrongly flip an Accessory app back to Regular.
 
 57. **A conditionally-shown element must be in the pixel budget, not just the steady-state one.**
     `meeting_html.py`'s ambient bar expands `.barOpt`'s `max-width` from 0 to a hardcoded cap on
@@ -1358,7 +1369,36 @@
     something that resolves itself quickly (a toast, an animation); for a state with no time bound (paused
     can last indefinitely), tie the reveal to the USER'S ATTENTION (hover) instead, or it reads as stuck.
 
-59. **The product is branded "Flume" everywhere user-facing (renamed from "Verbal", 2026-08-23) — but
+59. **A forced model swap can regress latency even when it's a straight upstream retirement, not a choice
+    — and `reasoning_effort` is the knob, not a fix.** Groq retired the whole `llama-3.x` tier on
+    2026-08-18 (every call 404'd `model_not_found`), forcing `ai_cleanup.py`'s `SPEED_CLEANUP_MODEL` from
+    `llama-3.1-8b-instant` to `openai/gpt-oss-20b` and the quality tier from `llama-3.3-70b-versatile` to
+    `openai/gpt-oss-120b` (commit 3f952ff). Both replacements are REASONING models — Groq defaults
+    `reasoning_effort` to `"medium"` — so a purely mechanical formatting request now burns hundreds of
+    hidden thinking tokens before answering: measured in the `SPEED_CLEANUP_MODEL` comment at 1.54s / 430
+    output tokens vs the old model's 0.82s / 51, on the identical task. Nothing about the app's own model
+    OR pipeline selection logic changed or regressed — `speed_mode`/`chained_mode` still pick the same
+    tiers they always did — which is exactly why it read as mysterious ("sudden slowdown despite the
+    optimized pipeline"): the regression came from what the selected model IS now, not from which model
+    got selected. Fixed (2026-08-22) by passing `reasoning_effort="low"` on every dictation-formatting
+    call — `cleanup_with_groq()`, `process_text()`'s `chat_via_proxy` call, and `build_chain_spec()`'s
+    chain payload in `ai_cleanup.py`. The `chained_mode` path needed a matching server-side change since
+    `groq-proxy/index.ts`'s `chainFormat()` hand-builds its request body rather than forwarding the client
+    payload wholesale (unlike the plain JSON `/chat/completions` branch, which needed nothing — it already
+    forwards `reasoning_effort` through automatically): added a `chain_reasoning_effort` form field,
+    parsed and stripped alongside the other `chain_*` fields, threaded into the request body only when
+    present. `"low"` is a mitigation, not a full recovery to the old baseline — there is no way to turn
+    reasoning off entirely for this model family, only down. Left `format_note()` (notes formatting, a
+    separate feature) untouched: the same regression logic applies there too, but changing it wasn't asked
+    for and risks an unreviewed quality trade on a task that leans more on structural judgment.
+    A related, unrelated-cause gap this surfaced: `context/03-features.md`'s `speed_mode` entry and
+    `context/04-data-model.md`'s latency-flags entry both still named `llama-3.1-8b-instant` as
+    `SPEED_CLEANUP_MODEL` after the 3f952ff swap, even though that same commit's message claimed "context/
+    docs updated for the above" — the quality-tier references got fixed, the speed-tier one didn't. Doc
+    sync claims in a commit message are not self-verifying; grep the actual model constant name across
+    `context/` when a model swap lands, don't trust that the commit already did it.
+
+60. **The product is branded "Flume" everywhere user-facing (renamed from "Verbal", 2026-08-23) — but
     every internal identity string stays "Verbal"/`com.verbal.app`, deliberately.** App bundle/executable
     name, window/dialog titles, the installer name, tray/menu text, and dashboard copy all say "Flume"
     now. Left UNCHANGED on purpose: macOS `bundle_identifier='com.verbal.app'` (`whisperflow.spec`), the
@@ -1371,7 +1411,7 @@
     app" detection, and orphaning old Windows Programs-and-Features entries. That migration is a real
     product decision, not a rename, and stays out of scope until deliberately planned.
 
-60. **`assets/icon.png` is a 44x44 flat black mic silhouette for the menu-bar/tray glyph
+61. **`assets/icon.png` is a 44x44 flat black mic silhouette for the menu-bar/tray glyph
     (`generate_menu_icon()` in `scripts/generate_icons.py`) — it is NEVER the real app icon, and every
     icon-conversion step must read `assets/app_icon.png` instead.** Both the mac (`sips`+`iconutil` →
     `.icns`) and Windows (PIL → `.ico`) build pipelines read `assets/icon.png` for years, which is why

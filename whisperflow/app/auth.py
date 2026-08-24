@@ -377,6 +377,14 @@ def _clear_account_caches(cfg: dict) -> None:
     cfg["meetings"] = []
     cfg["meetings_opened"] = []
     cfg["dictionary"] = {}
+    # The team cache carries another organization's shared vocabulary, snippets and
+    # roster (IDI-216). It is account-scoped in the strongest sense — leaving it
+    # behind would let the next account signed in on this machine dictate with a
+    # team they were never in, and read its member list out of the dashboard.
+    cfg["org"] = {}
+    # …and the per-device onboarding nudge, so the next account that creates a
+    # team gets the setup screen rather than inheriting "already done".
+    cfg["org_setup_done"] = False
     # Voice fingerprints are local-only biometric-adjacent data (Hard Rule #18)
     # keyed to the people in THIS account's meetings — they must not survive
     # into another account, or past a deletion.

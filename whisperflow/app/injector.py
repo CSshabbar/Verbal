@@ -6,6 +6,8 @@ import pyperclip
 import Quartz
 from AppKit import NSWorkspace, NSRunningApplication
 
+from app import paste_guard
+
 logger = logging.getLogger("verbal.injector")
 
 VK_V = 0x09
@@ -210,6 +212,29 @@ def _inject_with_mentions(text: str) -> bool:
 
 
 def inject_text(text: str, allow_mentions: bool = False) -> bool:
+    # Pre-flight the Accessibility grant. WITHOUT it every CGEventPost below is a
+    # silent no-op: the paste "succeeds", returns True, logs "Pasted" — and
+    # nothing arrives in the target app. That produced a bug that looked like
+    # broken dictation rather than a missing permission, because ⌘V by hand
+    # worked fine (the text really is on the clipboard). See app/paste_guard.py.
+    # This runs before the mention path too — that path posts CGEvents as well,
+    # so it fails exactly the same way.
+    try:
+        if not paste_guard.can_paste():
+            try:
+                pyperclip.copy(text)
+            except Exception as e:
+                logger.error(f"clipboard copy failed while paste was blocked: {e}")
+            # Put the user back in their app so the ⌘V the popup tells them
+            # about lands in the right place.
+            restore_focused_app()
+            paste_guard.report_blocked(
+                paste_guard.REASON_ACCESSIBILITY, _previous_app_name)
+            return False
+    except Exception as e:
+        # The guard must never be what stops a dictation — fall through and try.
+        logger.debug("paste guard skipped: %s", e)
+
     # When file-tagging is on and the dictation target is Cursor/Windsurf, drive
     # the @-mention picker so tags become real references. Any failure falls back
     # to a plain paste so a recording is never lost.

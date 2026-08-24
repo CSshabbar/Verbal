@@ -12,5 +12,7 @@ export { useCanvas } from './useCanvas';
 export type { CanvasKind, LiveSlot, FeedEntry } from './useCanvas';
 export { useSnippets } from './useSnippets';
 export type { Snippet, SnippetPatch } from './useSnippets';
+export { useOrganization } from './useOrganization';
+export type { Org, OrgMember, OrgInvite, OrgRole, UsageRow, BoardRow } from './useOrganization';
 export { useSyncEnabled, setSyncEnabled } from './useSyncEnabled';
 export { startSyncLifecycle, catchUpNow } from './syncLifecycle';

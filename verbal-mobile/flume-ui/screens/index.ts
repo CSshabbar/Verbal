@@ -17,6 +17,7 @@ export { MeetingLiveScreen } from './MeetingLiveScreen';
 export { CanvasScreen } from './CanvasScreen';
 export { SettingsScreen } from './SettingsScreen';
 export { SnippetsScreen } from './SnippetsScreen';
+export { TeamScreen } from './TeamScreen';
 export { ModelsScreen } from './ModelsScreen';
 export { DictionaryScreen } from './DictionaryScreen';
 export { InsightsScreen } from './InsightsScreen';

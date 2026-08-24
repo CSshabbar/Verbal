@@ -18,6 +18,13 @@ table (one row per user). Kept deliberately lightweight: no per-transcription
 network calls (the dictionary is loaded into config once per session), and
 fetch/save only touch the network — reads write config only when it changed, so
 they never spam save_config (which previously caused a write race).
+
+TWO SETS, ONE PIPELINE (IDI-216 Phase 4). `get()` is the user's OWN dictionary and
+is what every editor and save path touches. `effective()` is personal ∪ the team's
+shared dictionary and is what build_prompt / known_terms / apply_replacements /
+apply_snippets actually apply. Both read only local state; the team half comes
+from `organizations.team_dictionary()`, a config-cache read, so the dictation path
+still makes no network call. See the merge_with_team() block for the union rule.
 """
 import logging
 import re
@@ -86,7 +93,75 @@ def normalize(d):
 
 
 def get(config):
+    """The user's OWN dictionary. This is the editable surface — every save path
+    (save/add_replacement/add_snippet/…) and the Dictionary + Snippets screens
+    operate on exactly this. For what dictation should actually APPLY, see
+    effective()."""
     return normalize(config.get("dictionary"))
+
+
+# ── team dictionary (IDI-216 Phase 4) ─────────────────────────────────────────
+# A user in a team dictates with personal ∪ team. The merge rule (IDI-216 open
+# decision #3): the UNION is what applies — nothing is dropped from either set —
+# and only a genuine same-key collision needs a tiebreak, where PERSONAL wins:
+# identical vocabulary word (case-insensitive), identical replacement `from`,
+# identical snippet `trigger`. Personal-wins is the non-destructive choice —
+# joining a team can never silently change what your existing snippet trigger
+# expands to, or how a word you taught Flume yourself is spelled.
+#
+# ORDERING is not incidental. Team entries are placed FIRST and personal entries
+# LAST so that build_prompt's tail-keeping (Whisper conditions on the last ~224
+# tokens, and trimming happens from the front) still protects the terms this user
+# taught it most recently. Getting this backwards would mean joining a team
+# quietly evicts your own vocabulary from the bias prompt.
+#
+# Fail-closed: any error returns the personal dictionary unchanged. A team lookup
+# must never be able to break dictation (Hard Rule #1).
+
+def _union_first_wins(team, personal, key_fn):
+    """[team entries whose key is not in personal] + [personal entries]."""
+    personal_keys = {key_fn(p) for p in personal}
+    return [t for t in team if key_fn(t) not in personal_keys] + list(personal)
+
+
+def merge_with_team(personal, team):
+    """Pure (no config, no network) so the rule is fixture-testable on its own."""
+    personal, team = normalize(personal), normalize(team)
+    return {
+        "vocabulary": _union_first_wins(
+            team["vocabulary"], personal["vocabulary"], lambda w: str(w).strip().lower()),
+        "replacements": _union_first_wins(
+            team["replacements"], personal["replacements"],
+            lambda r: str(r.get("from", "")).strip().lower()),
+        "snippets": _union_first_wins(
+            team["snippets"], personal["snippets"],
+            lambda s: str(s.get("trigger", "")).strip().lower()),
+    }
+
+
+def effective(config):
+    """What dictation applies: the user's dictionary merged with their team's.
+
+    Pure local read — `organizations.team_dictionary()` reads the config cache and
+    never touches the network, so this is safe on the hot path."""
+    try:
+        from app import organizations
+        team = organizations.team_dictionary(config)
+        if not (team["vocabulary"] or team["replacements"] or team["snippets"]):
+            return get(config)
+        return merge_with_team(get(config), team)
+    except Exception as e:
+        logger.debug("effective dictionary failed, using personal only: %s", e)
+        return get(config)
+
+
+def effective_snippets(config):
+    """Snippets that should expand — personal ∪ team. The Snippets SCREEN uses
+    get_snippets() (personal only); this is the apply-time set."""
+    try:
+        return effective(config)["snippets"]
+    except Exception:
+        return get(config)["snippets"]
 
 
 def build_prompt(config):
@@ -97,7 +172,7 @@ def build_prompt(config):
     user taught it most recently. An over-long glossary is not merely ignored —
     every extra term is another word the model can drop into an unrelated
     sentence, and another line it can parrot back (see strip_prompt_echo)."""
-    vocab = get(config)["vocabulary"]
+    vocab = effective(config)["vocabulary"]
     if not vocab:
         return None
     words = vocab[-_MAX_PROMPT_TERMS:]
@@ -269,7 +344,7 @@ def known_terms(config, limit=60):
     Distinct from build_prompt(): that feeds Whisper's transcription bias
     (vocabulary only); this grounds the post-transcription cleanup model."""
     try:
-        d = get(config)
+        d = effective(config)
         terms, seen = [], set()
         for w in d["vocabulary"] + [r.get("to", "") for r in d["replacements"]]:
             w = (w or "").strip()
@@ -288,7 +363,7 @@ def apply_replacements(text, config):
     case-insensitive; preserves capitalization of the replacement)."""
     if not text:
         return text
-    for r in get(config)["replacements"]:
+    for r in effective(config)["replacements"]:
         frm, to = r["from"], r["to"]
         try:
             text = re.sub(r"\b" + re.escape(frm) + r"\b", to, text, flags=re.IGNORECASE)
@@ -421,7 +496,7 @@ def apply_snippets(text, config, save_config_fn=None):
     try:
         if not text or not isinstance(text, str):
             return text
-        snippets = get_snippets(config)
+        snippets = effective_snippets(config)
         valid = [s for s in snippets
                  if str(s.get("trigger", "")).strip() and str(s.get("expansion", "")).strip()]
         if not valid:

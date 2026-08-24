@@ -99,9 +99,22 @@ Each feature: **what it does · desktop impl · mobile impl · backend · status
 - **Latency: `speed_mode` (2026-08-14, desktop, default OFF).** One master switch in `DEFAULT_CONFIG` so
   the pre-tuning behaviour stays reachable for A/B. When on: transcripts of **≤ 8 words**
   (`ai_cleanup._SKIP_CLEANUP_MAX_WORDS`) skip the LLM entirely; `SYSTEM_PROMPT` (~2,428 tokens) is replaced
-  by `LEAN_SYSTEM_PROMPT` (~677); formatting runs on `SPEED_CLEANUP_MODEL` (`llama-3.1-8b-instant`) instead
-  of `openai/gpt-oss-120b` (was llama-3.3-70b, retired by Groq 2026-08-18). Measured: prompt size has **~zero** latency effect — the win comes from the
-  skip rule and the smaller model, not from the shorter prompt.
+  by `LEAN_SYSTEM_PROMPT` (~677); formatting runs on `SPEED_CLEANUP_MODEL` instead of `openai/gpt-oss-120b`.
+  Measured: prompt size has **~zero** latency effect — the win comes from the skip rule and the smaller
+  model, not from the shorter prompt.
+  **`SPEED_CLEANUP_MODEL` is `openai/gpt-oss-20b` (2026-08-18 — was `llama-3.1-8b-instant`, retired by Groq
+  the same day every other `llama-3.x` model was; every call 404'd `model_not_found` until this swap).**
+  This is a REGRESSION the code comment above `SPEED_CLEANUP_MODEL` measures explicitly: gpt-oss-20b is a
+  reasoning model, so it burns hidden "thinking" tokens before answering even a purely mechanical
+  formatting request — 1.54s / 430 output tokens vs the old 8b-instant's 0.82s / 51 tokens on the same
+  task. Both gpt-oss calls (`SPEED_CLEANUP_MODEL` in `speed_mode`, `openai/gpt-oss-120b` otherwise, in both
+  `process_text()` and `build_chain_spec()`'s chained payload) now pass **`reasoning_effort="low"`**
+  (2026-08-22) to claw most of that back — Groq's own default for the gpt-oss family is `"medium"`, which
+  is where the hidden-token cost comes from; there is no way to disable reasoning outright, only to turn
+  it down. The `chained_mode` path needed the Edge Function's `chainFormat()` updated too (a new
+  `chain_reasoning_effort` form field, since that request body is hand-built server-side rather than
+  forwarded wholesale) — the plain (unchained) `/chat/completions` JSON branch needed no server change, it
+  already forwards the whole client payload through as-is.
 - **Settings → Dictation → "Speed & pipeline" (2026-08-15).** A radio group exposing the three real
   pipelines, plus a **Transcription model** select (`asr_model`: `auto` | `whisper-large-v3-turbo` |
   `whisper-large-v3`; `auto` keeps the language-based routing at `transcriber.py`, an explicit pick applies
@@ -298,6 +311,212 @@ Each feature: **what it does · desktop impl · mobile impl · backend · status
 - **Status:** full parity (desktop + mobile). Fails closed — any `apply_snippets` error returns the text
   unchanged, never breaking the transcribe → inject path.
 
+## Team / Organization (IDI-216, Aug 2026)
+
+- **What:** a named group ABOVE the single-user account. An owner creates a team, invites people by
+  email, manages roles, and shares a dictionary + snippets with everyone on it; members can opt in to
+  usage insights and a team leaderboard. **One team per user** — enforced by a partial unique index on
+  `organization_members(user_id) where status='active'`, not by app code, so a racing invite claim
+  cannot create a second membership.
+- **Why it did NOT need IDI-29 first.** The obvious reading of "team mode" is cross-account access, which
+  on the legacy tables would be a real security hole (they are scoped, not enforced). The shipped design
+  avoids the premise: the shared dictionary lives in its OWN table (`organization_dictionary`), and
+  cross-member reads go through SECURITY DEFINER RPCs that check membership themselves. So nothing here
+  reads another user's row in `dictionary`/`transcriptions`/…, the four new tables carry real
+  `auth.uid()` RLS from their first row, and `supabase_auth_uid_rls.sql` stays an independent ticket
+  with its pairing trade-off still open. See `04-data-model.md` §Organization layer.
+- **Roles:** `owner` (exactly one, immovable, the only role that can toggle the leaderboard org-wide) ·
+  `admin` (invite, remove, change roles, edit the shared dictionary) · `member` (read the roster + shared
+  dictionary; manage their own consent; leave). Membership and invites are READ-only over REST — every
+  write goes through an RPC, because Postgres RLS cannot restrict which *columns* a policy lets you
+  write, so a "members may update their own row" policy would also let a member set their own role.
+- **Invites:** `invite-member` Edge Function → `organization_invites` row + a one-time token → Resend
+  email. The DB stores only the token's **sha256**, so a leaked row can't be replayed. The claim RPC
+  (`org_claim_invite`) fails closed in order — unknown token, expired, already used, already in a team,
+  no seats, and finally the **email guard**: the signed-in account's address must match the address the
+  invite was sent to, or a forwarded link would grant membership to whoever opened it first. Seats are
+  counted as active members + pending invites so an admin can't over-invite and discover it at claim
+  time. **No partial invite** — if the mail fails to send, the row is deleted again.
+- **Shared dictionary (the merge rule).** Dictation applies **personal ∪ team**. Nothing is dropped from
+  either set; only a genuine same-key collision needs a tiebreak — identical vocabulary word
+  (case-insensitive), identical replacement `from`, identical snippet `trigger` — and there **personal
+  wins**. That is the non-destructive choice: joining a team can never silently change what your existing
+  snippet trigger expands to. Team entries are ordered FIRST and personal LAST, because `build_prompt`
+  keeps the *tail* of the vocabulary (Whisper conditions on the last ~224 tokens and trimming happens
+  from the front) — reversed, joining a team would quietly evict your own words from the bias prompt.
+  Desktop `dictionary.effective()`/`merge_with_team()`; mobile `getEffectiveDictionary()`/`mergeWithTeam()`.
+  Both read a LOCAL cache (`config['org']` / AsyncStorage `flume_org`), so the dictation path still makes
+  no network call, and both fail closed to personal-only on any error.
+  **It is EDITED on the Dictionary screen, not on Team** (2026-08-21). Both platforms put a scope switch —
+  `Mine | <team name>` — at the top of Dictionary; Team carries only a one-line summary that links across.
+  A dictionary is a dictionary, people look for one under Dictionary, and two homes for one concept meant
+  two places to learn it. Admins edit the shared scope, members see it read-only with "your admins
+  maintain these". Desktop `DICT_SCOPE`/`renderTeamDictionary()`/`tdSave()` (a CAS through
+  `save_team_dictionary`, because two admins can be editing at once); mobile `DictionaryScreen`'s
+  `scope` state, which falls back to `personal` if the team disappears mid-session.
+- **Daily series for the charts.** `org_usage_series(p_org, p_days)` returns per-member per-day word
+  counts in ONE call — the roster sparklines and the per-member heatmap need the breakdown that
+  `org_usage_summary`'s totals can't give, and N round trips (one per member) would be silly. Same
+  privacy contract; visibility differs by role on purpose — owner/admin get every consenting member,
+  anyone else gets only their own row, so a member can see their own sparkline without the screen
+  becoming a way to read colleagues' activity.
+- **Usage insights + leaderboard (opt-in, counts only).** `org_usage_summary` (every active member — an
+  owner/admin gets all consenting members, anyone else gets their own row) and
+  `org_leaderboard` (every active member, once the owner enables it org-wide) are SECURITY DEFINER RPCs
+  that read `transcriptions` to COUNT words and sum durations and return **only** aggregates — there is
+  no column in either return type that could carry transcript text. A member who hasn't set
+  `usage_consent` is **absent from the result entirely** rather than shown as zeroes, so their silence
+  isn't itself a signal. The leaderboard needs BOTH the owner's org-wide switch (default off) and the
+  member's own `leaderboard_opt_in`; turning `usage_consent` off turns the opt-in off with it.
+  **The toggles live in Settings, not on Team** (2026-08-21): desktop adds a `privacy` group to
+  `SETTINGS_GROUPS` (label "Team privacy", rail badge `sharing`/`private`), mobile a `TEAM PRIVACY`
+  section. Both are rendered **only when the user is on a team**, and desktop falls the group back to
+  `account` if you leave while sitting on it. "Where do I turn that off?" had two answers before; now it
+  has the same answer as every other data switch in the product. The team payload therefore feeds two
+  screens, so `teamRepaint()` paints whichever is showing — a consent toggle that does not move while the
+  backend has already changed reads as broken.
+  **Leave team moved with it, and is hidden for an owner**: `org_remove_member` returns
+  `cannot_remove_owner`, so the old unconditional button on the Team screen always failed for the one
+  person most likely to press it.
+- **Where each person writes (2026-08-21).** `org_app_breakdown(p_org, p_days)` answers the question an
+  admin asks first — *which app is each person actually dictating into?* Until now the only per-app data
+  existed in `config['stats_daily'].apps` on each user's own machine, which is why Insights could chart it
+  and Team could not. `transcriptions.app` is written by both desktops from the **pre-injection**
+  frontmost app; **iOS writes nothing** (no frontmost window on a phone). Rendered as a stacked share
+  strip per member on the team overview and a ranked list on each member page.
+  **Historic rows are NULL and unbackfillable**, so both surfaces state the 21 Aug 2026 cutoff in prose
+  rather than rendering an empty panel that reads as a bug — the same discipline as the blank-WPM-gauge
+  fix. This is also the one place the team layer's "counts and durations only" promise had to widen; the
+  copy on every Team surface now names app names explicitly.
+- **Entitlements (Phase 3):** `organizations.plan`/`seats`. `groq_check_rate_limit_org` is the MER-30
+  limiter plus a `p_user_id` it uses to look up the caller's org plan and RAISE their tier — folded into
+  the round trip the limiter already makes, so team entitlements cost the hot path **zero** extra DB
+  calls. `groq-proxy` falls back to the original `groq_check_rate_limit` if the org RPC is absent (and
+  latches that off after one 404), so the function and the migration can deploy in either order.
+- **Desktop UI — four views off one screen** (`flume_dashboard_html.py::renderTeam()`, backed by
+  `app/organizations.py` through `DashboardApi`). Both desktops render the same `flume_html()` against
+  the same backend class, so **Windows has this at parity automatically**.
+  1. **No team** — the create/join screen. Leads with the value rather than a form: the same sentence
+     shown as a new teammate would hear it (`Ideas` struck through) beside how the team hears it
+     (`Idiaz`), then ONE primary action. The join path stays findable but quiet — someone joining
+     normally clicks a link in an email and never sees this screen.
+  2. **Just created** — a two-step setup that did not exist in the first cut, where creating a team
+     dropped you onto an empty roster with no next step. Step 1 offers to **copy the owner's own
+     dictionary into the team's** (`seed_team_dictionary`), because a team that starts empty has no
+     reason to be used; step 2 is the first invite. Seats are drawn as dots, not a fraction. Dismissed
+     by sending an invite, seeding the dictionary, or Skip; tracked in the local-only config key
+     `org_setup_done` (a per-device nudge — deliberately NOT a Supabase column) and reset on account
+     switch by `auth._clear_account_caches`.
+  3. **The team** — a permanent roster column (each row carrying a 14-day sparkline) beside a detail
+     pane titled "How <team> flows", echoing Insights' "How you flow". The **contribution ring** is the
+     team's answer to the WPM gauge: total in the middle, per-member split around it, so an unbalanced
+     team is visible at a glance. Then the pastel `.itile` band (words · dictations · team pace · seats),
+     the **ranking**, "Where the team writes", and one-line pointers to the shared dictionary and to the
+     consent toggles. **Neither is edited here** — the dictionary lives under Dictionary → <team>, the
+     consent toggles under Settings → Team privacy. Each pointer states the current state in a sentence
+     ("you are sharing your dictation counts…") so the jump is informed, not exploratory.
+     The **ranking** (`tmLeaderboardCard`) is a table, not a bar chart: rank, avatar, name, a
+     dictations/wpm/top-app subline and the word count on one row, with the bar as a background wash —
+     people compare themselves to the row above, so those have to read together. It draws from
+     `TEAM_USAGE` for owners/admins (the fuller, consent-gated set they already see) and from the opt-in
+     `TEAM_BOARD` for everyone else; **same rows, same order, different audience**. This is why a new
+     admin no longer sees an empty "nobody has opted in yet" board, which was the single most confusing
+     thing about the first cut.
+     **A plain member's overview is their own numbers, in second person** — "You on <team>", "Your words",
+     "Your pace", their own app mix, no contribution ring (one contributor always reads 100%), and a line
+     saying the team's totals stay with the admins. Before 2026-08-21 that page was all zeroes: every
+     total comes from `org_usage_summary`, which was admin-only in SQL *and* gated client-side twice, so a
+     member's team looked like it had never dictated anything. The empty-state copy was the tell — it said
+     "usage appears here as people turn sharing on" while everyone was already sharing. Empty states that
+     name a cause must be able to tell that cause apart from the others: `TEAM_USAGE` null (not loaded),
+     `rows: []` for an admin (nobody dictated), and `rows: []` for a member (you didn't) are now three
+     different sentences.
+  4. **One member** — that person's numbers given the full Insights treatment: the same semicircular
+     WPM gauge, the same pastel band, the same 14-week activity heatmap, then "Where <name> writes".
+     Role control and Remove sit in the header (**always visible and labelled**, not hover-revealed — a
+     control nobody can find is a control that doesn't exist). A member who has not consented shows a
+     locked empty state, never zeroes, and no app panel either: an explanation of missing app data would
+     still be a page about them.
+  **The screen reuses the Insights CSS deliberately** (`.inshero`/`.itile`/`.inscard`/`.inshm`/
+  `.insabar`): "numbers about you" already has a house style, and a Team screen that invented its own
+  would read as a different product. Only the roster column, the ring and the onboarding screens carry
+  new CSS.
+- **Per-member WPM is derived, not stored** — `org_usage_summary` returns `words` and `speech_ms`, so
+  the client divides. It is suppressed below **120 s** of measured audio: `transcriptions.duration_ms`
+  is NULL on older rows (193 of 430 on the founding account), and a thin sample would invent a number
+  rather than report one.
+- **Mobile UI:** `flume-ui/screens/TeamScreen.tsx` via `flume-ui/hooks/useOrganization.ts` (+ `.mock.ts`),
+  reached from the SidePanel's Tools group and hosted in the `Menu` modal stack — so it carries its own
+  chevron-back and uses native-Alert `confirm()` (Hard Rule #14). Same sections as desktop: the shared
+  dictionary is a pointer here too (the editing is a `Mine | <team>` scope on `DictionaryScreen`), the
+  usage list is a ranking with the bar behind the text rather than beside it (a separate chart column
+  leaves no room for a name at phone width), and "Where the team writes" renders the same stacked share
+  strip, and the privacy toggles are a `TEAM PRIVACY` section in `SettingsScreen` rather than a block on
+  Team. Still first-pass relative to desktop: no join popup, no invite modal, no domain card.
+- **Deep-linked invites (mobile):** `lib/pendingInvite.ts` parks the token from a
+  `verbal://team-invite?t=…` link and claims it after sign-in — the usual order, since the recipient taps
+  the link in their email before they have a session. Single-use by construction: the token is removed
+  *before* the claim is attempted, so a failed claim can't silently retry on every launch.
+- **Account teardown:** the org cache is account-scoped in the strongest sense and is wiped by both
+  platforms' sign-out/account-switch paths (`auth._clear_account_caches` sets `config['org']`;
+  `clearAccountData` removes `flume_org` AND calls `clearOrgCache()` for the in-memory mirror). Without
+  it the next account signed in on that machine would dictate with a team it was never in.
+- **Fails closed, everywhere.** No team, an offline device, a 403 and an unapplied migration are
+  indistinguishable to callers — all return the "no org" shape. A paired-but-never-signed-in device
+  sends the anon key, reads zero org rows, and simply has no team.
+- **Status (2026-08-19):** built and **backend LIVE**. Migrations `organizations_team_layer_idi216` +
+  `organizations_revoke_anon_execute_idi216` are applied to `ovpcthjingugwvpxlsna`, and `invite-member`
+  is deployed (v1, `verify_jwt` on). Verified live in a rolled-back transaction with simulated JWT
+  claims for two real users: an owner sees only their own org/roster/shared dictionary, a non-member
+  sees **zero** rows in all four tables, anon sees zero, and a member's direct `UPDATE` to promote
+  themselves to `owner` affects 0 rows (there is no write policy at all). The invite function refuses
+  both a missing Authorization header (gateway 401) and the anon key (role `anon` ≠ `authenticated` →
+  `not_authenticated`).
+  **Email is live (2026-08-20):** `RESEND_API_KEY` + `INVITE_FROM_EMAIL=sraza@idiaz.io` are set, and
+  `idiaz.io` is **verified** in Resend (DKIM + SPF MX + SPF TXT, added at Squarespace — the domain's
+  nameservers are `ns-cloud-*.googledomains.com`, inherited from the Google Domains acquisition, so the
+  Squarespace DNS panel is the right place). Two things cost time and are worth knowing next time:
+  Squarespace's **NAME** field takes the subdomain only (`send`, not `send.idiaz.io`), and the SPF TXT
+  first went in as `include:amazonses.com~all` — **the space before `~all` is load-bearing**; without it
+  SPF parses the whole thing as the include target and the record has no `all` mechanism. Verification
+  only passed after the corrected record had propagated to public resolvers and the check was
+  re-triggered. The Resend MX lives on the `send` subdomain and does NOT disturb the Google Workspace
+  MX at the root.
+  **Invite email redesigned (2026-08-20, IDI-225):** `inviteEmail()` now echoes the real
+  idiaz.io/flume site instead of a generic transactional layout — the nav's icon+wordmark lockup, the
+  dotted-border mono eyebrow pill, the bold headline with a terracotta trailing period, the product
+  screenshots' three-dot window-chrome (wrapping the same "what changes" before/after line), and the
+  hero's numbered `01`/`02` mono-index feature rows, and (2026-08-20, follow-up) the actual mascot mark
+  rasterized from the site nav's own SVG. **That icon rides as a Resend `cid:` inline attachment
+  (`flume-icon.ts`, base64 PNG), not a hosted `<img src>`** — deliberately, so showing it needed no new
+  public storage bucket/CDN to stand up or secure, and it still renders for recipients who block remote
+  images (only their client's own inline-image gate applies). This is the one exception to the earlier
+  "no images" rule; the Outlook-safe table button, `color-scheme` meta, preheader, and plain-text mirror
+  are all unchanged. **Gotcha (2026-08-21): keep this asset small.** The first deploy embedded a 300×328
+  icon (~16k-char base64) directly in the `deploy_edge_function` MCP tool call — that payload silently
+  truncated mid-call (v7 shipped with a ~3.1k-char, invalid, non-4-multiple base64 string; a confused
+  follow-up agent then made it worse across several more versions before being stopped). Fixed by
+  shrinking the source PNG to 58×64 (~4.7k-char base64, still 2× the email's largest display size,
+  30×33) and redeploying directly rather than through another long-running agent — verified after by
+  independently re-fetching the deployed source and checking the base64's exact length. **Never trust a
+  giant inline string in a single tool call without an independent length/hash check post-deploy; a
+  fresh short-context agent check is more reliable than eyeballing or a long-context retype.** `CLAIM_BASE`
+  now defaults to `https://idiaz.io/flume/download.html` (was the
+  nonexistent `flume.app/join`) — a real, live page, but it does not yet consume the `?t=` token to
+  auto-claim; that still happens by pasting the link/token into "Have an invite?". **Still needed:**
+  wiring `download.html` (or a dedicated page) to read `?t=` and deep-link into
+  `verbal://team-invite?t=…`, root SPF + DMARC for `idiaz.io` (Hard Rule gap, no root SPF/DMARC today —
+  Workspace human mail from `@idiaz.io` is unauthenticated), moving `INVITE_FROM_EMAIL` off the
+  personal `sraza@idiaz.io` mailbox, Resend bounce/complaint webhooks → suppression list, and the
+  **`groq-proxy` redeploy** for Phase-3 entitlements (deployed version still calls the old limiter — a
+  no-op difference until teams exist), and **IDI-217** (account deletion orphans a team).
+- **Migration gotcha worth remembering:** `revoke all on function … from public` revokes from the PUBLIC
+  pseudo-role and does NOT undo Supabase's `ALTER DEFAULT PRIVILEGES` grant of `EXECUTE` to **`anon`** on
+  new functions in `public`. The org RPCs were briefly anon-callable because of it (harmless — each
+  derives its caller from `auth.uid()`, which is NULL for anon, so they returned `not_authenticated` /
+  `forbidden` / an empty set), and were explicitly revoked in a follow-up migration. **Revoke from
+  `anon` by name**, not just from `public`, on any future SECURITY DEFINER function.
+
 ## Auto-learn from corrections (desktop only)
 
 - **What:** after inserting a transcript, if you fix a mis-transcribed word in the target field, offer to
@@ -346,8 +565,23 @@ Each feature: **what it does · desktop impl · mobile impl · backend · status
   **dictation target**, not the live frontmost app which may be the overlay). `inject_text(text,
   allow_mentions=)` = `pyperclip` + `restore_focused_app` + Cmd+V CGEvent; when mentions are enabled and
   the text has an `@name.ext` in a tagging IDE, routes to `_inject_with_mentions` (falls back to plain
-  paste on any failure). Windows equivalent: `win_injector.py` (clipboard + `pyautogui` Ctrl+V, `user32`
-  foreground-window save/restore).
+  paste on any failure). Windows equivalent: `win_injector.py` (clipboard + `_press_ctrl_v()` SendInput,
+  `user32` foreground-window save/restore).
+- **Blocked-paste detection** (`paste_guard.py`, 2026-08): both paste primitives can be refused by the OS
+  *without failing*, so `inject_text` used to report success while nothing arrived. macOS —
+  `CGEventPost` is a **silent no-op without the Accessibility grant**; `inject_text` now pre-flights
+  `paste_guard.can_paste()` (`AXIsProcessTrusted`, re-read every dictation so granting it mid-session works
+  on the next one) and on failure copies the text, restores focus, returns **False**, and reports.
+  Windows — **UIPI** refuses synthetic input aimed at a higher-integrity window (target running as
+  administrator) and `SendInput` returns 0 inserted events, which the old `pyautogui.hotkey("ctrl","v")`
+  discarded; `_press_ctrl_v()` checks the count instead (and always sends the key-ups, so a partial
+  delivery can't leave Ctrl stuck). `report_blocked` shows a popup **once per reason per run** (re-armed if
+  the grant flips) via a hook registered by `main.py::_prompt_paste_blocked` (`rumps.alert` on the main
+  thread) / `win_main.py::_prompt_paste_blocked` (tkinter `askyesno`). Its confirm button runs
+  `open_fix()`: macOS opens Privacy & Security → Accessibility; Windows relaunches elevated via
+  `ShellExecuteW "runas"` — which **must close the singleton mutex handle first** (see `05-conventions.md`).
+  The transcription is always on the clipboard before any of this, so a blocked paste is never lost and the
+  pill reads "In clipboard · paste with ⌘V".
 
 ## Recordings — save / playback / retry
 
@@ -668,6 +902,19 @@ Each feature: **what it does · desktop impl · mobile impl · backend · status
   a confirm; it is a list removal, not a revocation, so any of those devices reappears on its next
   heartbeat. Nothing auto-prunes — see `04-data-model` §`devices` for why, and for the reinstall-identity
   fix that stops the list filling up in the first place.
+- **Sync-target popover (desktop, 2026-08).** The full-screen Devices selector isn't the only way to
+  change where dictation lands any more: clicking a device row in the sidebar (`#sideDevices`, now
+  clickable) or the small **"Sync: <target>"** pill at the top of Home (`.homeSyncPill`, in `renderHome()`'s
+  `.mhead`) opens `#syncPop`, a floating panel anchored under the click with the identical target pills
+  (`syncSelectorHTML()` — one implementation shared by the Devices screen and the popover, so there's
+  only one place that builds the option list). Picking a pill calls the same `set_target_device` bridge
+  method the Devices screen uses; `setTarget()` then refreshes the sidebar, Home pill and popover together.
+  The current target's sidebar row carries a small "SYNC" tag. Closes on outside click, Escape, or picking
+  a target. Fixed the pre-existing gap where `SharedDashboard._device_refresh_loop`'s periodic `'devices'`
+  push (every 30s) had no `VerbalNative` handler and was silently dropped — the sidebar/Home pill only ever
+  reflected the device list from page load; `'devices'` now updates `STATE.devices`/`target_device_id` and
+  re-renders. This is still the same GLOBAL, per-installation target (`dashboard._target_device_id` /
+  local config `sync_target_device_id`) described above — no new schema, no per-device-pair matrix.
 - QR-based, single-use token. Host (signed in) inserts a `pairings` row (`token`=`token_urlsafe(6)`,
   `expires_at`≈now+120 s), shows QR `flume://pair?t=<token>`. New device claims via the **`claim_pairing`
   RPC** (IDI-157: atomic guarded claim, server-side expiry — direct table reads/updates are gone) → adopt
@@ -842,10 +1089,23 @@ deletes real files under `~/.verbal/` and this development machine has a real, i
   (screens 31a–31h); availability: macOS full, iOS read-only (+ scratchpad edit), Windows none.
 - **Desktop:** `meetings.py` (`MeetingManager`/`MeetingSession` state machine: idle→preparing→recording⇄
   paused→stopping→processing→ready|failed) + `system_audio.py` (SCK audio capture) + `meeting_window.py`/
-  `meeting_html.py` (ONE morphing WKWebView panel: an ambient glassy **bar** top-center — live dot, title,
-  timer, waveform, star/pause/stop, click-to-expand — that fluidly grows into the full window via native
-  frame animation; content modes `permissions` 31h / `premeeting` 31b / `live` 31c; while
-  recording, losing focus or closing collapses back to the bar; the separate `meeting_hud.py` was dead code, DELETED in IDI-179).
+  `meeting_html.py` (ONE morphing WKWebView panel: an ambient glassy **bar** top-center — that fluidly grows
+  into the full window via native frame animation; content modes `permissions` 31h / `premeeting` 31b /
+  `live` 31c; while recording, losing focus or closing collapses back to the bar; the separate
+  `meeting_hud.py` was dead code, DELETED in IDI-179). **Short by default:** at rest the bar carries only
+  the live dot + elapsed timer, same Capsule recipe as the recording overlay (IDI-184) — title, waveform and
+  cancel/star/pause/stop live in `.barOpt`, revealed on hover only — pausing does NOT force it open (it
+  used to; dropped per `05-conventions.md` Rule #58, since a paused meeting can sit paused indefinitely
+  and the pill was staying maximally wide the whole time instead of shrinking to dot+timer). A paused
+  meeting is signaled by the dot alone (greyed, no pulse); the same four actions also sit in the full live
+  screen's header (`.mact`). **Cancel is destructive and distinct from Stop**: Stop finalizes (drains
+  transcription, uploads audio, generates the summary, keeps a history row); Cancel throws the whole
+  meeting away — no transcript, no summary, no history row, and it deletes the cloud row/audio + local WAV
+  that already exist from the moment recording started. Gated behind a JS `confirm()` on both surfaces
+  (`05-conventions.md` Rule #57). Hover is driven
+  from Python (`MeetingWindow._start_hover_monitor`/`_on_global_mouse`, active only
+  while `layout==='bar'`) since a background, non-activating panel gets no real CSS `:hover` on macOS — see
+  `05-conventions.md` Rule #40.
   The panel is **live-meeting-only** (MER-46): reading a meeting happens in the dashboard, and when a
   meeting stops the panel collapses to a **handoff pill** ("Finishing notes…" → "Notes ready →", ✕ to
   dismiss) whose click calls `open_meeting` — `MeetingWindow.set_handoff(state, row)` on both platforms,
@@ -858,7 +1118,7 @@ deletes real files under `~/.verbal/` and this development machine has a real, i
   "Start Meeting"/"Return to Meeting". (Mobile keeps its Meetings entry inside the Notes tab — there is no
   sidebar on mobile.) `scr-meetings` is a **two-level route** (`MVIEW` = `list` | `detail`, plus the
   `MSUBNOTES` full-notes sub-page): the detail view IS the ported PostMeetingSummary — see
-  **Meeting detail** below. Bridge methods on `DashboardApi`: `start/stop/pause_meeting`,
+  **Meeting detail** below. Bridge methods on `DashboardApi`: `start/stop/pause/cancel_meeting`,
   `mark_moment`, `save_meeting_scratchpad`, `set_meeting_title` (live session) /
   `set_meeting_title_by_id` (any meeting — what the detail view's title field calls), `rename_speaker`,
   `list_meetings`, `get_meeting`, `open_meeting(_launcher)`, `delete_meeting`, `retry_meeting_summary`,
@@ -1054,7 +1314,7 @@ delta, fail-closed paths). Both spec files declare `app.insights` in `hiddenimpo
 - **Menubar menu** (`menubar_menu.py`, macOS, IDI-183): a real `NSMenu`, left-click. Header row (custom
   `NSView`: mark, status, hotkey hint / waveform + elapsed / meeting timer, words-today) → Start
   Recording · Start Meeting → Recent ▸ (last 10, click copies; Open History…) · Canvas (N) ▸ · Notes →
-  Recording Mode: <value> ▸ · Whisper Model: <value> ▸ · ✓ Auto-detect Meetings · ✓ Sync to My Devices
+  Recording Mode: <value> ▸ · Offline Model: <value> ▸ · ✓ Auto-detect Meetings · ✓ Sync to My Devices
   (disabled while signed out) → Open Flume ⌘O · Settings… ⌘, · sign in/out → Check for Updates… · About
   Flume · Quit ⌘Q. `Reset Onboarding (dev)` still only exists under `VERBAL_DEV`.
   **Signed out, the menu is locked:** every account row (record, meeting, Recent, Canvas, Notes, mode,
@@ -1093,7 +1353,11 @@ delta, fail-closed paths). Both spec files declare `app.insights` in `hiddenimpo
   post-update. Windows' `auto_update=True` mode deliberately skips the badge/menu entirely — a silent
   unattended update has no "declined" state for a badge to represent.
 - **Permissions** (`permissions.py`): accessibility / microphone / system-audio / notifications status +
-  request, surfaced via `DashboardApi.get_permissions/request_permission`.
+  request, surfaced via `DashboardApi.get_permissions/request_permission`. On Windows the module's
+  bottom-of-file shim overrides `check_accessibility()` to `"granted"` — correct, because Windows has no
+  paste permission; its paste blocker is UIPI, detected after the fact by `paste_guard.py` instead.
+  Accessibility is also read on the dictation path now, not just by the onboarding wizard — see
+  **Blocked-paste detection** above.
   **Mic permission is now actually requested on the path a real user takes (2026-08-23).** Previously
   `request_microphone()` (mac) / the Windows Settings deep-link were only reachable from a
   Settings/Permissions screen nobody visits on first install — the hotkey record-start path just opened
@@ -1222,14 +1486,27 @@ fails closed.
   **Google Meet** call in any browser (code `xxx-yyyy-zzz` / `meet.google.com` / `Meet - ` prefix),
   **Zoom web**, **Teams**/**Webex** meeting windows, FaceTime. Returns `{source,key,app}`; the friendly
   `source` (e.g. "Chrome", "Zoom") shows in the pill. `_BROWSERS`/provider matchers are easily extended.
-  Conservative on purpose (an idle Zoom / a doc titled "Meet…" must not trigger — see the fixture matrix
-  in the detect test).
+  Conservative on purpose (an idle Zoom / a doc titled "Meet…" must not trigger) — pinned by
+  `meeting_detect_fixtures.py`.
+- **False-positive hardening (2026-08-19).** Because `detect()` tests EVERY on-screen title, a loose
+  pattern fires on whatever is open. Three fixes: (a) `_MEET_CODE` is now boundary-anchored
+  (`(?<![a-z0-9-])…(?![a-z0-9-])`) — unanchored, it matched any 3-4-3 letter run *inside* a longer
+  hyphenated slug, and a Chrome tab containing "…axo-data-and…" was reported as a live Meet call
+  (`gmeet:axo-data-and`, 7 prompts in one evening); (b) a code alone is no longer sufficient — it needs
+  `\bmeet\b` in the title too, since three short hyphenated words are ordinary in article titles;
+  (c) Webex dropped its `or "webex" in low` clause, which made every Webex window a "call" even though the
+  owner check already proves the app. A `_MEET_SITE` signal was **added** (`… - Google Meet` as the
+  trailing site name, end-anchored so "How to use Google Meet - YouTube" is excluded) — that catches a
+  *named* call, which the old rules missed entirely.
 - **Prompt** (`app/meeting_prompt.py`): a non-activating NSPanel + WKWebView pill (same recipe as
   `autolearn_widget.py` — never steals focus from the call), near-black Flume design with a sage accent.
   Buttons post `md_take`/`md_dismiss` through the shared `_Bridge`.
 - **Wiring** (`main.py`): `_detect_meeting_tick` asks **once per call** (`_md_handled` keyed by call),
   skips when a meeting is already recording, and resets after ~2 empty polls so the *next* call re-prompts
-  (also hides a stale pill). `_meeting_detect_result(True)` → `meetings.start(use_mic,use_system,lang)` +
+  (also hides a stale pill). A **dismissal is durable for the session** (`_md_dismissed`, 2026-08-19):
+  that reset used to erase the refusal too, so a detection that merely flickered off-screen for 10 s
+  came back and asked again — same key, seven times. `_md_dismissed` is deliberately NOT cleared by the
+  empty-poll reset (anti-nag, like `autolearn_declined`). `_meeting_detect_result(True)` → `meetings.start(use_mic,use_system,lang)` +
   open the live window; if capture isn't ready (permissions) it falls back to `_toggle_meeting` (the
   permission/pre-meeting flow). Menubar **"Auto-detect meetings"** checkbox toggles `meeting_autodetect`
   (config, default **on**).

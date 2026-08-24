@@ -116,6 +116,10 @@ a = Analysis(
         # a frozen build without it would fail only when a user opens Team or
         # dictates while in one (Hard Rule #30).
         'app.organizations',
+        # win_main.py's paste-blocked prompt (`from app import paste_guard`) is a
+        # FUNCTION-level import too — declared explicitly per Rule #30 rather than
+        # relying on bytecode scan.
+        'app.paste_guard',
         # NOTE: app.theme is intentionally NOT listed — it imports AppKit/Foundation
         # at module load time and is macOS-only. Adding it would break the frozen
         # Windows exe. Windows uses fonts_css.py (base64 @font-face) instead.

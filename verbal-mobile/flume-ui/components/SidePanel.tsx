@@ -2,7 +2,7 @@
  * SidePanel — the app's navigation hub (V2 "Daily Four" redesign, 2026-08-16).
  *
  * A left slide-in panel mirroring the desktop sidebar: Workspace (Canvas,
- * Meetings), Tools (Dictionary, Snippets, Device pairing), live device
+ * Meetings), Tools (Dictionary, Snippets, Team, Device pairing), live device
  * presence + the sync toggle, and the account footer (gear → Settings).
  * Replaces the old Menu modal as the home for everything that isn't a tab.
  *
@@ -28,7 +28,7 @@ export type SidePanelProps = {
   open: boolean;
   onClose: () => void;
   /** Navigate somewhere and close — the panel never owns routing itself. */
-  onNavigate: (dest: 'canvas' | 'meetings' | 'dictionary' | 'snippets' | 'devices' | 'settings') => void;
+  onNavigate: (dest: 'canvas' | 'meetings' | 'dictionary' | 'snippets' | 'team' | 'devices' | 'settings') => void;
 };
 
 export const SidePanel: React.FC<SidePanelProps> = ({ open, onClose, onNavigate }) => {
@@ -81,6 +81,7 @@ export const SidePanel: React.FC<SidePanelProps> = ({ open, onClose, onNavigate 
         <Section label="TOOLS">
           <Row icon="book-outline" label="Dictionary" onPress={go('dictionary')} />
           <Row icon="flash-outline" label="Snippets" onPress={go('snippets')} />
+          <Row icon="people-outline" label="Team" onPress={go('team')} />
           <Row icon="laptop-outline" label="Device pairing" onPress={go('devices')} />
         </Section>
 

@@ -56,7 +56,7 @@ def transcribe_via_proxy(wav_path: str, config: dict, prompt: str | None = None,
     formatting completion server-side and return it in the same response, so the
     Mac pays one round trip instead of two. Shape:
         {"system": <system prompt>, "user": <user message with {{TEXT}}>,
-         "model": <chat model id>}
+         "model": <chat model id>, "reasoning_effort": <"low"|"medium"|"high", optional>}
     `{{TEXT}}` in `user` is substituted server-side with the ASR output. The
     prompt and model still come from the client, so chaining changes only WHERE
     the second call is made — not what it asks for.
@@ -92,6 +92,8 @@ def transcribe_via_proxy(wav_path: str, config: dict, prompt: str | None = None,
             data["chain_user"] = chain.get("user") or "{{TEXT}}"
             if chain.get("model"):
                 data["chain_model"] = chain["model"]
+            if chain.get("reasoning_effort"):
+                data["chain_reasoning_effort"] = chain["reasoning_effort"]
             # Dictionary find->replace rules, applied server-side BEFORE formatting so
             # the formatter reads the same corrected text it would read unchained.
             if chain.get("replace"):
@@ -126,11 +128,18 @@ def transcribe_via_proxy(wav_path: str, config: dict, prompt: str | None = None,
 def chat_via_proxy(messages: list, config: dict, model: str = "openai/gpt-oss-120b",
                    max_tokens: int = 2048, timeout: float = 10.0,
                    response_format: dict | None = None,
-                   provider: str | None = None) -> str | None:
+                   provider: str | None = None,
+                   reasoning_effort: str | None = None) -> str | None:
     """Chat completion via the proxy (JSON → Groq /chat/completions).
     Pass response_format={"type": "json_object"} for Groq's strict JSON mode.
     Pass provider="ollama" to route to Ollama Cloud instead (model = an Ollama tag,
-    e.g. "gpt-oss:120b") — same OpenAI-compatible request/response shape."""
+    e.g. "gpt-oss:120b") — same OpenAI-compatible request/response shape.
+    Pass reasoning_effort="low"/"medium"/"high" for the gpt-oss family — they default
+    to "medium" and silently spend hundreds of hidden thinking tokens on even a purely
+    mechanical formatting request (see ai_cleanup.py's SPEED_CLEANUP_MODEL comment for
+    the measured cost). This function forwards it as-is; the Edge Function's JSON
+    /chat/completions branch passes the whole payload through unmodified, so no
+    server-side change is needed for THIS path."""
     try:
         import httpx
         payload = {"model": model, "messages": messages, "temperature": 0, "max_tokens": max_tokens}
@@ -138,6 +147,8 @@ def chat_via_proxy(messages: list, config: dict, model: str = "openai/gpt-oss-12
             payload["response_format"] = response_format
         if provider:
             payload["provider"] = provider
+        if reasoning_effort:
+            payload["reasoning_effort"] = reasoning_effort
         resp = httpx.post(_endpoint(), headers=_headers(config, json=True), json=payload, timeout=timeout)
         if resp.status_code == 413:
             raise ProxyPayloadTooLarge(resp.text[:200])

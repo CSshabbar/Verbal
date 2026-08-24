@@ -160,11 +160,18 @@ export async function clearAccountData(): Promise<void> {
     'flume_target_device',  // flume-ui/hooks/useDevices target selection
     'verbal_insights_cache', // lib/insights cloud aggregate (account-scoped)
     'verbal_canvas_log',     // useCanvas local activity feed (account-scoped)
+    'flume_org',             // lib/organizations — another team's shared vocabulary,
+                             // snippets and member roster must never survive an
+                             // account switch on this device (IDI-216)
   ]);
   // The dictionary's CAS witness (`updated_at` of the row we last read) belongs
   // to the OLD account — keeping it would make the next push compare against a
   // foreign row. Dynamic import: lib/dictionary imports this module.
   import('./dictionary').then((m) => m.resetSyncState()).catch(() => {});
+  // The org module also keeps an in-memory mirror of that cache for the dictation
+  // path, so removing the AsyncStorage key alone would leave it live for the rest
+  // of the app run. Dynamic import for the same cycle reason as above.
+  import('./organizations').then((m) => m.clearOrgCache()).catch(() => {});
 }
 
 export async function getDeviceName(): Promise<string> {

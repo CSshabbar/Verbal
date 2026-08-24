@@ -30,8 +30,17 @@ def check_for_update() -> dict | None:
         if time.time() - getattr(sys, '_verbal_start_time', 0) < 30:
             return None
 
+        # Reads the app_versions_latest VIEW, not the raw table.
+        #
+        # This used to be `app_versions?order=released_at.desc&limit=1`, which is
+        # wrong whenever CI stamps released_at non-monotonically — and it does. Live
+        # data had win 1.0.9 at 00:00:00 and win 1.0.8 at 09:13:24 on the SAME day,
+        # so "newest" resolved to 1.0.8 and nobody on 1.0.7 could ever be offered
+        # 1.0.9. The view orders by SEMVER (see semver_key) and returns one row per
+        # platform, so the app and the public /download redirect can never disagree
+        # about which build is current.
         resp = httpx.get(
-            f"{SUPABASE_URL}/rest/v1/app_versions",
+            f"{SUPABASE_URL}/rest/v1/app_versions_latest",
             headers={
                 "apikey": SUPABASE_KEY,
                 "Authorization": f"Bearer {SUPABASE_KEY}",
@@ -39,7 +48,6 @@ def check_for_update() -> dict | None:
             params={
                 "platform": f"eq.{PLATFORM}",
                 "select": "version,changelog,file_url,file_hash,file_size,released_at",
-                "order": "released_at.desc",
                 "limit": "1",
             },
             timeout=5,

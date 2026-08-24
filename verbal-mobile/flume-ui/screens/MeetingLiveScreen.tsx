@@ -130,7 +130,11 @@ export const MeetingLiveScreen: React.FC<Props> = ({ meetingId, onBack, onFinish
         {/* header */}
         <View style={styles.header}>
           <Pressable onPress={onBack} hitSlop={12} style={({ pressed }) => [styles.backBtn, pressed && pressedStyle]}>
-            <Ionicons name="chevron-down" size={22} color={colors.textPrimary} />
+            {/* chevron-BACK, not chevron-down: this screen is pushed onto the
+                Notes stack (no `presentation: 'modal'`), so a downward chevron
+                promised a dismiss gesture that doesn't exist here. Every other
+                secondary screen uses chevron-back. */}
+            <Ionicons name="chevron-back" size={22} color={colors.textPrimary} />
           </Pressable>
           <View style={{ flex: 1, minWidth: 0 }}>
             <View style={styles.recRow}>
