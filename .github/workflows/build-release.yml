@@ -144,14 +144,21 @@ jobs:
       - name: Generate icons
         run: |
           cd whisperflow
-          python3 scripts/generate_icons.py
+          # Icon PNGs are CHECKED IN (regenerated at development time by
+          # scripts/generate_brand_icons.py from the mascot masters in
+          # assets/brand/ — conventions #61). This step used to also run the
+          # OLD scripts/generate_icons.py, which silently overwrote the
+          # checked-in menu-bar pair (assets/icon.png / icon_active.png) with
+          # its retired mic art on every build — v1.0.29 shipped the parrot
+          # Dock icon but the old mic menu-bar icon because of exactly that
+          # (2026-08-25). CI must never regenerate art; it only CONVERTS the
+          # committed app_icon.png into the platform container below.
           mkdir -p assets/icon.iconset
           # NOTE: these sips calls MUST read assets/app_icon.png (the real
-          # 1024x1024 Flume app icon), NOT assets/icon.png — the latter is a
-          # tiny 44x44 flat black mic silhouette meant only for the menu bar
-          # (generate_menu_icon() in scripts/generate_icons.py, consumed by
-          # ICON_PATH/ICON_ACTIVE_PATH in app/main.py). Reading icon.png here
-          # was the root cause of the Dock/Finder/DMG icon looking wrong/blank.
+          # 1024x1024 app icon), NOT assets/icon.png — the latter is the tiny
+          # 44x44 menu-bar glyph (ICON_PATH/ICON_ACTIVE_PATH in app/main.py).
+          # Reading icon.png here was the root cause of the Dock/Finder/DMG
+          # icon looking wrong/blank.
           sips -z 16 16 assets/app_icon.png --out assets/icon.iconset/icon_16x16.png
           sips -z 32 32 assets/app_icon.png --out assets/icon.iconset/icon_16x16@2x.png
           sips -z 32 32 assets/app_icon.png --out assets/icon.iconset/icon_32x32.png
