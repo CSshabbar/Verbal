@@ -456,20 +456,30 @@ class OverlayBar:
         # The pill has its own "!" disc — drop any leading warning emoji.
         return re.sub(r"^[\s⚠️❗❌✖]+", "", status or "").strip()
 
-    def show_briefly(self, status, duration=2.0):
+    def show_briefly(self, status, duration=2.0, error=False):
         self._stop_level_pump()
         self._order_front()
-        secs = int(max(0, time.time() - self._t0)) if self._t0 else 0
-        m = re.search(r"(\d+)\s*w", status or "", re.I)
-        words = m.group(1) if m else ""
-        if status and status.lower().startswith("pasted"):
-            label = f"Pasted to {self._this_device()}"
-        elif status and "clipboard" in status.lower():
-            label = "Copied to clipboard"
+        if error:
+            # Same failure pill as update_status(error=True) — a flash like
+            # "Mic access needed" was falling through to the plain "done" push
+            # below (no error path existed here at all), rendering as if it
+            # were a normal successful paste/copy confirmation. Confirmed
+            # live, 2026-08-25: exactly the "shows Copied in green" confusion
+            # reported for the repeated mic-denied hotkey flash.
+            self._push("error", {"label": self._strip_glyphs(status) or "Something went wrong",
+                                 "state": "Failed"})
         else:
-            label = status or "Done"
-        meta = (f"{words}W · {secs}S" if words else f"{secs}S")
-        self._push("done", {"label": label, "meta": meta})
+            secs = int(max(0, time.time() - self._t0)) if self._t0 else 0
+            m = re.search(r"(\d+)\s*w", status or "", re.I)
+            words = m.group(1) if m else ""
+            if status and status.lower().startswith("pasted"):
+                label = f"Pasted to {self._this_device()}"
+            elif status and "clipboard" in status.lower():
+                label = "Copied to clipboard"
+            else:
+                label = status or "Done"
+            meta = (f"{words}W · {secs}S" if words else f"{secs}S")
+            self._push("done", {"label": label, "meta": meta})
         # auto-dismiss the Done pill after `duration` (unless replaced sooner)
         self._done_token = getattr(self, "_done_token", 0) + 1
         token = self._done_token
