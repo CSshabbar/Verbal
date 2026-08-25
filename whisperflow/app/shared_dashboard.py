@@ -617,6 +617,40 @@ class DashboardApi:
     def app(self):
         return self.dashboard.app
 
+    def get_update_status(self):
+        """Polled by the dashboard's update banner + Settings > Updates. Read-only
+        snapshot of state main.py's App owns (_update_available/_phase/_progress) —
+        this never mutates anything, so it's safe to poll on a timer."""
+        from app.config import APP_VERSION
+        app = self.app
+        avail = app._update_available
+        return _ok(
+            current_version=APP_VERSION,
+            available=({"version": avail.get("version"),
+                        "changelog": avail.get("changelog", "")} if avail else None),
+            phase=app._update_phase,
+            progress=app._update_progress,
+        )
+
+    def check_for_updates(self):
+        """Settings > Updates' "Check for Updates" button. suppress_prompt=True
+        because this is an explicit, user-visible dashboard action — the native
+        rumps.alert popping up on top of it would be a redundant second prompt
+        for the same click. get_update_status() (polled right after) is what
+        actually shows the result in the dashboard."""
+        import threading
+        threading.Thread(target=self.app._check_update,
+                          kwargs={"suppress_prompt": True}, daemon=True).start()
+        return _ok()
+
+    def start_update_download(self):
+        self.app._start_update_download()
+        return _ok()
+
+    def install_ready_update(self):
+        self.app._install_ready_update()
+        return _ok()
+
     def get_insights(self):
         """Insights payload from the local ledger + cached cloud aggregate —
         instant, no network. See app/insights.py for the data model."""

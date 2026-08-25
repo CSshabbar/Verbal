@@ -213,6 +213,19 @@ class VerbalApp(rumps.App):
         self._update_available = None
         self._update_dismissed_version = None
 
+        # In-dashboard update flow (IDI-224 follow-up, 2026-08-25): the native
+        # rumps.alert + tray badge above is a separate, still-working path —
+        # this is the additional in-app banner/Settings flow the user asked
+        # for, so both can trigger from the SAME `_update_available` state.
+        # phase: 'idle' | 'downloading' | 'ready' | 'installing' | 'failed'.
+        # 'ready' means the installer is on disk at _update_ready_path and
+        # NOTHING has been auto-installed yet — install_update() (which
+        # replaces the app bundle and exits this process) only runs once the
+        # user explicitly clicks "Restart to update", never automatically.
+        self._update_phase = "idle"
+        self._update_progress = 0.0
+        self._update_ready_path = None
+
         # Running totals. WRITE-ONLY on macOS since IDI-183 — the menu header
         # takes its number from get_daily_words() instead — but they must stay:
         # win_main.py has its own `_status_text()` that reads them for its tray
@@ -1339,7 +1352,7 @@ class VerbalApp(rumps.App):
         feedback every time (never a silent no-op)."""
         if self._mic_denied_alerted:
             try:
-                self.overlay.show_briefly("Mic access needed — check Settings", duration=1.6)
+                self.overlay.show_briefly("Mic access needed — check Settings", duration=1.6, error=True)
             except Exception:
                 pass
             return
@@ -2013,7 +2026,7 @@ class VerbalApp(rumps.App):
         except Exception as e:
             logger.debug(f"update badge refresh failed: {e}")
 
-    def _check_update(self, announce_current=False):
+    def _check_update(self, announce_current=False, suppress_prompt=False):
         """Background update poll — both the one-shot startup check
         (`_start_app`) and the periodic re-check (`_update_check_timer`,
         every `UPDATE_CHECK_INTERVAL`) land here. `check_for_update()`
@@ -2037,7 +2050,14 @@ class VerbalApp(rumps.App):
             is_new_version = update["version"] != self._update_dismissed_version
             self._update_available = update
             self._on_main(self._refresh_update_badge)
-            if is_new_version:
+            # A newly-found version invalidates whatever the in-app flow was
+            # doing for a PREVIOUS version (its downloaded path is now stale).
+            if self._update_phase != "idle" and (
+                    not self._update_ready_path or is_new_version):
+                self._update_phase = "idle"
+                self._update_progress = 0.0
+                self._update_ready_path = None
+            if is_new_version and not suppress_prompt:
                 self._on_main(lambda: self._show_update_prompt(update))
         else:
             had_one = self._update_available is not None
@@ -2095,6 +2115,43 @@ class VerbalApp(rumps.App):
         else:
             self._on_main(lambda: rumps.alert("Update failed", "Could not download the update. Try again later."))
             self._on_main(lambda: self._status_note(""))
+
+    def _start_update_download(self):
+        """Dashboard-driven download — separate from `_do_update` (the native
+        alert's path) because this one must NEVER auto-install. It downloads,
+        parks the installer at `_update_ready_path`, sets phase='ready', and
+        stops — install only happens if/when the user clicks "Restart to
+        update" in the dashboard (`_install_ready_update`)."""
+        if self._update_phase in ("downloading", "installing"):
+            return  # already running; a duplicate click is a no-op, not a second download
+        update = self._update_available
+        if not update:
+            return
+        self._update_phase = "downloading"
+        self._update_progress = 0.0
+
+        def _run():
+            from app.updater import download_update
+            path = download_update(update, on_progress=lambda f: setattr(self, "_update_progress", f))
+            if path:
+                self._update_ready_path = path
+                self._update_phase = "ready"
+            else:
+                self._update_phase = "failed"
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _install_ready_update(self):
+        """"Restart to update" — the ONLY thing in this whole flow that's
+        allowed to actually replace the app bundle and exit. Safe to call
+        from a webview/API thread: install_update() just spawns a detached
+        shell helper and calls sys.exit(0), no AppKit involved."""
+        path = self._update_ready_path
+        if not path:
+            return
+        self._update_phase = "installing"
+        from app.updater import install_update
+        install_update(path)
 
     def _about(self, _):
         from app.config import APP_VERSION
