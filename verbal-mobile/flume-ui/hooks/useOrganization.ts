@@ -30,6 +30,7 @@ import {
   setOrgSettings,
   saveTeamDictionary as saveTeamDictionaryLib,
   usageSummary,
+  usageSeries,
   leaderboard,
   appBreakdown,
   type Org,
@@ -54,6 +55,9 @@ export function useOrganization() {
   // Per-member app mix, keyed by user_id. Empty until members dictate on a
   // build that records it — see appBreakdown().
   const [apps, setApps] = useState<Record<string, AppRow[]>>({});
+  // Daily words per member for the roster sparklines (org_usage_series) —
+  // [day, words] pairs keyed by user_id.
+  const [series, setSeries] = useState<Record<string, Array<[string, number]>>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [usageDays, setUsageDaysState] = useState(30);
@@ -77,6 +81,7 @@ export function useOrganization() {
           setUsage({ rows: [], members: 0, consented: 0 });
           setBoard({ enabled: false, rows: [] });
           setApps({});
+          setSeries({});
         }
         return;
       }
@@ -86,17 +91,19 @@ export function useOrganization() {
       // Usage and app-mix are fetched for EVERYONE; the RPCs decide what comes
       // back (all consenting members for an admin, your own row otherwise).
       // Invites have no member-scoped version, so they stay admin-only.
-      const [inv, use, brd, app] = await Promise.all([
+      const [inv, use, brd, app, ser] = await Promise.all([
         admin ? listInvites() : Promise.resolve([] as OrgInvite[]),
         usageSummary(days),
         leaderboard(bDays),
         appBreakdown(days),
+        usageSeries(),
       ]);
       if (!alive.current) return;
       setInvites(inv);
       setUsage(use);
       setBoard(brd);
       setApps(app);
+      setSeries(ser);
     },
     [usageDays, boardDays],
   );
@@ -235,6 +242,7 @@ export function useOrganization() {
     org,
     invites,
     usage,
+    series,
     board,
     apps,
     loading,

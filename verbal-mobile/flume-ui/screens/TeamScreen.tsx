@@ -4,6 +4,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
+import Svg, { Path } from 'react-native-svg';
 import { Text, Button } from '../components';
 import { colors, radius, space, pressedStyle } from '../theme';
 import { confirm } from '../components/ConfirmDialog';
@@ -21,6 +22,30 @@ const initial = (m: { display_name?: string; email?: string }) =>
 const minutes = (ms: number) => {
   const m = Math.round((ms || 0) / 60000);
   return m >= 60 ? `${(m / 60).toFixed(1)}h` : `${m}m`;
+};
+
+/** SVG path for a member's daily-words sparkline over the trailing `days`
+ *  window. Gap days are honest zeroes, so a quiet week reads flat rather than
+ *  connecting two spikes. Returns null when there's nothing to draw. */
+const sparkPath = (
+  pairs: Array<[string, number]> | undefined, days: number, w: number, h: number,
+): string | null => {
+  if (!pairs || pairs.length === 0) return null;
+  const byDay = new Map(pairs);
+  const vals: number[] = [];
+  const d = new Date();
+  d.setDate(d.getDate() - (days - 1));
+  for (let i = 0; i < days; i++) {
+    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    vals.push(Number(byDay.get(key) ?? 0));
+    d.setDate(d.getDate() + 1);
+  }
+  const max = Math.max(...vals);
+  if (max <= 0) return null;
+  const step = w / (days - 1);
+  return vals
+    .map((v, i) => `${i === 0 ? 'M' : 'L'}${(i * step).toFixed(1)},${(h - (v / max) * (h - 1)).toFixed(1)}`)
+    .join(' ');
 };
 
 const whenLabel = (iso: string | null) => {
@@ -443,6 +468,13 @@ export const TeamScreen: React.FC<Props> = ({ onBack }) => {
                 Only your own numbers appear here. Your admins see the team's totals.
               </Text>
             )}
+            {seeAll && ranked.length > 0 && (
+              <Text variant="caption" color={colors.textMuted} style={styles.sectionSub}>
+                {`${org.name || 'The team'} spoke ${ranked
+                  .reduce((a, r) => a + (r.words || 0), 0)
+                  .toLocaleString('en-US')} words in the last ${t.usageDays} days.`}
+              </Text>
+            )}
             <View style={styles.segRow}>
               {[7, 30, 90].map((d) => (
                 <Pressable
@@ -495,6 +527,14 @@ export const TeamScreen: React.FC<Props> = ({ onBack }) => {
                         .filter(Boolean)
                         .join(' · ')}
                     </Text>
+                    {(() => {
+                      const p = sparkPath(t.series[r.user_id], 42, 120, 16);
+                      return p ? (
+                        <Svg width={120} height={16} style={{ marginTop: 3 }}>
+                          <Path d={p} stroke={i === 0 ? colors.primary : colors.textDisabled} strokeWidth={1.4} fill="none" />
+                        </Svg>
+                      ) : null;
+                    })()}
                   </View>
                   <Text variant="label">{r.words.toLocaleString('en-US')}</Text>
                 </View>

@@ -630,6 +630,30 @@ export async function leaderboard(days = 7): Promise<{ enabled: boolean; rows: B
   }
 }
 
+/** Daily word counts per member — the desktop Team screen's sparkline data
+ *  (org_usage_series), keyed by user_id as [day, words] pairs in day order.
+ *  Same visibility rules as usageSummary: the RPC decides the rows (admins and
+ *  — when the owner opened stats team-wide — members get every consenting
+ *  member; anyone else exactly themselves). */
+export async function usageSeries(days = 98): Promise<Record<string, Array<[string, number]>>> {
+  const org = await getCachedOrg();
+  if (!org.org_id) return {};
+  try {
+    const { data, error } = await supabase.rpc('org_usage_series', { p_org: org.org_id, p_days: days });
+    if (error || !Array.isArray(data)) return {};
+    const out: Record<string, Array<[string, number]>> = {};
+    for (const r of data as Array<{ user_id?: string; day?: string; words?: number }>) {
+      const uid = String(r?.user_id ?? '');
+      const day = String(r?.day ?? '');
+      if (!uid || !day) continue;
+      (out[uid] ??= []).push([day, Number(r?.words ?? 0)]);
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
 export type AppRow = { app: string; dictations: number; words: number };
 
 /** Per-member per-app dictation counts — "where does each person actually use
