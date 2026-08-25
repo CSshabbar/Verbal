@@ -20,7 +20,13 @@ import { supabase } from './supabase';
 import { getCloudUserId, getDeviceId, getHistory } from './storage';
 
 const CACHE_KEY = 'verbal_insights_cache';
-const CACHE_V = 2;            // v2: rows re-read for duration_ms (2026-08-16)
+const CACHE_V = 3;            // v3: full re-read after the 2026-08-25 account
+                              // merges backfilled ~1,200 old transcriptions
+                              // BEHIND every existing cache's high-water mark
+                              // (see the self-heal note in refreshCache — a
+                              // populated cache can't detect a backfill, so
+                              // the one-time invalidation does it).
+                              // v2: rows re-read for duration_ms (2026-08-16)
 const PAGE = 1000;
 const MAX_PAGES = 40;
 export const TYPING_WPM = 40; // the average-typist baseline for "time saved"
@@ -99,6 +105,15 @@ export async function loadCache(): Promise<InsightsCache | null> {
 export async function refreshCache(cache: InsightsCache): Promise<InsightsCache> {
   try {
     let lastTs = cache.lastTs;
+    // Self-heal (same fix as desktop insights.py, 2026-08-25): a high-water
+    // mark with an EMPTY fold means every row seen so far was skipped — and
+    // history merged/backfilled into the account lands with created_at OLDER
+    // than the mark, so `gt(lastTs)` can never see it again. Live case: the
+    // account merges moved ~1,200 old transcriptions in after this cache had
+    // already advanced past their timestamps; Insights showed days while
+    // months sat invisible. Rewinding only ever happens while `days` is
+    // empty, so a populated cache never re-scans.
+    if (lastTs && Object.keys(cache.days).length === 0) lastTs = '';
     let changed = false;
     const ownDeviceId = await getDeviceId().catch(() => '');
     for (let page = 0; page < MAX_PAGES; page++) {
