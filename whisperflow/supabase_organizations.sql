@@ -413,14 +413,25 @@ begin
 end;
 $$;
 
--- Phase 5 — per-member usage for org admins.
+-- Phase 5 — per-member usage. Every active member can call this (an owner/admin
+-- gets every consenting member, anyone else gets exactly their own row) — see
+-- app/flume_dashboard_html.py's loadTeamExtras comment: the frontend always
+-- requests this for everyone, and used to be gated on teamAdmin() client-side,
+-- which is why a plain member's Team screen was all zeroes.
+--
+-- FIXED 2026-08-25 (fix_org_usage_summary_member_own_row): this originally
+-- hard-gated the entire function to `role in ('owner','admin')`, silently
+-- returning empty for a plain member — contradicting the contract above and
+-- leaving a member's own Team screen blank even after the frontend fix landed,
+-- since usage_consent gates visibility TO ADMINS, not to yourself.
 --
 -- PRIVACY CONTRACT (IDI-216 open decision #2, and the reason this is an RPC rather
 -- than a view): the function reads `transcriptions.text` to COUNT words, and returns
 -- only counts. No transcript, title, note or audio reference can leave through it —
 -- there is no column in the return type that could carry one. A member who has not
--- set usage_consent is absent from the result entirely (not zeroed), so an admin
--- cannot infer activity from a row of zeroes either.
+-- set usage_consent is absent from an ADMIN's result entirely (not zeroed), so an
+-- admin cannot infer activity from a row of zeroes either — but every member can
+-- still see their own row regardless of their own consent flag.
 create or replace function public.org_usage_summary(p_org uuid, p_days int default 30)
 returns table (
   user_id      text,
@@ -438,9 +449,11 @@ security definer
 set search_path = public
 as $$
 declare
+  v_uid   text := auth.uid()::text;
+  v_role  text := public.org_member_role(p_org);
   v_since timestamptz := now() - (greatest(1, least(coalesce(p_days, 30), 365)) || ' days')::interval;
 begin
-  if public.org_member_role(p_org) not in ('owner', 'admin') then
+  if v_role is null then
     return;
   end if;
   return query
@@ -458,7 +471,8 @@ begin
            and tr.deleted_at is null
            and btrim(coalesce(tr.text, '')) <> ''
       ) t on true
-     where m.org_id = p_org and m.status = 'active' and m.usage_consent
+     where m.org_id = p_org and m.status = 'active'
+       and (m.user_id = v_uid or (v_role in ('owner', 'admin') and m.usage_consent))
      order by coalesce(t.words, 0) desc;
 end;
 $$;

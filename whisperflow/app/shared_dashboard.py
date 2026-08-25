@@ -1728,6 +1728,12 @@ class DashboardApi:
         res = organizations.claim_invite(self.app.config, token, save_config,
                                          confirm_mismatch=bool(confirm_mismatch))
         if res.get("ok"):
+            # Same reasoning as accept_pending_invite: joining via a claimed
+            # link is still joining, not creating — skip the owner-only setup
+            # wizard so this path doesn't hit the same redirect glitch.
+            cfg = self.app.config
+            cfg["org_setup_done"] = True
+            save_config(cfg)
             return _ok(team=res.get("org"), already=bool(res.get("already")))
         if res.get("needs_confirm"):
             return {"ok": False, "needs_confirm": True,
@@ -1756,7 +1762,18 @@ class DashboardApi:
     def accept_pending_invite(self, org_id):
         from app import organizations
         res = organizations.accept_pending(self.app.config, org_id, save_config)
-        return _ok(team=res.get("org")) if res.get("ok") else _err(res.get("error", ""))
+        if not res.get("ok"):
+            return _err(res.get("error", ""))
+        # A member who JOINS a team has nothing to set up — create_team's setup
+        # wizard (seed the shared dictionary, invite others) is for the owner of
+        # a brand-new team. Without this, org_setup_done stays at its unset
+        # default and get_team() sends every freshly-invited member straight
+        # back to "create a team" until they click Skip (confirmed live,
+        # 2026-08-25 — the exact "redirect glitch" reported after accepting).
+        cfg = self.app.config
+        cfg["org_setup_done"] = True
+        save_config(cfg)
+        return _ok(team=res.get("org"))
 
     def set_team_auto_join(self, enabled):
         from app import organizations
