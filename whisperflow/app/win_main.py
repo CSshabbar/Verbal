@@ -1309,7 +1309,7 @@ class VerbalWinApp:
                     except Exception:
                         pass
                 try:
-                    self.overlay.show_briefly("No speech detected. Speak louder!", duration=1.5)
+                    self.overlay.show_briefly("No speech detected. Speak louder!", duration=1.5, error=True)
                 except Exception:
                     pass
                 self._reset_to_ready()
@@ -1327,7 +1327,7 @@ class VerbalWinApp:
                     logger.error(f"failed-entry write failed: {e}")
                 self._upload_recording_async(rec_id, _path)
                 try:
-                    self.overlay.show_briefly("Transcription failed — retry from History", duration=2.0)
+                    self.overlay.show_briefly("Transcription failed — retry from History", duration=2.0, error=True)
                 except Exception:
                     pass
                 self._reset_to_ready()
@@ -1495,7 +1495,7 @@ class VerbalWinApp:
         except Exception as e:
             logger.critical(f"PROCESS CRASH: {e}\n{traceback.format_exc()}")
             try:
-                self.overlay.show_briefly("Error occurred", duration=2.0)
+                self.overlay.show_briefly("Error occurred", duration=2.0, error=True)
             except:
                 pass
             self._reset_to_ready()

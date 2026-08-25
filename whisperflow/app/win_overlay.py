@@ -7,7 +7,7 @@ pill floats on the desktop with no surrounding rectangle.
 
 Public interface matches OverlayBar (app/overlay.py):
     setup(), show(status), update_status(status),
-    show_briefly(status, duration), hide(), .visible
+    show_briefly(status, duration, error), hide(), .visible
 
 Rendered visual approximates the Mac Flume pill:
   * dark rounded pill background
@@ -127,6 +127,16 @@ ACC_RGB    = (200, 90, 62)            # --acc #C85A3E terracotta. NOT #E8522A
                                       # 05-conventions Rule #16. Found during IDI-184.
 BLUE_RGB   = (74, 144, 226)
 GREEN_RGB  = (74, 209, 90)            # --green
+RED_RGB    = (224, 80, 73)            # --rec #E05049 — the error pill's dot
+
+# Statuses that must NOT render as a success pill — same backstop as the Mac
+# overlay's _ERROR_HINTS (overlay.py): callers should pass error=True
+# explicitly, but a message that self-identifies as a failure never gets the
+# green dot even if they forget. Until 2026-08-25 this overlay had NO error
+# mode at all, so "No speech detected", "Transcription failed" and
+# "Error occurred" all drew the green success dot.
+_ERROR_HINTS = ("no speech", "failed", "error", "couldn't", "could not",
+                "unable", "needed", "denied")
 
 # tkinter's -transparentcolor makes pixels of ONE exact color invisible.
 # Any color works, but PIL antialiases the pill's rounded corners against
@@ -159,6 +169,7 @@ class WinOverlay:
         self._dst = "WIN"
         self._done_label = ""
         self._done_meta = ""
+        self._error = False            # done-pill variant: red dot, no success read
         self._mode = "hidden"          # 'recording' | 'transcribing' | 'done' | 'hidden'
 
         self._t0 = 0.0                 # record start
@@ -339,6 +350,7 @@ class WinOverlay:
 
     def show(self, status="Listening..."):
         self._status_text = status
+        self._error = False
         self._device = self._this_device()
         self._src = self._this_device()
         self._dst = self._target_device()
@@ -362,22 +374,37 @@ class WinOverlay:
             self._mode = "done"
             self._done_label = status
             self._done_meta = ""
+            self._error = self._looks_like_error(status)
         self._safe(self._render)
 
-    def show_briefly(self, status, duration=2.0):
+    @staticmethod
+    def _looks_like_error(status):
+        low = (status or "").lower()
+        return any(h in low for h in _ERROR_HINTS)
+
+    def show_briefly(self, status, duration=2.0, error=False):
         self._mode = "done"
         s = status or ""
         low = s.lower()
-        if low.startswith("pasted"):
-            self._done_label = f"Pasted to {self._this_device()}"
-        elif "clipboard" in low:
-            self._done_label = "Copied to clipboard"
+        self._error = bool(error) or self._looks_like_error(s)
+        if self._error:
+            # An error message is shown VERBATIM — never remapped to the
+            # "Pasted"/"Copied" copy below, and with no word-count meta: a
+            # failure notice wearing success dressing is exactly the bug
+            # this variant exists to fix.
+            self._done_label = s or "Something went wrong"
+            self._done_meta = ""
         else:
-            self._done_label = s or "Done"
-        secs = int(max(0, time.time() - self._t0)) if self._t0 else 0
-        m = re.search(r"(\d+)\s*w", s, re.I)
-        words = m.group(1) if m else ""
-        self._done_meta = (f"{words}W · {secs}S" if words else (f"{secs}S" if secs else ""))
+            if low.startswith("pasted"):
+                self._done_label = f"Pasted to {self._this_device()}"
+            elif "clipboard" in low:
+                self._done_label = "Copied to clipboard"
+            else:
+                self._done_label = s or "Done"
+            secs = int(max(0, time.time() - self._t0)) if self._t0 else 0
+            m = re.search(r"(\d+)\s*w", s, re.I)
+            words = m.group(1) if m else ""
+            self._done_meta = (f"{words}W · {secs}S" if words else (f"{secs}S" if secs else ""))
         self._active = True
         self._safe(lambda: (self._show_internal(), self._schedule_hide(duration)))
 
@@ -766,10 +793,12 @@ class WinOverlay:
         x = self._px0 + PADDING_LEFT
         self._hits = []
 
-        # Green check dot on the left.
+        # Status dot on the left — green for success, red for the error
+        # variant (which previously didn't exist: every failure drew green).
         r = _s(6)
+        dot = RED_RGB if self._error else GREEN_RGB
         draw.ellipse((x, cy - r, x + 2 * r, cy + r),
-                     fill=GREEN_RGB + (255,))
+                     fill=dot + (255,))
         x += 2 * r + _s(10)
 
         # Label + meta.
