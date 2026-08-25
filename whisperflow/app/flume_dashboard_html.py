@@ -195,7 +195,7 @@ body{background:var(--bg);font-family:'Geist',-apple-system,system-ui,sans-serif
 .devrow .dtgt{margin-left:auto;color:var(--acc);font:600 9px 'JetBrains Mono';letter-spacing:.08em;opacity:.9}
 .ddot{width:7px;height:7px;border-radius:50%;background:var(--sub)}.ddot.on{background:var(--on)}
 .sfooter{margin-top:auto;display:flex;align-items:center;gap:11px;padding:12px 6px 2px;border-top:1px solid var(--bd)}
-.avatar{width:30px;height:30px;border-radius:50%;background:var(--acc);color:#fff5ea;display:flex;align-items:center;justify-content:center;font:600 13px 'Geist'}
+.avatar{flex:none;width:30px;height:30px;border-radius:50%;background:var(--acc);color:#fff5ea;display:flex;align-items:center;justify-content:center;font:600 13px 'Geist'}
 .uname{font:600 13px 'Geist'}
 .ficon{background:transparent;border:0;color:var(--mut);cursor:pointer;padding:4px;display:flex}.ficon svg{width:16px;height:16px}.ficon.push{margin-left:auto}.ficon:hover{color:var(--tx)}
 .main{padding:24px 28px;height:100%;min-height:0;overflow-y:auto;overflow-x:hidden;overscroll-behavior:contain}
@@ -1426,7 +1426,6 @@ def flume_html() -> str:
       <div class="sfooter">
         <div class="avatar" id="avatarInitial">V</div><span class="uname" id="userName">You</span>
         <button class="ficon push" data-screen="settings" title="Settings">{_svg('gear')}</button>
-        <button class="ficon" title="Theme">{_svg('sun')}</button>
       </div>
     </aside>"""
 
