@@ -1352,6 +1352,15 @@ delta, fail-closed paths). Both spec files declare `app.insights` in `hiddenimpo
   blanket suppression) and only clear once a still-newer version supersedes them or the app relaunches
   post-update. Windows' `auto_update=True` mode deliberately skips the badge/menu entirely — a silent
   unattended update has no "declined" state for a badge to represent.
+  **In-dashboard update flow + one-surface rule (2026-08-25):** the dashboard now carries its own update
+  banner (Update available → downloading % → "Restart to update", user-clicked, never auto-install) plus
+  a Settings > Updates group (current version + Check for Updates), backed by
+  `DashboardApi.get_update_status/check_for_updates/start_update_download/install_ready_update` and
+  `main.py`'s `_update_phase` state machine. With that in place, AUTOMATIC checks (startup + 4h timer)
+  no longer pop the native OS dialog on either platform — badge + menu row + banner only; the native
+  dialog fires solely for the explicit "Check for Updates…" menu item or the "Update available" row
+  ("two popups per version reads as nagging" — live feedback). `install_update()` exits via `os._exit`,
+  not `sys.exit` — every caller is on a worker thread (see `05-conventions.md` #64).
 - **Permissions** (`permissions.py`): accessibility / microphone / system-audio / notifications status +
   request, surfaced via `DashboardApi.get_permissions/request_permission`. On Windows the module's
   bottom-of-file shim overrides `check_accessibility()` to `"granted"` — correct, because Windows has no
