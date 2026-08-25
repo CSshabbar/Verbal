@@ -31,7 +31,11 @@ jobs:
       - name: Generate icons
         run: |
           cd whisperflow
-          python3 scripts/generate_icons.py
+          # No art generation here — icon PNGs are checked in (dev-time:
+          # scripts/generate_brand_icons.py). The old generate_icons.py call
+          # overwrote the committed menu-bar icons with retired mic art on
+          # every CI build (2026-08-25). This step only converts the committed
+          # app_icon.png into the .icns container.
           mkdir -p assets/icon.iconset
           # NOTE: these sips calls MUST read assets/app_icon.png (the real
           # 1024x1024 Flume app icon), NOT assets/icon.png — the latter is a
