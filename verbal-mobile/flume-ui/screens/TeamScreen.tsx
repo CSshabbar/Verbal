@@ -52,9 +52,12 @@ export const TeamScreen: React.FC<Props> = ({ onBack }) => {
   const [name, setName] = useState('');
   const [company, setCompany] = useState('');
   const [token, setToken] = useState('');
-  // Invite
+  // Invite. The form opens on demand (user request, 2026-08-25) — a permanently
+  // expanded email field read as "the screen wants something from me" on every
+  // visit; desktop's roster has the same shape ("Add teammate" opens the form).
   const [email, setEmail] = useState('');
   const [inviteAdmin, setInviteAdmin] = useState(false);
+  const [inviteOpen, setInviteOpen] = useState(false);
   const [busy, setBusy] = useState(false);
 
   const onRefresh = async () => {
@@ -351,43 +354,66 @@ export const TeamScreen: React.FC<Props> = ({ onBack }) => {
               </>
             )}
 
-            <Text variant="label" style={styles.section}>
-              Invite someone
-            </Text>
-            <Text variant="caption" color={colors.textMuted} style={styles.sectionSub}>
-              They get a one-time link that expires in 7 days and only works for that address.
-            </Text>
-            <TextInput
-              style={styles.input}
-              value={email}
-              onChangeText={setEmail}
-              placeholder="name@company.com"
-              placeholderTextColor={colors.textDisabled}
-              autoCapitalize="none"
-              autoCorrect={false}
-              keyboardType="email-address"
-            />
-            <View style={styles.switchRow}>
-              <Text variant="caption" color={colors.textSecondary}>
-                Invite as admin
-              </Text>
-              <Switch
-                value={inviteAdmin}
-                onValueChange={setInviteAdmin}
-                trackColor={{ true: colors.primary, false: colors.surface3 }}
+            {!inviteOpen ? (
+              <Button
+                label="Invite someone"
+                onPress={() => setInviteOpen(true)}
+                style={{ marginTop: space.m }}
               />
-            </View>
-            <Button
-              label="Send invite"
-              disabled={busy}
-              onPress={() =>
-                guard(async () => {
-                  const res = await t.invite(email.trim(), inviteAdmin ? 'admin' : 'member');
-                  if (res.ok) setEmail('');
-                })
-              }
-              style={{ marginTop: space.s }}
-            />
+            ) : (
+              <>
+                <Text variant="label" style={styles.section}>
+                  Invite someone
+                </Text>
+                <Text variant="caption" color={colors.textMuted} style={styles.sectionSub}>
+                  They get a one-time link that expires in 7 days and only works for that address.
+                </Text>
+                <TextInput
+                  style={styles.input}
+                  value={email}
+                  onChangeText={setEmail}
+                  placeholder="name@company.com"
+                  placeholderTextColor={colors.textDisabled}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  keyboardType="email-address"
+                  autoFocus
+                />
+                <View style={styles.switchRow}>
+                  <Text variant="caption" color={colors.textSecondary}>
+                    Invite as admin
+                  </Text>
+                  <Switch
+                    value={inviteAdmin}
+                    onValueChange={setInviteAdmin}
+                    trackColor={{ true: colors.primary, false: colors.surface3 }}
+                  />
+                </View>
+                <Button
+                  label="Send invite"
+                  disabled={busy}
+                  onPress={() =>
+                    guard(async () => {
+                      const res = await t.invite(email.trim(), inviteAdmin ? 'admin' : 'member');
+                      if (res.ok) {
+                        setEmail('');
+                        setInviteOpen(false);
+                      }
+                    })
+                  }
+                  style={{ marginTop: space.s }}
+                />
+                <Button
+                  label="Cancel"
+                  variant="ghost"
+                  onPress={() => {
+                    setInviteOpen(false);
+                    setEmail('');
+                  }}
+                  style={{ marginTop: space.xs }}
+                />
+              </>
+            )}
           </>
         )}
 
