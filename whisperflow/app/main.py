@@ -377,6 +377,21 @@ class VerbalApp(rumps.App):
                 sub = main_menu.itemAtIndex_(i).submenu()
                 if sub and sub.title() == "Edit":
                     return
+            # App menu with a real Quit item FIRST (index 0 of the main menu is
+            # the application menu by AppKit convention). Cmd+Q is not a global
+            # shortcut — it only works when some menu item carries the "q" key
+            # equivalent, and until now nothing did, so Cmd+Q silently did
+            # nothing and the only ways out were the tray menu or a Dock
+            # right-click → Quit (reported live, 2026-08-25). terminate: is the
+            # same action rumps' own Quit row fires, so both paths clean up
+            # identically.
+            app_item = NSMenuItem.alloc().init()
+            main_menu.insertItem_atIndex_(app_item, 0)
+            app_menu = NSMenu.alloc().initWithTitle_("Flume")
+            app_item.setSubmenu_(app_menu)
+            quit_it = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                "Quit Flume", "terminate:", "q")
+            app_menu.addItem_(quit_it)
             edit_item = NSMenuItem.alloc().init()
             main_menu.addItem_(edit_item)
             edit_menu = NSMenu.alloc().initWithTitle_("Edit")
@@ -395,7 +410,7 @@ class VerbalApp(rumps.App):
                     continue
                 it = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(title, action, key)
                 edit_menu.addItem_(it)
-            logger.info("Edit menu installed (Cmd+C/V/X/A/Z)")
+            logger.info("Edit menu installed (Cmd+C/V/X/A/Z, Cmd+Q quits)")
         except Exception as e:
             logger.warning(f"Could not install Edit menu: {e}")
 
