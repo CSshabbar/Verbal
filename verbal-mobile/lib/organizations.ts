@@ -51,6 +51,7 @@ export type Org = {
   plan: string;
   seats: number;
   leaderboard_enabled: boolean;
+  stats_visible_to_members: boolean;
   usage_consent: boolean;
   leaderboard_opt_in: boolean;
   members: OrgMember[];
@@ -91,6 +92,7 @@ export const NO_ORG: Org = {
   plan: '',
   seats: 0,
   leaderboard_enabled: false,
+  stats_visible_to_members: false,
   usage_consent: false,
   leaderboard_opt_in: false,
   members: [],
@@ -166,7 +168,7 @@ export async function fetchOrg(): Promise<Org> {
         'org_id,role,usage_consent,leaderboard_opt_in,' +
           // IDI-219 renamed the column to `purchased_seats`; aliased back to `seats`
         // so the Org type and every screen reference stay unchanged.
-        'organizations(id,name,company_name,plan,seats:purchased_seats,leaderboard_enabled)',
+        'organizations(id,name,company_name,plan,seats:purchased_seats,leaderboard_enabled,stats_visible_to_members)',
       )
       .eq('user_id', userId)
       .eq('status', 'active')
@@ -192,6 +194,7 @@ export async function fetchOrg(): Promise<Org> {
       plan: o?.plan ?? 'team',
       seats: Number(o?.seats ?? 0),
       leaderboard_enabled: !!o?.leaderboard_enabled,
+      stats_visible_to_members: !!o?.stats_visible_to_members,
       usage_consent: !!row.usage_consent,
       leaderboard_opt_in: !!row.leaderboard_opt_in,
       members,
@@ -469,18 +472,21 @@ export async function setOrgSettings(fields: {
   name?: string;
   company_name?: string;
   leaderboard_enabled?: boolean;
+  stats_visible_to_members?: boolean;
 }): Promise<OrgResult> {
   const org = await getCachedOrg();
   if (org.role !== 'owner' && org.role !== 'admin') {
     return { ok: false, error: 'Only owners and admins can do that' };
   }
-  if (fields.leaderboard_enabled !== undefined && org.role !== 'owner') {
-    return { ok: false, error: 'Only the owner can change the leaderboard' };
+  if ((fields.leaderboard_enabled !== undefined || fields.stats_visible_to_members !== undefined)
+      && org.role !== 'owner') {
+    return { ok: false, error: 'Only the owner can change that' };
   }
   const patch: Record<string, unknown> = {};
   if (fields.name !== undefined) patch.name = fields.name;
   if (fields.company_name !== undefined) patch.company_name = fields.company_name;
   if (fields.leaderboard_enabled !== undefined) patch.leaderboard_enabled = fields.leaderboard_enabled;
+  if (fields.stats_visible_to_members !== undefined) patch.stats_visible_to_members = fields.stats_visible_to_members;
   if (Object.keys(patch).length === 0) return { ok: false, error: 'Nothing to save' };
   patch.updated_at = new Date().toISOString();
   try {
@@ -621,6 +627,30 @@ export async function leaderboard(days = 7): Promise<{ enabled: boolean; rows: B
     return { enabled: true, rows: data as BoardRow[] };
   } catch {
     return { enabled: true, rows: [] };
+  }
+}
+
+/** Daily word counts per member — the desktop Team screen's sparkline data
+ *  (org_usage_series), keyed by user_id as [day, words] pairs in day order.
+ *  Same visibility rules as usageSummary: the RPC decides the rows (admins and
+ *  — when the owner opened stats team-wide — members get every consenting
+ *  member; anyone else exactly themselves). */
+export async function usageSeries(days = 98): Promise<Record<string, Array<[string, number]>>> {
+  const org = await getCachedOrg();
+  if (!org.org_id) return {};
+  try {
+    const { data, error } = await supabase.rpc('org_usage_series', { p_org: org.org_id, p_days: days });
+    if (error || !Array.isArray(data)) return {};
+    const out: Record<string, Array<[string, number]>> = {};
+    for (const r of data as Array<{ user_id?: string; day?: string; words?: number }>) {
+      const uid = String(r?.user_id ?? '');
+      const day = String(r?.day ?? '');
+      if (!uid || !day) continue;
+      (out[uid] ??= []).push([day, Number(r?.words ?? 0)]);
+    }
+    return out;
+  } catch {
+    return {};
   }
 }
 

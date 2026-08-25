@@ -264,7 +264,7 @@ input,textarea{font-family:inherit;color:inherit;background:none;border:0;outlin
 .toggle.on::after{left:15px}
 /* Custom language listbox — never a native <select>. WebView2's OS combo
    popup ignores CSS overflow/z-index and paints through the modal footer
-   (05-conventions.md Rule #62). The menu is a sibling of .prePanel (not a
+   (05-conventions.md Rule #66). The menu is a sibling of .prePanel (not a
    child) so .prePanel{overflow:hidden} cannot clip it. */
 .preLang{background:var(--raised2);color:var(--tx);border:1px solid var(--bd2);border-radius:8px;
   font:500 11.5px 'Geist';padding:5px 8px 5px 10px;min-width:140px;max-width:190px;

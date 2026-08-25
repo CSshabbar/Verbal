@@ -24,6 +24,11 @@ on:
     branches: [dev]
     paths:
       - 'whisperflow/**'
+  # A release is normally cut by a whisperflow/** push, but a fix that lives
+  # OUTSIDE whisperflow (live case 2026-08-25: build-release.yml itself was
+  # clobbering the checked-in menu-bar icons) still needs a release to ship
+  # its effect. Manual dispatch cuts one without a dummy commit.
+  workflow_dispatch:
 
 permissions:
   contents: write

@@ -617,6 +617,40 @@ class DashboardApi:
     def app(self):
         return self.dashboard.app
 
+    def get_update_status(self):
+        """Polled by the dashboard's update banner + Settings > Updates. Read-only
+        snapshot of state main.py's App owns (_update_available/_phase/_progress) —
+        this never mutates anything, so it's safe to poll on a timer."""
+        from app.config import APP_VERSION
+        app = self.app
+        avail = app._update_available
+        return _ok(
+            current_version=APP_VERSION,
+            available=({"version": avail.get("version"),
+                        "changelog": avail.get("changelog", "")} if avail else None),
+            phase=app._update_phase,
+            progress=app._update_progress,
+        )
+
+    def check_for_updates(self):
+        """Settings > Updates' "Check for Updates" button. suppress_prompt=True
+        because this is an explicit, user-visible dashboard action — the native
+        rumps.alert popping up on top of it would be a redundant second prompt
+        for the same click. get_update_status() (polled right after) is what
+        actually shows the result in the dashboard."""
+        import threading
+        threading.Thread(target=self.app._check_update,
+                          kwargs={"suppress_prompt": True}, daemon=True).start()
+        return _ok()
+
+    def start_update_download(self):
+        self.app._start_update_download()
+        return _ok()
+
+    def install_ready_update(self):
+        self.app._install_ready_update()
+        return _ok()
+
     def get_insights(self):
         """Insights payload from the local ledger + cached cloud aggregate —
         instant, no network. See app/insights.py for the data model."""
@@ -1728,6 +1762,12 @@ class DashboardApi:
         res = organizations.claim_invite(self.app.config, token, save_config,
                                          confirm_mismatch=bool(confirm_mismatch))
         if res.get("ok"):
+            # Same reasoning as accept_pending_invite: joining via a claimed
+            # link is still joining, not creating — skip the owner-only setup
+            # wizard so this path doesn't hit the same redirect glitch.
+            cfg = self.app.config
+            cfg["org_setup_done"] = True
+            save_config(cfg)
             return _ok(team=res.get("org"), already=bool(res.get("already")))
         if res.get("needs_confirm"):
             return {"ok": False, "needs_confirm": True,
@@ -1756,7 +1796,18 @@ class DashboardApi:
     def accept_pending_invite(self, org_id):
         from app import organizations
         res = organizations.accept_pending(self.app.config, org_id, save_config)
-        return _ok(team=res.get("org")) if res.get("ok") else _err(res.get("error", ""))
+        if not res.get("ok"):
+            return _err(res.get("error", ""))
+        # A member who JOINS a team has nothing to set up — create_team's setup
+        # wizard (seed the shared dictionary, invite others) is for the owner of
+        # a brand-new team. Without this, org_setup_done stays at its unset
+        # default and get_team() sends every freshly-invited member straight
+        # back to "create a team" until they click Skip (confirmed live,
+        # 2026-08-25 — the exact "redirect glitch" reported after accepting).
+        cfg = self.app.config
+        cfg["org_setup_done"] = True
+        save_config(cfg)
+        return _ok(team=res.get("org"))
 
     def set_team_auto_join(self, enabled):
         from app import organizations

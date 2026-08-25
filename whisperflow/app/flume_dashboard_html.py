@@ -89,6 +89,20 @@ _CSS = """
 html,body{height:100%}
 body{background:var(--bg);font-family:'Geist',-apple-system,system-ui,sans-serif;color:var(--tx);-webkit-font-smoothing:antialiased;overflow:hidden}
 .app{display:grid;grid-template-columns:196px minmax(0,1fr);grid-template-rows:100vh;height:100vh;overflow:hidden}
+/* ── update banner (IDI-224 follow-up) — a fixed overlay appended to body
+   directly rather than the grid, so it floats above whichever screen is
+   active without every screen template needing its own slot for it. ── */
+#update-banner{position:fixed;top:14px;right:14px;z-index:80;display:flex;align-items:center;gap:10px;
+  background:var(--card);border:1px solid var(--acc-bd);border-radius:12px;padding:10px 14px;
+  box-shadow:0 8px 24px rgba(0,0,0,.4);font:500 13px 'Geist';color:var(--tx);max-width:380px}
+#update-banner .ub-text{flex:1;line-height:1.4}
+#update-banner .ub-text b{color:var(--acc-txt)}
+#update-banner .ub-actions{display:flex;gap:8px;flex:none}
+#update-banner button{font:600 12px 'Geist';border-radius:8px;padding:6px 12px;cursor:pointer;border:1px solid transparent}
+#update-banner button.primary{background:var(--acc);color:#fff}
+#update-banner button.ghost{background:transparent;border-color:var(--bd2);color:var(--mut)}
+#update-banner .ub-bar{width:100%;height:4px;border-radius:2px;background:var(--bd2);overflow:hidden;margin-top:6px}
+#update-banner .ub-bar>i{display:block;height:100%;background:var(--acc);transition:width .3s}
 /* ── sign-in (two-pane) ── */
 #signin{position:fixed;inset:0;z-index:50;background:var(--bg);display:grid;grid-template-columns:1fr 1fr}
 #signin[hidden]{display:none}
@@ -181,7 +195,7 @@ body{background:var(--bg);font-family:'Geist',-apple-system,system-ui,sans-serif
 .devrow .dtgt{margin-left:auto;color:var(--acc);font:600 9px 'JetBrains Mono';letter-spacing:.08em;opacity:.9}
 .ddot{width:7px;height:7px;border-radius:50%;background:var(--sub)}.ddot.on{background:var(--on)}
 .sfooter{margin-top:auto;display:flex;align-items:center;gap:11px;padding:12px 6px 2px;border-top:1px solid var(--bd)}
-.avatar{width:30px;height:30px;border-radius:50%;background:var(--acc);color:#fff5ea;display:flex;align-items:center;justify-content:center;font:600 13px 'Geist'}
+.avatar{flex:none;width:30px;height:30px;border-radius:50%;background:var(--acc);color:#fff5ea;display:flex;align-items:center;justify-content:center;font:600 13px 'Geist'}
 .uname{font:600 13px 'Geist'}
 .ficon{background:transparent;border:0;color:var(--mut);cursor:pointer;padding:4px;display:flex}.ficon svg{width:16px;height:16px}.ficon.push{margin-left:auto}.ficon:hover{color:var(--tx)}
 .main{padding:24px 28px;height:100%;min-height:0;overflow-y:auto;overflow-x:hidden;overscroll-behavior:contain}
@@ -1412,7 +1426,6 @@ def flume_html() -> str:
       <div class="sfooter">
         <div class="avatar" id="avatarInitial">V</div><span class="uname" id="userName">You</span>
         <button class="ficon push" data-screen="settings" title="Settings">{_svg('gear')}</button>
-        <button class="ficon" title="Theme">{_svg('sun')}</button>
       </div>
     </aside>"""
 
@@ -1470,6 +1483,73 @@ let AL={enabled:false}, AL_LOADED=false;
 let MEETS={meetings:[],active_id:null}, MEETS_LOADED=false, MSET=null, MSET_LOADED=false;
 let MEET_QUERY='';   // Meetings page search filter (31f)
 let retryErr='', retryBusy=false;
+
+// ── In-dashboard update flow (IDI-224 follow-up) ─────────────────────────────
+// Separate from the native menu-bar alert (main.py's _show_update_prompt),
+// which keeps working independently — this polls the SAME backend state so
+// whichever one finds an update, both can end up showing it. UPDATE_DISMISSED
+// is local-only (not persisted): reopening the dashboard re-shows the banner
+// for a version you clicked "Later" on, same as the native path's badge does.
+let UPDATE_STATE=null, UPDATE_DISMISSED=null, UPDATE_POLL=null;
+function pollUpdateStatus(){
+  api('get_update_status').then(r=>{
+    if(!r || !r.ok) return;
+    UPDATE_STATE = r;
+    renderUpdateBanner();
+    if(ACTIVE==='settings' && SETTINGS_GROUP==='updates') renderSettings();
+  });
+}
+function startUpdateBannerPolling(){
+  pollUpdateStatus();
+  if(UPDATE_POLL) clearInterval(UPDATE_POLL);
+  UPDATE_POLL = setInterval(pollUpdateStatus, 30000);
+}
+function renderUpdateBanner(){
+  let el = document.getElementById('update-banner');
+  const avail = UPDATE_STATE && UPDATE_STATE.available;
+  const dismissed = avail && UPDATE_DISMISSED===avail.version && UPDATE_STATE.phase==='idle';
+  if(!avail || dismissed){ if(el) el.remove(); return; }
+  if(!el){ el=document.createElement('div'); el.id='update-banner'; document.body.appendChild(el); }
+  const v = esc(avail.version), phase = UPDATE_STATE.phase;
+  if(phase==='downloading'){
+    const pct = Math.round((UPDATE_STATE.progress||0)*100);
+    el.innerHTML = `<div class="ub-text">Downloading Flume ${v}… ${pct}%<div class="ub-bar"><i style="width:${pct}%"></i></div></div>`;
+  } else if(phase==='ready'){
+    el.innerHTML = `<div class="ub-text">Flume ${v} is ready to install.</div>
+      <div class="ub-actions"><button class="primary" onclick="installReadyUpdate()">Restart to update</button></div>`;
+  } else if(phase==='installing'){
+    el.innerHTML = `<div class="ub-text">Installing — Flume will restart in a moment…</div>`;
+  } else if(phase==='failed'){
+    el.innerHTML = `<div class="ub-text">Couldn't download Flume ${v}.</div>
+      <div class="ub-actions"><button class="primary" onclick="startUpdateDownload()">Retry</button>
+      <button class="ghost" onclick="dismissUpdateBanner('${esc(avail.version)}')">Later</button></div>`;
+  } else {
+    el.innerHTML = `<div class="ub-text">Flume ${v} is available.</div>
+      <div class="ub-actions"><button class="primary" onclick="startUpdateDownload()">Update</button>
+      <button class="ghost" onclick="dismissUpdateBanner('${esc(avail.version)}')">Later</button></div>`;
+  }
+}
+function startUpdateDownload(){
+  if(!UPDATE_STATE) return;
+  UPDATE_STATE.phase='downloading'; UPDATE_STATE.progress=0;
+  renderUpdateBanner();
+  api('start_update_download').then(pollUpdateStatus);
+}
+function installReadyUpdate(){
+  if(UPDATE_STATE) UPDATE_STATE.phase='installing';
+  renderUpdateBanner();
+  // The app process exits as part of this call (mounts the update, replaces
+  // the bundle, relaunches) — nothing left to do here once it's fired.
+  api('install_ready_update');
+}
+function dismissUpdateBanner(version){ UPDATE_DISMISSED=version; renderUpdateBanner(); }
+function checkForUpdatesNow(){
+  toast('Checking for updates…');
+  api('check_for_updates').then(()=>{ setTimeout(()=>{
+    pollUpdateStatus();
+    if(!(UPDATE_STATE && UPDATE_STATE.available)) toast("You're up to date");
+  }, 1500); });
+}
 const esc = s => String(s==null?'':s).replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const keyText = v => Array.isArray(v) ? v.join('\n') : (v==null?'':String(v));
 const words = s => (s||'').trim()? (s||'').trim().split(/\s+/).length : 0;
@@ -4604,6 +4684,7 @@ function stopPairing(){
 // this screen every ~30s and must not throw you back to the first group.
 const SETTINGS_GROUPS=[
   {id:'account',    label:'Account',     lede:'Who you are signed in as — and what leaving takes with it.'},
+  {id:'updates',    label:'Updates',     lede:'Your current version, and whether a newer one is ready.'},
   // Only rendered when the user is actually on a team — see renderSettings().
   // A privacy group that says "you have no team" is a group nobody needed.
   {id:'privacy',    label:'Team privacy', lede:'What your team can and cannot see about your dictation.'},
@@ -4730,6 +4811,7 @@ function settingsBadge(id){
     const s=(STATE&&STATE.settings)||{};
     if(id==='dictionary') return DICT.vocabulary.length+' · '+DICT.replacements.length;
     if(id==='data')       return s.sync_enabled?'on':'off';
+    if(id==='updates')    return (UPDATE_STATE && UPDATE_STATE.available) ? 'update' : '';
     if(id==='privacy')    return (TEAM&&TEAM.usage_consent)?'sharing':'private';
     if(id==='notes'){
       const keys=['notes_search_enabled','notes_autotitle_enabled',
@@ -4812,6 +4894,34 @@ function settingsPane(id){
         </div></div>`;
   }
 
+  if(id==='updates'){
+    const cur = (UPDATE_STATE && UPDATE_STATE.current_version) || (STATE && STATE.version) || '';
+    const avail = UPDATE_STATE && UPDATE_STATE.available;
+    const phase = UPDATE_STATE ? UPDATE_STATE.phase : 'idle';
+    let statusHtml;
+    if(avail && phase==='downloading'){
+      const pct = Math.round((UPDATE_STATE.progress||0)*100);
+      statusHtml = `<div class="sdesc">Downloading v${esc(avail.version)}… ${pct}%</div>`;
+    } else if(avail && phase==='ready'){
+      statusHtml = `<div class="sdesc">v${esc(avail.version)} is downloaded and ready.</div>
+        <button class="btn primary" style="margin-top:8px" onclick="installReadyUpdate()">Restart to update</button>`;
+    } else if(avail && phase==='installing'){
+      statusHtml = `<div class="sdesc">Installing — Flume will restart shortly.</div>`;
+    } else if(avail){
+      statusHtml = `<div class="sdesc">v${esc(avail.version)} is available.</div>
+        <button class="btn primary" style="margin-top:8px" onclick="startUpdateDownload()">Update to v${esc(avail.version)}</button>`;
+    } else {
+      statusHtml = `<div class="sdesc">You're up to date.</div>`;
+    }
+    return `
+      <div class="ssection">
+        <div class="scard row">
+          <div class="grow"><div class="sname">Flume v${esc(cur)}</div>${statusHtml}</div>
+          <button class="btn ghost" onclick="checkForUpdatesNow()">Check for Updates</button>
+        </div>
+      </div>`;
+  }
+
   if(id==='privacy'){
     // hasTeam() is re-checked because a heartbeat can repaint Settings in the
     // moment between leaving a team and the rail rebuilding.
@@ -4845,6 +4955,19 @@ function settingsPane(id){
           onclick="show('insights')">Insights</button> page counts everything you have ever dictated,
           including takes that never reached the cloud &mdash; so it will always read higher.</span></div>
       </div>
+
+      ${teamOwner()?`
+      <div class="ssection"><h3>Team-wide visibility</h3>
+        <p class="ssub">By default only owners and admins see the roster's numbers. Open them up and
+          every member sees the same per-person stats admins do &mdash; each person's own sharing switch
+          above still wins: someone who turned theirs off stays hidden from everyone.</p>
+        <div class="scard">
+          <div class="saverow"><button class="toggle ${TEAM.stats_visible_to_members?'on':''}"
+              aria-label="Everyone sees everyone's stats"
+              onclick="toggleTeamStatsVisible()"></button>
+            <span style="font:500 13px Geist">Everyone sees everyone&rsquo;s stats</span></div>
+        </div>
+      </div>`:''}
 
       <div class="ssection"><h3>Membership</h3>
         <div class="scard row">
@@ -5637,6 +5760,7 @@ async function load(){
   // Probe for a waiting invite at startup, not just when Team is opened —
   // otherwise the sign-in popup only fires for people who already went looking.
   loadTeam(true);
+  startUpdateBannerPolling();
   LOAD_STARTED=true;
   // MER-46 handshake. VerbalNative is installed by now (it is assigned at parse
   // time) and the bridge is live (pywebviewready fired, or the backstop ran), so
@@ -5909,6 +6033,7 @@ function leaveTeam(){
   });
 }
 function toggleTeamBoard(){ busyGuard('team', ()=>api('set_team_settings', {leaderboard_enabled: !TEAM.leaderboard_enabled})).then(r=>teamApply(r,'Saved')); }
+function toggleTeamStatsVisible(){ busyGuard('team', ()=>api('set_team_settings', {stats_visible_to_members: !TEAM.stats_visible_to_members})).then(r=>teamApply(r,'Saved')); }
 function setTeamConsent(u,b){ busyGuard('team', ()=>api('set_team_consent', u, b)).then(r=>teamApply(r,'Preference saved')); }
 function selectMember(uid){ TEAM_SEL=uid; renderTeam(); }
 
@@ -6287,8 +6412,15 @@ function teamRosterHtml(){
 //   TEAM_BOARD  — team-visible, gated on leaderboard_opt_in (off by default)
 // Admins rank from usage because it is the fuller set and already theirs to see;
 // everyone else sees the opt-in board. Same rows, same order, different audience.
+// EXCEPT when the owner opened stats team-wide (stats_visible_to_members,
+// 2026-08-26): members then already see every consenting member's numbers in
+// the roster, so a separate opt-in board that ranks a SUBSET of those same
+// numbers is pure friction — live case: ranking on, stats open, and a member's
+// board sat empty because nobody had found the per-person opt-in toggle. Rank
+// from the usage they can already see; the opt-in gate stays for teams that
+// keep stats admin-only.
 function tmBoardRows(){
-  if(teamAdmin()){
+  if(teamAdmin() || (TEAM.stats_visible_to_members && TEAM_USAGE && TEAM_USAGE.rows)){
     return ((TEAM_USAGE&&TEAM_USAGE.rows)||[]).slice()
       .sort((a,b)=>(b.words||0)-(a.words||0));
   }
@@ -6383,7 +6515,7 @@ function tmAppsCard(){
   const cols=['#C85A3E','#EADFCE','#A8BCA1','#C3AECB','#8a7d74','#4a2d24'];
   // A member's TEAM_APPS holds exactly their own row, so the same card works for
   // both audiences — it just has one bar in it, and says "you" instead of a name.
-  const solo=!teamAdmin();
+  const solo=!teamAdmin() && !TEAM.stats_visible_to_members;
   const mem=(TEAM.members||[])
     .filter(m=>!solo || m.user_id===teamMe())
     .filter(m=>tmAppsFor(m.user_id).length);
@@ -6439,7 +6571,7 @@ function teamEveryoneHtml(){
   // split, not this code). Presenting that as "the team spoke N words" would be a
   // straight-up lie, and a contribution ring with one segment always reads 100%.
   // So the whole hero switches voice for a member.
-  const mine=!teamAdmin();
+  const mine=!teamAdmin() && !TEAM.stats_visible_to_members;
   const heroTx = mine
     ? (total
         ? `You spoke <b>${fmtN(total)} words</b> on ${esc(TEAM.name||'this team')} in the last ${TEAM_DAYS} days.`

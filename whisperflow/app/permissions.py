@@ -51,18 +51,32 @@ def check_microphone():
         # request), but worth naming correctly rather than relying on two
         # call sites' handling happening to coincide.
         return {0: "not_determined", 3: "granted", 2: "denied", 1: "denied"}.get(st, "unknown")
-    except Exception:
+    except Exception as e:
+        logger.warning(f"check_microphone probe failed: {e!r}")
         return "unknown"
 
 
 def request_microphone():
     try:
         from AVFoundation import AVCaptureDevice, AVMediaTypeAudio
+        # Flume is a background/menu-bar app, not the frontmost one when the
+        # hotkey fires. Confirmed live, 2026-08-25: requestAccess can be
+        # issued successfully (no exception, completion handler eventually
+        # fires) yet the system dialog never visibly renders and the mic
+        # stays silent — matching a known macOS quirk where TCC defers/drops
+        # the alert for a process that isn't key/frontmost. Activating first
+        # gives the OS an actual window to attach the alert to.
+        try:
+            from AppKit import NSApplication
+            NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
+        except Exception as e:
+            logger.debug(f"activate-before-prompt failed (non-fatal): {e!r}")
         AVCaptureDevice.requestAccessForMediaType_completionHandler_(
-            AVMediaTypeAudio, lambda granted: None)
+            AVMediaTypeAudio, lambda granted: logger.info(f"mic requestAccess completion: granted={granted}"))
+        logger.info("mic requestAccess issued")
         return
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"mic requestAccess failed, falling back to Settings: {e!r}")
     _open_settings("Privacy_Microphone")
 
 

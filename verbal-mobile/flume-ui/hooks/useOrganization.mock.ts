@@ -26,6 +26,7 @@ const DEMO_ORG: Org = {
   plan: 'team',
   seats: 5,
   leaderboard_enabled: true,
+  stats_visible_to_members: false,
   usage_consent: true,
   leaderboard_opt_in: true,
   members: [

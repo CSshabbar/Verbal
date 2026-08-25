@@ -213,6 +213,19 @@ class VerbalApp(rumps.App):
         self._update_available = None
         self._update_dismissed_version = None
 
+        # In-dashboard update flow (IDI-224 follow-up, 2026-08-25): the native
+        # rumps.alert + tray badge above is a separate, still-working path —
+        # this is the additional in-app banner/Settings flow the user asked
+        # for, so both can trigger from the SAME `_update_available` state.
+        # phase: 'idle' | 'downloading' | 'ready' | 'installing' | 'failed'.
+        # 'ready' means the installer is on disk at _update_ready_path and
+        # NOTHING has been auto-installed yet — install_update() (which
+        # replaces the app bundle and exits this process) only runs once the
+        # user explicitly clicks "Restart to update", never automatically.
+        self._update_phase = "idle"
+        self._update_progress = 0.0
+        self._update_ready_path = None
+
         # Running totals. WRITE-ONLY on macOS since IDI-183 — the menu header
         # takes its number from get_daily_words() instead — but they must stay:
         # win_main.py has its own `_status_text()` that reads them for its tray
@@ -364,6 +377,21 @@ class VerbalApp(rumps.App):
                 sub = main_menu.itemAtIndex_(i).submenu()
                 if sub and sub.title() == "Edit":
                     return
+            # App menu with a real Quit item FIRST (index 0 of the main menu is
+            # the application menu by AppKit convention). Cmd+Q is not a global
+            # shortcut — it only works when some menu item carries the "q" key
+            # equivalent, and until now nothing did, so Cmd+Q silently did
+            # nothing and the only ways out were the tray menu or a Dock
+            # right-click → Quit (reported live, 2026-08-25). terminate: is the
+            # same action rumps' own Quit row fires, so both paths clean up
+            # identically.
+            app_item = NSMenuItem.alloc().init()
+            main_menu.insertItem_atIndex_(app_item, 0)
+            app_menu = NSMenu.alloc().initWithTitle_("Flume")
+            app_item.setSubmenu_(app_menu)
+            quit_it = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                "Quit Flume", "terminate:", "q")
+            app_menu.addItem_(quit_it)
             edit_item = NSMenuItem.alloc().init()
             main_menu.addItem_(edit_item)
             edit_menu = NSMenu.alloc().initWithTitle_("Edit")
@@ -382,7 +410,7 @@ class VerbalApp(rumps.App):
                     continue
                 it = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(title, action, key)
                 edit_menu.addItem_(it)
-            logger.info("Edit menu installed (Cmd+C/V/X/A/Z)")
+            logger.info("Edit menu installed (Cmd+C/V/X/A/Z, Cmd+Q quits)")
         except Exception as e:
             logger.warning(f"Could not install Edit menu: {e}")
 
@@ -1339,7 +1367,7 @@ class VerbalApp(rumps.App):
         feedback every time (never a silent no-op)."""
         if self._mic_denied_alerted:
             try:
-                self.overlay.show_briefly("Mic access needed — check Settings", duration=1.6)
+                self.overlay.show_briefly("Mic access needed — check Settings", duration=1.6, error=True)
             except Exception:
                 pass
             return
@@ -2013,7 +2041,7 @@ class VerbalApp(rumps.App):
         except Exception as e:
             logger.debug(f"update badge refresh failed: {e}")
 
-    def _check_update(self, announce_current=False):
+    def _check_update(self, announce_current=False, suppress_prompt=False):
         """Background update poll — both the one-shot startup check
         (`_start_app`) and the periodic re-check (`_update_check_timer`,
         every `UPDATE_CHECK_INTERVAL`) land here. `check_for_update()`
@@ -2024,12 +2052,16 @@ class VerbalApp(rumps.App):
         Persistence (the discoverable badge/menu-row this feeds): finding an
         update sets `_update_available` and stays set — surfaced via the
         badge + "Update available" menu row — until either a newer version
-        supersedes it or the user actually updates. The popup itself,
-        though, is throttled to once per version: if the user already hit
-        "Later" for this exact version, later periodic checks keep the badge
-        current but don't pop the alert again (`_update_dismissed_version`)
-        — only a genuinely newer version, or the user manually re-opening
-        the prompt from the menu row, shows it again.
+        supersedes it or the user actually updates.
+
+        The native rumps.alert popup fires ONLY for the explicit menu-bar
+        "Check for Updates…" (announce_current=True). Automatic checks — the
+        startup one-shot and the 4h timer — surface through the badge and the
+        dashboard's in-app banner alone. It used to pop on every automatic
+        find too, which DOUBLED with the in-app banner ("keeps giving me
+        macOS popups and also in-app popups", 2026-08-25): two surfaces
+        announcing the same version reads as nagging, and the in-app banner
+        is the flow the user actually asked for.
         """
         from app.updater import check_for_update
         update = check_for_update()
@@ -2037,7 +2069,14 @@ class VerbalApp(rumps.App):
             is_new_version = update["version"] != self._update_dismissed_version
             self._update_available = update
             self._on_main(self._refresh_update_badge)
-            if is_new_version:
+            # A newly-found version invalidates whatever the in-app flow was
+            # doing for a PREVIOUS version (its downloaded path is now stale).
+            if self._update_phase != "idle" and (
+                    not self._update_ready_path or is_new_version):
+                self._update_phase = "idle"
+                self._update_progress = 0.0
+                self._update_ready_path = None
+            if announce_current and not suppress_prompt:
                 self._on_main(lambda: self._show_update_prompt(update))
         else:
             had_one = self._update_available is not None
@@ -2095,6 +2134,43 @@ class VerbalApp(rumps.App):
         else:
             self._on_main(lambda: rumps.alert("Update failed", "Could not download the update. Try again later."))
             self._on_main(lambda: self._status_note(""))
+
+    def _start_update_download(self):
+        """Dashboard-driven download — separate from `_do_update` (the native
+        alert's path) because this one must NEVER auto-install. It downloads,
+        parks the installer at `_update_ready_path`, sets phase='ready', and
+        stops — install only happens if/when the user clicks "Restart to
+        update" in the dashboard (`_install_ready_update`)."""
+        if self._update_phase in ("downloading", "installing"):
+            return  # already running; a duplicate click is a no-op, not a second download
+        update = self._update_available
+        if not update:
+            return
+        self._update_phase = "downloading"
+        self._update_progress = 0.0
+
+        def _run():
+            from app.updater import download_update
+            path = download_update(update, on_progress=lambda f: setattr(self, "_update_progress", f))
+            if path:
+                self._update_ready_path = path
+                self._update_phase = "ready"
+            else:
+                self._update_phase = "failed"
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _install_ready_update(self):
+        """"Restart to update" — the ONLY thing in this whole flow that's
+        allowed to actually replace the app bundle and exit. Safe to call
+        from a webview/API thread: install_update() just spawns a detached
+        shell helper and calls sys.exit(0), no AppKit involved."""
+        path = self._update_ready_path
+        if not path:
+            return
+        self._update_phase = "installing"
+        from app.updater import install_update
+        install_update(path)
 
     def _about(self, _):
         from app.config import APP_VERSION

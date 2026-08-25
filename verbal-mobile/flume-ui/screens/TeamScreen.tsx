@@ -4,6 +4,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
+import Svg, { Path } from 'react-native-svg';
 import { Text, Button } from '../components';
 import { colors, radius, space, pressedStyle } from '../theme';
 import { confirm } from '../components/ConfirmDialog';
@@ -21,6 +22,30 @@ const initial = (m: { display_name?: string; email?: string }) =>
 const minutes = (ms: number) => {
   const m = Math.round((ms || 0) / 60000);
   return m >= 60 ? `${(m / 60).toFixed(1)}h` : `${m}m`;
+};
+
+/** SVG path for a member's daily-words sparkline over the trailing `days`
+ *  window. Gap days are honest zeroes, so a quiet week reads flat rather than
+ *  connecting two spikes. Returns null when there's nothing to draw. */
+const sparkPath = (
+  pairs: Array<[string, number]> | undefined, days: number, w: number, h: number,
+): string | null => {
+  if (!pairs || pairs.length === 0) return null;
+  const byDay = new Map(pairs);
+  const vals: number[] = [];
+  const d = new Date();
+  d.setDate(d.getDate() - (days - 1));
+  for (let i = 0; i < days; i++) {
+    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    vals.push(Number(byDay.get(key) ?? 0));
+    d.setDate(d.getDate() + 1);
+  }
+  const max = Math.max(...vals);
+  if (max <= 0) return null;
+  const step = w / (days - 1);
+  return vals
+    .map((v, i) => `${i === 0 ? 'M' : 'L'}${(i * step).toFixed(1)},${(h - (v / max) * (h - 1)).toFixed(1)}`)
+    .join(' ');
 };
 
 const whenLabel = (iso: string | null) => {
@@ -52,9 +77,12 @@ export const TeamScreen: React.FC<Props> = ({ onBack }) => {
   const [name, setName] = useState('');
   const [company, setCompany] = useState('');
   const [token, setToken] = useState('');
-  // Invite
+  // Invite. The form opens on demand (user request, 2026-08-25) — a permanently
+  // expanded email field read as "the screen wants something from me" on every
+  // visit; desktop's roster has the same shape ("Add teammate" opens the form).
   const [email, setEmail] = useState('');
   const [inviteAdmin, setInviteAdmin] = useState(false);
+  const [inviteOpen, setInviteOpen] = useState(false);
   const [busy, setBusy] = useState(false);
 
   const onRefresh = async () => {
@@ -180,6 +208,9 @@ export const TeamScreen: React.FC<Props> = ({ onBack }) => {
   // ── in a team ──────────────────────────────────────────────────────────────
   const { org } = t;
   const dict = org.dictionary;
+  // Owner opened per-person stats to the whole team (2026-08-25): members then
+  // read the same usage rows admins do, so the copy switches voice with the data.
+  const seeAll = t.isAdmin || !!org.stats_visible_to_members;
 
   // ── ranking + app mix ────────────────────────────────────────────────────
   // Ranked from t.usage, which is admin-only and gated on each member's
@@ -348,43 +379,66 @@ export const TeamScreen: React.FC<Props> = ({ onBack }) => {
               </>
             )}
 
-            <Text variant="label" style={styles.section}>
-              Invite someone
-            </Text>
-            <Text variant="caption" color={colors.textMuted} style={styles.sectionSub}>
-              They get a one-time link that expires in 7 days and only works for that address.
-            </Text>
-            <TextInput
-              style={styles.input}
-              value={email}
-              onChangeText={setEmail}
-              placeholder="name@company.com"
-              placeholderTextColor={colors.textDisabled}
-              autoCapitalize="none"
-              autoCorrect={false}
-              keyboardType="email-address"
-            />
-            <View style={styles.switchRow}>
-              <Text variant="caption" color={colors.textSecondary}>
-                Invite as admin
-              </Text>
-              <Switch
-                value={inviteAdmin}
-                onValueChange={setInviteAdmin}
-                trackColor={{ true: colors.primary, false: colors.surface3 }}
+            {!inviteOpen ? (
+              <Button
+                label="Invite someone"
+                onPress={() => setInviteOpen(true)}
+                style={{ marginTop: space.m }}
               />
-            </View>
-            <Button
-              label="Send invite"
-              disabled={busy}
-              onPress={() =>
-                guard(async () => {
-                  const res = await t.invite(email.trim(), inviteAdmin ? 'admin' : 'member');
-                  if (res.ok) setEmail('');
-                })
-              }
-              style={{ marginTop: space.s }}
-            />
+            ) : (
+              <>
+                <Text variant="label" style={styles.section}>
+                  Invite someone
+                </Text>
+                <Text variant="caption" color={colors.textMuted} style={styles.sectionSub}>
+                  They get a one-time link that expires in 7 days and only works for that address.
+                </Text>
+                <TextInput
+                  style={styles.input}
+                  value={email}
+                  onChangeText={setEmail}
+                  placeholder="name@company.com"
+                  placeholderTextColor={colors.textDisabled}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  keyboardType="email-address"
+                  autoFocus
+                />
+                <View style={styles.switchRow}>
+                  <Text variant="caption" color={colors.textSecondary}>
+                    Invite as admin
+                  </Text>
+                  <Switch
+                    value={inviteAdmin}
+                    onValueChange={setInviteAdmin}
+                    trackColor={{ true: colors.primary, false: colors.surface3 }}
+                  />
+                </View>
+                <Button
+                  label="Send invite"
+                  disabled={busy}
+                  onPress={() =>
+                    guard(async () => {
+                      const res = await t.invite(email.trim(), inviteAdmin ? 'admin' : 'member');
+                      if (res.ok) {
+                        setEmail('');
+                        setInviteOpen(false);
+                      }
+                    })
+                  }
+                  style={{ marginTop: space.s }}
+                />
+                <Button
+                  label="Cancel"
+                  variant="ghost"
+                  onPress={() => {
+                    setInviteOpen(false);
+                    setEmail('');
+                  }}
+                  style={{ marginTop: space.xs }}
+                />
+              </>
+            )}
           </>
         )}
 
@@ -407,11 +461,18 @@ export const TeamScreen: React.FC<Props> = ({ onBack }) => {
         {(
           <>
             <Text variant="label" style={styles.section}>
-              {t.isAdmin ? 'Usage' : 'Your usage on this team'}
+              {seeAll ? 'Usage' : 'Your usage on this team'}
             </Text>
-            {!t.isAdmin && (
+            {!seeAll && (
               <Text variant="caption" color={colors.textMuted} style={styles.sectionSub}>
                 Only your own numbers appear here. Your admins see the team's totals.
+              </Text>
+            )}
+            {seeAll && ranked.length > 0 && (
+              <Text variant="caption" color={colors.textMuted} style={styles.sectionSub}>
+                {`${org.name || 'The team'} spoke ${ranked
+                  .reduce((a, r) => a + (r.words || 0), 0)
+                  .toLocaleString('en-US')} words in the last ${t.usageDays} days.`}
               </Text>
             )}
             <View style={styles.segRow}>
@@ -433,7 +494,7 @@ export const TeamScreen: React.FC<Props> = ({ onBack }) => {
             </View>
             {ranked.length === 0 ? (
               <Text variant="caption" color={colors.textDisabled} style={styles.sectionSub}>
-                {t.isAdmin
+                {seeAll
                   ? 'Nobody on the team has dictated in this window yet.'
                   : `You haven't dictated in the last ${t.usageDays} days.`}
               </Text>
@@ -466,6 +527,14 @@ export const TeamScreen: React.FC<Props> = ({ onBack }) => {
                         .filter(Boolean)
                         .join(' · ')}
                     </Text>
+                    {(() => {
+                      const p = sparkPath(t.series[r.user_id], 42, 120, 16);
+                      return p ? (
+                        <Svg width={120} height={16} style={{ marginTop: 3 }}>
+                          <Path d={p} stroke={i === 0 ? colors.primary : colors.textDisabled} strokeWidth={1.4} fill="none" />
+                        </Svg>
+                      ) : null;
+                    })()}
                   </View>
                   <Text variant="label">{r.words.toLocaleString('en-US')}</Text>
                 </View>
@@ -478,7 +547,7 @@ export const TeamScreen: React.FC<Props> = ({ onBack }) => {
 
             {/* Where the team writes */}
             <Text variant="label" style={styles.section}>
-              {t.isAdmin ? 'Where the team writes' : 'Where you write'}
+              {seeAll ? 'Where the team writes' : 'Where you write'}
             </Text>
             {appMembers.length === 0 ? (
               <Text variant="caption" color={colors.textDisabled} style={styles.sectionSub}>
@@ -588,6 +657,33 @@ export const TeamScreen: React.FC<Props> = ({ onBack }) => {
                 />
               </View>
             )}
+          </>
+        )}
+
+        {/* Team-wide stats visibility (owner-only, 2026-08-25): by default only
+            owners/admins see the roster's numbers; this opens the same
+            consenting-member stats to every member. An individual's own
+            sharing switch still wins — the org flag widens the audience,
+            never overrides an opt-out (same contract as the leaderboard). */}
+        {t.isOwner && (
+          <>
+            <Text variant="label" style={styles.section}>
+              Team-wide visibility
+            </Text>
+            <Text variant="caption" color={colors.textMuted} style={styles.sectionSub}>
+              Let every member see the same per-person stats admins do. Anyone who turned off sharing
+              stays hidden from everyone.
+            </Text>
+            <View style={styles.switchRow}>
+              <Text variant="caption" color={colors.textSecondary}>
+                {"Everyone sees everyone's stats"}
+              </Text>
+              <Switch
+                value={!!org.stats_visible_to_members}
+                onValueChange={(v) => guard(() => t.saveSettings({ stats_visible_to_members: v }))}
+                trackColor={{ true: colors.primary, false: colors.surface3 }}
+              />
+            </View>
           </>
         )}
 

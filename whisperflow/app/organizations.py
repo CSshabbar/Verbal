@@ -41,6 +41,7 @@ NO_ORG = {
     "plan": "",
     "seats": 0,
     "leaderboard_enabled": False,
+    "stats_visible_to_members": False,
     # IDI-218 domain governance. `is_generic_domain` defaults TRUE so an unknown or
     # unfetched org is treated as invite-only — the fail-closed direction.
     "domain": "",
@@ -176,7 +177,8 @@ def fetch(config, save_config_fn) -> dict:
             # the SELECT so the cached shape and every UI reference stay put — the
             # client word for it is unchanged, only the DB column moved.
             "organizations(id,name,company_name,owner_user_id,plan,"
-            "seats:purchased_seats,leaderboard_enabled,domain,is_generic_domain,auto_join_enabled)",
+            "seats:purchased_seats,leaderboard_enabled,stats_visible_to_members,"
+            "domain,is_generic_domain,auto_join_enabled)",
             "user_id": f"eq.{user_id}",
             "status": "eq.active",
             "limit": "1",
@@ -201,6 +203,7 @@ def fetch(config, save_config_fn) -> dict:
             "plan": org_row.get("plan") or "team",
             "seats": int(org_row.get("seats") or 0),
             "leaderboard_enabled": bool(org_row.get("leaderboard_enabled")),
+            "stats_visible_to_members": bool(org_row.get("stats_visible_to_members")),
             "domain": org_row.get("domain") or "",
             # Absent column -> True, matching NO_ORG: never assume a domain is
             # corporate just because the read came back thin.
@@ -600,15 +603,17 @@ def set_org_settings(config, save_config_fn, **fields) -> dict:
     Allowlisted — a client must never be able to PATCH `plan`, `seats` or
     `owner_user_id` on its own authority."""
     allowed = {k: v for k, v in fields.items()
-               if k in ("name", "company_name", "leaderboard_enabled") and v is not None}
+               if k in ("name", "company_name", "leaderboard_enabled",
+                        "stats_visible_to_members") and v is not None}
     if not allowed:
         return {"ok": False, "error": "Nothing to save"}
     try:
         org = get(config)
         if org["role"] not in ("owner", "admin"):
             return {"ok": False, "error": "Only owners and admins can do that"}
-        if "leaderboard_enabled" in allowed and org["role"] != "owner":
-            return {"ok": False, "error": "Only the owner can change the leaderboard"}
+        if ("leaderboard_enabled" in allowed or "stats_visible_to_members" in allowed) \
+                and org["role"] != "owner":
+            return {"ok": False, "error": "Only the owner can change that"}
         allowed["updated_at"] = "now()"
         _rest(config, "PATCH", "organizations",
               params={"id": f"eq.{org['org_id']}"}, body=allowed)

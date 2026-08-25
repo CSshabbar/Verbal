@@ -360,6 +360,18 @@ Each feature: **what it does · desktop impl · mobile impl · backend · status
   privacy contract; visibility differs by role on purpose — owner/admin get every consenting member,
   anyone else gets only their own row, so a member can see their own sparkline without the screen
   becoming a way to read colleagues' activity.
+- **Team-wide stats visibility (2026-08-25).** `organizations.stats_visible_to_members` (owner-only
+  toggle — desktop Settings > Team privacy > "Team-wide visibility", mobile Team screen): when on,
+  every active member sees the same per-person stats owners/admins do (`org_usage_summary`/
+  `org_usage_series`/`org_app_breakdown` all honor it). Each member's own `usage_consent` still wins —
+  the org switch widens the audience, never overrides an individual opt-out, exactly the
+  `leaderboard_enabled` vs `leaderboard_opt_in` contract. Client member-views switch voice on the flag
+  (desktop `TEAM.stats_visible_to_members`, mobile `seeAll`), since the RPCs decide the rows either way.
+  **Ranking under team-wide visibility (2026-08-26):** with the flag on, desktop's `tmBoardRows()` ranks
+  members from the usage rows they can already see instead of the opt-in board — an opt-in ranking of
+  already-visible numbers is pure friction (live case: ranking on, stats open, member's board empty
+  because nobody had opted in). `leaderboard_opt_in` still gates the board for teams that keep stats
+  admin-only. Mobile needs no change: its usage list is already rendered ranked with bars.
 - **Usage insights + leaderboard (opt-in, counts only).** `org_usage_summary` (every active member — an
   owner/admin gets all consenting members, anyone else gets their own row) and
   `org_leaderboard` (every active member, once the owner enables it org-wide) are SECURITY DEFINER RPCs
@@ -1089,7 +1101,7 @@ deletes real files under `~/.verbal/` and this development machine has a real, i
   (screens 31a–31h); availability: macOS full, iOS read-only (+ scratchpad edit), Windows capture via
   WASAPI loopback (`win_system_audio.py`) hosted in `WinMeetingWindow` (same `meeting_html()`; the
   pre-meeting language control is a custom listbox, not a native `<select>` — WebView2's OS combo
-  popup ignores CSS overflow and covers Start recording; `05-conventions.md` Rule #62). No call
+  popup ignores CSS overflow and covers Start recording; `05-conventions.md` Rule #66). No call
   auto-detect on Windows yet.
 - **Desktop:** `meetings.py` (`MeetingManager`/`MeetingSession` state machine: idle→preparing→recording⇄
   paused→stopping→processing→ready|failed) + `system_audio.py` (SCK audio capture) + `meeting_window.py`/
@@ -1356,6 +1368,15 @@ delta, fail-closed paths). Both spec files declare `app.insights` in `hiddenimpo
   blanket suppression) and only clear once a still-newer version supersedes them or the app relaunches
   post-update. Windows' `auto_update=True` mode deliberately skips the badge/menu entirely — a silent
   unattended update has no "declined" state for a badge to represent.
+  **In-dashboard update flow + one-surface rule (2026-08-25):** the dashboard now carries its own update
+  banner (Update available → downloading % → "Restart to update", user-clicked, never auto-install) plus
+  a Settings > Updates group (current version + Check for Updates), backed by
+  `DashboardApi.get_update_status/check_for_updates/start_update_download/install_ready_update` and
+  `main.py`'s `_update_phase` state machine. With that in place, AUTOMATIC checks (startup + 4h timer)
+  no longer pop the native OS dialog on either platform — badge + menu row + banner only; the native
+  dialog fires solely for the explicit "Check for Updates…" menu item or the "Update available" row
+  ("two popups per version reads as nagging" — live feedback). `install_update()` exits via `os._exit`,
+  not `sys.exit` — every caller is on a worker thread (see `05-conventions.md` #64).
 - **Permissions** (`permissions.py`): accessibility / microphone / system-audio / notifications status +
   request, surfaced via `DashboardApi.get_permissions/request_permission`. On Windows the module's
   bottom-of-file shim overrides `check_accessibility()` to `"granted"` — correct, because Windows has no

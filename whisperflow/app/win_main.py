@@ -1308,7 +1308,7 @@ class VerbalWinApp:
                     except Exception:
                         pass
                 try:
-                    self.overlay.show_briefly("No speech detected. Speak louder!", duration=1.5)
+                    self.overlay.show_briefly("No speech detected. Speak louder!", duration=1.5, error=True)
                 except Exception:
                     pass
                 self._reset_to_ready()
@@ -1326,7 +1326,7 @@ class VerbalWinApp:
                     logger.error(f"failed-entry write failed: {e}")
                 self._upload_recording_async(rec_id, _path)
                 try:
-                    self.overlay.show_briefly("Transcription failed — retry from History", duration=2.0)
+                    self.overlay.show_briefly("Transcription failed — retry from History", duration=2.0, error=True)
                 except Exception:
                     pass
                 self._reset_to_ready()
@@ -1494,7 +1494,7 @@ class VerbalWinApp:
         except Exception as e:
             logger.critical(f"PROCESS CRASH: {e}\n{traceback.format_exc()}")
             try:
-                self.overlay.show_briefly("Error occurred", duration=2.0)
+                self.overlay.show_briefly("Error occurred", duration=2.0, error=True)
             except:
                 pass
             self._reset_to_ready()
@@ -1828,11 +1828,9 @@ class VerbalWinApp:
 
         Always sets self._pending_update and refreshes the tray icon/menu —
         that's what makes the badge and menu row persist regardless of what
-        the user does with the popup. The popup itself is gated by
-        config['update_dialog_seen_version'] so periodic/repeat calls for a
-        version the user already answered ("Later"/"No") don't nag with the
-        same dialog again; `force_dialog=True` (from the tray menu's explicit
-        click — an intentional re-ask, not a nag) bypasses that gate.
+        the user does with the popup. The dialog itself only ever shows for
+        `force_dialog=True` (the tray menu's explicit click); automatic
+        checks stop at the badge + the dashboard banner.
         """
         self._pending_update = update
         try:
@@ -1841,8 +1839,12 @@ class VerbalWinApp:
         except Exception as e:
             logger.debug(f"update badge refresh failed: {e}")
 
-        already_seen = self.config.get("update_dialog_seen_version") == update.get("version")
-        if already_seen and not force_dialog:
+        # Automatic finds stop at the badge/menu row + the dashboard's in-app
+        # banner — the popup fires only on the tray menu's explicit click
+        # (force_dialog=True). Same policy as mac's _check_update, and for the
+        # same reason (2026-08-25): the OS popup doubling the in-app banner
+        # for the same version reads as nagging.
+        if not force_dialog:
             return
 
         from app.updater import download_update, install_update
