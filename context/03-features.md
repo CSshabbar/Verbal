@@ -459,7 +459,12 @@ Each feature: **what it does · desktop impl · mobile impl · backend · status
   rather than report one.
 - **Mobile UI:** `flume-ui/screens/TeamScreen.tsx` via `flume-ui/hooks/useOrganization.ts` (+ `.mock.ts`),
   reached from the SidePanel's Tools group and hosted in the `Menu` modal stack — so it carries its own
-  chevron-back and uses native-Alert `confirm()` (Hard Rule #14). Same sections as desktop: the shared
+  chevron-back and uses native-Alert `confirm()` (Hard Rule #14). **Split in two (2026-08-26):** the main
+  view is read-only numbers (stat tiles, usage ranking, "Where the team writes", leaderboard list); a gear
+  in the title row opens **Team settings** — roster (role toggle/remove), pending invites, the on-demand
+  invite form, the owner's leaderboard + team-wide-visibility switches, the dictionary/privacy pointers
+  and Leave team (hidden for the owner). One long scroll with all of it read as "complicated"; the
+  numbers are what people open the screen for, the management is a tap away. Same sections as desktop: the shared
   dictionary is a pointer here too (the editing is a `Mine | <team>` scope on `DictionaryScreen`), the
   usage list is a ranking with the bar behind the text rather than beside it (a separate chart column
   leaves no room for a name at phone width), and "Where the team writes" renders the same stacked share

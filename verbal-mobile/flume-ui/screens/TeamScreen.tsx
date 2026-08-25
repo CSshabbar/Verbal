@@ -63,6 +63,12 @@ const whenLabel = (iso: string | null) => {
  * gating is enforced server-side by RLS + the RPCs; the checks here only decide
  * what to DRAW, so a stale cached role can never turn into an actual privilege.
  *
+ * In a team the screen is split in two (2026-08-26): the MAIN view is read-only
+ * numbers (stats, usage ranking, app mix, leaderboard); everything you *manage* —
+ * roster roles/removal, pending invites, the invite form, the owner's leaderboard
+ * and team-wide-visibility switches, the dictionary/privacy pointers and Leave
+ * team — sits behind the gear in the title row as "Team settings".
+ *
  * Reached from the SidePanel under Workspace, and hosted in the `Menu` modal
  * stack — so it carries its own chevron-back (conventions §Back affordances) and
  * uses native Alert-backed `confirm()` rather than the JS ConfirmDialog, which
@@ -84,6 +90,10 @@ export const TeamScreen: React.FC<Props> = ({ onBack }) => {
   const [inviteAdmin, setInviteAdmin] = useState(false);
   const [inviteOpen, setInviteOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+  // Team settings live behind a gear (user request, 2026-08-26): the roster,
+  // invites, owner toggles and pointers all on one scroll read as "complicated".
+  // The main view is now just the numbers; everything you *manage* is one tap away.
+  const [showSettings, setShowSettings] = useState(false);
 
   const onRefresh = async () => {
     setRefreshing(true);
@@ -256,55 +266,34 @@ export const TeamScreen: React.FC<Props> = ({ onBack }) => {
     if (ok) await guard(() => t.leave());
   };
 
-  return (
-    <View style={[styles.screen, { paddingTop: insets.top + space.s }]}>
-      {header}
-      <ScrollView
-        style={{ flex: 1 }}
-        contentContainerStyle={{ paddingBottom: insets.bottom + space.xxl }}
-        keyboardShouldPersistTaps="handled"
-        refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.textMuted} />
-        }
-      >
-        <View style={styles.titleRow}>
-          <View style={{ flex: 1 }}>
-            <Text variant="title" style={styles.title}>
-              {org.name || 'Team'}
-            </Text>
-            {!!org.company_name && (
-              <Text variant="bodyXs" color={colors.textMuted}>
-                {org.company_name}
-              </Text>
-            )}
-          </View>
-          <View style={styles.rolePill}>
-            <Text variant="metaSm" color={colors.textSecondary}>
-              {org.role}
-            </Text>
-          </View>
+  // ── team settings (behind the gear) ───────────────────────────────────────
+  if (showSettings) {
+    return (
+      <View style={[styles.screen, { paddingTop: insets.top + space.s }]}>
+        <View style={styles.header}>
+          <Pressable
+            onPress={() => {
+              setShowSettings(false);
+              setInviteOpen(false);
+              setEmail('');
+            }}
+            hitSlop={12}
+            style={({ pressed }) => pressed && pressedStyle}
+          >
+            <Ionicons name="chevron-back" size={26} color={colors.textPrimary} />
+          </Pressable>
+          <Text variant="metaSm" color={colors.textMuted} style={styles.eyebrow}>
+            {org.name || 'Team'}
+          </Text>
         </View>
-
-        <View style={styles.stats}>
-          <View style={styles.stat}>
-            <Text variant="metaSm" color={colors.textMuted}>
-              Members
-            </Text>
-            <Text variant="subtitle">{`${org.members.length}/${org.seats}`}</Text>
-          </View>
-          <View style={styles.stat}>
-            <Text variant="metaSm" color={colors.textMuted}>
-              Plan
-            </Text>
-            <Text variant="bodyLg">{org.plan}</Text>
-          </View>
-          <View style={styles.stat}>
-            <Text variant="metaSm" color={colors.textMuted}>
-              Top
-            </Text>
-            <Text variant="subtitle">{board.rows.length ? board.rows[0].words : 0}</Text>
-          </View>
-        </View>
+        <ScrollView
+          style={{ flex: 1 }}
+          contentContainerStyle={{ paddingBottom: insets.bottom + space.xxl }}
+          keyboardShouldPersistTaps="handled"
+        >
+          <Text variant="title" style={styles.title}>
+            Team settings
+          </Text>
 
         {/* Members */}
         <Text variant="label" style={styles.section}>
@@ -442,6 +431,54 @@ export const TeamScreen: React.FC<Props> = ({ onBack }) => {
           </>
         )}
 
+        {/* Leaderboard (owner switch) */}
+        {t.isOwner && (
+          <>
+            <Text variant="label" style={styles.section}>
+              Leaderboard
+            </Text>
+            <Text variant="caption" color={colors.textMuted} style={styles.sectionSub}>
+              A team-visible ranking by words dictated. People appear only if they opt in themselves.
+            </Text>
+            <View style={styles.switchRow}>
+              <Text variant="caption" color={colors.textSecondary}>
+                Visible to the team
+              </Text>
+              <Switch
+                value={!!org.leaderboard_enabled}
+                onValueChange={(v) => guard(() => t.saveSettings({ leaderboard_enabled: v }))}
+                trackColor={{ true: colors.primary, false: colors.surface3 }}
+              />
+            </View>
+          </>
+        )}
+        {/* Team-wide stats visibility (owner-only, 2026-08-25): by default only
+            owners/admins see the roster's numbers; this opens the same
+            consenting-member stats to every member. An individual's own
+            sharing switch still wins — the org flag widens the audience,
+            never overrides an opt-out (same contract as the leaderboard). */}
+        {t.isOwner && (
+          <>
+            <Text variant="label" style={styles.section}>
+              Team-wide visibility
+            </Text>
+            <Text variant="caption" color={colors.textMuted} style={styles.sectionSub}>
+              Let every member see the same per-person stats admins do. Anyone who turned off sharing
+              stays hidden from everyone.
+            </Text>
+            <View style={styles.switchRow}>
+              <Text variant="caption" color={colors.textSecondary}>
+                {"Everyone sees everyone's stats"}
+              </Text>
+              <Switch
+                value={!!org.stats_visible_to_members}
+                onValueChange={(v) => guard(() => t.saveSettings({ stats_visible_to_members: v }))}
+                trackColor={{ true: colors.primary, false: colors.surface3 }}
+              />
+            </View>
+          </>
+        )}
+
         {/* Shared dictionary — a POINTER, not an editor. The editing lives on the
             Dictionary screen under a Team scope, so there is one place to learn. */}
         <Text variant="label" style={styles.section}>
@@ -453,6 +490,100 @@ export const TeamScreen: React.FC<Props> = ({ onBack }) => {
             : 'Nothing shared yet. Names, jargon and product words the whole team should get right belong here.'}
           {'\n'}Edit it under Dictionary → {org.name || 'Team'}. Your own entries always win a clash.
         </Text>
+
+        {/* Privacy — a POINTER. The toggles live in Settings → TEAM PRIVACY, the
+            same place every other "what does this app do with my data" switch is,
+            so there is one answer to "where do I turn that off?". */}
+        <Text variant="label" style={styles.section}>
+          Your privacy
+        </Text>
+        <Text variant="caption" color={colors.textMuted} style={styles.sectionSub}>
+          {org.usage_consent
+            ? `You are sharing your dictation counts with admins${org.leaderboard_opt_in ? ' and appearing on the ranking' : ', and staying off the ranking'}.`
+            : 'You are not sharing anything — your numbers appear in no admin view.'}
+          {'\n'}What you dictate is never shared either way. Change it under Settings → Team privacy.
+        </Text>
+
+
+          {/* Hidden for the owner: org_remove_member returns cannot_remove_owner,
+              so the button would always fail for the one person most likely to press it. */}
+          {!t.isOwner && (
+            <Button
+              label="Leave team"
+              variant="ghost"
+              disabled={busy}
+              onPress={onLeave}
+              style={{ marginTop: space.xl }}
+            />
+          )}
+
+          {!!t.error && (
+            <Text variant="caption" color={colors.textMuted} style={styles.errorNote}>
+              {t.error}
+            </Text>
+          )}
+        </ScrollView>
+      </View>
+    );
+  }
+
+  return (
+    <View style={[styles.screen, { paddingTop: insets.top + space.s }]}>
+      {header}
+      <ScrollView
+        style={{ flex: 1 }}
+        contentContainerStyle={{ paddingBottom: insets.bottom + space.xxl }}
+        keyboardShouldPersistTaps="handled"
+        refreshControl={
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.textMuted} />
+        }
+      >
+        <View style={styles.titleRow}>
+          <View style={{ flex: 1 }}>
+            <Text variant="title" style={styles.title}>
+              {org.name || 'Team'}
+            </Text>
+            {!!org.company_name && (
+              <Text variant="bodyXs" color={colors.textMuted}>
+                {org.company_name}
+              </Text>
+            )}
+          </View>
+          <View style={styles.rolePill}>
+            <Text variant="metaSm" color={colors.textSecondary}>
+              {org.role}
+            </Text>
+          </View>
+          <Pressable
+            onPress={() => setShowSettings(true)}
+            hitSlop={10}
+            accessibilityLabel="Team settings"
+            style={({ pressed }) => [styles.gearBtn, pressed && pressedStyle]}
+          >
+            <Ionicons name="settings-outline" size={20} color={colors.textSecondary} />
+          </Pressable>
+        </View>
+
+        <View style={styles.stats}>
+          <View style={styles.stat}>
+            <Text variant="metaSm" color={colors.textMuted}>
+              Members
+            </Text>
+            <Text variant="subtitle">{`${org.members.length}/${org.seats}`}</Text>
+          </View>
+          <View style={styles.stat}>
+            <Text variant="metaSm" color={colors.textMuted}>
+              Plan
+            </Text>
+            <Text variant="bodyLg">{org.plan}</Text>
+          </View>
+          <View style={styles.stat}>
+            <Text variant="metaSm" color={colors.textMuted}>
+              Top
+            </Text>
+            <Text variant="subtitle">{board.rows.length ? board.rows[0].words : 0}</Text>
+          </View>
+        </View>
 
         {/* Usage — for EVERYONE. A plain member's `ranked` holds exactly their own
             row (the RPC does that split), so this section is their own numbers
@@ -595,32 +726,12 @@ export const TeamScreen: React.FC<Props> = ({ onBack }) => {
           </>
         )}
 
-        {/* Leaderboard */}
-        <Text variant="label" style={styles.section}>
-          Leaderboard
-        </Text>
-        {!org.leaderboard_enabled ? (
+        {/* Leaderboard — list only; the owner's enable switch is in Team settings. */}
+        {org.leaderboard_enabled && (
           <>
-            <Text variant="caption" color={colors.textMuted} style={styles.sectionSub}>
-              {t.isOwner
-                ? 'A team-visible ranking by words dictated. People appear only if they opt in themselves.'
-                : "Your team owner hasn't turned this on."}
+            <Text variant="label" style={styles.section}>
+              Leaderboard
             </Text>
-            {t.isOwner && (
-              <View style={styles.switchRow}>
-                <Text variant="caption" color={colors.textSecondary}>
-                  Enable for this team
-                </Text>
-                <Switch
-                  value={false}
-                  onValueChange={() => guard(() => t.saveSettings({ leaderboard_enabled: true }))}
-                  trackColor={{ true: colors.primary, false: colors.surface3 }}
-                />
-              </View>
-            )}
-          </>
-        ) : (
-          <>
             {board.rows.length === 0 ? (
               <Text variant="caption" color={colors.textDisabled} style={styles.sectionSub}>
                 Nobody has opted in yet.
@@ -645,60 +756,8 @@ export const TeamScreen: React.FC<Props> = ({ onBack }) => {
                 </View>
               ))
             )}
-            {t.isOwner && (
-              <View style={styles.switchRow}>
-                <Text variant="caption" color={colors.textSecondary}>
-                  Visible to the team
-                </Text>
-                <Switch
-                  value
-                  onValueChange={() => guard(() => t.saveSettings({ leaderboard_enabled: false }))}
-                  trackColor={{ true: colors.primary, false: colors.surface3 }}
-                />
-              </View>
-            )}
           </>
         )}
-
-        {/* Team-wide stats visibility (owner-only, 2026-08-25): by default only
-            owners/admins see the roster's numbers; this opens the same
-            consenting-member stats to every member. An individual's own
-            sharing switch still wins — the org flag widens the audience,
-            never overrides an opt-out (same contract as the leaderboard). */}
-        {t.isOwner && (
-          <>
-            <Text variant="label" style={styles.section}>
-              Team-wide visibility
-            </Text>
-            <Text variant="caption" color={colors.textMuted} style={styles.sectionSub}>
-              Let every member see the same per-person stats admins do. Anyone who turned off sharing
-              stays hidden from everyone.
-            </Text>
-            <View style={styles.switchRow}>
-              <Text variant="caption" color={colors.textSecondary}>
-                {"Everyone sees everyone's stats"}
-              </Text>
-              <Switch
-                value={!!org.stats_visible_to_members}
-                onValueChange={(v) => guard(() => t.saveSettings({ stats_visible_to_members: v }))}
-                trackColor={{ true: colors.primary, false: colors.surface3 }}
-              />
-            </View>
-          </>
-        )}
-
-        {/* Privacy — a POINTER. The toggles live in Settings → TEAM PRIVACY, the
-            same place every other "what does this app do with my data" switch is,
-            so there is one answer to "where do I turn that off?". */}
-        <Text variant="label" style={styles.section}>
-          Your privacy
-        </Text>
-        <Text variant="caption" color={colors.textMuted} style={styles.sectionSub}>
-          {org.usage_consent
-            ? `You are sharing your dictation counts with admins${org.leaderboard_opt_in ? ' and appearing on the ranking' : ', and staying off the ranking'}.`
-            : 'You are not sharing anything — your numbers appear in no admin view.'}
-          {'\n'}What you dictate is never shared either way. Change it under Settings → Team privacy.
-        </Text>
 
         {!!t.error && (
           <Text variant="caption" color={colors.textMuted} style={styles.errorNote}>
@@ -717,6 +776,14 @@ const styles = StyleSheet.create({
   title: { marginBottom: 4 },
   titleRow: { flexDirection: 'row', alignItems: 'flex-start', gap: space.s },
   lead: { marginBottom: space.base },
+  gearBtn: {
+    width: 34,
+    height: 34,
+    borderRadius: radius.xs,
+    backgroundColor: colors.surface2,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   rolePill: {
     paddingHorizontal: space.s,
     paddingVertical: 5,
