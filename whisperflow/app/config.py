@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 # (a shared "config.tmp" name caused a rename race: config.tmp -> config.json).
 _config_lock = threading.RLock()
 
-APP_VERSION = "1.0.33"
+APP_VERSION = "1.0.34"
 PLATFORM = "mac" if platform.system() == "Darwin" else "win" if platform.system() == "Windows" else "linux"
 
 CONFIG_DIR = Path.home() / ".verbal"
