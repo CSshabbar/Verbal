@@ -182,7 +182,20 @@ class _Bridge(NSObject):
 #
 # The delegate must be RETAINED — WKWebView holds `UIDelegate` weakly, so a
 # locally-scoped instance is collected and the panels quietly stop working again.
+#
+# MEMOIZED (2026-08-25): Objective-C class names are PROCESS-GLOBAL, so the
+# second window to call this (meeting_window.py, after the dashboard already
+# had) crashed class creation with "_FlumeUIDelegate is overriding existing
+# Objective-C class" — leaving the meeting widget with NO dialog delegate, so
+# its confirm() resolved false and "discard meeting" silently did nothing
+# (reported live as "delete button is not working for the meeting widget").
+_UI_DELEGATE_CLASS = None
+
+
 def _ui_delegate_class():
+    global _UI_DELEGATE_CLASS
+    if _UI_DELEGATE_CLASS is not None:
+        return _UI_DELEGATE_CLASS
     from AppKit import NSAlert, NSAlertFirstButtonReturn, NSCriticalAlertStyle
 
     def _split(msg: str):
@@ -241,6 +254,7 @@ def _ui_delegate_class():
             # which is the safe reading if something ever does.
             handler(None)
 
+    _UI_DELEGATE_CLASS = _FlumeUIDelegate
     return _FlumeUIDelegate
 
 
