@@ -2052,12 +2052,16 @@ class VerbalApp(rumps.App):
         Persistence (the discoverable badge/menu-row this feeds): finding an
         update sets `_update_available` and stays set — surfaced via the
         badge + "Update available" menu row — until either a newer version
-        supersedes it or the user actually updates. The popup itself,
-        though, is throttled to once per version: if the user already hit
-        "Later" for this exact version, later periodic checks keep the badge
-        current but don't pop the alert again (`_update_dismissed_version`)
-        — only a genuinely newer version, or the user manually re-opening
-        the prompt from the menu row, shows it again.
+        supersedes it or the user actually updates.
+
+        The native rumps.alert popup fires ONLY for the explicit menu-bar
+        "Check for Updates…" (announce_current=True). Automatic checks — the
+        startup one-shot and the 4h timer — surface through the badge and the
+        dashboard's in-app banner alone. It used to pop on every automatic
+        find too, which DOUBLED with the in-app banner ("keeps giving me
+        macOS popups and also in-app popups", 2026-08-25): two surfaces
+        announcing the same version reads as nagging, and the in-app banner
+        is the flow the user actually asked for.
         """
         from app.updater import check_for_update
         update = check_for_update()
@@ -2072,7 +2076,7 @@ class VerbalApp(rumps.App):
                 self._update_phase = "idle"
                 self._update_progress = 0.0
                 self._update_ready_path = None
-            if is_new_version and not suppress_prompt:
+            if announce_current and not suppress_prompt:
                 self._on_main(lambda: self._show_update_prompt(update))
         else:
             had_one = self._update_available is not None
