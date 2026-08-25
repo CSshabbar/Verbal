@@ -6412,8 +6412,15 @@ function teamRosterHtml(){
 //   TEAM_BOARD  — team-visible, gated on leaderboard_opt_in (off by default)
 // Admins rank from usage because it is the fuller set and already theirs to see;
 // everyone else sees the opt-in board. Same rows, same order, different audience.
+// EXCEPT when the owner opened stats team-wide (stats_visible_to_members,
+// 2026-08-26): members then already see every consenting member's numbers in
+// the roster, so a separate opt-in board that ranks a SUBSET of those same
+// numbers is pure friction — live case: ranking on, stats open, and a member's
+// board sat empty because nobody had found the per-person opt-in toggle. Rank
+// from the usage they can already see; the opt-in gate stays for teams that
+// keep stats admin-only.
 function tmBoardRows(){
-  if(teamAdmin()){
+  if(teamAdmin() || (TEAM.stats_visible_to_members && TEAM_USAGE && TEAM_USAGE.rows)){
     return ((TEAM_USAGE&&TEAM_USAGE.rows)||[]).slice()
       .sort((a,b)=>(b.words||0)-(a.words||0));
   }

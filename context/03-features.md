@@ -367,6 +367,11 @@ Each feature: **what it does · desktop impl · mobile impl · backend · status
   the org switch widens the audience, never overrides an individual opt-out, exactly the
   `leaderboard_enabled` vs `leaderboard_opt_in` contract. Client member-views switch voice on the flag
   (desktop `TEAM.stats_visible_to_members`, mobile `seeAll`), since the RPCs decide the rows either way.
+  **Ranking under team-wide visibility (2026-08-26):** with the flag on, desktop's `tmBoardRows()` ranks
+  members from the usage rows they can already see instead of the opt-in board — an opt-in ranking of
+  already-visible numbers is pure friction (live case: ranking on, stats open, member's board empty
+  because nobody had opted in). `leaderboard_opt_in` still gates the board for teams that keep stats
+  admin-only. Mobile needs no change: its usage list is already rendered ranked with bars.
 - **Usage insights + leaderboard (opt-in, counts only).** `org_usage_summary` (every active member — an
   owner/admin gets all consenting members, anyone else gets their own row) and
   `org_leaderboard` (every active member, once the owner enables it org-wide) are SECURITY DEFINER RPCs
