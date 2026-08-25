@@ -169,6 +169,19 @@ def _refresh_cloud_locked(config, save_config_fn, uid):
     since = config.get("stats_since") or ""
     my_dev = get_device_id(config)
 
+    # Self-heal: a watermark with an EMPTY fold means every row seen so far
+    # was skipped — and once that's true, history merged or backfilled into
+    # the account can never appear, because it lands with created_at OLDER
+    # than last_ts and `gt.last_ts` never sees it again. Live case,
+    # 2026-08-25: the 2026-08-15 account merge moved 772 old transcriptions
+    # into the account AFTER the first refresh had already advanced the
+    # watermark past their timestamps — Insights showed days while weeks of
+    # real history sat invisible behind the watermark. Rewinding costs at
+    # most CLOUD_MAX_PAGES reads and only ever happens while `days` is
+    # empty, so a populated cache never re-scans.
+    if last_ts and not days:
+        last_ts = ""
+
     changed = False
     for _ in range(CLOUD_MAX_PAGES):
         params = {
