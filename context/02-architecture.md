@@ -119,8 +119,9 @@ separate users purely by `user_id` (the Supabase auth id after sign-in). Details
   the **pre-injection** frontmost app (`transcriptions.app`), which is what `org_app_breakdown` aggregates
   into the per-person app mix. iOS has no equivalent and writes nothing.
 - **Config:** `~/.verbal/config.json`, written by `config.py::save_config` — **atomic** (`tempfile.mkstemp`
-  unique name + `os.replace`) under a module-level `_config_lock`. This is the desktop source of truth
-  for user data/settings; cloud syncs on top.
+  unique name + `os.replace`, with a Windows PermissionError retry) under a module-level `_config_lock`
+  (RLock). `load_config` reads under that lock and only writes when the dict actually changed. This is
+  the desktop source of truth for user data/settings; cloud syncs on top.
 - **Fonts:** Geist + JetBrains Mono. AppKit views use CoreText-registered faces (`theme.py`); WKWebViews
   can't resolve those by name, so `fonts_css.py::web_font_css()` inlines the TTFs as base64 `@font-face`.
 
@@ -128,9 +129,11 @@ separate users purely by `user_id` (the Supabase auth id after sign-in). Details
 
 `meetings.py::MeetingManager/MeetingSession` — dual-source capture, entirely separate from the dictation
 `Recorder` (Rule #1): the mic gets its **own** `sounddevice.InputStream` (16 kHz mono) and the call's other
-side comes from `system_audio.py::SystemAudioCapture` — **ScreenCaptureKit audio-only** (2×2 video frames
+side comes from `system_audio.py::SystemAudioCapture` — **ScreenCaptureKit audio-only** on macOS (2×2 video frames
 dropped, `excludesCurrentProcessAudio`, gated by the Screen-Recording permission,
-`pyobjc-framework-ScreenCaptureKit`+`CoreMedia` wrappers). Each source is silence-chunked (8–22 s) and fed
+`pyobjc-framework-ScreenCaptureKit`+`CoreMedia` wrappers) and **WASAPI loopback** on Windows
+(`system_audio.py` re-exports `win_system_audio.py` when `sys.platform == "win32"`; no screen-recording
+TCC gate). Each source is silence-chunked (8–22 s) and fed
 through the normal `transcriber` chain into utterances `{speaker, t0, t1, text}` (speakers are
 source-based: mic=`self`, system=`s1..N` with a 90 s-gap heuristic; rename is retroactive). Stop → WAV mix →
 `meeting-audio` bucket → structured summary LLM call (`groq_proxy.chat_via_proxy`, strict-JSON
@@ -158,9 +161,10 @@ bounded `config['meetings']` (`MEETINGS_CAP`). The HUD appears when the meeting 
 - **Dashboard:** `win_dashboard.py` + `shared_dashboard.py::DashboardApi` (the same backend class macOS
   uses) render the identical `flume_dashboard_html.py::flume_html()` via real pywebview (WebView2) instead
   of WKWebView + `_SHIM` — see "Also shared across the two desktops" below.
-- **Native-heavy features not yet ported:** meetings (ScreenCaptureKit → needs WASAPI loopback), auto-learn
-  and file-tagging (macOS Accessibility → need UI Automation) — specced in `whisperflow/WINDOWS_PARITY_PLAN.md`
-  and `whisperflow/windows_specs/*.md`, not yet implemented.
+- **Native-heavy features not yet ported:** auto-learn and file-tagging (macOS Accessibility → need UI Automation) — specced in `whisperflow/WINDOWS_PARITY_PLAN.md`
+  and `whisperflow/windows_specs/*.md`. **Meetings capture is ported** (`win_system_audio.py` WASAPI loopback +
+  `win_meeting_window.py` / `win_meeting_hud.py` hosting the same `meeting_html()`). Granola-style call
+  auto-detect (`meeting_detect.py`) is still macOS-only.
 
 ## Mobile stack (`verbal-mobile/`)
 

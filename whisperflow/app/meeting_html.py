@@ -49,6 +49,7 @@ _IC = {
     "collapse":'<path d="M9 4v5H4"/><path d="m9 9-6-6"/><path d="M15 20v-5h5"/><path d="m15 15 6 6"/>',
     "trash":  '<path d="M4 7h16"/><path d="M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/><path d="M6 7l1 13a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-13"/><path d="M10 11v6M14 11v6"/>',
     "expand":  '<path d="M15 4h5v5"/><path d="m20 4-6 6"/><path d="M9 20H4v-5"/><path d="m4 20 6-6"/>',
+    "chevron": '<path d="m6 9 6 6 6-6"/>',
 }
 
 
@@ -261,8 +262,25 @@ input,textarea{font-family:inherit;color:inherit;background:none;border:0;outlin
   border-radius:50%;background:var(--tx);transition:left .25s ease}
 .toggle.on{background:var(--acc)}
 .toggle.on::after{left:15px}
+/* Custom language listbox — never a native <select>. WebView2's OS combo
+   popup ignores CSS overflow/z-index and paints through the modal footer
+   (05-conventions.md Rule #62). The menu is a sibling of .prePanel (not a
+   child) so .prePanel{overflow:hidden} cannot clip it. */
 .preLang{background:var(--raised2);color:var(--tx);border:1px solid var(--bd2);border-radius:8px;
-  font:500 11.5px 'Geist';padding:5px 8px;max-width:170px}
+  font:500 11.5px 'Geist';padding:5px 8px 5px 10px;min-width:140px;max-width:190px;
+  display:inline-flex;align-items:center;gap:8px;cursor:pointer;text-align:left;flex:none}
+.preLang span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.preLang svg{flex:none;color:var(--mut);transition:transform .15s ease}
+.preLang[aria-expanded="true"]{border-color:var(--acc-bd)}
+.preLang[aria-expanded="true"] svg{transform:rotate(180deg)}
+.preLangMenu{position:fixed;z-index:50;min-width:170px;max-width:240px;
+  background:var(--modal);border:1px solid var(--bd2);border-radius:10px;
+  box-shadow:0 16px 40px rgba(0,0,0,.55);padding:4px;overflow-y:auto}
+.preLangMenu[hidden]{display:none}
+.preLangOpt{display:block;width:100%;text-align:left;padding:7px 10px;border-radius:7px;
+  font:500 12px 'Geist';color:var(--tx2);background:none;border:0;cursor:pointer}
+.preLangOpt:hover,.preLangOpt:focus{background:var(--raised);color:var(--tx);outline:none}
+.preLangOpt.on{background:var(--acc-soft);color:var(--acc-txt)}
 .preFoot{display:flex;align-items:center;gap:8px;padding:10px 20px;border-top:1px solid var(--bd);
   background:var(--footer)}
 .preFoot .hint{font:400 11px 'Geist';color:var(--faint);flex:1}
@@ -439,7 +457,7 @@ def _permission_modal():
             <div class="permSub">One-time setup &middot; takes about a minute</div>
           </div>
         </div>
-        <div class="permInfo">Flume records the meeting <b>on this Mac</b> — no bot joins your call.
+        <div class="permInfo" id="permInfo">Flume records the meeting <b>on this Mac</b> — no bot joins your call.
         To hear the other side, macOS requires the <b>Screen &amp; System Audio Recording</b>
         permission (audio only; Flume never captures your screen). Your microphone needs its
         usual permission too.</div>
@@ -483,7 +501,10 @@ def _premeeting_modal():
         </div>
         <div class="srcRow">
           <div class="stx"><div class="sl">Language</div><div class="ss">What this meeting will be spoken in</div></div>
-          <select class="preLang" id="preLang" onchange="PRE.lang=this.value"></select>
+          <button type="button" class="preLang" id="preLangBtn" aria-haspopup="listbox"
+                  aria-expanded="false" onclick="preLangToggle(event)">
+            <span id="preLangLbl">English</span>{_svg('chevron', 12)}
+          </button>
         </div>
       </div>
       <div class="preErr" id="preErr"></div>
@@ -493,6 +514,7 @@ def _premeeting_modal():
         <button class="btnP" id="preStartBtn" onclick="preStart()">Start recording</button>
       </div>
     </div>
+    <div class="preLangMenu" id="preLangMenu" hidden role="listbox"></div>
   </div>"""
 
 
@@ -591,6 +613,7 @@ function api(name){ const a=[].slice.call(arguments,1);
   return (window.pywebview && window.pywebview.api && window.pywebview.api[name])
     ? window.pywebview.api[name].apply(null,a) : Promise.resolve({ok:false}); }
 const esc = s => String(s==null?'':s).replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const IS_WIN = /Windows/i.test(navigator.userAgent||'') || /^Win/.test(navigator.platform||'');
 
 let MODE='permissions';           // permissions | premeeting | live
 let HANDOFF=null;                 // post-meeting bar state (MER-46): {state,id,title}
@@ -653,7 +676,14 @@ function renderBar(){
 }
 
 // ── PermissionChecklistModal (31h) ─────────────────────────────────────────────
-const STEP_COPY = {
+const STEP_COPY = IS_WIN ? {
+  support:      {label:'Meeting capture engine', sub:'WASAPI loopback — built into Flume on Windows.',
+                 subPending:'Checking this PC…'},
+  system_audio: {label:'System audio', sub:'Lets Flume hear the other side of the call.',
+                 subActive:'No extra permission — Windows allows loopback capture.'},
+  microphone:   {label:'Allow Microphone', sub:'Lets Flume hear you.',
+                 subActive:'Windows will open Settings → Privacy → Microphone.'},
+} : {
   support:      {label:'Meeting capture engine', sub:'Built into Flume on macOS 13 and later.',
                  subPending:'Checking this Mac…'},
   system_audio: {label:'Allow System Audio Recording', sub:'Lets Flume hear the other side of the call.',
@@ -661,6 +691,12 @@ const STEP_COPY = {
   microphone:   {label:'Allow Microphone', sub:'Lets Flume hear you.',
                  subActive:'macOS will ask for Microphone access.'},
 };
+if(IS_WIN){
+  const info=document.getElementById('permInfo');
+  if(info) info.innerHTML='Flume records the meeting <b>on this PC</b> — no bot joins your call. '+
+    'The other side of the call is captured via WASAPI loopback (no extra permission). '+
+    'Your microphone is gated in <b>Settings → Privacy → Microphone</b>.';
+}
 
 function renderPerms(){
   const wrap = document.getElementById('permWrap');
@@ -673,7 +709,7 @@ function renderPerms(){
     const c = STEP_COPY[st.id]||{label:st.id, sub:''};
     let cls='pending', disc=String(i+1), sub=c.sub;
     if(st.done){ cls='done'; disc='✓'; doneCount++; }
-    else if(st.denied){ cls='denied'; disc='!'; sub='Denied in System Settings — click Grant to fix.'; }
+    else if(st.denied){ cls='denied'; disc='!'; sub=IS_WIN?'Denied in Windows Settings — click Grant to fix.':'Denied in System Settings — click Grant to fix.'; }
     else if(firstUndone){ cls='active'; sub=c.subActive||c.subPending||c.sub; }
     if(!st.done) firstUndone=false;
     let act='';
@@ -703,9 +739,15 @@ function permGrant(which){
 function permHow(){
   const el=document.getElementById('permErr');
   el.className='permErr show';
-  el.innerHTML='1&#41; Click <b>Open Sound settings</b> — macOS shows the permission prompt.<br>'+
-    '2&#41; If no prompt appears: System Settings → Privacy &amp; Security → <b>Screen &amp; System Audio Recording</b>.<br>'+
-    '3&#41; Enable <b>Verbal</b>, then come back here — the checklist re-checks automatically.';
+  if(IS_WIN){
+    el.innerHTML='1&#41; Click <b>Grant microphone</b> — Windows opens Settings → Privacy → Microphone.<br>'+
+      '2&#41; Turn on <b>Let desktop apps access your microphone</b> and allow Flume.<br>'+
+      '3&#41; Come back here — the checklist re-checks automatically.';
+  } else {
+    el.innerHTML='1&#41; Click <b>Open Sound settings</b> — macOS shows the permission prompt.<br>'+
+      '2&#41; If no prompt appears: System Settings → Privacy &amp; Security → <b>Screen &amp; System Audio Recording</b>.<br>'+
+      '3&#41; Enable <b>Verbal</b>, then come back here — the checklist re-checks automatically.';
+  }
 }
 function permSkip(){ api('meeting_permissions_skipped'); }
 function permTest(){
@@ -736,17 +778,84 @@ function permLevel(v){
 // ── PreMeetingModal (31b) ──────────────────────────────────────────────────────
 let PRE={sys:true, mic:true, lang:''};
 let PRE_LANGS_LOADED=false;
+let PRE_LANG_OPTS=[];
+let PRE_LANG_OPEN=false;
+function preLangLabel(){
+  const hit=(PRE_LANG_OPTS||[]).find(function(o){ return o[0]===PRE.lang; });
+  return hit ? hit[1] : (PRE.lang||'English');
+}
+function renderPreLangMenu(){
+  const menu=document.getElementById('preLangMenu');
+  if(!menu) return;
+  menu.innerHTML=(PRE_LANG_OPTS||[]).map(function(o){
+    const on=o[0]===PRE.lang;
+    return '<button type="button" role="option" class="preLangOpt'+(on?' on':'')+
+      '" data-v="'+esc(o[0])+'"'+(on?' aria-selected="true"':'')+'>'+esc(o[1])+'</button>';
+  }).join('');
+}
+function preLangClose(){
+  if(!PRE_LANG_OPEN) return;
+  PRE_LANG_OPEN=false;
+  const menu=document.getElementById('preLangMenu');
+  const btn=document.getElementById('preLangBtn');
+  if(menu) menu.hidden=true;
+  if(btn) btn.setAttribute('aria-expanded','false');
+}
+function preLangPlace(){
+  const btn=document.getElementById('preLangBtn');
+  const menu=document.getElementById('preLangMenu');
+  if(!btn||!menu) return;
+  const br=btn.getBoundingClientRect();
+  const gap=6;
+  const wantW=Math.max(170, br.width);
+  const left=Math.min(Math.max(12, br.right-wantW), Math.max(12, window.innerWidth-wantW-12));
+  const spaceAbove=br.top-12;
+  const spaceBelow=window.innerHeight-br.bottom-12;
+  // Prefer opening UP so the list never covers Start recording (the trigger
+  // sits just above the footer). Fall down only when there isn't room above.
+  const openUp=spaceAbove>=120 || spaceAbove>=spaceBelow;
+  const maxH=Math.max(96, Math.min(220, (openUp?spaceAbove:spaceBelow)-gap));
+  menu.style.width=wantW+'px';
+  menu.style.maxHeight=maxH+'px';
+  menu.style.left=left+'px';
+  if(openUp){
+    menu.style.top='auto';
+    menu.style.bottom=(window.innerHeight-br.top+gap)+'px';
+  } else {
+    menu.style.bottom='auto';
+    menu.style.top=(br.bottom+gap)+'px';
+  }
+}
+function preLangToggle(ev){
+  if(ev) ev.stopPropagation();
+  if(PRE_LANG_OPEN){ preLangClose(); return; }
+  renderPreLangMenu();
+  const menu=document.getElementById('preLangMenu');
+  const btn=document.getElementById('preLangBtn');
+  if(!menu||!btn) return;
+  menu.hidden=false;
+  PRE_LANG_OPEN=true;
+  btn.setAttribute('aria-expanded','true');
+  preLangPlace();
+  const on=menu.querySelector('.preLangOpt.on')||menu.querySelector('.preLangOpt');
+  if(on) on.focus();
+}
+function preLangPick(v){
+  PRE.lang=v||'';
+  const lbl=document.getElementById('preLangLbl');
+  if(lbl) lbl.textContent=preLangLabel();
+  preLangClose();
+}
 function loadPreLangs(){
   if(PRE_LANGS_LOADED) return;
   api('get_spoken_language').then(function(r){
     if(!(r && r.ok)) return;
     PRE_LANGS_LOADED=true;
     PRE.lang = r.value || 'en';
-    const sel=document.getElementById('preLang');
-    if(!sel) return;
-    sel.innerHTML=(r.options||[]).map(function(o){
-      return '<option value="'+esc(o[0])+'"'+(o[0]===PRE.lang?' selected':'')+'>'+esc(o[1])+'</option>';
-    }).join('');
+    PRE_LANG_OPTS = r.options || [];
+    const lbl=document.getElementById('preLangLbl');
+    if(lbl) lbl.textContent=preLangLabel();
+    if(PRE_LANG_OPEN) renderPreLangMenu();
   });
 }
 let PRE_STARTING=false;            // a start_meeting call is in flight
@@ -758,8 +867,8 @@ function preErr(msg){
 }
 function renderPre(){
   document.getElementById('preWrap').className = (MODE==='premeeting') ? 'show' : '';
-  if(MODE==='premeeting') loadPreLangs();
-  if(MODE!=='premeeting') return;
+  if(MODE!=='premeeting'){ preLangClose(); return; }
+  loadPreLangs();
   document.getElementById('preSysTgl').className='toggle'+(PRE.sys?' on':'');
   document.getElementById('preMicTgl').className='toggle'+(PRE.mic?' on':'');
   document.getElementById('preSysDisc').className='disc'+(PRE.sys?'':' off');
@@ -768,7 +877,7 @@ function renderPre(){
   btn.disabled = PRE_STARTING || !(PRE.sys||PRE.mic);
   btn.textContent = PRE_STARTING ? 'Starting…' : 'Start recording';
   const t=document.getElementById('preTitle');
-  setTimeout(function(){ t.focus(); }, 60);
+  if(!PRE_LANG_OPEN) setTimeout(function(){ if(!PRE_LANG_OPEN) t.focus(); }, 60);
 }
 function preToggle(which){ PRE[which]=!PRE[which]; renderPre(); }
 function preCancel(){ MODE='idle'; PRE_STARTING=false; preErr(''); renderPre(); api('close_meeting_window'); }
@@ -798,9 +907,53 @@ function preStart(){
 }
 document.addEventListener('keydown', function(ev){
   if(MODE!=='premeeting') return;
-  if(ev.key==='Enter'){ ev.preventDefault(); preStart(); }
+  if(PRE_LANG_OPEN){
+    const opts=[].slice.call(document.querySelectorAll('.preLangOpt'));
+    const cur=opts.indexOf(document.activeElement);
+    if(ev.key==='Escape'){ ev.preventDefault(); preLangClose(); return; }
+    if(ev.key==='ArrowDown'){
+      ev.preventDefault();
+      const n=opts[cur<0?0:(cur+1)%opts.length]; if(n) n.focus();
+      return;
+    }
+    if(ev.key==='ArrowUp'){
+      ev.preventDefault();
+      const n=opts[cur<0?opts.length-1:(cur-1+opts.length)%opts.length]; if(n) n.focus();
+      return;
+    }
+    if(ev.key==='Enter'){
+      ev.preventDefault();
+      const el=document.activeElement;
+      if(el && el.classList.contains('preLangOpt')) preLangPick(el.getAttribute('data-v'));
+      else preLangClose();
+      return;
+    }
+    return;
+  }
+  if(ev.key==='Enter'){
+    ev.preventDefault();
+    if(document.activeElement===document.getElementById('preLangBtn')){ preLangToggle(); return; }
+    preStart();
+  }
   else if(ev.key==='Escape'){ ev.preventDefault(); preCancel(); }
 });
+document.addEventListener('mousedown', function(ev){
+  if(!PRE_LANG_OPEN) return;
+  const menu=document.getElementById('preLangMenu');
+  const btn=document.getElementById('preLangBtn');
+  if(menu && menu.contains(ev.target)) return;
+  if(btn && btn.contains(ev.target)) return;
+  preLangClose();
+});
+window.addEventListener('resize', function(){ if(PRE_LANG_OPEN) preLangPlace(); });
+(function(){
+  const menu=document.getElementById('preLangMenu');
+  if(!menu) return;
+  menu.addEventListener('click', function(ev){
+    const opt=ev.target.closest('.preLangOpt');
+    if(opt) preLangPick(opt.getAttribute('data-v'));
+  });
+})();
 
 // ── Live screen (31c) ──────────────────────────────────────────────────────────
 let MEET={id:null, state:'idle', title:'', speakers:{}};
@@ -1122,7 +1275,7 @@ api('meeting_page_ready');   // handshake: flush events emitted before load
     # touch disjoint properties, so they compose rather than conflict.
     pressed = pressed_css([
         ".btnP", ".btnS", ".iconbtn", ".barBtn", ".toggle",
-        ".markpill", ".dictChip",
+        ".markpill", ".dictChip", ".preLang", ".preLangOpt",
     ])
     return ("<!doctype html><html><head><meta charset='utf-8'><style>"
             + web_font_css() + _CSS + pressed + "</style></head><body>"

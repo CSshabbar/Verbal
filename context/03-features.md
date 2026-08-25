@@ -716,10 +716,10 @@ Each feature: **what it does · desktop impl · mobile impl · backend · status
     fetched via the existing `get_meeting` on click (cloud-hydrated LIST rows lack summary/decisions —
     don't compose from them), falling back to raw transcript text when no summary exists yet. A
     transcription imports as its text + provenance. Composition is 100% client-side through the ordinary
-    `save_note` — no new backend. **Windows:** `app.meetings` is None there, so
-    `DashboardApi.list_meetings`/`get_meeting` gained a READ-ONLY cloud fallback
-    (`meetings._fetch_meeting_rows`, module imports are platform-safe) — Mac-captured meetings now show
-    in the Windows Meetings screen and its import picker (`open_meeting` routes through the fallback too;
+    `save_note` — no new backend. **Windows:** capture is live (`MeetingManager` + WASAPI), and
+    `DashboardApi.list_meetings`/`get_meeting` still have a cloud fallback
+    (`meetings._fetch_meeting_rows`, module imports are platform-safe) so Mac-captured meetings show
+    even when local capture isn't running — the Meetings screen and its import picker (`open_meeting` routes through the fallback too;
     `opened` returns every id so read-only rows never flash NEW). Mobile: `flume-ui/components/ImportNotesModal.tsx` (bottom sheet, same
     tabs/search/composition — exported `meetingToNote`/`historyToNote` mirror the desktop functions; JS
     `<Modal>` is allowed because NotesListScreen is a TAB screen, Hard Rule #14 bans it only inside
@@ -1086,7 +1086,11 @@ deletes real files under `~/.verbal/` and this development machine has a real, i
 - **What:** record a live meeting ON the Mac (system audio + mic — no bot joins the call), see a live
   transcript beside a personal scratchpad, and get a post-meeting hybrid summary: AI summary + decisions +
   action items + the user's own notes enhanced with transcript context. Spec: `MEETINGS_DESIGN_HANDOFF.md`
-  (screens 31a–31h); availability: macOS full, iOS read-only (+ scratchpad edit), Windows none.
+  (screens 31a–31h); availability: macOS full, iOS read-only (+ scratchpad edit), Windows capture via
+  WASAPI loopback (`win_system_audio.py`) hosted in `WinMeetingWindow` (same `meeting_html()`; the
+  pre-meeting language control is a custom listbox, not a native `<select>` — WebView2's OS combo
+  popup ignores CSS overflow and covers Start recording; `05-conventions.md` Rule #62). No call
+  auto-detect on Windows yet.
 - **Desktop:** `meetings.py` (`MeetingManager`/`MeetingSession` state machine: idle→preparing→recording⇄
   paused→stopping→processing→ready|failed) + `system_audio.py` (SCK audio capture) + `meeting_window.py`/
   `meeting_html.py` (ONE morphing WKWebView panel: an ambient glassy **bar** top-center — that fluidly grows

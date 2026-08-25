@@ -675,10 +675,9 @@ class VerbalWinApp:
 
     def _sign_out(self, _=None):
         try:
-            # Stop ACTIVE work first (IDI-170) — mirrors main._sign_out. The
-            # Windows build has no MeetingManager yet (meetings are a macOS
-            # feature, see WINDOWS_PARITY_PLAN.md W6), so this is a guarded
-            # no-op here and becomes live the moment `self.meetings` exists.
+            # Stop ACTIVE work first (IDI-170) — mirrors main._sign_out.
+            # An in-flight meeting must not keep capturing after the account
+            # that started it is gone.
             try:
                 meetings = getattr(self, "meetings", None)
                 if meetings and meetings.active:

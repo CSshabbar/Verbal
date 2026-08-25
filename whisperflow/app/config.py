@@ -1,15 +1,19 @@
 import json
 import os
 import platform
+import stat
 import tempfile
 import threading
+import time
 from pathlib import Path
 
 from dotenv import load_dotenv
 
-# Serializes config writes so concurrent threads (sync, dictionary, device
-# refresh, dashboard) never race on the same temp file.
-_config_lock = threading.Lock()
+# Serializes config reads AND writes so concurrent threads (sync, dictionary,
+# device refresh, dashboard) never race on the same file. RLock because
+# load_config() may call save_config() while still holding it.
+# (a shared "config.tmp" name caused a rename race: config.tmp -> config.json).
+_config_lock = threading.RLock()
 
 APP_VERSION = "1.0.20"
 PLATFORM = "mac" if platform.system() == "Darwin" else "win" if platform.system() == "Windows" else "linux"
@@ -194,14 +198,20 @@ def load_config() -> dict:
     config = None
     if CONFIG_FILE.exists():
         try:
-            with open(CONFIG_FILE) as f:
-                config = json.load(f)
+            with _config_lock:
+                with open(CONFIG_FILE, encoding="utf-8") as f:
+                    config = json.load(f)
         except (json.JSONDecodeError, Exception):
             backup = CONFIG_FILE.with_suffix(".json.bak")
-            CONFIG_FILE.rename(backup)
+            try:
+                CONFIG_FILE.rename(backup)
+            except OSError:
+                pass
 
+    changed = False
     if config is None:
         config = dict(DEFAULT_CONFIG)
+        changed = True
     else:
         # Migration: if old hotkey exists and new ones don't
         if "hotkey" in config and "hotkey_hold" not in config:
@@ -212,16 +222,50 @@ def load_config() -> dict:
             else: val = old
             config["hotkey_hold"] = val
             config["hotkey_toggle"] = val
+            changed = True
 
         for key, val in DEFAULT_CONFIG.items():
-            config.setdefault(key, val)
+            if key not in config:
+                config[key] = val
+                changed = True
 
     env_key = os.getenv("GEMINI_API_KEY", "").strip()
     if env_key and env_key not in config["gemini_api_keys"]:
         config["gemini_api_keys"].insert(0, env_key)
+        changed = True
 
-    save_config(config)
+    if changed:
+        save_config(config)
     return config
+
+
+def _replace_config(tmp_path: str):
+    """Atomically move the temp file onto config.json.
+
+    On Windows, `os.replace` of a destination another handle still has open
+    (or that Defender/Search briefly scanned) raises WinError 5 Access Denied
+    — confirmed live 2026-08-25, auth then fell back to the anon key. Retry
+    a short backoff; readers also take `_config_lock` so the remaining
+    collisions are out-of-process.
+    """
+    if os.name == "nt" and CONFIG_FILE.exists():
+        try:
+            os.chmod(CONFIG_FILE, stat.S_IWRITE | stat.S_IREAD)
+        except OSError:
+            pass
+    last = None
+    for attempt in range(12):
+        try:
+            os.replace(tmp_path, CONFIG_FILE)
+            return
+        except PermissionError as e:
+            last = e
+        except OSError as e:
+            if getattr(e, "winerror", None) != 5 and e.errno not in (5, 13):
+                raise
+            last = e
+        time.sleep(0.025 * (attempt + 1))
+    raise last
 
 
 def save_config(config: dict):
@@ -231,9 +275,11 @@ def save_config(config: dict):
     with _config_lock:
         fd, tmp_path = tempfile.mkstemp(dir=str(CONFIG_DIR), prefix=".config-", suffix=".tmp")
         try:
-            with os.fdopen(fd, "w") as f:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
                 json.dump(config, f, indent=2)
-            os.replace(tmp_path, CONFIG_FILE)
+                f.flush()
+                os.fsync(f.fileno())
+            _replace_config(tmp_path)
         except Exception:
             try:
                 os.unlink(tmp_path)

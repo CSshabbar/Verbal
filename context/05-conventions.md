@@ -19,9 +19,13 @@
    Always: `py_compile` + `import app.main` + `node --check` the rendered script blocks.
 
 3. **Config writes are atomic + locked.** Only write config via `config.py::save_config` (unique
-   `tempfile.mkstemp` name + `os.replace` under `_config_lock`). Never share a temp filename across
-   threads (a shared `config.tmp` caused a rename race). Cloud fetches write config **only when content
-   changed** (avoids save churn).
+   `tempfile.mkstemp` name + `os.replace` under `_config_lock`, an RLock because `load_config` may
+   save while holding it). Never share a temp filename across threads (a shared `config.tmp` caused a
+   rename race). Cloud fetches write config **only when content changed** (avoids save churn) —
+   `load_config` itself used to rewrite the file on every call, which on Windows collided with a
+   reader and raised WinError 5 Access Denied (`os.replace` of an open destination). Reads take the
+   same lock; `os.replace` retries a short backoff on PermissionError. `load_config` only saves when
+   defaults/migrations actually mutated the dict.
 
 4. **Main-thread discipline (macOS).** WKWebView and all AppKit UI must be touched on the main thread —
    route every background→UI hop through `main._on_main` / the `rumps.Timer` UI queue. Background threads
@@ -1432,6 +1436,17 @@
     per-platform convention (a full-bleed opaque square for iOS/`icon`, vs. a transparent-background
     foreground-only layer sized to the ~66% safe zone for Android's `adaptiveIcon.foregroundImage`) rather
     than reusing one image for both, which was the mobile app's second bug.
+
+62. **Never put a native `<select>` in a constrained modal — WebView2 draws it as an OS popup.**
+    Chromium/WebView2's combo list is a system window: it ignores CSS `overflow`, `z-index`, and the
+    parent modal's bounds. On the New Meeting screen that list painted through the footer and covered
+    **Start recording**, with the last languages fading off the bottom of the window. WKWebView on
+    macOS is more forgiving, which is why the bug only showed up in the Windows port of the same
+    `meeting_html.py`. The pre-meeting language control is now a custom listbox (`#preLangBtn` +
+    `#preLangMenu`, sibling of `.prePanel`, `position:fixed`, max-height clamped to the webview,
+    opens upward so it cannot cover the Start button). Apply the same recipe to any picker that
+    sits above a primary action in a pywebview window. Settings-page `<select>`s are fine: they
+    live on a scrolling pane with room below.
 
 ## Design system (Flume)
 
