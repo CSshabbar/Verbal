@@ -327,6 +327,8 @@ class VerbalWinApp:
         tray_thread = threading.Thread(
             target=self._tray_icon.run, name="tray", daemon=True)
         tray_thread.start()
+        threading.Thread(
+            target=self._second_instance_watch, name="second-instance", daemon=True).start()
 
         # Tkinter overlay on its own thread.
         self.overlay.setup()
@@ -517,9 +519,76 @@ class VerbalWinApp:
             logger.error(f"paste-blocked prompt failed: {e}")
 
     def _tray_quit(self, icon=None, item=None):
-        if self._tray_icon:
-            self._tray_icon.stop()
-        sys.exit(0)
+        """Quit for real.
+
+        os._exit, NOT sys.exit: this runs on the pystray thread (tray menu), or
+        on an _on_main daemon thread (popover's quit_app / the elevated
+        relaunch) — never on the main thread, which is parked in
+        webview.start(). sys.exit() from a worker thread raises SystemExit in
+        THAT thread only, so the old code stopped the tray icon and then left
+        the process alive: no icon, no window, but still holding the
+        single-instance mutex. Every later double-click on Flume hit
+        ERROR_ALREADY_EXISTS and exited silently — reported 2026-08-26 as
+        "after closing the app it doesn't open again". Same lesson as
+        updater.install_update. Config writes are atomic, so nothing is lost.
+        """
+        logger.info("quit requested — exiting process")
+        try:
+            if self._tray_icon:
+                self._tray_icon.stop()
+        except Exception as e:
+            logger.debug("tray stop failed: %s", e)
+        try:
+            import webview
+            for w in list(getattr(webview, "windows", [])):
+                try:
+                    w.destroy()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        try:
+            logging.shutdown()
+        except Exception:
+            pass
+        os._exit(0)
+
+    def _second_instance_watch(self):
+        """Wake the running app when the user launches Flume again.
+
+        Closing the dashboard window leaves the process in the tray (by
+        design), so the natural next step — double-clicking the Flume shortcut
+        — spawns a second process that loses the singleton mutex. Instead of
+        that copy dying silently, it pulses a named Event and this thread
+        answers by showing the dashboard: to the user, "opening the app"
+        opens the app. Fail-closed — if anything here breaks, the tray still
+        works exactly as before.
+        """
+        try:
+            import ctypes
+            from ctypes import wintypes
+            k32 = ctypes.windll.kernel32
+            k32.CreateEventW.restype = wintypes.HANDLE
+            k32.CreateEventW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.BOOL, wintypes.LPCWSTR]
+            k32.WaitForSingleObject.restype = wintypes.DWORD
+            k32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+            # Auto-reset (bManualReset=False): one SetEvent → one wake.
+            h = k32.CreateEventW(None, False, False, SHOW_EVENT_NAME)
+            if not h:
+                logger.debug("second-instance event create failed")
+                return
+            sys._verbal_show_event = h
+            INFINITE = 0xFFFFFFFF
+            while True:
+                if k32.WaitForSingleObject(h, INFINITE) != 0:
+                    break
+                logger.info("second launch detected — showing dashboard")
+                try:
+                    self.dashboard.show()
+                except Exception as e:
+                    logger.error("dashboard show on second launch failed: %s", e)
+        except Exception as e:
+            logger.debug("second-instance watch died: %s", e)
 
     def _tray_about(self, icon=None, item=None):
         import tkinter as tk
@@ -1869,6 +1938,29 @@ class VerbalWinApp:
                 install_update(path)
 
 
+SHOW_EVENT_NAME = "VerbalShowDashboardEvent_v1"
+
+
+def _signal_running_instance():
+    """Second process → tell the first one to show its dashboard (see
+    VerbalWinApp._second_instance_watch). Best-effort; never raises."""
+    try:
+        import ctypes
+        from ctypes import wintypes
+        k32 = ctypes.windll.kernel32
+        EVENT_MODIFY_STATE = 0x0002
+        k32.OpenEventW.restype = wintypes.HANDLE
+        k32.OpenEventW.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.LPCWSTR]
+        h = k32.OpenEventW(EVENT_MODIFY_STATE, False, SHOW_EVENT_NAME)
+        if not h:
+            return False
+        ok = bool(k32.SetEvent(h))
+        k32.CloseHandle(h)
+        return ok
+    except Exception:
+        return False
+
+
 def _acquire_single_instance_mutex():
     """Prevent a second Verbal from running — the second instance stacks
     every window (tray icons, overlay pills) and steals the hotkey.
@@ -1908,7 +2000,11 @@ def main():
     import time
     sys._verbal_start_time = time.time()
     if not _acquire_single_instance_mutex():
-        logger.info("Another Verbal instance is already running — exiting")
+        # Not an error from the user's point of view: they clicked Flume, so
+        # Flume should appear. Hand the running copy the request and go.
+        signalled = _signal_running_instance()
+        logger.info("Another Verbal instance is already running — %s",
+                    "asked it to show the dashboard" if signalled else "exiting")
         return
     app = VerbalWinApp()
     app.start()

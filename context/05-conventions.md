@@ -1402,6 +1402,21 @@
     sync claims in a commit message are not self-verifying; grep the actual model constant name across
     `context/` when a model swap lands, don't trust that the commit already did it.
 
+59b. **Windows: never `sys.exit()` off the main thread — quit with `os._exit(0)`, and a second launch must
+    WAKE the first, not die.** `win_main._tray_quit` runs on the pystray thread (or an `_on_main` daemon
+    thread from the popover's `quit_app`), never on the main thread, which is parked in `webview.start()`.
+    `sys.exit()` there raises `SystemExit` in that thread only: the tray icon vanished but the process
+    lived on, still holding `VerbalSingletonMutex_v1`, so every later double-click hit
+    `ERROR_ALREADY_EXISTS` and exited silently ("after closing the app it doesn't open again",
+    2026-08-26 — the same lesson `updater.install_update` already learned). `_tray_quit` now stops the
+    tray, destroys pywebview windows, `logging.shutdown()`, `os._exit(0)`. And because closing the
+    dashboard with X deliberately leaves Flume in the tray, the *losing* second process now pulses the
+    named auto-reset Event `VerbalShowDashboardEvent_v1` (`_signal_running_instance`) and the running
+    app's `_second_instance_watch` thread answers with `dashboard.show()` — "opening the app" opens the
+    app. `SharedDashboard` hooks `events.closed` to drop its window reference so that show() rebuilds
+    rather than poking a destroyed handle. All fail-closed: if the Event plumbing breaks, behavior is
+    exactly the old tray-only one. The Event name is a machine identity like the mutex — see #60.
+
 60. **The product is branded "Flume" everywhere user-facing (renamed from "Verbal", 2026-08-23) — but
     every internal identity string stays "Verbal"/`com.verbal.app`, deliberately.** App bundle/executable
     name, window/dialog titles, the installer name, tray/menu text, and dashboard copy all say "Flume"

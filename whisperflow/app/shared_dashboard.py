@@ -277,6 +277,10 @@ class SharedDashboard:
         except Exception as e:
             logger.debug(f"ensure_window_size failed: {e}")
 
+    def _on_window_closed(self, *_):
+        self._window = None
+        self._page_ready = False
+
     def show(self):
         try:
             import webview
@@ -326,6 +330,10 @@ class SharedDashboard:
         # because .threepane already sets height:100vh explicitly). Keep the
         # shared HTML untouched — this fix is host-side only.
         try:
+            # X on the title bar destroys the pywebview window; drop our
+            # reference so the next show() (tray, or a second launch signalling
+            # the running app) rebuilds instead of poking a dead handle.
+            self._window.events.closed += self._on_window_closed
             self._window.events.loaded += self._inject_scroll_fix
             # Belt-and-braces flush, same reasoning as win_meeting_window._on_loaded:
             # on WebView2 the JS-initiated handshake can lose the bridge-init race
