@@ -188,7 +188,7 @@ export function useOrganization() {
   const remove = useCallback(async (userId: string) => apply(await removeMember(userId)), [apply]);
   const leave = useCallback(async () => apply(await leaveOrg()), [apply]);
   const saveSettings = useCallback(
-    async (fields: { name?: string; company_name?: string; leaderboard_enabled?: boolean }) =>
+    async (fields: { name?: string; company_name?: string; leaderboard_enabled?: boolean; stats_visible_to_members?: boolean }) =>
       apply(await setOrgSettings(fields)),
     [apply],
   );

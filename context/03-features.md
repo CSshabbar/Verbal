@@ -360,6 +360,13 @@ Each feature: **what it does · desktop impl · mobile impl · backend · status
   privacy contract; visibility differs by role on purpose — owner/admin get every consenting member,
   anyone else gets only their own row, so a member can see their own sparkline without the screen
   becoming a way to read colleagues' activity.
+- **Team-wide stats visibility (2026-08-25).** `organizations.stats_visible_to_members` (owner-only
+  toggle — desktop Settings > Team privacy > "Team-wide visibility", mobile Team screen): when on,
+  every active member sees the same per-person stats owners/admins do (`org_usage_summary`/
+  `org_usage_series`/`org_app_breakdown` all honor it). Each member's own `usage_consent` still wins —
+  the org switch widens the audience, never overrides an individual opt-out, exactly the
+  `leaderboard_enabled` vs `leaderboard_opt_in` contract. Client member-views switch voice on the flag
+  (desktop `TEAM.stats_visible_to_members`, mobile `seeAll`), since the RPCs decide the rows either way.
 - **Usage insights + leaderboard (opt-in, counts only).** `org_usage_summary` (every active member — an
   owner/admin gets all consenting members, anyone else gets their own row) and
   `org_leaderboard` (every active member, once the owner enables it org-wide) are SECURITY DEFINER RPCs

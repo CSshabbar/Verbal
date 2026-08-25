@@ -4956,6 +4956,19 @@ function settingsPane(id){
           including takes that never reached the cloud &mdash; so it will always read higher.</span></div>
       </div>
 
+      ${teamOwner()?`
+      <div class="ssection"><h3>Team-wide visibility</h3>
+        <p class="ssub">By default only owners and admins see the roster's numbers. Open them up and
+          every member sees the same per-person stats admins do &mdash; each person's own sharing switch
+          above still wins: someone who turned theirs off stays hidden from everyone.</p>
+        <div class="scard">
+          <div class="saverow"><button class="toggle ${TEAM.stats_visible_to_members?'on':''}"
+              aria-label="Everyone sees everyone's stats"
+              onclick="toggleTeamStatsVisible()"></button>
+            <span style="font:500 13px Geist">Everyone sees everyone&rsquo;s stats</span></div>
+        </div>
+      </div>`:''}
+
       <div class="ssection"><h3>Membership</h3>
         <div class="scard row">
           <div class="grow"><div class="sname">${esc(TEAM.name||'Your team')}</div>
@@ -6020,6 +6033,7 @@ function leaveTeam(){
   });
 }
 function toggleTeamBoard(){ busyGuard('team', ()=>api('set_team_settings', {leaderboard_enabled: !TEAM.leaderboard_enabled})).then(r=>teamApply(r,'Saved')); }
+function toggleTeamStatsVisible(){ busyGuard('team', ()=>api('set_team_settings', {stats_visible_to_members: !TEAM.stats_visible_to_members})).then(r=>teamApply(r,'Saved')); }
 function setTeamConsent(u,b){ busyGuard('team', ()=>api('set_team_consent', u, b)).then(r=>teamApply(r,'Preference saved')); }
 function selectMember(uid){ TEAM_SEL=uid; renderTeam(); }
 
@@ -6494,7 +6508,7 @@ function tmAppsCard(){
   const cols=['#C85A3E','#EADFCE','#A8BCA1','#C3AECB','#8a7d74','#4a2d24'];
   // A member's TEAM_APPS holds exactly their own row, so the same card works for
   // both audiences — it just has one bar in it, and says "you" instead of a name.
-  const solo=!teamAdmin();
+  const solo=!teamAdmin() && !TEAM.stats_visible_to_members;
   const mem=(TEAM.members||[])
     .filter(m=>!solo || m.user_id===teamMe())
     .filter(m=>tmAppsFor(m.user_id).length);
@@ -6550,7 +6564,7 @@ function teamEveryoneHtml(){
   // split, not this code). Presenting that as "the team spoke N words" would be a
   // straight-up lie, and a contribution ring with one segment always reads 100%.
   // So the whole hero switches voice for a member.
-  const mine=!teamAdmin();
+  const mine=!teamAdmin() && !TEAM.stats_visible_to_members;
   const heroTx = mine
     ? (total
         ? `You spoke <b>${fmtN(total)} words</b> on ${esc(TEAM.name||'this team')} in the last ${TEAM_DAYS} days.`

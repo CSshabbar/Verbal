@@ -180,6 +180,9 @@ export const TeamScreen: React.FC<Props> = ({ onBack }) => {
   // ── in a team ──────────────────────────────────────────────────────────────
   const { org } = t;
   const dict = org.dictionary;
+  // Owner opened per-person stats to the whole team (2026-08-25): members then
+  // read the same usage rows admins do, so the copy switches voice with the data.
+  const seeAll = t.isAdmin || !!org.stats_visible_to_members;
 
   // ── ranking + app mix ────────────────────────────────────────────────────
   // Ranked from t.usage, which is admin-only and gated on each member's
@@ -407,9 +410,9 @@ export const TeamScreen: React.FC<Props> = ({ onBack }) => {
         {(
           <>
             <Text variant="label" style={styles.section}>
-              {t.isAdmin ? 'Usage' : 'Your usage on this team'}
+              {seeAll ? 'Usage' : 'Your usage on this team'}
             </Text>
-            {!t.isAdmin && (
+            {!seeAll && (
               <Text variant="caption" color={colors.textMuted} style={styles.sectionSub}>
                 Only your own numbers appear here. Your admins see the team's totals.
               </Text>
@@ -433,7 +436,7 @@ export const TeamScreen: React.FC<Props> = ({ onBack }) => {
             </View>
             {ranked.length === 0 ? (
               <Text variant="caption" color={colors.textDisabled} style={styles.sectionSub}>
-                {t.isAdmin
+                {seeAll
                   ? 'Nobody on the team has dictated in this window yet.'
                   : `You haven't dictated in the last ${t.usageDays} days.`}
               </Text>
@@ -478,7 +481,7 @@ export const TeamScreen: React.FC<Props> = ({ onBack }) => {
 
             {/* Where the team writes */}
             <Text variant="label" style={styles.section}>
-              {t.isAdmin ? 'Where the team writes' : 'Where you write'}
+              {seeAll ? 'Where the team writes' : 'Where you write'}
             </Text>
             {appMembers.length === 0 ? (
               <Text variant="caption" color={colors.textDisabled} style={styles.sectionSub}>
@@ -588,6 +591,33 @@ export const TeamScreen: React.FC<Props> = ({ onBack }) => {
                 />
               </View>
             )}
+          </>
+        )}
+
+        {/* Team-wide stats visibility (owner-only, 2026-08-25): by default only
+            owners/admins see the roster's numbers; this opens the same
+            consenting-member stats to every member. An individual's own
+            sharing switch still wins — the org flag widens the audience,
+            never overrides an opt-out (same contract as the leaderboard). */}
+        {t.isOwner && (
+          <>
+            <Text variant="label" style={styles.section}>
+              Team-wide visibility
+            </Text>
+            <Text variant="caption" color={colors.textMuted} style={styles.sectionSub}>
+              Let every member see the same per-person stats admins do. Anyone who turned off sharing
+              stays hidden from everyone.
+            </Text>
+            <View style={styles.switchRow}>
+              <Text variant="caption" color={colors.textSecondary}>
+                {"Everyone sees everyone's stats"}
+              </Text>
+              <Switch
+                value={!!org.stats_visible_to_members}
+                onValueChange={(v) => guard(() => t.saveSettings({ stats_visible_to_members: v }))}
+                trackColor={{ true: colors.primary, false: colors.surface3 }}
+              />
+            </View>
           </>
         )}
 

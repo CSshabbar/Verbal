@@ -670,3 +670,98 @@ $$;
 revoke all     on function public.org_usage_series(uuid, int) from public;
 revoke execute on function public.org_usage_series(uuid, int) from anon;
 grant  execute on function public.org_usage_series(uuid, int) to authenticated;
+
+-- ── Team-wide stats visibility (applied live 2026-08-25 as
+--    `org_stats_visible_to_members`) ─────────────────────────────────────────
+-- The owner can open the per-member stats to EVERY active member, not just
+-- owner/admin ("either everyone can see each other's stats, or no" — user
+-- request). A member's own usage_consent still gates whether THEY appear: the
+-- org-wide switch widens the audience, never overrides an individual opt-out
+-- (same contract as leaderboard_enabled vs leaderboard_opt_in). These three
+-- CREATE OR REPLACEs supersede the earlier definitions above (this file is
+-- append-ordered and idempotent — the last definition wins on a re-run).
+
+alter table public.organizations
+  add column if not exists stats_visible_to_members boolean not null default false;
+
+create or replace function public.org_usage_summary(p_org uuid, p_days int default 30)
+returns table (
+  user_id text, email text, display_name text, role text,
+  dictations bigint, words bigint, speech_ms bigint, last_active timestamptz
+)
+language plpgsql stable security definer set search_path = public as $$
+declare
+  v_uid   text := auth.uid()::text;
+  v_role  text := public.org_member_role(p_org);
+  v_all   boolean;
+  v_since timestamptz := now() - (greatest(1, least(coalesce(p_days, 30), 365)) || ' days')::interval;
+begin
+  if v_role is null then return; end if;
+  select o.stats_visible_to_members into v_all from public.organizations o where o.id = p_org;
+  return query
+    select m.user_id, m.email, m.display_name, m.role,
+           coalesce(t.dictations, 0), coalesce(t.words, 0), coalesce(t.speech_ms, 0), t.last_active
+      from public.organization_members m
+      left join lateral (
+        select count(*) as dictations,
+               coalesce(sum(array_length(regexp_split_to_array(btrim(tr.text), '\s+'), 1)), 0) as words,
+               coalesce(sum(coalesce(tr.duration_ms, 0)), 0)::bigint as speech_ms,
+               max(tr.created_at) as last_active
+          from public.transcriptions tr
+         where tr.user_id = m.user_id and tr.created_at >= v_since
+           and tr.deleted_at is null and btrim(coalesce(tr.text, '')) <> ''
+      ) t on true
+     where m.org_id = p_org and m.status = 'active'
+       and (m.user_id = v_uid
+            or ((v_role in ('owner','admin') or coalesce(v_all, false)) and m.usage_consent))
+     order by coalesce(t.words, 0) desc;
+end; $$;
+
+create or replace function public.org_usage_series(p_org uuid, p_days int default 98)
+returns table (user_id text, day date, words bigint)
+language plpgsql stable security definer set search_path = public as $$
+declare
+  v_uid   text := auth.uid()::text;
+  v_role  text := public.org_member_role(p_org);
+  v_all   boolean;
+  v_since timestamptz := now() - (greatest(1, least(coalesce(p_days, 98), 365)) || ' days')::interval;
+begin
+  if v_role is null then return; end if;
+  select o.stats_visible_to_members into v_all from public.organizations o where o.id = p_org;
+  return query
+    select m.user_id, (tr.created_at at time zone 'UTC')::date as day,
+           coalesce(sum(array_length(regexp_split_to_array(btrim(tr.text), '\s+'), 1)), 0)::bigint
+      from public.organization_members m
+      join public.transcriptions tr on tr.user_id = m.user_id
+     where m.org_id = p_org and m.status = 'active' and m.usage_consent
+       and (v_role in ('owner','admin') or m.user_id = v_uid or coalesce(v_all, false))
+       and tr.created_at >= v_since and tr.deleted_at is null
+       and btrim(coalesce(tr.text, '')) <> ''
+     group by m.user_id, (tr.created_at at time zone 'UTC')::date
+     order by m.user_id, day;
+end; $$;
+
+create or replace function public.org_app_breakdown(p_org uuid, p_days int default 30)
+returns table (user_id text, display_name text, app text, dictations bigint, words bigint)
+language plpgsql stable security definer set search_path = public as $$
+declare
+  v_role  text := public.org_member_role(p_org);
+  v_uid   text := auth.uid()::text;
+  v_all   boolean;
+  v_since timestamptz := now() - (greatest(1, least(coalesce(p_days, 30), 365)) || ' days')::interval;
+begin
+  if v_role is null then return; end if;
+  select o.stats_visible_to_members into v_all from public.organizations o where o.id = p_org;
+  return query
+    select m.user_id, m.display_name, tr.app, count(*)::bigint,
+           coalesce(sum(array_length(regexp_split_to_array(btrim(tr.text), '\s+'), 1)), 0)::bigint
+      from public.organization_members m
+      join public.transcriptions tr on tr.user_id = m.user_id
+     where m.org_id = p_org and m.status = 'active' and m.usage_consent
+       and (v_role in ('owner','admin') or m.user_id = v_uid or coalesce(v_all, false))
+       and tr.created_at >= v_since and tr.deleted_at is null
+       and tr.app is not null and btrim(tr.app) <> ''
+       and btrim(coalesce(tr.text, '')) <> ''
+     group by m.user_id, m.display_name, tr.app
+     order by m.user_id, count(*) desc;
+end; $$;
