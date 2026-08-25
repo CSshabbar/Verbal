@@ -125,7 +125,18 @@ def install_update(file_path: str, silent: bool = False):
         )
     else:
         _install_update_mac(file_path)
-    sys.exit(0)
+    # os._exit, NOT sys.exit: every caller reaches here on a WORKER thread
+    # (the native alert's _do_update daemon thread, the dashboard bridge's
+    # install_ready_update) — and sys.exit() from a non-main thread raises
+    # SystemExit in that thread ONLY. The process kept running, so the mac
+    # helper script's wait-for-exit loop waited forever and the update only
+    # actually installed once the user happened to quit the app by hand
+    # (reported live twice, 2026-08-25: "restarts itself after some time,
+    # very confusing", then a banner stuck on "Installing — Flume will
+    # restart in a moment…" with the helper visible in ps still polling
+    # kill -0). Config writes are atomic (Hard Rule: atomic config writes),
+    # so a hard exit here loses nothing.
+    os._exit(0)
 
 
 def _install_update_mac(dmg_path: str):
