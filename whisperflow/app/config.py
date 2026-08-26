@@ -1,6 +1,10 @@
+import copy
+import errno
 import json
+import logging
 import os
 import platform
+import shutil
 import stat
 import tempfile
 import threading
@@ -9,11 +13,35 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+logger = logging.getLogger("verbal.config")
+
 # Serializes config reads AND writes so concurrent threads (sync, dictionary,
 # device refresh, dashboard) never race on the same file. RLock because
 # load_config() may call save_config() while still holding it.
 # (a shared "config.tmp" name caused a rename race: config.tmp -> config.json).
 _config_lock = threading.RLock()
+
+# Backoff between attempts when Windows refuses a file op because another handle
+# holds config.json (Defender/Search Indexer/an external reader): 20 ms doubling
+# to 320 ms, ~620 ms worst case before we give up on THAT strategy.
+_RETRY_BACKOFF = (0.02, 0.04, 0.08, 0.16, 0.32)
+
+# The config text this process last read or wrote successfully. Consulted only
+# when config.json EXISTS but cannot be read after retries (an out-of-process
+# lock). Before 2026-08-26 that transient failure was handled like a corrupt
+# file: config.json was moved to .bak and DEFAULT_CONFIG was saved over it, so an
+# antivirus scan could silently sign the user out and drop their history.
+_last_good_json: str | None = None
+# True while this process runs on DEFAULT_CONFIG only because config.json exists
+# but stayed unreadable on the first load (no in-memory copy to fall back on).
+# The dict load_config hands out in that state is a factory reset that callers
+# mutate and pass straight back to save_config (win_main migrates
+# `hotkey_label` on startup, get_device_id mints an id, sync writes tokens) —
+# and save_config alone cannot tell that dict from a trusted one. So save_config
+# refuses to write anything while this is set; only a later load_config that
+# actually reads the file clears it (2026-08-26 review of the Defender-lock fix).
+_serving_unread_defaults = False
+_last_tmp_sweep = 0.0
 
 APP_VERSION = "1.0.34"
 PLATFORM = "mac" if platform.system() == "Darwin" else "win" if platform.system() == "Windows" else "linux"
@@ -191,26 +219,164 @@ def get_device_id(config: dict) -> str:
         return platform.node() or "desktop"
 
 
+def _is_lock_error(e: OSError) -> bool:
+    """True for the Windows 'someone else has this file' family — WinError 5
+    ACCESS_DENIED (os.replace onto an open destination), 32 SHARING_VIOLATION,
+    33 LOCK_VIOLATION — i.e. failures worth retrying, as opposed to a missing
+    directory or a genuinely read-only location."""
+    if isinstance(e, PermissionError):
+        return True
+    return getattr(e, "winerror", None) in (5, 32, 33) or e.errno in (5, 13)
+
+
+def _sweep_stale_tmps(force: bool = False):
+    """Remove orphaned `.config-*.tmp` files: a save that died between mkstemp
+    and os.replace (crash, or the os._exit quit path in win_main) leaves one
+    behind forever. Only files older than 60 s go, so a second process that is
+    mid-write is never disturbed; throttled to once per 10 min unless forced.
+    Best-effort — never raises."""
+    global _last_tmp_sweep
+    now = time.time()
+    if not force and now - _last_tmp_sweep < 600:
+        return
+    _last_tmp_sweep = now
+    try:
+        for p in CONFIG_DIR.glob(".config-*.tmp"):
+            try:
+                if now - p.stat().st_mtime > 60:
+                    p.unlink()
+            except OSError:
+                pass
+    except Exception:
+        pass
+
+
+def _read_config_text() -> tuple[bytes | None, OSError | None]:
+    """Read config.json, retrying Windows lock collisions with backoff.
+    Returns (raw_bytes, None) on success, (None, None) if the file does not
+    exist, (None, err) if it exists but stayed unreadable. Caller holds the lock.
+
+    Returns BYTES on purpose: decoding happens in load_config's corrupt-file
+    handler. A UnicodeDecodeError is a ValueError, not an OSError — a
+    config.json cut mid-emoji (process killed during an in-place fallback write
+    of non-ASCII history) used to escape here and crash VerbalWinApp.__init__
+    on every launch, with the .prev safety net never consulted."""
+    err = None
+    for delay in _RETRY_BACKOFF + (None,):
+        try:
+            return CONFIG_FILE.read_bytes(), None
+        except FileNotFoundError:
+            return None, None
+        except OSError as e:
+            err = e
+            if delay is None or not _is_lock_error(e):
+                break
+            time.sleep(delay)
+    return None, err
+
+
+def _recover_from_prev() -> dict | None:
+    """`config.json.prev` exists only while an in-place fallback write is in
+    flight (see _write_in_place). If config.json is corrupt and .prev parses,
+    the process died mid-write and .prev is the last good state."""
+    prev = CONFIG_FILE.with_suffix(".json.prev")
+    try:
+        if prev.exists():
+            cfg = json.loads(prev.read_text(encoding="utf-8"))
+            if isinstance(cfg, dict):
+                logger.warning("config.json was corrupt; restored from config.json.prev")
+                return cfg
+    except Exception:
+        pass
+    return None
+
+
 def load_config() -> dict:
+    global _last_good_json, _serving_unread_defaults
     ensure_dirs()
     load_dotenv(ENV_FILE)
 
     config = None
-    if CONFIG_FILE.exists():
-        try:
-            with _config_lock:
-                with open(CONFIG_FILE, encoding="utf-8") as f:
-                    config = json.load(f)
-        except (json.JSONDecodeError, Exception):
-            backup = CONFIG_FILE.with_suffix(".json.bak")
+    persist = True    # False = we could not read the file; never write defaults over it
+    restored = False  # True = recovered after corruption; config.json is gone, re-persist
+    with _config_lock:
+        _sweep_stale_tmps()
+        raw, err = _read_config_text()
+        if raw is not None:
             try:
-                CONFIG_FILE.rename(backup)
-            except OSError:
-                pass
+                # Decode INSIDE the handler: UnicodeDecodeError is a ValueError,
+                # so a torn UTF-8 file takes the corrupt path below instead of
+                # propagating out of load_config.
+                text = raw.decode("utf-8")
+                config = json.loads(text)
+                if not isinstance(config, dict):
+                    raise ValueError("config root is not a JSON object")
+                _last_good_json = text
+                _serving_unread_defaults = False
+                # A .prev left behind by a fallback write that completed but
+                # did not get to unlink it (or was superseded by a later
+                # atomic save): config.json is fine, so it is just litter.
+                try:
+                    CONFIG_FILE.with_suffix(".json.prev").unlink()
+                except OSError:
+                    pass
+            except ValueError as e:
+                # Genuinely corrupt on disk (JSON/UTF-8 error). Move it aside as
+                # config.json.bak. os.replace, NOT Path.rename: os.rename on
+                # Windows fails with WinError 183 when a previous .bak exists
+                # ("Cannot create a file when that file already exists",
+                # 2026-08-26 user log). Then prefer the .prev safety copy over a
+                # factory reset.
+                logger.warning("config.json is corrupt (%s); moving it to config.json.bak", e)
+                try:
+                    os.replace(CONFIG_FILE, CONFIG_FILE.with_suffix(".json.bak"))
+                except OSError as e2:
+                    logger.warning("could not move corrupt config.json aside: %s", e2)
+                # Best surviving state first: what THIS process last read/wrote
+                # (something external trashed the file), else the .prev snapshot
+                # of an interrupted in-place write, else a factory reset.
+                if _last_good_json is not None:
+                    try:
+                        config = json.loads(_last_good_json)
+                        logger.warning("restored config from in-memory copy")
+                    except ValueError:
+                        config = None
+                if config is None:
+                    config = _recover_from_prev()
+                if config is not None:
+                    restored = True
+                # Whatever we end up with, the on-disk file is gone (.bak), so
+                # this process now owns the state and may persist it.
+                _serving_unread_defaults = False
+        elif err is not None:
+            # The file exists but another handle kept it unreadable for the whole
+            # retry window. This is NOT corruption — do not touch the file on
+            # disk. Serve the last copy this process read/wrote; if there is none
+            # (first load of the process), run on defaults but refuse to persist
+            # them — here AND in every later save_config (see
+            # _serving_unread_defaults): the caller will mutate this dict and
+            # hand it back, and writing it would be a factory reset over the
+            # real config.
+            if _last_good_json is not None:
+                try:
+                    config = json.loads(_last_good_json)
+                    logger.warning("config.json unreadable (%s); using last in-memory copy", err)
+                except ValueError:
+                    config = None
+            if config is None:
+                logger.error("config.json unreadable (%s) and no in-memory copy; "
+                             "running on defaults WITHOUT persisting them", err)
+                persist = False
+                _serving_unread_defaults = True
+        else:
+            # No config.json at all: a genuine first run, defaults are legitimate.
+            _serving_unread_defaults = False
 
     changed = False
     if config is None:
-        config = dict(DEFAULT_CONFIG)
+        # Deep copy: DEFAULT_CONFIG holds mutable lists (history, meetings, …) and
+        # a shallow dict() would let the first append leak into the defaults.
+        config = copy.deepcopy(DEFAULT_CONFIG)
         changed = True
     else:
         # Migration: if old hotkey exists and new ones don't
@@ -226,7 +392,7 @@ def load_config() -> dict:
 
         for key, val in DEFAULT_CONFIG.items():
             if key not in config:
-                config[key] = val
+                config[key] = copy.deepcopy(val)
                 changed = True
 
     env_key = os.getenv("GEMINI_API_KEY", "").strip()
@@ -234,19 +400,32 @@ def load_config() -> dict:
         config["gemini_api_keys"].insert(0, env_key)
         changed = True
 
-    if changed:
+    if (changed or restored) and persist:
         save_config(config)
+        if restored:
+            # The recovered state is back on disk atomically; the .prev
+            # snapshot has served its purpose. Under the lock: another thread's
+            # save_config may be mid _write_in_place, and its freshly made .prev
+            # is the only copy of config.json while that file sits truncated.
+            with _config_lock:
+                try:
+                    CONFIG_FILE.with_suffix(".json.prev").unlink()
+                except OSError:
+                    pass
     return config
 
 
-def _replace_config(tmp_path: str):
-    """Atomically move the temp file onto config.json.
+def _replace_config(tmp_path: str) -> bool:
+    """Atomically move the temp file onto config.json. True on success; False
+    when Windows kept refusing for the whole retry window (the caller then
+    falls back to an in-place write). Any non-lock OSError propagates.
 
     On Windows, `os.replace` of a destination another handle still has open
-    (or that Defender/Search briefly scanned) raises WinError 5 Access Denied
-    — confirmed live 2026-08-25, auth then fell back to the anon key. Retry
-    a short backoff; readers also take `_config_lock` so the remaining
-    collisions are out-of-process.
+    without FILE_SHARE_DELETE (Defender/Search Indexer scanning it, or any
+    external reader) raises WinError 5 Access Denied — 2026-08-25/26 user logs
+    show ~12 of them per session, each of which used to discard the save and
+    drop auth to the anon key. In-process readers take `_config_lock`, so every
+    remaining collision is out-of-process and short-lived: retry with backoff.
     """
     if os.name == "nt" and CONFIG_FILE.exists():
         try:
@@ -254,38 +433,106 @@ def _replace_config(tmp_path: str):
         except OSError:
             pass
     last = None
-    for attempt in range(12):
+    for delay in _RETRY_BACKOFF + (None,):
         try:
             os.replace(tmp_path, CONFIG_FILE)
-            return
-        except PermissionError as e:
-            last = e
+            return True
         except OSError as e:
-            if getattr(e, "winerror", None) != 5 and e.errno not in (5, 13):
+            if not _is_lock_error(e):
                 raise
             last = e
-        time.sleep(0.025 * (attempt + 1))
-    raise last
+            if delay is None:
+                break
+            time.sleep(delay)
+    logger.warning("os.replace onto config.json kept failing (%s); writing in place", last)
+    return False
+
+
+def _write_in_place(data: str):
+    """Last resort when os.replace cannot win: overwrite config.json where it
+    stands. A handle that blocks a rename (no FILE_SHARE_DELETE) normally still
+    allows writes (Python and most scanners open with FILE_SHARE_READ|WRITE), so
+    this succeeds where the rename could not — the save is preserved instead of
+    lost. It is NOT atomic, so the current file is first copied to
+    config.json.prev; load_config restores from .prev if a crash mid-write
+    leaves config.json truncated, and .prev is removed once the write lands.
+    """
+    prev = CONFIG_FILE.with_suffix(".json.prev")
+    if CONFIG_FILE.exists():
+        try:
+            shutil.copyfile(CONFIG_FILE, prev)
+        except OSError as e:
+            logger.warning("could not snapshot config.json to .prev before in-place write: %s", e)
+    for delay in _RETRY_BACKOFF + (None,):
+        try:
+            with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+                f.write(data)
+                f.flush()
+                os.fsync(f.fileno())
+            break
+        except OSError as e:
+            if delay is None or not _is_lock_error(e):
+                raise
+            time.sleep(delay)
+    try:
+        prev.unlink()
+    except OSError:
+        pass
+
+
+def _refuse_untrusted_save():
+    """Called under the lock when this process is still running on the defaults
+    load_config served because config.json was unreadable. The dict a caller
+    wants saved descends from that factory reset, so writing it — atomically or
+    in place — would wipe the user's real sign-in and history the moment the
+    external lock lets go. Raise OSError (the contract save_config already had
+    when os.replace gave up), so peripheral callers' except blocks fail closed
+    and the real file is left untouched until a load_config can read it."""
+    raw, err = _read_config_text()
+    if raw is not None:
+        # The file is readable again, but the caller's dict is still the stale
+        # defaults; only a fresh load_config may hand out a writable config.
+        raise OSError(
+            errno.EACCES,
+            "save_config refused: this process is running on unread defaults; "
+            "config.json is readable again - reload it before saving")
+    raise OSError(
+        errno.EACCES,
+        "save_config refused: this process is running on unread defaults and "
+        "config.json is still unreadable (%s)" % (err,))
 
 
 def save_config(config: dict):
+    """Persist config. Atomic (unique tempfile + os.replace) under `_config_lock`;
+    on Windows, falls back to an in-place write rather than losing the save when
+    an external handle blocks the rename. The temp file is always removed.
+    Raises OSError without touching the file while `_serving_unread_defaults`."""
+    global _last_good_json
     ensure_dirs()
     # Unique temp file per write + a lock → safe under concurrent writers
     # (a shared "config.tmp" name caused rename races: config.tmp -> config.json).
     with _config_lock:
+        if _serving_unread_defaults:
+            _refuse_untrusted_save()
+        _sweep_stale_tmps()
+        data = json.dumps(config, indent=2)
         fd, tmp_path = tempfile.mkstemp(dir=str(CONFIG_DIR), prefix=".config-", suffix=".tmp")
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(config, f, indent=2)
+                f.write(data)
                 f.flush()
                 os.fsync(f.fileno())
-            _replace_config(tmp_path)
-        except Exception:
+            if not _replace_config(tmp_path):
+                _write_in_place(data)
+                _sweep_stale_tmps(force=True)
+            _last_good_json = data
+        finally:
+            # Replaced (already gone), fell back, or failed: never leave
+            # `.config-*.tmp` litter in ~/.verbal.
             try:
                 os.unlink(tmp_path)
             except OSError:
                 pass
-            raise
 
 
 def add_gemini_key(config: dict, key: str) -> dict:

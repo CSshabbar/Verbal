@@ -2041,7 +2041,7 @@ class VerbalApp(rumps.App):
         except Exception as e:
             logger.debug(f"update badge refresh failed: {e}")
 
-    def _check_update(self, announce_current=False, suppress_prompt=False):
+    def _check_update(self, announce_current=False, suppress_prompt=False, force=False):
         """Background update poll — both the one-shot startup check
         (`_start_app`) and the periodic re-check (`_update_check_timer`,
         every `UPDATE_CHECK_INTERVAL`) land here. `check_for_update()`
@@ -2064,7 +2064,7 @@ class VerbalApp(rumps.App):
         is the flow the user actually asked for.
         """
         from app.updater import check_for_update
-        update = check_for_update()
+        update = check_for_update(force=force)
         if update:
             is_new_version = update["version"] != self._update_dismissed_version
             self._update_available = update
@@ -2091,8 +2091,15 @@ class VerbalApp(rumps.App):
                     f"Flume v{APP_VERSION} is the latest version."))
 
     def _check_update_now(self, _=None):
-        """Menubar 'Check for Updates…' — same path as the startup poll."""
-        threading.Thread(target=self._check_update, args=(True,), daemon=True).start()
+        """Menubar 'Check for Updates…' — same path as the startup poll, but
+        force=True: an explicit click skips updater's 30 s post-launch gate
+        (that gate exists for AUTOMATIC checks, to stop auto-install loops).
+        Without it a click in the first 30 s did no network call at all and
+        still alerted "You're up to date" — a confident lie (2026-08-26, same
+        fix the dashboard's button got in shared_dashboard.check_for_updates)."""
+        threading.Thread(target=self._check_update,
+                         kwargs={"announce_current": True, "force": True},
+                         daemon=True).start()
 
     def _periodic_update_check(self, _timer=None):
         """`_update_check_timer` callback (runs on the main thread, like every
@@ -2150,13 +2157,21 @@ class VerbalApp(rumps.App):
         self._update_progress = 0.0
 
         def _run():
-            from app.updater import download_update
-            path = download_update(update, on_progress=lambda f: setattr(self, "_update_progress", f))
-            if path:
-                self._update_ready_path = path
-                self._update_phase = "ready"
-            else:
+            # try/except so a raise out of download_update (e.g. the NameError
+            # its retry path used to hit, 2026-08-26) lands on 'failed' — the
+            # banner offers Retry — instead of the thread dying with the phase
+            # stuck at "Downloading… N%" until relaunch. Mirrors win_main.
+            try:
+                from app.updater import download_update
+                path = download_update(update, on_progress=lambda f: setattr(self, "_update_progress", f))
+                if path:
+                    self._update_ready_path = path
+                    self._update_phase = "ready"
+                else:
+                    self._update_phase = "failed"
+            except Exception as e:
                 self._update_phase = "failed"
+                logger.error(f"Update download failed: {e}")
 
         threading.Thread(target=_run, daemon=True).start()
 

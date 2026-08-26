@@ -13,6 +13,7 @@ import shlex
 import subprocess
 import sys
 import tempfile
+import time
 
 import httpx
 
@@ -22,13 +23,34 @@ from app.sync import SUPABASE_URL, SUPABASE_KEY
 logger = logging.getLogger("verbal.updater")
 
 
-def check_for_update() -> dict | None:
-    """Poll Supabase for the latest version. Returns info dict or None."""
+def check_for_update(force: bool = False) -> dict | None:
+    """Poll Supabase for the latest version. Returns info dict or None.
+
+    Returns None BOTH when we're current and when the check fails/is gated,
+    so callers that need to say "you're up to date" must decide that
+    themselves.
+
+    `force=False` (automatic checks — the startup one-shot and the periodic
+    re-check) keeps the 30-second post-launch gate: it exists so a freshly
+    auto-installed build can never find "itself" and re-download in a loop
+    if the installer failed to actually bump the version. `force=True` is
+    for an EXPLICIT user click — the dashboard's "Check for Updates" button
+    on both platforms, the mac menubar's "Check for Updates…" and the Windows
+    tray's "Check for updates..." row — and skips the gate: a human clicking
+    a button cannot loop, and gating them produced a silent no-op (or a false
+    "You're up to date") that read as a broken button. This mattered
+    on Windows (2026-08-26 report, Flume 1.0.33 never seeing 1.0.34):
+    win_main used to fire its ONLY check of the session at t=0, inside this
+    gate, so the app never actually asked Supabase at all.
+    """
     try:
         # Don't check for updates in the first 30 seconds after launch
-        # to avoid infinite auto-update loops
-        import time
-        if time.time() - getattr(sys, '_verbal_start_time', 0) < 30:
+        # to avoid infinite auto-update loops (see docstring). Skipped for
+        # an explicit user-initiated check. (`time` is a MODULE-level import
+        # on purpose: it used to be imported only here, so download_update's
+        # retry backoff below raised NameError on the first transient error
+        # and the 3-attempt retry never actually happened — 2026-08-26.)
+        if not force and time.time() - getattr(sys, '_verbal_start_time', 0) < 30:
             return None
 
         # Reads the app_versions_latest VIEW, not the raw table.

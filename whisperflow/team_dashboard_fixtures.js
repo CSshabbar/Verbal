@@ -24,10 +24,19 @@ const { execFileSync } = require('child_process'), vm = require('vm'), path = re
 // what ships rather than a copy of it (convention #39: verify a rendered surface
 // by rendering it).
 const ROOT = __dirname;
+// The venv layout differs per OS (.venv/bin/python vs .venv/Scripts/python.exe),
+// and on Windows Python's stdout defaults to cp1252, which cannot encode the
+// dashboard's typographic quotes/arrows — PYTHONUTF8=1 makes the pipe UTF-8 on
+// both platforms (2026-08-26: the stock runner failed before reaching any test
+// on the Windows dev box).
+const PYTHON = process.platform === 'win32'
+  ? path.join(ROOT, '.venv', 'Scripts', 'python.exe')
+  : path.join(ROOT, '.venv', 'bin', 'python');
 const html = execFileSync(
-  path.join(ROOT, '.venv/bin/python'),
+  PYTHON,
   ['-c', 'from app import flume_dashboard_html as M; import sys; sys.stdout.write(M.flume_html())'],
-  { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 },
+  { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024,
+    env: { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' } },
 );
 const blocks = [...html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
 if (!blocks.length) {

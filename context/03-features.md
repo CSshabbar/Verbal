@@ -1107,7 +1107,15 @@ deletes real files under `~/.verbal/` and this development machine has a real, i
   WASAPI loopback (`win_system_audio.py`) hosted in `WinMeetingWindow` (same `meeting_html()`; the
   pre-meeting language control is a custom listbox, not a native `<select>` — WebView2's OS combo
   popup ignores CSS overflow and covers Start recording; `05-conventions.md` Rule #66). No call
-  auto-detect on Windows yet.
+  auto-detect on Windows yet. **Two Windows fixes from the 2026-08-26 report:** (1) `WinMeetingWindow`
+  is built once and re-used like the Mac panel, so it now intercepts pywebview's `closing` — X /
+  Alt+F4 **hides** it (or collapses to the bar while recording/processing, `windowShouldClose_` parity)
+  instead of letting winforms destroy the form — and drops its references on `closed`; before that,
+  the first close left a dead handle and every later "Start meeting" was a silent no-op (Rule #67;
+  Windows shutdown/log-off and Task Manager are still let through). (2) The default meeting title
+  (`MeetingSession.__init__`, `"Meeting — Aug 26, 14:05"`) is built from `tm_mday` instead of the
+  glibc-only `%-d`, which the Windows CRT rejected with "Invalid format string" — so every meeting
+  started without a typed title failed on Windows (Rule #68).
 - **Desktop:** `meetings.py` (`MeetingManager`/`MeetingSession` state machine: idle→preparing→recording⇄
   paused→stopping→processing→ready|failed) + `system_audio.py` (SCK audio capture) + `meeting_window.py`/
   `meeting_html.py` (ONE morphing WKWebView panel: an ambient glassy **bar** top-center — that fluidly grows
@@ -1347,7 +1355,10 @@ delta, fail-closed paths). Both spec files declare `app.insights` in `hiddenimpo
   via `MenuController.menuNeedsUpdate:`; the ⌘-equivalents are menu-local (the global dictation hotkey
   stays in `hotkey.py` and is advertised in the header subtitle instead of faked as a key equivalent).
 - **Popover** (`flume_popover_html.py`): **Windows only** now — the tray-click pywebview mini-dashboard
-  (`win_popover.py`). The macOS `NSPopover` host (`flume_popover.py`) was deleted in IDI-183.
+  (`win_popover.py`). The macOS `NSPopover` host (`flume_popover.py`) was deleted in IDI-183. Built once
+  and re-used: Alt+F4 hides it (pywebview `closing` cancelled) and `closed` drops the handle so the next
+  tray click rebuilds — the same dead-handle recipe as `WinMeetingWindow` (`05-conventions.md` #67,
+  2026-08-26). Its `quit_app` goes through `win_main._hard_exit` (#59b).
 - **Hotkey** (`hotkey.py`): `NSEvent` global monitor; default key **54 (Right Cmd)**, ESC cancels. Hold
   mode (down=start/up=stop) vs Toggle mode (debounced tap). Windows uses `pynput` (default `alt_r`).
   **Tap-to-latch (Aug 2026):** in HOLD mode the key now does both jobs — a press longer than
@@ -1371,8 +1382,9 @@ delta, fail-closed paths). Both spec files declare `app.insights` in `hiddenimpo
   moment a newer version is found, plus a persistent "Update available (vX.Y.Z)" menu row — both survive
   a "Later" dismissal for the rest of the session (gated by a per-version seen-dialog flag, not a
   blanket suppression) and only clear once a still-newer version supersedes them or the app relaunches
-  post-update. Windows' `auto_update=True` mode deliberately skips the badge/menu entirely — a silent
-  unattended update has no "declined" state for a badge to represent.
+  post-update. (Windows' `auto_update=True` mode used to skip the badge/menu entirely; since
+  2026-08-26 the badge, tray row and dashboard banner show in that mode too, because the silent
+  install now waits for the app to be idle — see below.)
   **In-dashboard update flow + one-surface rule (2026-08-25):** the dashboard now carries its own update
   banner (Update available → downloading % → "Restart to update", user-clicked, never auto-install) plus
   a Settings > Updates group (current version + Check for Updates), backed by
@@ -1382,6 +1394,31 @@ delta, fail-closed paths). Both spec files declare `app.insights` in `hiddenimpo
   dialog fires solely for the explicit "Check for Updates…" menu item or the "Update available" row
   ("two popups per version reads as nagging" — live feedback). `install_update()` exits via `os._exit`,
   not `sys.exit` — every caller is on a worker thread (see `05-conventions.md` #64).
+  **Windows parity + "it never actually checked" fix (2026-08-26, Flume 1.0.33 never saw 1.0.34):**
+  the Windows app fired its ONLY check of the session at t=0 — inside `updater`'s 30 s post-launch
+  gate — then a once-per-session flag made every later call a no-op, so Windows never asked Supabase
+  at all; and the dashboard's update bridge read `_update_available` etc. straight off the app object,
+  which `VerbalWinApp` didn't have, so every 30 s poll raised `AttributeError` and Settings › Updates
+  was dead on Windows. Now (`05-conventions.md` #69): `VerbalWinApp` owns the same
+  `_update_available/_phase/_progress/_ready_path` state machine as macOS (`_pending_update` is an
+  alias); `_update_check_loop` checks 35 s after launch and every 4 h; the tray gets a **"Check for
+  updates..."** row (Mac-parity — the only Windows caller of `announce_current=True`, so the "You're
+  up to date" dialog is reachable); every explicit click on either platform passes
+  `check_for_update(force=True)` to skip the gate; and `DashboardApi.check_for_updates` is
+  synchronous (≤ 8 s) and returns `available`/`version` so the button's toast can't contradict the
+  banner. **Windows `auto_update=True` (the default) is unattended but no longer abrupt:**
+  `_download_and_install(update, silent=True)` downloads with progress, parks the installer as phase
+  `ready` (banner: "ready to install" / "Restart to update" — clickable any time) and only runs the
+  `/VERYSILENT` install + `os._exit` once `_app_busy()` — recording, transcribing/injecting, or a
+  meeting capturing/post-processing — has been False for two consecutive 1 s polls; it abandons the
+  parked installer if a newer version supersedes it mid-wait (and chains straight into that one), or
+  if the user already clicked "Restart to update". The tray dialog's "Yes" (an explicit click,
+  `silent=False`) installs immediately. Every download/install is single-flight
+  (`_update_download_lock`), a periodic re-check landing mid-download keeps the in-flight state instead
+  of yanking it on a transient `None`, and any raise lands on phase `failed` (banner offers Retry) on
+  both platforms — `main.py::_start_update_download` gained the same try/except. `updater.py`'s
+  `time` import moved to module level: `download_update`'s retry backoff raised `NameError` on the
+  first transient error, so its 3-attempt retry had never run.
 - **Permissions** (`permissions.py`): accessibility / microphone / system-audio / notifications status +
   request, surfaced via `DashboardApi.get_permissions/request_permission`. On Windows the module's
   bottom-of-file shim overrides `check_accessibility()` to `"granted"` — correct, because Windows has no

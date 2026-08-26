@@ -84,6 +84,15 @@ logger = logging.getLogger("verbal")
 MODE_HOLD = "hold"
 MODE_TOGGLE = "toggle"
 
+# Update-check scheduling (mirrors main.py's UPDATE_CHECK_INTERVAL). The first
+# automatic check waits UPDATE_STARTUP_DELAY seconds because
+# updater.check_for_update() deliberately returns None for the first 30 s after
+# launch (the auto-install-loop guard keyed off sys._verbal_start_time). Before
+# 2026-08-26 the Windows app fired its ONLY check of the session at t=0 — inside
+# that gate — so a Flume 1.0.33 install never once asked Supabase about 1.0.34.
+UPDATE_STARTUP_DELAY = 35
+UPDATE_CHECK_INTERVAL = 4 * 60 * 60
+
 
 def _play_sound(name: str):
     try:
@@ -127,13 +136,46 @@ class VerbalWinApp:
         self._last_toggle_time = 0.0
         self._sync = None
         self._tray_icon = None
-        # Persistent "update available" state (Task: tray badge + menu item).
-        # Holds the update dict from updater.check_for_update() once a newer
-        # version is found in manual-update mode (auto_update handles its own
-        # update silently and never sets this — see _check_update). None ==
-        # no known update, the tray icon carries no badge and the menu item
-        # is hidden.
-        self._pending_update = None
+        # Persistent "update available" state (Task: tray badge + menu item),
+        # ported to the same state machine main.py's VerbalApp owns so the
+        # cross-platform dashboard bridge (shared_dashboard.DashboardApi.
+        # get_update_status / start_update_download / install_ready_update)
+        # works identically on Windows. Until 2026-08-26 Windows only had
+        # `_pending_update`, so every 30 s dashboard poll logged
+        # "'VerbalWinApp' object has no attribute '_update_available'" and the
+        # in-app banner / "Check for updates" button were dead here.
+        #
+        # `_update_available` holds the dict from updater.check_for_update()
+        # once a newer version is found and stays set until a still-newer one
+        # supersedes it or the app relaunches post-update. None == no known
+        # update: the tray icon carries no badge and _menu_update is hidden.
+        # `_pending_update` (below, a property) is a read/write alias so the
+        # existing tray badge/menu code keeps reading the SAME state.
+        #
+        # In-dashboard flow — phase: 'idle' | 'downloading' | 'ready' |
+        # 'installing' | 'failed'. 'ready' means the installer is on disk at
+        # _update_ready_path and nothing has been installed yet: the
+        # dashboard's "Update" click parks it there and waits for an explicit
+        # "Restart to update" (_install_ready_update). The unattended
+        # auto_update path (config default True) drives the same fields so
+        # the banner can show what it is doing. (No `_update_dismissed_version`
+        # here, unlike main.py: on Windows the dialog only ever shows for an
+        # explicit click, so there is no automatic re-nag to suppress, and
+        # "is this a new version?" compares against the previously found
+        # dict instead — a field nothing reads is a trap for the next port.)
+        self._update_available = None
+        self._update_phase = "idle"
+        self._update_progress = 0.0
+        self._update_ready_path = None
+        # Serialises download+install so the auto-update path, the tray
+        # dialog's "Yes" and the dashboard's "Update" can never run two
+        # downloads of the same installer concurrently.
+        self._update_download_lock = threading.Lock()
+        # Set by _hard_exit (from any thread) the moment a quit begins. Read
+        # by SharedDashboard._on_window_closed (no tray hint while quitting)
+        # and by _hard_exit itself as its re-entrancy guard, so it must exist
+        # from __init__ on — a getattr default alone would hide a typo.
+        self._exiting = False
 
         # Menu item references for dynamic updates
         self._menu_status = None
@@ -174,6 +216,19 @@ class VerbalWinApp:
         self._total_words = sum(len(_entry_text(h).split()) for h in history)
 
         self._init_sync()
+
+    @property
+    def _pending_update(self):
+        """Alias of `_update_available` for the pre-existing tray badge/menu
+        code (_menu_update, _create_icon_image, _update_tray_icon,
+        _offer_update, _tray_open_update). getattr with a default so a read
+        during __init__ — before the backing attr exists — is None, not an
+        AttributeError."""
+        return getattr(self, "_update_available", None)
+
+    @_pending_update.setter
+    def _pending_update(self, value):
+        self._update_available = value
 
     def _on_main(self, fn):
         """Run `fn` off the hot path — the Windows analogue of the Mac app's
@@ -284,6 +339,11 @@ class VerbalWinApp:
             pystray.MenuItem(lambda item: self._auth_menu_label(), self._tray_toggle_auth),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem(lambda item: f"Flume v{APP_VERSION}", self._tray_about),
+            # Mac-parity with the menubar's "Check for Updates…". This is the
+            # only caller of _check_update(announce_current=True) on Windows —
+            # without it the "You're up to date" dialog and the force_dialog
+            # re-offer were dead code that read as a live path (2026-08-26).
+            pystray.MenuItem("Check for updates...", self._tray_check_updates),
             pystray.MenuItem("Quit", self._tray_quit),
         )
 
@@ -298,16 +358,20 @@ class VerbalWinApp:
         except Exception as e:
             logger.debug("paste-blocked prompt hook not installed: %s", e)
         self._start_hotkey()
-        threading.Thread(target=self._check_update, daemon=True).start()
+        # Update checks: a long-lived loop (first check after UPDATE_STARTUP_DELAY,
+        # then every UPDATE_CHECK_INTERVAL) instead of the old one-shot thread,
+        # which fired at t=0 inside updater's 30 s post-launch gate and was
+        # then blocked by a once-per-session guard — i.e. it never checked at
+        # all (2026-08-26: 1.0.33 never saw 1.0.34). See _update_check_loop.
+        threading.Thread(target=self._update_check_loop, name="update-check", daemon=True).start()
         threading.Thread(target=self._presence_loop, daemon=True).start()
 
         import pystray
 
-        # _check_update() runs on its own thread started just above and may
-        # already have set self._pending_update by the time we get here
-        # (network round-trip vs. this thread's icon-image construction is a
-        # genuine race either way) — read it now so a fast update check
-        # doesn't get its badge silently dropped by this initial image.
+        # The first automatic update check is UPDATE_STARTUP_DELAY seconds away,
+        # so this initial image is normally un-badged; still read the live
+        # state rather than hard-coding False so a badge can never be silently
+        # dropped by this construction if the timing ever changes.
         icon_image = self._create_icon_image(False, badge=self._pending_update is not None)
         self._tray_icon = pystray.Icon(
             "Flume", icon_image,
@@ -519,34 +583,96 @@ class VerbalWinApp:
             logger.error(f"paste-blocked prompt failed: {e}")
 
     def _tray_quit(self, icon=None, item=None):
-        """Quit for real.
+        """Quit for real (tray menu "Quit", popover quit_app, elevated relaunch).
 
-        os._exit, NOT sys.exit: this runs on the pystray thread (tray menu), or
+        Thin wrapper: the actual teardown lives in _hard_exit so the
+        bootloader-parent watcher (_watch_bootloader_parent) and the user's
+        Quit share ONE implementation — two hand-rolled exit paths would
+        drift apart, and this one has already been fixed once (2026-08-26).
+        """
+        self._hard_exit("quit requested")
+
+    def _hard_exit(self, reason: str):
+        """Tear down the process for real, from ANY thread. Never returns.
+
+        os._exit, NOT sys.exit: callers run on the pystray thread (tray menu),
         on an _on_main daemon thread (popover's quit_app / the elevated
-        relaunch) — never on the main thread, which is parked in
-        webview.start(). sys.exit() from a worker thread raises SystemExit in
-        THAT thread only, so the old code stopped the tray icon and then left
-        the process alive: no icon, no window, but still holding the
-        single-instance mutex. Every later double-click on Flume hit
-        ERROR_ALREADY_EXISTS and exited silently — reported 2026-08-26 as
+        relaunch), or on the parent-watcher thread — never on the main thread,
+        which is parked in webview.start(). sys.exit() from a worker thread
+        raises SystemExit in THAT thread only, so the old code stopped the tray
+        icon and then left the process alive: no icon, no window, but still
+        holding the single-instance mutex. Every later double-click on Flume
+        hit ERROR_ALREADY_EXISTS and exited silently — reported 2026-08-26 as
         "after closing the app it doesn't open again". Same lesson as
         updater.install_update. Config writes are atomic, so nothing is lost.
+
+        Deliberately MINIMAL: hide the tray icon (else Windows keeps a ghost
+        icon until the mouse sweeps the notification area), drop the webview
+        windows, flush logs, exit. No network, no meeting-session stops, no
+        config writes — anything that can block or raise here is a way for the
+        process to lurk in Task Manager again. Every step is guarded and every
+        step is optional; os._exit(0) is the only thing that must happen.
+
+        The optional teardown is also TIME-BOUNDED (daemon thread, joined for
+        at most ~1 s). pywebview's winforms `destroy()` does a synchronous
+        Control.Invoke onto the GUI/main thread, so with that thread stalled
+        or deadlocked an inline destroy never returns and os._exit is never
+        reached — the process keeps the mutex and lurks, which is exactly the
+        state a user is in when they resort to Task Manager (they kill Flume
+        because it looks hung). The "child exits within ~1 s" contract must
+        hold regardless of GUI-thread health.
+
+        Re-entrant: tray Quit and the bootloader-parent watcher (or the
+        elevated-relaunch quit) can fire at the same moment. The second caller
+        skips the teardown — a second stop() on a stopped icon / destroy() on
+        a half-closed form only raises inside pystray/pywebview — and just
+        exits after giving the first a moment to flush.
         """
-        logger.info("quit requested — exiting process")
+        # Let SharedDashboard._on_window_closed tell "user closed the window"
+        # apart from "we are destroying windows on the way out" (no tray hint
+        # toast while quitting). Set BEFORE the destroys below fire `closed`.
+        if getattr(self, "_exiting", False):
+            logger.info("exit already in progress (%s)", reason)
+            time.sleep(1.5)
+            os._exit(0)
+        self._exiting = True
+        logger.info("exiting process: %s", reason)
+
+        def _teardown():
+            try:
+                icon = self._tray_icon
+                if icon:
+                    # `visible = False` calls pystray's _hide() — Shell_NotifyIcon
+                    # NIM_DELETE — synchronously, from any thread. stop() alone
+                    # only PostMessage()s WM_STOP and relies on _mainloop's
+                    # `finally` to delete the icon, but when Quit is clicked we
+                    # ARE on the pystray message-loop thread and os._exit fires
+                    # before control ever returns to that loop → ghost icon.
+                    try:
+                        icon.visible = False
+                    except Exception as e:
+                        logger.debug("tray hide failed: %s", e)
+                    icon.stop()
+            except Exception as e:
+                logger.debug("tray stop failed: %s", e)
+            try:
+                import webview
+                for w in list(getattr(webview, "windows", [])):
+                    try:
+                        w.destroy()
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
         try:
-            if self._tray_icon:
-                self._tray_icon.stop()
+            t = threading.Thread(target=_teardown, name="hard-exit-teardown", daemon=True)
+            t.start()
+            t.join(1.0)
+            if t.is_alive():
+                logger.info("teardown still running after 1 s (%s); exiting anyway", reason)
         except Exception as e:
-            logger.debug("tray stop failed: %s", e)
-        try:
-            import webview
-            for w in list(getattr(webview, "windows", [])):
-                try:
-                    w.destroy()
-                except Exception:
-                    pass
-        except Exception:
-            pass
+            logger.debug("teardown thread failed: %s", e)
         try:
             logging.shutdown()
         except Exception:
@@ -604,6 +730,17 @@ class VerbalWinApp:
             "Powered by Whisper + Gemini"
         )
         root.destroy()
+
+    def _tray_check_updates(self, icon=None, item=None):
+        """Tray "Check for updates..." — an explicit click, so announce the
+        result either way (dialog for "up to date" too; silence reads as a
+        broken row) and skip updater's 30 s post-launch gate (force=True: a
+        human clicking cannot produce the auto-install loop the gate guards
+        against). Off the pystray callback thread — the network call must not
+        freeze the tray menu."""
+        threading.Thread(
+            target=self._check_update, kwargs={"announce_current": True, "force": True},
+            name="update-check-now", daemon=True).start()
 
     def _tray_open_update(self, icon=None, item=None):
         """Tray menu row shown only while an update is pending (see
@@ -1851,55 +1988,319 @@ class VerbalWinApp:
             logger.debug(f"sync_id record failed: {e}")
 
     # ── Update check ──────────────────────────────────────────────────────
-    def _check_update(self):
-        # Only check for updates once per session to prevent resource exhaustion
-        if hasattr(self, '_update_checked') and self._update_checked:
-            return
+    # Windows port of main.py's update state machine (2026-08-26). Everything
+    # here is peripheral: each entry point swallows its own errors so a broken
+    # update path can never touch record → transcribe → inject. Threading: all
+    # of it runs on daemon threads (the check loop, the dashboard bridge's
+    # pywebview API thread, the pystray callback thread) — the same contexts
+    # that already drove _update_tray_icon/_update_tray_menu before the port.
 
+    def _update_check_loop(self):
+        """Daemon thread started in start(). Sleeps past updater's 30-second
+        post-launch gate, checks once, then re-checks every
+        UPDATE_CHECK_INTERVAL (main.py's rumps.Timer cadence) for the "left
+        running for days" case. Replaces the one-shot t=0 thread + once-per-
+        session guard, which together meant the Windows app never performed
+        a real check in a session (2026-08-26: 1.0.33 never saw 1.0.34)."""
+        time.sleep(UPDATE_STARTUP_DELAY)
+        while True:
+            try:
+                self._check_update()
+            except Exception as e:
+                logger.debug(f"periodic update check failed: {e}")
+            time.sleep(UPDATE_CHECK_INTERVAL)
+
+    def _check_update(self, announce_current=False, suppress_prompt=False, force=False):
+        """Update poll — the startup/periodic loop above, the dashboard's
+        "Check for updates" button (shared_dashboard.check_for_updates, which
+        passes suppress_prompt=True, force=True) and the tray's "Check for
+        updates..." row (_tray_check_updates: announce_current=True,
+        force=True) all land here. Same signature as main.py so the
+        cross-platform bridge is oblivious.
+
+        `force` skips updater's 30 s post-launch gate — only ever set for an
+        explicit user click, which cannot produce the auto-install loop the
+        gate guards against. No once-per-session guard any more: it silently
+        turned every later check into a no-op.
+
+        Found: `_update_available` is set (badge + tray row via _offer_update,
+        banner via get_update_status) and stays set until a newer version
+        supersedes it or the app relaunches post-update. A DIFFERENT version
+        than the one already parked invalidates the in-app flow's state for
+        the old one (its downloaded installer is stale). In auto_update mode
+        (config default True) the download + silent install kick off here,
+        driving phase/progress so the banner shows "Downloading… / Installing"
+        instead of the app just vanishing mid-session. The tk dialog only
+        shows for announce_current (an explicit user action) — automatic
+        finds stop at badge + banner, same nag-avoidance policy as macOS.
+
+        Not found: check_for_update() returns None BOTH when current and when
+        the request failed, so an update that is mid-download / parked ready
+        is kept rather than yanked by a transient network error; otherwise the
+        state clears and the badge/menu refresh if one had been showing.
+        """
         from app.updater import check_for_update
-        update = check_for_update()
-        self._update_checked = True  # Mark that we've checked
-
-        if not update:
-            return
         try:
-            auto_update = self.config.get("auto_update", True)
-            if auto_update:
-                # Auto-update replaces the running app silently and
-                # unattended — there's no "dismissed for now" state to
-                # discover later, so the persistent badge/menu item (which
-                # exist specifically so a DECLINED update stays findable)
-                # would have nothing meaningful to point at here. Skip them
-                # entirely in this mode; a failed silent download/install
-                # just falls through to the existing log-only error handling
-                # below, same as before this change.
-                from app.updater import download_update, install_update
-                logger.info(f"Auto-update: downloading {update['version']}")
-                self.overlay.show_briefly(f"Updating to v{update['version']}...", duration=3.0)
-                path = download_update(update)
-                if path:
-                    install_update(path, silent=True)
+            update = check_for_update(force=force)
+        except Exception as e:
+            logger.debug(f"update check failed: {e}")
+            update = None
+
+        try:
+            in_flight = self._update_phase in ("downloading", "ready", "installing")
+            if not update and self._update_available and in_flight:
+                update = self._update_available
+
+            if not update:
+                had_one = self._update_available is not None
+                self._update_available = None
+                self._update_phase = "idle"
+                self._update_progress = 0.0
+                self._update_ready_path = None
+                if had_one:
+                    self._update_tray_icon(self._is_recording)
+                    self._update_tray_menu()
+                if announce_current and not suppress_prompt:
+                    self._show_up_to_date_dialog()
                 return
 
-            # Manual mode: the popup is the discoverability path on FIRST
-            # sight of a version; the persistent tray badge + "Update
-            # available" menu item (_menu_update) are what carry that same
-            # information forward after the user dismisses it, so declining
-            # once doesn't mean losing track of the update for the rest of
-            # the session.
+            prev = self._update_available
+            is_new_version = not prev or prev.get("version") != update.get("version")
+            if is_new_version and self._update_phase != "idle":
+                self._update_phase = "idle"
+                self._update_progress = 0.0
+                self._update_ready_path = None
+            # Sets _update_available (via the _pending_update alias) and
+            # refreshes the badge + tray row; never shows the dialog here.
             self._offer_update(update)
+
+            auto_started = False
+            if self.config.get("auto_update", True) and self._update_phase in ("idle", "failed"):
+                # Unattended: download + /VERYSILENT install, reflected in the
+                # state machine. Not when the dashboard has already parked the
+                # installer (phase 'ready') — that flow promised to wait for an
+                # explicit "Restart to update".
+                logger.info(f"Auto-update: downloading {update.get('version')}")
+                try:
+                    self.overlay.show_briefly(f"Updating to v{update.get('version')}...", duration=3.0)
+                except Exception as e:
+                    logger.debug(f"update overlay note failed: {e}")
+                threading.Thread(
+                    target=self._download_and_install, args=(update, True),
+                    name="auto-update", daemon=True).start()
+                auto_started = True
+
+            if announce_current and not suppress_prompt and not auto_started:
+                self._offer_update(update, force_dialog=True)
         except Exception as e:
+            logger.error(f"Update check handling failed: {e}")
+
+    def _set_update_progress(self, fraction):
+        """download_update on_progress callback → banner percentage."""
+        try:
+            self._update_progress = max(0.0, min(1.0, float(fraction)))
+        except Exception:
+            pass
+
+    def _app_busy(self) -> bool:
+        """True while the process must NOT be killed out from under the user:
+        a dictation is being recorded or transcribed/injected, or a meeting
+        session is capturing or still post-processing. Read-only peeks at
+        state the record path already maintains — never touches it (Hard Rule
+        1). Fail-open to False so a broken peek can never wedge an update."""
+        try:
+            if self._is_recording or self._processing:
+                return True
+            m = self.meetings
+            if m is not None and (getattr(m, "active", None) or getattr(m, "processing", None)):
+                return True
+        except Exception as e:
+            logger.debug("busy check failed: %s", e)
+        return False
+
+    def _download_and_install(self, update, silent):
+        """Download `update` and hand it to updater.install_update, which
+        launches the installer and os._exit()s this process (never returns
+        on success). Used by the auto_update path (silent=True → /VERYSILENT)
+        and the tray dialog's "Yes" (silent=False). Single-flight via
+        _update_download_lock so a periodic re-check landing mid-download
+        can't start a second copy of the same download; on any failure the
+        phase goes to 'failed' so the banner offers Retry.
+
+        silent=True is UNATTENDED, so it must not exit the process at an
+        arbitrary moment: install_update ends in os._exit(0), and the first
+        real Windows auto-update (the pre-2026-08-26 t=0 check never ran)
+        would have killed a dictation mid record→transcribe→inject or a
+        meeting mid-recording — transcript lost, nothing injected, tray gone.
+        So after the download it parks the installer as phase 'ready' (the
+        banner reads "ready to install" / "Restart to update", which the user
+        may click at any time — _install_ready_update takes the same path)
+        and only proceeds once _app_busy() has been False for two consecutive
+        1 s polls. It abandons the install if a newer version supersedes this
+        one while waiting (the parked installer is stale) or if someone else
+        already installed. The tray dialog's "Yes" (silent=False) installs
+        immediately: the user just asked for it, with the app idle in front
+        of them."""
+        if not self._update_download_lock.acquire(blocking=False):
+            logger.debug("update download already in progress; skipping duplicate")
+            return
+        # A newer version found while this thread held the lock: the periodic
+        # check's own _download_and_install for it hit the non-blocking
+        # acquire above and was dropped, so this thread picks it up once the
+        # lock is free (else the unattended install waits a whole
+        # UPDATE_CHECK_INTERVAL). Same hand-off as _start_update_download.
+        resume = None
+        try:
+            from app.updater import download_update, install_update
+            self._update_phase = "downloading"
+            self._update_progress = 0.0
+            path = download_update(update, on_progress=self._set_update_progress)
+            if not path:
+                self._update_phase = "failed"
+                logger.error(f"Update download failed for {update.get('version')}")
+                return
+            self._update_ready_path = path
+            if silent:
+                self._update_phase = "ready"
+                idle_polls = 0
+                while idle_polls < 2:
+                    current = self._update_available
+                    if not current or current.get("version") != update.get("version"):
+                        logger.info("Auto-update: %s superseded while waiting for idle; dropping it",
+                                    update.get("version"))
+                        try:
+                            os.unlink(path)
+                        except Exception:
+                            pass
+                        resume = current
+                        return
+                    if self._update_phase != "ready" or self._update_ready_path != path:
+                        # The user clicked "Restart to update" (installing now)
+                        # or the state was reset under us — either way this
+                        # thread has nothing left to do.
+                        return
+                    idle_polls = idle_polls + 1 if not self._app_busy() else 0
+                    time.sleep(1.0)
+                logger.info(f"Auto-update: app idle, installing {update.get('version')}")
+            self._update_phase = "installing"
+            install_update(path, silent=silent)
+        except Exception as e:
+            self._update_phase = "failed"
             logger.error(f"Update failed: {e}")
+        finally:
+            self._update_download_lock.release()
+            # In the finally (not after it): the superseded branch `return`s
+            # from inside the try, so code after this block would never run.
+            if resume is not None and self.config.get("auto_update", True):
+                self._download_and_install(resume, True)
+
+    def _start_update_download(self):
+        """Dashboard-driven download (shared_dashboard.start_update_download),
+        ported from main.py. This one must NEVER auto-install: it downloads,
+        parks the installer at `_update_ready_path`, sets phase='ready', and
+        stops — install only happens if/when the user clicks "Restart to
+        update" (_install_ready_update). Duplicate clicks are no-ops."""
+        try:
+            if self._update_phase in ("downloading", "installing"):
+                return
+            update = self._update_available
+            if not update:
+                return
+            if not self._update_download_lock.acquire(blocking=False):
+                return
+            self._update_phase = "downloading"
+            self._update_progress = 0.0
+        except Exception as e:
+            logger.error(f"start_update_download failed: {e}")
+            return
+
+        def _run():
+            # Set when a newer version superseded `update` mid-download: the
+            # periodic check reset the phase to 'idle' and spawned the auto
+            # path for the new version, but that thread found the lock held
+            # by THIS download and was dropped ("skipping duplicate") — so
+            # without a hand-off the unattended install waited a whole
+            # UPDATE_CHECK_INTERVAL (4 h) and the stale installer stayed in
+            # the temp dir. Chained AFTER the lock is released, below.
+            resume = None
+            try:
+                from app.updater import download_update
+                path = download_update(update, on_progress=self._set_update_progress)
+                current = self._update_available
+                if not current or current.get("version") != update.get("version"):
+                    # A newer version superseded this one mid-download;
+                    # _check_update already reset the phase — leave it.
+                    if path:
+                        try:
+                            os.unlink(path)
+                        except Exception:
+                            pass
+                    resume = current
+                    return
+                if path:
+                    self._update_ready_path = path
+                    self._update_phase = "ready"
+                else:
+                    self._update_phase = "failed"
+            except Exception as e:
+                self._update_phase = "failed"
+                logger.error(f"Update download failed: {e}")
+            finally:
+                self._update_download_lock.release()
+                # In the finally (not after it): the superseded branch
+                # `return`s from inside the try, so code after this block
+                # would never run.
+                if resume is not None and self.config.get("auto_update", True):
+                    self._download_and_install(resume, True)
+
+        threading.Thread(target=_run, name="update-download", daemon=True).start()
+
+    def _install_ready_update(self):
+        """"Restart to update" (shared_dashboard.install_ready_update) — the
+        ONLY thing in the dashboard flow allowed to actually run the
+        installer and exit. Safe from the pywebview API thread:
+        install_update() spawns the detached installer and os._exit()s
+        (rule 59b — never sys.exit() off the main thread on Windows)."""
+        try:
+            path = self._update_ready_path
+            if not path:
+                return
+            if not os.path.exists(path):
+                # Temp dir got cleaned between download and click — let the
+                # banner offer Retry instead of pretending to install.
+                self._update_ready_path = None
+                self._update_phase = "failed"
+                return
+            self._update_phase = "installing"
+            from app.updater import install_update
+            install_update(path)
+        except Exception as e:
+            self._update_phase = "failed"
+            logger.error(f"Update install failed: {e}")
+
+    def _show_up_to_date_dialog(self):
+        """Explicit "Check for updates" with nothing newer — silence there
+        reads as a broken button (same rationale as main.py's rumps.alert)."""
+        try:
+            import tkinter as tk
+            from tkinter import messagebox
+            root = tk.Tk()
+            root.withdraw()
+            messagebox.showinfo("You're up to date", f"Flume v{APP_VERSION} is the latest version.")
+            root.destroy()
+        except Exception as e:
+            logger.debug(f"up-to-date dialog failed: {e}")
 
     def _offer_update(self, update, force_dialog=False):
         """Show (or re-show) the update-available dialog and keep the
         persistent tray badge + menu item (_menu_update) in sync with it.
 
-        Always sets self._pending_update and refreshes the tray icon/menu —
-        that's what makes the badge and menu row persist regardless of what
-        the user does with the popup. The dialog itself only ever shows for
-        `force_dialog=True` (the tray menu's explicit click); automatic
-        checks stop at the badge + the dashboard banner.
+        Always sets self._pending_update (== _update_available) and refreshes
+        the tray icon/menu — that's what makes the badge and menu row persist
+        regardless of what the user does with the popup. The dialog itself
+        only ever shows for `force_dialog=True` (the tray menu's explicit
+        click, or an announce_current check); automatic checks stop at the
+        badge + the dashboard banner.
         """
         self._pending_update = update
         try:
@@ -1916,27 +2317,51 @@ class VerbalWinApp:
         if not force_dialog:
             return
 
-        from app.updater import download_update, install_update
-        import tkinter as tk
-        from tkinter import messagebox
-        root = tk.Tk()
-        root.withdraw()
-        changelog = update.get("changelog", "Bug fixes and improvements")
-        resp = messagebox.askyesno(
-            f"Flume {update['version']} available",
-            f"{changelog}\n\nDownload and install now?",
-        )
-        root.destroy()
-        self.config["update_dialog_seen_version"] = update.get("version")
         try:
-            save_config(self.config)
+            import tkinter as tk
+            from tkinter import messagebox
+            version = update.get("version")
+            phase = self._update_phase
+            root = tk.Tk()
+            root.withdraw()
+            try:
+                if phase in ("downloading", "installing"):
+                    # The dashboard/auto path already has this in hand — a
+                    # second "Download now?" would start nothing (single-
+                    # flight lock) and just confuse.
+                    messagebox.showinfo(
+                        f"Flume {version} available",
+                        "Flume is already downloading this update and will "
+                        "restart to install it.")
+                    return
+                if phase == "ready" and self._update_ready_path:
+                    if messagebox.askyesno(
+                            f"Flume {version} ready to install",
+                            "The update has been downloaded.\n\nRestart Flume to install it now?"):
+                        threading.Thread(target=self._install_ready_update, daemon=True).start()
+                    return
+                changelog = update.get("changelog", "Bug fixes and improvements")
+                resp = messagebox.askyesno(
+                    f"Flume {version} available",
+                    f"{changelog}\n\nDownload and install now?",
+                )
+            finally:
+                root.destroy()
+            self.config["update_dialog_seen_version"] = version
+            try:
+                save_config(self.config)
+            except Exception as e:
+                logger.debug(f"update-seen flag save failed: {e}")
+            if resp:
+                # Off the pystray callback thread so a slow download doesn't
+                # freeze the tray menu; the lock makes a duplicate a no-op.
+                threading.Thread(
+                    target=self._download_and_install, args=(update, False),
+                    name="update-install", daemon=True).start()
+            # "No": nothing to remember — the badge + _menu_update row stay,
+            # and the dialog only ever re-shows on another explicit click.
         except Exception as e:
-            logger.debug(f"update-seen flag save failed: {e}")
-        if resp:
-            path = download_update(update)
-            if path:
-                install_update(path)
-
+            logger.error(f"update dialog failed: {e}")
 
 SHOW_EVENT_NAME = "VerbalShowDashboardEvent_v1"
 
@@ -1961,6 +2386,170 @@ def _signal_running_instance():
         return False
 
 
+# ── Process model of the shipped build (why the watcher below exists) ─────────
+# verbal-win.spec builds a PyInstaller ONE-FILE exe (EXE(...) with no COLLECT), so
+# a running Flume is TWO Flume.exe processes: the bootloader parent (~9 MB, child
+# of explorer.exe — it unpacks to %TEMP%\_MEIxxxx and then just waits) and the
+# real app child (~300 MB, holds the tray icon, the hotkey, the WebView2 windows
+# and the "VerbalSingletonMutex_v1" mutex). Task Manager shows both. When a user
+# picks the parent and hits "End task", only the bootloader dies; the child is
+# orphaned and keeps running headless-ish — and keeps the mutex, so the next
+# double-click on Flume loses _acquire_single_instance_mutex and exits.
+# Reported 2026-08-26: "when I close the program it doesn't quit properly and I
+# can see it running in task manager. If I end the program it still lurks around
+# in the task manager until I kill it." _watch_bootloader_parent closes that
+# hole: the child watches its bootloader parent and hard-exits with it. The
+# structural fix is a onedir build (COLLECT) — one process, no bootloader — but
+# that touches CI and the Inno Setup Source paths, so it is a separate change.
+# The watcher detects the build layout itself (sys._MEIPASS outside the exe's
+# directory == one-file) and stays off in a onedir build, where "parent is
+# another Flume.exe" is a legitimate state — see _watch_bootloader_parent.
+
+
+def _watch_bootloader_parent(on_parent_exit):
+    """Frozen one-file build only: exit with the PyInstaller bootloader parent.
+
+    Opens the parent process (os.getppid()) and, ONLY if its executable is the
+    same file as ours (sys.executable is the bootloader path in a one-file
+    child) and it was created before us (guards PID reuse), starts a daemon
+    thread that blocks in WaitForSingleObject on the parent's handle. When the
+    parent is gone the thread calls `on_parent_exit(reason)` — VerbalWinApp.
+    _hard_exit, the same teardown as tray Quit — so an "End task" on either
+    Flume.exe in Task Manager ends Flume, not just half of it.
+
+    Never runs when not frozen: a dev run's parent is the terminal/IDE shell,
+    and Flume must not die with it. Never runs in a onedir (COLLECT) build
+    either, and that needs a POSITIVE one-file check, not just the path
+    compare: in onedir the app IS Flume.exe, and its parent can legitimately
+    be another Flume.exe with the same path and an earlier creation time —
+    concretely the elevated relaunch (paste_guard._relaunch_elevated →
+    ShellExecuteW "runas"), which AppInfo reparents onto the requesting
+    process. Both guards would pass, the watcher would arm, and when the old
+    instance then quits (_prompt_paste_blocked → _tray_quit) the healthy
+    elevated copy would hard-exit with it — Flume vanishing right after the
+    user asked it to fix paste. One-file is told apart by sys._MEIPASS: the
+    bootloader unpacks to %TEMP%/_MEIxxxx, OUTSIDE the exe's directory,
+    whereas onedir's _MEIPASS is the exe dir itself (PyInstaller < 6) or its
+    `_internal` subdir (PyInstaller >= 6). Fully fail-closed: any ctypes
+    failure is logged at debug and the watcher is simply not started (old
+    behaviour). Returns True only if the watcher thread was started.
+    """
+    try:
+        if not getattr(sys, "frozen", False):
+            return False
+        meipass = getattr(sys, "_MEIPASS", None)
+        if not meipass:
+            logger.debug("parent watcher: frozen but no _MEIPASS; not a one-file build")
+            return False
+        exe_dir = os.path.normcase(os.path.realpath(os.path.dirname(sys.executable)))
+        unpack_dir = os.path.normcase(os.path.realpath(meipass))
+        try:
+            inside = os.path.commonpath([exe_dir, unpack_dir]) == exe_dir
+        except ValueError:
+            inside = False  # different drives: certainly not inside
+        if inside:
+            logger.debug("parent watcher: onedir layout (%s under %s); no watcher", unpack_dir, exe_dir)
+            return False
+        ppid = os.getppid()
+        if not ppid or ppid <= 0:
+            logger.debug("parent watcher: no usable ppid (%r)", ppid)
+            return False
+
+        import ctypes
+        from ctypes import wintypes
+        k32 = ctypes.windll.kernel32
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        SYNCHRONIZE = 0x00100000
+        INFINITE = 0xFFFFFFFF
+        WAIT_OBJECT_0 = 0
+
+        k32.OpenProcess.restype = wintypes.HANDLE
+        k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        k32.QueryFullProcessImageNameW.restype = wintypes.BOOL
+        k32.QueryFullProcessImageNameW.argtypes = [
+            wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD)]
+        k32.GetCurrentProcess.restype = wintypes.HANDLE
+        k32.GetCurrentProcess.argtypes = []
+        k32.GetProcessTimes.restype = wintypes.BOOL
+        k32.GetProcessTimes.argtypes = [
+            wintypes.HANDLE, ctypes.POINTER(wintypes.FILETIME), ctypes.POINTER(wintypes.FILETIME),
+            ctypes.POINTER(wintypes.FILETIME), ctypes.POINTER(wintypes.FILETIME)]
+        k32.WaitForSingleObject.restype = wintypes.DWORD
+        k32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        k32.CloseHandle.restype = wintypes.BOOL
+        k32.CloseHandle.argtypes = [wintypes.HANDLE]
+
+        h = k32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, False, ppid)
+        if not h:
+            logger.debug("parent watcher: OpenProcess(%d) failed", ppid)
+            return False
+
+        def _close():
+            try:
+                k32.CloseHandle(h)
+            except Exception:
+                pass
+
+        # Is the parent really our bootloader? Compare executable paths (a
+        # launcher script or shell wrapper fails this test and gets no
+        # watcher). Not sufficient on its own for onedir — see the docstring —
+        # which is why the _MEIPASS layout check above runs first.
+        buf = ctypes.create_unicode_buffer(32768)
+        size = wintypes.DWORD(len(buf))
+        if not k32.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(size)):
+            logger.debug("parent watcher: QueryFullProcessImageNameW failed")
+            _close()
+            return False
+        parent_exe = buf.value[: size.value]
+
+        def _norm(path):
+            return os.path.normcase(os.path.realpath(path))
+
+        if not parent_exe or _norm(parent_exe) != _norm(sys.executable):
+            logger.debug("parent watcher: parent is not our bootloader (%s)", parent_exe)
+            _close()
+            return False
+
+        # PID-reuse guard: a parent "created" after us is not our parent.
+        def _created(handle):
+            c, e, k, u = (wintypes.FILETIME() for _ in range(4))
+            if not k32.GetProcessTimes(handle, ctypes.byref(c), ctypes.byref(e),
+                                       ctypes.byref(k), ctypes.byref(u)):
+                return None
+            return (c.dwHighDateTime << 32) | c.dwLowDateTime
+
+        parent_created = _created(h)
+        self_created = _created(k32.GetCurrentProcess())
+        if parent_created is None or self_created is None or parent_created > self_created:
+            logger.debug("parent watcher: creation-time check failed (%r vs %r)",
+                         parent_created, self_created)
+            _close()
+            return False
+
+        def _wait():
+            try:
+                rc = k32.WaitForSingleObject(h, INFINITE)
+            except Exception as e:
+                logger.debug("parent watcher: wait raised: %s", e)
+                return
+            if rc != WAIT_OBJECT_0:
+                # WAIT_FAILED / anything unexpected: do NOT exit on a guess.
+                logger.debug("parent watcher: wait returned %r; not exiting", rc)
+                return
+            logger.info("bootloader parent (pid %d) exited - tearing down with it", ppid)
+            try:
+                on_parent_exit("bootloader parent exited")
+            except Exception as e:
+                logger.error("parent watcher: teardown failed: %s", e)
+
+        threading.Thread(target=_wait, name="parent-watch", daemon=True).start()
+        logger.info("watching bootloader parent pid %d", ppid)
+        return True
+    except Exception as e:
+        logger.debug("parent watcher not started: %s", e)
+        return False
+
+
 def _acquire_single_instance_mutex():
     """Prevent a second Verbal from running — the second instance stacks
     every window (tray icons, overlay pills) and steals the hotkey.
@@ -1968,7 +2557,8 @@ def _acquire_single_instance_mutex():
     Uses a Windows named mutex; the handle stays alive for the whole
     process lifetime (stashed on the sys module) so Windows releases it
     on exit. Returns True if we acquired the singleton, False if another
-    Verbal is already running.
+    Verbal is already running. (The mutex is held by the one-file CHILD
+    process, not the bootloader parent — see the process-model note above.)
 
     NOTE: Must call kernel32.GetLastError() directly — `ctypes.get_last_error`
     only returns non-zero when the DLL was loaded with `use_last_error=True`,
@@ -2007,6 +2597,10 @@ def main():
                     "asked it to show the dashboard" if signalled else "exiting")
         return
     app = VerbalWinApp()
+    # Frozen one-file build: die with the bootloader parent so an "End task"
+    # in Task Manager cannot leave an orphan holding the mutex (2026-08-26).
+    # No-op in dev runs and on any ctypes failure.
+    _watch_bootloader_parent(app._hard_exit)
     app.start()
 
 

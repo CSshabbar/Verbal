@@ -26,6 +26,27 @@
    reader and raised WinError 5 Access Denied (`os.replace` of an open destination). Reads take the
    same lock; `os.replace` retries a short backoff on PermissionError. `load_config` only saves when
    defaults/migrations actually mutated the dict.
+   **Windows hardening (2026-08-26 — user logs showed ~12 WinError 5s per session, each of which
+   discarded the save and dropped auth to the anon key):** (a) both the read and the `os.replace`
+   retry the Windows lock family only (`_is_lock_error`: WinError 5/32/33, `PermissionError`) with a
+   `_RETRY_BACKOFF` of 20→320 ms; (b) if the rename still loses, `save_config` **falls back to an
+   in-place write** (`_write_in_place`) after snapshotting the current file to `config.json.prev` —
+   a handle that blocks a rename (no `FILE_SHARE_DELETE`) normally still allows writes, so the save
+   is kept instead of lost; `load_config` restores from `.prev` if a crash left `config.json`
+   truncated and deletes it once the file reads clean; (c) an **unreadable** `config.json` (exists,
+   but locked for the whole retry window) is NOT corruption: `load_config` serves the last text this
+   process read/wrote (`_last_good_json`) and, on a first load with no copy, runs on defaults but
+   sets `_serving_unread_defaults`, which makes every later `save_config` raise `OSError` **without
+   touching the file** until a `load_config` actually reads it — the old code moved the locked file
+   to `.bak` and saved `DEFAULT_CONFIG` over it, i.e. an antivirus scan could sign the user out and
+   drop their history; (d) a genuinely corrupt file (JSON *or* UTF-8 error — the read is bytes and
+   the decode happens inside the corrupt-file handler, because a `UnicodeDecodeError` is a
+   `ValueError` that used to escape and crash `VerbalWinApp.__init__` on every launch) goes aside via
+   `os.replace(..., config.json.bak)` — `Path.rename` failed with WinError 183 whenever a previous
+   `.bak` existed — then in-memory copy → `.prev` → factory reset, in that order; (e) defaults are
+   `copy.deepcopy`'d (`DEFAULT_CONFIG` holds mutable lists); (f) orphaned `.config-*.tmp` files older
+   than 60 s are swept (`_sweep_stale_tmps`, throttled to 10 min) — the `os._exit` quit path can leave
+   one behind, and the temp file is now unlinked in a `finally` on every outcome.
 
 4. **Main-thread discipline (macOS).** WKWebView and all AppKit UI must be touched on the main thread —
    route every background→UI hop through `main._on_main` / the `rumps.Timer` UI queue. Background threads
@@ -1408,14 +1429,46 @@
     `sys.exit()` there raises `SystemExit` in that thread only: the tray icon vanished but the process
     lived on, still holding `VerbalSingletonMutex_v1`, so every later double-click hit
     `ERROR_ALREADY_EXISTS` and exited silently ("after closing the app it doesn't open again",
-    2026-08-26 — the same lesson `updater.install_update` already learned). `_tray_quit` now stops the
-    tray, destroys pywebview windows, `logging.shutdown()`, `os._exit(0)`. And because closing the
+    2026-08-26 — the same lesson `updater.install_update` already learned). `_tray_quit` is now a thin
+    wrapper over **`_hard_exit(reason)`**, the ONE teardown every exit path shares (tray Quit, the
+    popover's `quit_app`, the elevated relaunch, the bootloader watcher below): set `self._exiting`
+    (so `SharedDashboard._on_window_closed` and the pywebview `closing` interceptors of #67 can tell
+    "quitting" from "user closed a window"), hide the tray icon (`icon.visible = False` — a
+    synchronous `NIM_DELETE`; `stop()` alone only posts `WM_STOP` and, when Quit is clicked, we ARE on
+    the pystray loop thread that never gets to run its `finally`, so the icon stayed as a ghost),
+    destroy the pywebview windows, `logging.shutdown()`, `os._exit(0)`. The optional teardown runs on
+    a daemon thread **joined for at most 1 s**: pywebview's winforms `destroy()` is a synchronous
+    `Control.Invoke` onto the GUI thread, so with that thread stalled an inline destroy never returns
+    and `os._exit` is never reached — exactly the "looks hung, kill it in Task Manager" state. It is
+    re-entrant (a second caller sleeps 1.5 s and exits) and does no network, no meeting-stop, no config
+    write — anything that can block or raise there is a way to lurk again. And because closing the
     dashboard with X deliberately leaves Flume in the tray, the *losing* second process now pulses the
     named auto-reset Event `VerbalShowDashboardEvent_v1` (`_signal_running_instance`) and the running
     app's `_second_instance_watch` thread answers with `dashboard.show()` — "opening the app" opens the
     app. `SharedDashboard` hooks `events.closed` to drop its window reference so that show() rebuilds
-    rather than poking a destroyed handle. All fail-closed: if the Event plumbing breaks, behavior is
-    exactly the old tray-only one. The Event name is a machine identity like the mutex — see #60.
+    rather than poking a destroyed handle — and, on Windows only, shows a **one-time toast** the first
+    time the dashboard is X'd ("Flume is still running in the system tray … right-click the tray icon
+    and choose Quit"; `_maybe_show_tray_close_hint`, flag `config['tray_close_hint_shown']`, winotify
+    → `pystray` `notify` fallback, config write + toast on a daemon thread, suppressed while
+    `_exiting`) — users read the vanished window as "closed" and then found Flume.exe in Task Manager.
+    All fail-closed: if the Event plumbing breaks, behavior is exactly the old tray-only one. The Event
+    name is a machine identity like the mutex — see #60.
+    **The shipped build is TWO processes (PyInstaller ONE-FILE).** `verbal-win.spec` is `EXE(...)` with
+    no `COLLECT`, so a running Flume is a ~9 MB **bootloader parent** (child of explorer.exe; unpacks
+    to `%TEMP%\_MEIxxxx` and waits) plus the ~300 MB **real app child** that owns the tray icon, hotkey,
+    WebView2 windows and `VerbalSingletonMutex_v1`. Task Manager shows both `Flume.exe`. "End task" on
+    the parent used to orphan the child — headless, still holding the mutex, so the next double-click
+    died on `ERROR_ALREADY_EXISTS` ("if I end the program it still lurks around in the task manager",
+    2026-08-26). `win_main._watch_bootloader_parent(app._hard_exit)` closes that hole: the child opens
+    `os.getppid()` with `SYNCHRONIZE`, blocks in `WaitForSingleObject` on a daemon thread and
+    `_hard_exit`s when the parent dies. It arms ONLY when all four hold — `sys.frozen`; one-file layout
+    (`sys._MEIPASS` is OUTSIDE the exe's directory — in onedir it is the exe dir or `_internal`, and
+    there "parent is another Flume.exe" is legitimate: the elevated relaunch gets reparented onto the
+    requester, and the healthy copy would die when the old one quits); parent image path ==
+    `sys.executable`; parent created before us (PID-reuse guard) — and any ctypes failure just means no
+    watcher (old behavior). Never in a dev run (the parent is your terminal). The **structural** fix is a
+    onedir (`COLLECT`) build — one process, no bootloader — but that touches CI and the Inno Setup
+    `Source` paths and is deliberately a separate change.
 
 60. **The product is branded "Flume" everywhere user-facing (renamed from "Verbal", 2026-08-23) — but
     every internal identity string stays "Verbal"/`com.verbal.app`, deliberately.** App bundle/executable
@@ -1511,6 +1564,84 @@
     sits above a primary action in a pywebview window. Settings-page `<select>`s are fine: they
     live on a scrolling pane with room below.
 
+67. **Every Windows pywebview window that is built once and re-used MUST handle `events.closing`
+    (hide + cancel) and `events.closed` (drop the handle).** pywebview's winforms backend DESTROYS the
+    form on the title-bar X / Alt+F4 (`Form.Close` → the BrowserView leaves `webview.windows`), while
+    our `self._window` keeps pointing at the corpse — and `Window.show()` on a dead uid is a **silent
+    no-op** (`gui.show(uid)` finds no instance; nothing raises). That is why "Start meeting" on Windows
+    logged `meeting open: ready=True skipped=False`, called `show()`, and nothing appeared, forever,
+    after the first close (2026-08-26). `WinMeetingWindow` and `WinPopover` now follow the same recipe,
+    which any new pywebview surface must copy: (a) `closing += _on_closing` — runs synchronously ON the
+    WinForms UI thread; it `hide()`s (mid-meeting it collapses to the bar instead, macOS
+    `windowShouldClose_` parity) and **returns False** so pywebview sets `FormClosingEventArgs.Cancel`.
+    Keep it trivial: `hide()` is safe there (Control.Invoke on the owning thread) but **`evaluate_js` —
+    hence `emit`/`set_layout`/`_refresh` — deadlocks the UI thread**; anything touching the page goes
+    through `app._on_main`. Let programmatic teardown through: `self._destroying` (set by the class's
+    own `destroy()`) or `app._exiting` (`_hard_exit`'s generic `webview.windows` destroy sweep, #59b).
+    (b) `closed += _on_closed` — the safety net when the form dies anyway: reset every reference
+    (`_window`, api/bridge, `_page_ready`/`_loaded`, `_visible`, pending queues) so the next `show()`
+    rebuilds; take the build lock (it runs on a pywebview thread). (c) `show()` first checks
+    `_window_alive()` — `self._window in webview.windows`, since pywebview prunes that list BEFORE
+    `closed` fires — and rebuilds once on a stale handle; there is deliberately NO
+    "show() raised → rebuild" fallback because show() never raises on a dead handle and a rebuild on
+    the `shown` timeout would orphan a second form. (d) `_wait_shown()` bounds the wait for the fresh
+    form's `shown` Event to `SHOWN_WAIT_S` (5 s): every `Window` method show() calls next (`resize`/
+    `move`/`show`) is `_shown_call`-decorated and blocks **20 s each** when Shown never fires (WebView2
+    runtime mid-update) — a silent ~60 s freeze per click became one warning + early return, handle
+    kept for the next retry. (e) set `_visible = True` BEFORE `.show()` — `_on_loaded` (pywebview
+    thread) hides the window when `_visible` is False, so setting it after raced a first-open hide.
+    (f) **Veto USER closes only.** pywebview's `closing` Event hides the `CloseReason`, and WinForms
+    routes Windows shutdown/log-off (`WM_QUERYENDSESSION` → `WindowsShutDown`), Task Manager "End task"
+    (`TaskManagerClosing`) and `Application.Exit` through the same `FormClosing` — hidden forms
+    included. Cancelling those parks Windows on "Flume is preventing you from shutting down" (review of
+    the same-day fix). So `_build` also subscribes a NATIVE `FormClosing` handler on
+    `self._window.native` (`_attach_native_closing`; `create_window` is synchronous for non-master
+    windows so `.native` is already the `BrowserForm`) — it runs after pywebview's, and for every
+    `CloseReason` other than `UserClosing` sets `_destroying = True` and clears `args.Cancel`.
+
+68. **No glibc-only `strftime` directives — the Windows CRT raises `ValueError("Invalid format
+    string")`.** The `-` (no-pad) flag family (`%-d`, `%-I`, `%-m`, `%-H`, …) is a glibc/BSD extension,
+    not C89; Python's `time.strftime` hands the format to the platform CRT, so it works on macOS and
+    blows up on Windows. `MeetingSession.__init__`'s default title used `'%b %-d, %H:%M'`, so every
+    meeting started on Windows without a typed title failed with "manager start failed: Invalid format
+    string" (2026-08-26). Build unpadded fields from the struct instead (`lt = time.localtime()`;
+    `f"{time.strftime('%b', lt)} {lt.tm_mday}, {time.strftime('%H:%M', lt)}"`) — `tm_mday`/`tm_hour`
+    are already unpadded everywhere — or `.lstrip('0')`. Grep for `%-` before shipping any shared
+    module's date formatting; the code path is identical on both platforms, only the CRT differs.
+
+69. **The shared `DashboardApi` reads host-app state by ATTRIBUTE NAME — every attribute it touches must
+    exist on BOTH `VerbalApp` (main.py) and `VerbalWinApp` (win_main.py), and a Windows-only "one-shot"
+    is not a schedule.** Two halves, one report (Flume 1.0.33 never saw 1.0.34, 2026-08-26):
+    (a) `get_update_status` read `app._update_available/_update_phase/_update_progress` directly, and
+    Windows only had `_pending_update` — so every 30 s dashboard poll raised `AttributeError` into the
+    log for the whole session and the in-app banner / Settings › Updates button were dead there. Fix on
+    both sides: `VerbalWinApp` now owns the SAME state machine (`_update_available`, `_update_phase`,
+    `_update_progress`, `_update_ready_path`, `_update_download_lock`; `_pending_update` survives as a
+    read/write **property alias** so the tray badge/menu code reads the same state), and the bridge
+    reads with `getattr(..., default)` / `callable()` checks and returns `_err` instead of raising —
+    a host without the machine reports "no update", never a traceback. When you add a field to one
+    app class, add it to the other in the same change (or make the bridge tolerate its absence).
+    (b) The Windows startup check was **permanently defeated by two guards stacked on each other**:
+    `updater.check_for_update()` returns `None` for the first 30 s after launch (the auto-install-loop
+    gate keyed off `sys._verbal_start_time`), and `win_main._check_update` fired its ONLY check at
+    t=0 — inside that gate — then set a once-per-session flag that turned every later call into a
+    no-op. Net effect: the Windows app never asked Supabase at all. Now: `_update_check_loop` (daemon;
+    first check after `UPDATE_STARTUP_DELAY=35` s, then every `UPDATE_CHECK_INTERVAL=4 h`, mirroring
+    main.py's `rumps.Timer`), no session flag, and **`check_for_update(force=True)` for every explicit
+    click** (dashboard button on both platforms, mac menubar "Check for Updates…", the new Windows
+    tray "Check for updates..." row) — a human clicking cannot produce the loop the gate guards
+    against, and a gated click was a silent no-op / a false "You're up to date". Lessons: a gate that
+    returns `None` for "too early" is indistinguishable from "no update", so callers that skip a check
+    must be *scheduled* to try again; and `DashboardApi.check_for_updates` is now **synchronous,
+    bounded by `CHECK_UPDATES_WAIT_S=8 s`** and returns `available`/`version` — the old fire-and-forget
+    + a fixed 1.5 s JS poll toasted "You're up to date" and then grew a banner on the next 30 s poll
+    whenever Supabase took >1.5 s (safe to block: both bridges run API calls on their own daemon
+    thread). Two adjacent latent bugs fixed in the same pass: `updater.py` imported `time` INSIDE
+    `check_for_update`, so `download_update`'s retry backoff raised `NameError` on the first transient
+    error and the 3-attempt retry never happened; and `main.py::_start_update_download`'s thread had no
+    try/except, so a raise left the banner stuck at "Downloading… N%" until relaunch — both now land on
+    phase `'failed'` (banner offers Retry).
+
 ## Design system (Flume)
 
 Single source: desktop `app/theme.py` + `app/fonts_css.py`; mobile `flume-ui/theme/`. Also
@@ -1528,6 +1659,15 @@ Single source: desktop `app/theme.py` + `app/fonts_css.py`; mobile `flume-ui/the
   - `slate` `#d7dfe9` (ink `#182029`) — added for the Notes Studio Export card (v3.1); scards only so far
   - fcards' icon disc = the ink color inverted (near-black bg, pastel glyph); scards use a translucent
     ink-tint disc instead (`rgba(ink,.13)`).
+  - **Studio card geometry (`.scards .scard`, 2026-08-26 "align these icons"):** cards are **top-anchored**
+    and equal-height — `min-height:108px`, `gap:7px`, `justify-content:flex-start`, `.sdisc{margin-bottom:0}`
+    (the old `margin-bottom:auto` pinned title+description to the card's BOTTOM edge, so a two-line
+    description drew its title ~2 px higher than its row-mate), and the description **reserves two lines**
+    (`.ss{min-height:calc(2 * 1.35em)}`) so 1- and 2-line copy yield identical cards. The Export card's
+    popup anchor `.nmenuwrap` is a `<div>` that is `display:flex; flex-direction:column; position:relative`
+    with the card `flex:1 1 auto` — NOT `display:block` + `height:100%`: WebView2 resolved that percentage
+    height differently from the bare sibling cards and rendered two card heights in one row. The grid is
+    `align-items:stretch`. Applies to both Studios (Notes and Meeting detail).
 - **Auto-learn widget** deliberately uses the `cream` card language (cream pill, dark ink, near-black
   "Add to dictionary" button) — not orange/black — per user preference.
 
@@ -1630,6 +1770,9 @@ Single source: desktop `app/theme.py` + `app/fonts_css.py`; mobile `flume-ui/the
 cd whisperflow
 .venv/bin/python -m py_compile app/<changed>.py
 .venv/bin/python -c "import app.main"
+# on Windows the venv is .venv/Scripts/python.exe; when win_*.py, shared_dashboard.py, config.py
+# or updater.py are touched, also import the Windows shell (it is not covered by `import app.main`):
+.venv/Scripts/python.exe -c "import app.win_main; import app.shared_dashboard"
 # for dashboard/widget JS changes: node --check each rendered <script> block
 .venv/bin/python autolearn_fixtures.py     # if autolearn touched
 .venv/bin/python qa_filetags_fixtures.py    # if filetags touched
