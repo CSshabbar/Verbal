@@ -29,7 +29,7 @@ import objc
 
 from app import theme as _theme  # noqa: F401  — registers Geist/JBM for WKWebView
 from app.flume_dashboard_html import flume_html
-from app.shared_dashboard import DashboardApi, _cloud_allowed
+from app.shared_dashboard import DASHBOARD_TAB, DashboardApi, _cloud_allowed
 
 logger = logging.getLogger("verbal.flumeweb")
 
@@ -614,8 +614,13 @@ class FlumeWebDashboard:
         self._emit("result", {"text": text})
 
     def _on_tab_select(self, idx):
-        TAB = {0: "history", 1: "history", 2: "home", 3: "settings", 4: "canvas", 5: "notes", 6: "home"}
-        self._emit("selectTab", {"tab": TAB.get(idx, "home")})
+        self._emit("selectTab", {"tab": DASHBOARD_TAB.get(idx, "home")})
+
+    def show_tab(self, tab: str):
+        """Open the dashboard on a named screen. Same contract as
+        SharedDashboard.show_tab so Mac menubar and Windows tray cannot drift."""
+        self.show()
+        self._emit("selectTab", {"tab": tab})
 
     def _refresh(self):
         try:

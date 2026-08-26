@@ -50,8 +50,8 @@ Events it handles in `window.VerbalNative`: `recordingState`, `state`, `result`.
 Most of these already exist on `DashboardApi`. Ensure these three resolve correctly on Windows:
 
 - `open_window` → `self.app.dashboard.show()` (opens the shared Flume dashboard window).
-- `open_preferences` → `self.app.dashboard.show()` then `_on_tab_select(4)` (settings; see
-  `shared_dashboard.SharedDashboard._on_tab_select` TAB_MAP where `4 → "settings"`).
+- `open_preferences` → `self.app.dashboard.show_tab("settings")` (named tab — `DASHBOARD_TAB` in
+  `shared_dashboard.py`; do not pass a raw index, Mac and Windows drifted on 3 vs 4).
 - `quit_app` → `self.app._tray_quit()`.
 
 Check whether `DashboardApi` already implements `open_window` / `open_preferences` / `quit_app`

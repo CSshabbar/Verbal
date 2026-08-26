@@ -94,3 +94,34 @@ Review process: 10 adversarial reviewers (correctness + Windows-runtime lens per
 2. Install the resulting win build on the user's box by hand (once); run §5.2 (a)–(e) against it.
 3. If (a)–(e) pass, schedule the onedir change (§5.1) as its own PR — it is a packaging change, keep it separate from behaviour fixes.
 4. Optionally move `transcriber.remember_files`' `save_config` off the inject path (see §4 minor).
+
+## 8. Second pass (2026-08-26, after the Claude-limit handoff)
+
+Picked up from §7. The five original reports were already fixed in `fa282d0`; this pass
+closed holes that pass left, then re-verified.
+
+**Bugs the first pass missed (now fixed):**
+
+1. **Popover Preferences opened Canvas.** Mac `FlumeWebDashboard` tab map is `3=settings` /
+   `4=canvas`. Windows `SharedDashboard` had them reversed, and the popover used Mac indices
+   against the Windows map. One `DASHBOARD_TAB` + `show_tab("settings"|"canvas"|"notes")` on
+   both platforms. Spec `windows_specs/W4-popover.md` updated.
+2. **Dashboard reopen was the same silent no-op as Start meeting.** `Window.show()` does not
+   raise on a dead uid. Dashboard X *is* supposed to destroy; `_on_window_closed` drops the
+   handle, but a race/miss still poked the corpse. `_window_alive()` + rebuild, same as
+   meeting/popover. `_device_refresh_loop` was also spawned on every rebuild — latched now.
+3. **First-open hide race still had a hole.** `_visible = True` was set before `.show()` but
+   *after* `_wait_shown()`, so `_on_loaded` during the Shown wait still hid the window.
+   Visible is now set before the wait; timed-out wait clears it.
+4. **`webview.start()` returning left a tray-only zombie.** Windows shutdown destroys the
+   hidden anchor too; `start()` then returned and `VerbalWinApp.start()` fell off the end
+   while the singleton mutex was still held. Now `_hard_exit("webview loop ended")`.
+
+**Durable tests that lived in the first pass's scratchpad, now in-repo:**
+`whisperflow/win_bugs_fixtures.py` (strftime, updater gate, update-bridge fail-closed, tab
+map + popover Preferences, config unreadable≠corrupt / existing `.bak` / torn UTF-8).
+Smoke harness also covers dashboard destroy → rebuild.
+
+**Still needs a frozen build / a human (unchanged from §5):** onedir packaging, End-task on
+the 9 MB parent, real 1.0.33 → this build update install. Push when ready:
+`git push -u origin windows-bugs`.

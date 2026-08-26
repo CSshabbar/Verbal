@@ -437,6 +437,10 @@ class VerbalWinApp:
             # is up — perfect place to trigger the first create_window() so
             # the taskbar entry appears at launch.
             webview.start(func=_open_dashboard_on_start, debug=False)
+            # start() returns when every pywebview window is gone — Windows
+            # shutdown destroys the hidden anchor too. Don't fall off into a
+            # tray-only zombie that still holds the singleton mutex.
+            self._hard_exit("webview loop ended")
         except Exception as e:
             logger.error(f"webview.start failed on main thread: {e}", exc_info=True)
             # Fail-closed: if the GUI loop can't run, keep the tray alive so
@@ -519,20 +523,17 @@ class VerbalWinApp:
     def _tray_open_canvas(self, icon=None, item=None):
         if not self._require_signin():
             return
-        self.dashboard.show()
-        self.dashboard._on_tab_select(3)
+        self.dashboard.show_tab("canvas")
 
     def _tray_open_notes(self, icon=None, item=None):
         if not self._require_signin():
             return
-        self.dashboard.show()
-        self.dashboard._on_tab_select(5)
+        self.dashboard.show_tab("notes")
 
     def _tray_open_settings(self, icon=None, item=None):
         if not self._require_signin():
             return
-        self.dashboard.show()
-        self.dashboard._on_tab_select(4)
+        self.dashboard.show_tab("settings")
 
     def _tray_set_mode_hold(self, icon=None, item=None):
         if not self._require_signin():

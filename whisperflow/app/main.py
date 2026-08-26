@@ -655,12 +655,11 @@ class VerbalApp(rumps.App):
         self._ui_queue.put(fn)
 
     def _open_settings(self, _=None):
-        """Settings… — the dashboard's Settings tab (index 3)."""
+        """Settings… — the dashboard's Settings tab."""
         if not self._require_signin():
             return
         try:
-            self.dashboard.show()
-            self.dashboard._on_tab_select(3)
+            self.dashboard.show_tab("settings")
         except Exception as e:
             logger.warning(f"open settings failed: {e}")
 
@@ -869,14 +868,12 @@ class VerbalApp(rumps.App):
     def _open_canvas(self, _=None):
         if not self._require_signin():
             return
-        self.dashboard.show()
-        self.dashboard._on_tab_select(4)
+        self.dashboard.show_tab("canvas")
 
     def _open_notes(self, _=None):
         if not self._require_signin():
             return
-        self.dashboard.show()
-        self.dashboard._on_tab_select(5)
+        self.dashboard.show_tab("notes")
 
     # ── Meetings ─────────────────────────────────────────────────────────────
     def _meeting_win(self):

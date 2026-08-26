@@ -3,7 +3,7 @@ Windows bug-fix pass: updates, meeting window lifetime, quit path).
 
 Usage (Windows, from whisperflow/):
     PYTHONUTF8=1 .venv/Scripts/python.exe scripts/win_smoke_isolated.py
-Takes ~40 s, briefly shows a second tray icon and the meeting window, and ends
+Takes ~55 s, briefly shows a second tray icon and the meeting window, and ends
 via os._exit(0) once every step passed — a non-zero exit, a lingering
 python.exe, or a "quit_did_not_exit" step in the results means a regression.
 Results: %TEMP%/flume_smoke_result.json
@@ -137,6 +137,29 @@ def scenario():
         record("meeting_rebuild_after_destroy", dropped and mw.visible and alive(mw) is True,
                f"dropped={dropped} visible={mw.visible} alive={alive(mw)}")
         mw.hide()
+
+        # 6b) dashboard X DESTROYS the form (unlike meeting, which hides).
+        # show() on a dead uid is a silent no-op — same class of bug as Start
+        # meeting. Next Open Dashboard must rebuild.
+        dash = appobj.dashboard
+        dash.show()
+        time.sleep(6)
+        d_alive = bool(dash._window is not None and dash._window_alive())
+        record("dashboard_show_1", d_alive,
+               f"window={dash._window is not None} alive={dash._window_alive() if dash._window else None}")
+        if dash._window is not None:
+            dash._window.destroy()
+        time.sleep(3)
+        gone = dash._window is None or not dash._window_alive()
+        dash.show()
+        time.sleep(5)
+        record("dashboard_rebuild", gone and dash._window is not None and dash._window_alive(),
+               f"gone={gone} window={dash._window is not None} alive={dash._window_alive() if dash._window else None}")
+        try:
+            if dash._window is not None:
+                dash._window.hide()
+        except Exception:
+            pass
 
         # 7) quit: must exit the process (os._exit) within ~2 s and leave no ghost
         record("quit_requested", True, "calling _tray_quit from a worker thread")

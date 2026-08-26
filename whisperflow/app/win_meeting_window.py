@@ -46,6 +46,7 @@ import ctypes
 import ctypes.wintypes as wt
 import json
 import logging
+import threading
 
 from app.meeting_html import meeting_html
 from app.shared_dashboard import DashboardApi
@@ -91,8 +92,7 @@ class WinMeetingWindow:
             self._target_device_id = "__all__"
         # Guards concurrent show()s from spawning multiple windows before
         # webview.create_window returns and assigns self._window.
-        import threading as _th
-        self._build_lock = _th.Lock()
+        self._build_lock = threading.Lock()
 
     # ── DashboardApi shape ──────────────────────────────────────────────
     def _load_devices(self):
@@ -370,15 +370,16 @@ class WinMeetingWindow:
             if self._window is None:
                 logger.warning("meeting window: build failed, cannot show")
                 return
+            # _visible BEFORE wait_shown: `loaded` fires on a pywebview thread
+            # and `_on_loaded` hides when _visible is False, so a load during
+            # the Shown wait used to hide the first open.
+            self._visible = True
             if not self._wait_shown():
+                self._visible = False
                 return
             if mode in ("premeeting", "permissions"):
                 self._layout = "expanded"
             self._position_and_size()
-            # _visible BEFORE .show(): `loaded` fires on a pywebview thread and
-            # _on_loaded hides the window when _visible is False, so setting it
-            # after .show() raced a first-open hide (blank "nothing appeared").
-            self._visible = True
             # NOTE: Window.show() does NOT raise on a dead handle -- winforms
             # show(uid) silently returns when the uid has no BrowserView -- so
             # there is deliberately no "show() raised -> rebuild" fallback

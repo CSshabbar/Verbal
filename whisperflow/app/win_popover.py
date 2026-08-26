@@ -42,6 +42,7 @@ import ctypes
 import ctypes.wintypes as wt
 import json
 import logging
+import threading
 
 from app.flume_popover_html import popover_html
 from app.shared_dashboard import DashboardApi
@@ -84,28 +85,26 @@ class _PopoverBridge(DashboardApi):
         app._on_main(self._popover.hide)
         return {"ok": True}
 
-    def _open_tab(self, idx):
+    def _open_tab(self, tab):
         app = self._popover.app
 
         def go():
             try:
-                app.dashboard.show()
-                app.dashboard._on_tab_select(idx)
+                app.dashboard.show_tab(tab)
             except Exception as e:
-                logger.debug("dashboard tab select %s failed: %s", idx, e)
+                logger.debug("dashboard tab select %s failed: %s", tab, e)
 
         app._on_main(go)
         return {"ok": True}
 
-    # Tab indices come from SharedDashboard._on_tab_select's TAB_MAP.
     def open_canvas(self):
-        return self._open_tab(4)
+        return self._open_tab("canvas")
 
     def open_history(self):
-        return self._open_tab(0)
+        return self._open_tab("history")
 
     def open_preferences(self):
-        r = self._open_tab(3)  # settings
+        r = self._open_tab("settings")
         self._popover.app._on_main(self._popover.hide)
         return r
 
@@ -139,6 +138,7 @@ class WinPopover:
         # / Task Manager): the paths on which _on_closing lets pywebview tear
         # the form down. Only the user's Alt+F4 / X are intercepted.
         self._destroying = False
+        self._build_lock = threading.Lock()
 
     # ── window lifecycle ────────────────────────────────────────
     def _build(self):
@@ -251,8 +251,9 @@ class WinPopover:
         show()/toggle() rebuilds instead of calling show() on a dead handle
         (silent no-op -- the 2026-08-26 failure mode)."""
         try:
-            if window is None or window is self._window:
-                self._reset_refs()
+            with self._build_lock:
+                if window is None or window is self._window:
+                    self._reset_refs()
             logger.info("popover window destroyed -- next show() rebuilds")
         except Exception as e:
             logger.debug("popover closed-hook failed: %s", e)
@@ -266,8 +267,9 @@ class WinPopover:
                 w.destroy()
         except Exception as e:
             logger.debug("popover destroy failed: %s", e)
-        if self._window is w:
-            self._reset_refs()
+        with self._build_lock:
+            if self._window is w:
+                self._reset_refs()
 
     def _window_alive(self):
         """False once pywebview has pruned our window from `webview.windows`
@@ -340,19 +342,23 @@ class WinPopover:
     # ── show / hide / toggle ────────────────────────────────────
     def show(self):
         try:
-            if self._window is not None and not self._window_alive():
-                # closed-hook missed / raced -- never show() a dead handle.
-                logger.info("popover: stale handle -- rebuilding")
-                self._reset_refs()
-            if not self._window:
-                self._build()
+            with self._build_lock:
+                if self._window is not None and not self._window_alive():
+                    # closed-hook missed / raced -- never show() a dead handle.
+                    logger.info("popover: stale handle -- rebuilding")
+                    self._reset_refs()
+                if not self._window:
+                    self._build()
+            if self._window is None:
+                return
+            # _visible BEFORE wait_shown: `_on_loaded` fires on a pywebview
+            # thread and hides when _visible is False, so a load during the
+            # Shown wait used to hide the first open.
+            self._visible = True
             if not self._wait_shown():
+                self._visible = False
                 return
             self._position()
-            # _visible BEFORE .show(): _on_loaded (pywebview thread) hides the
-            # window when _visible is False, so setting it after .show() could
-            # race a first-open hide.
-            self._visible = True
             # Window.show() does NOT raise on a dead handle (winforms show(uid)
             # silently returns when the uid has no BrowserView), so there is
             # deliberately no rebuild-on-exception here: _window_alive() above

@@ -171,8 +171,10 @@ bounded `config['meetings']` (`MEETINGS_CAP`). The HUD appears when the meeting 
     Mac panel's `windowShouldClose_`) and `closed` (drop the handle so the next `show()` rebuilds);
     only the user's own X / Alt+F4 is vetoed — a native `FormClosing` handler lets Windows
     shutdown/log-off and Task Manager through. `SharedDashboard` (the dashboard window) still lets X
-    destroy and rebuilds on the next show; on Windows it toasts once where Quit lives.
-    `05-conventions.md` #67.
+    destroy and rebuilds on the next show (`_window_alive()` — `Window.show()` is a silent no-op on a
+    dead uid, same class of bug as Start meeting); on Windows it toasts once where Quit lives.
+    Menubar/tray/popover open a named tab via `dashboard.show_tab("canvas"|"settings"|"notes")` —
+    `DASHBOARD_TAB` is the one integer map for Mac and Windows (`05-conventions.md` #67, #70).
 - **Shares the SAME pipeline core as macOS:** `Recorder`, `transcriber` (`transcribe`/
   `transcribe_with_status`), `ai_cleanup.process_text`, `recordings`, `auth` — imported directly from
   `app.*`, not reimplemented. This is *why* Windows parity work is additive (new shell code) rather than

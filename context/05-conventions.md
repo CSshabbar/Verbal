@@ -1441,7 +1441,10 @@
     `Control.Invoke` onto the GUI thread, so with that thread stalled an inline destroy never returns
     and `os._exit` is never reached — exactly the "looks hung, kill it in Task Manager" state. It is
     re-entrant (a second caller sleeps 1.5 s and exits) and does no network, no meeting-stop, no config
-    write — anything that can block or raise there is a way to lurk again. And because closing the
+    write — anything that can block or raise there is a way to lurk again. `webview.start()` returning
+    (every window gone — Windows shutdown destroys the hidden anchor too) also calls `_hard_exit`
+    rather than falling off `VerbalWinApp.start()` into a tray-only zombie that still holds the mutex.
+    And because closing the
     dashboard with X deliberately leaves Flume in the tray, the *losing* second process now pulses the
     named auto-reset Event `VerbalShowDashboardEvent_v1` (`_signal_running_instance`) and the running
     app's `_second_instance_watch` thread answers with `dashboard.show()` — "opening the app" opens the
@@ -1588,9 +1591,10 @@
     form's `shown` Event to `SHOWN_WAIT_S` (5 s): every `Window` method show() calls next (`resize`/
     `move`/`show`) is `_shown_call`-decorated and blocks **20 s each** when Shown never fires (WebView2
     runtime mid-update) — a silent ~60 s freeze per click became one warning + early return, handle
-    kept for the next retry. (e) set `_visible = True` BEFORE `.show()` — `_on_loaded` (pywebview
-    thread) hides the window when `_visible` is False, so setting it after raced a first-open hide.
-    (f) **Veto USER closes only.** pywebview's `closing` Event hides the `CloseReason`, and WinForms
+    kept for the next retry. (e) set `_visible = True` BEFORE `_wait_shown()` (not merely before
+    `.show()`) — `_on_loaded` fires on a pywebview thread during the Shown wait and hides the window
+    when `_visible` is False, so a first-open load-during-wait used to hide the window we were about
+    to show. If Shown times out, set `_visible` back to False. (f) **Veto USER closes only.** pywebview's `closing` Event hides the `CloseReason`, and WinForms
     routes Windows shutdown/log-off (`WM_QUERYENDSESSION` → `WindowsShutDown`), Task Manager "End task"
     (`TaskManagerClosing`) and `Application.Exit` through the same `FormClosing` — hidden forms
     included. Cancelling those parks Windows on "Flume is preventing you from shutting down" (review of
@@ -1598,6 +1602,12 @@
     `self._window.native` (`_attach_native_closing`; `create_window` is synchronous for non-master
     windows so `.native` is already the `BrowserForm`) — it runs after pywebview's, and for every
     `CloseReason` other than `UserClosing` sets `_destroying = True` and clears `args.Cancel`.
+    (g) **`SharedDashboard` still needs `_window_alive()` even though X is *supposed* to destroy.**
+    Dashboard close is destroy-and-rebuild (the hotkey must keep working with no window), and
+    `_on_window_closed` drops the handle — but `Window.show()` does not raise on a dead uid, so a
+    reopen that races `closed` (or a missed hook) was the same silent no-op as Start meeting. `show()`
+    checks `self._window in webview.windows` and rebuilds; `_device_refresh_loop` is latched once
+    (`_device_refresh_started`), not spawned on every rebuild.
 
 68. **No glibc-only `strftime` directives — the Windows CRT raises `ValueError("Invalid format
     string")`.** The `-` (no-pad) flag family (`%-d`, `%-I`, `%-m`, `%-H`, …) is a glibc/BSD extension,
@@ -1641,6 +1651,13 @@
     error and the 3-attempt retry never happened; and `main.py::_start_update_download`'s thread had no
     try/except, so a raise left the banner stuck at "Downloading… N%" until relaunch — both now land on
     phase `'failed'` (banner offers Retry).
+
+70. **Dashboard tab indices are one map, and callers pass NAMES.** `DASHBOARD_TAB` in
+    `shared_dashboard.py` is the single `{int → screen-id}` used by both `FlumeWebDashboard` (Mac) and
+    `SharedDashboard` (Windows). They had drifted — Mac `3=settings`/`4=canvas`, Windows the reverse —
+    so the Windows tray popover's Preferences button (`_open_tab(3)` with a "settings" comment) opened
+    Canvas. Call `dashboard.show_tab("settings")` / `"canvas"` / `"notes"` from the menubar, tray, and
+    popover; do not pass a raw index. `win_bugs_fixtures.py` asserts the map and the popover wiring.
 
 ## Design system (Flume)
 
@@ -1776,7 +1793,8 @@ cd whisperflow
 # for dashboard/widget JS changes: node --check each rendered <script> block — scripted:
 .venv/bin/python scripts/js_check.py       # extracts every inline <script> from flume_html/meeting_html/popover_html
 # Windows shell live smoke (safe next to the installed app — isolated USERPROFILE, no mutex, signed out):
-PYTHONUTF8=1 .venv/Scripts/python.exe scripts/win_smoke_isolated.py   # 10 steps: update check, meeting window X/re-show, quit
+PYTHONUTF8=1 .venv/Scripts/python.exe scripts/win_smoke_isolated.py   # update check, meeting X/re-show, dashboard rebuild, quit
+.venv/Scripts/python.exe win_bugs_fixtures.py   # Windows bug-pass unit fixtures (strftime, update gate, tabs, config lock)
 .venv/bin/python autolearn_fixtures.py     # if autolearn touched
 .venv/bin/python qa_filetags_fixtures.py    # if filetags touched
 .venv/bin/python insights_fixtures.py      # if insights/stats touched
