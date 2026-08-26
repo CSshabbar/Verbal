@@ -1773,7 +1773,10 @@ cd whisperflow
 # on Windows the venv is .venv/Scripts/python.exe; when win_*.py, shared_dashboard.py, config.py
 # or updater.py are touched, also import the Windows shell (it is not covered by `import app.main`):
 .venv/Scripts/python.exe -c "import app.win_main; import app.shared_dashboard"
-# for dashboard/widget JS changes: node --check each rendered <script> block
+# for dashboard/widget JS changes: node --check each rendered <script> block — scripted:
+.venv/bin/python scripts/js_check.py       # extracts every inline <script> from flume_html/meeting_html/popover_html
+# Windows shell live smoke (safe next to the installed app — isolated USERPROFILE, no mutex, signed out):
+PYTHONUTF8=1 .venv/Scripts/python.exe scripts/win_smoke_isolated.py   # 10 steps: update check, meeting window X/re-show, quit
 .venv/bin/python autolearn_fixtures.py     # if autolearn touched
 .venv/bin/python qa_filetags_fixtures.py    # if filetags touched
 .venv/bin/python insights_fixtures.py      # if insights/stats touched
