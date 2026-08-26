@@ -43,7 +43,7 @@ _last_good_json: str | None = None
 _serving_unread_defaults = False
 _last_tmp_sweep = 0.0
 
-APP_VERSION = "1.0.34"
+APP_VERSION = "1.0.35"
 PLATFORM = "mac" if platform.system() == "Darwin" else "win" if platform.system() == "Windows" else "linux"
 
 CONFIG_DIR = Path.home() / ".verbal"
