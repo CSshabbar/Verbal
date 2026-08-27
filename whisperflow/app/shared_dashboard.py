@@ -68,6 +68,21 @@ SYNC_OFF_MSG = "Sync is off — turn it on in Settings."
 # whichever surface the user didn't touch got wiped on the other devices.
 KEEP = "__keep__"
 
+# Menubar / tray / popover tab indices. ONE map for Mac (`flume_web_dashboard`)
+# and Windows (`SharedDashboard`) — they drifted (Mac 3=settings/4=canvas,
+# Windows the reverse), so the Windows tray popover's Preferences button opened
+# Canvas (2026-08-26 follow-up). Integer callers must use these names, not
+# literals; `show_tab("settings")` is preferred.
+DASHBOARD_TAB = {
+    0: "history",
+    1: "history",
+    2: "home",
+    3: "settings",
+    4: "canvas",
+    5: "notes",
+    6: "home",
+}
+
 
 def device_identity(app):
     """(device_id, device_name) for THIS device.
@@ -244,6 +259,8 @@ class SharedDashboard:
         self._last_canvas_loaded = False
         self._canvas_listener_started = False
         self._canvas_stop = threading.Event()
+        self._device_refresh_started = False
+        self._build_lock = threading.Lock()
 
     def ensure_window_size(self, min_w, min_h=0):
         """Grow (never shrink) the pywebview dashboard window (Windows host).
@@ -277,9 +294,79 @@ class SharedDashboard:
         except Exception as e:
             logger.debug(f"ensure_window_size failed: {e}")
 
+    def _window_alive(self):
+        """False once pywebview has pruned our window from `webview.windows`
+        (its on_close does that BEFORE `closed` fires). `Window.show()` on a
+        dead uid is a silent no-op — the same failure that broke Start meeting
+        (#67). Dashboard X is *supposed* to destroy the form (unlike meeting/
+        popover, which hide); `_on_window_closed` drops the handle, but a
+        reopen that races `closed` — or a missed hook — still has to rebuild
+        rather than poke the corpse."""
+        if self._window is None:
+            return False
+        try:
+            import webview
+            return self._window in webview.windows
+        except Exception:
+            return True
+
     def _on_window_closed(self, *_):
         self._window = None
         self._page_ready = False
+        self._maybe_show_tray_close_hint()
+
+    # X on the dashboard deliberately leaves Flume running in the tray (the
+    # hotkey must keep working with no window open). Users read the missing
+    # window as "closed" and then find Flume.exe in Task Manager: "when I close
+    # the program it doesn't quit properly and I can see it running in task
+    # manager" (2026-08-26). One toast, the first time only, says where Quit is.
+    TRAY_CLOSE_HINT_KEY = "tray_close_hint_shown"
+    TRAY_CLOSE_HINT_TEXT = (
+        "Flume is still running in the system tray so your hotkey keeps working. "
+        "To quit completely, right-click the tray icon and choose Quit."
+    )
+
+    def _maybe_show_tray_close_hint(self):
+        """Runs on pywebview's `closed` event. Fail-closed and cheap: only a
+        dict check + flag set happen here; the config write and the toast go to
+        a daemon thread (winotify shells out to PowerShell and must not stall
+        the GUI thread that is tearing the window down)."""
+        try:
+            if os.name != "nt":
+                return
+            # _hard_exit sets this before destroying windows on the way out —
+            # that `closed` is not the user closing a window, so no hint.
+            if getattr(self.app, "_exiting", False):
+                return
+            cfg = getattr(self.app, "config", None)
+            if not isinstance(cfg, dict) or cfg.get(self.TRAY_CLOSE_HINT_KEY):
+                return
+            cfg[self.TRAY_CLOSE_HINT_KEY] = True   # in-memory first: never twice
+            threading.Thread(target=self._show_tray_close_hint,
+                             name="tray-close-hint", daemon=True).start()
+        except Exception as e:
+            logger.debug("tray close hint skipped: %s", e)
+
+    def _show_tray_close_hint(self):
+        try:
+            save_config(self.app.config)
+        except Exception as e:
+            logger.debug("tray close hint flag not persisted: %s", e)
+        title = "Flume"
+        # Same backend order as _notify_native (which is Canvas-titled), each
+        # step guarded; no backend at all just means no hint.
+        try:
+            from winotify import Notification
+            Notification(app_id="Flume", title=title, msg=self.TRAY_CLOSE_HINT_TEXT).show()
+            return
+        except Exception as e:
+            logger.debug("tray close hint: winotify unavailable: %s", e)
+        try:
+            icon = getattr(self.app, "_tray_icon", None)
+            if icon is not None and hasattr(icon, "notify"):
+                icon.notify(self.TRAY_CLOSE_HINT_TEXT, title)
+        except Exception as e:
+            logger.debug("tray close hint: tray notify unavailable: %s", e)
 
     def show(self):
         try:
@@ -292,68 +379,77 @@ class SharedDashboard:
             fallback.show()
             return
 
-        if self._window:
-            try:
-                self._window.show()
-                return
-            except Exception:
+        need_start = False
+        with self._build_lock:
+            if self._window is not None and not self._window_alive():
+                logger.info("dashboard: stale handle -- rebuilding")
                 self._window = None
+                self._page_ready = False
+            if self._window:
+                try:
+                    self._window.show()
+                    return
+                except Exception:
+                    self._window = None
+                    self._page_ready = False
 
-        # Render the SAME dark "Flume" UI the macOS app uses. flume_html() is
-        # already dual-target: it waits for `pywebviewready` and calls the shared
-        # DashboardApi via window.pywebview.api.* (native under pywebview here;
-        # shimmed inside WKWebView on macOS). This is what gives Windows visual
-        # parity with the Mac app instead of the retired light-theme dashboard.
-        from app.flume_dashboard_html import flume_html
+            # Render the SAME dark "Flume" UI the macOS app uses. flume_html() is
+            # already dual-target: it waits for `pywebviewready` and calls the shared
+            # DashboardApi via window.pywebview.api.* (native under pywebview here;
+            # shimmed inside WKWebView on macOS). This is what gives Windows visual
+            # parity with the Mac app instead of the retired light-theme dashboard.
+            from app.flume_dashboard_html import flume_html
 
-        api = DashboardApi(self)
-        # A rebuild means a fresh page: a stale `_page_ready` from the previous
-        # window would let emits fire at a page that has no VerbalNative yet.
-        self._page_ready = False
-        self._window = webview.create_window(
-            "Flume",
-            html=flume_html(),
-            js_api=api,
-            # 2026-08-17 (corrected): WIDE default (matches macOS) — the
-            # multi-pane screens want horizontal room, and >1000px keeps the
-            # Notes Studio pane visible. Height stays modest.
-            width=1240,
-            height=740,
-            min_size=(760, 520),
-            background_color="#0e1012",
-        )
-        # Windows: inject a CSS override that anchors `.screen` sections to
-        # viewport height. WKWebView on macOS resolves the shared HTML's
-        # `.main { height: 100% }` against an implicit viewport-height
-        # ancestor; WebView2 doesn't, so `.main` collapses to content and
-        # overflow-y:auto has nothing to scroll (History/Notes escape this
-        # because .threepane already sets height:100vh explicitly). Keep the
-        # shared HTML untouched — this fix is host-side only.
-        try:
-            # X on the title bar destroys the pywebview window; drop our
-            # reference so the next show() (tray, or a second launch signalling
-            # the running app) rebuilds instead of poking a dead handle.
-            self._window.events.closed += self._on_window_closed
-            self._window.events.loaded += self._inject_scroll_fix
-            # Belt-and-braces flush, same reasoning as win_meeting_window._on_loaded:
-            # on WebView2 the JS-initiated handshake can lose the bridge-init race
-            # on a freshly-created window. Idempotent — the second flush finds an
-            # empty queue.
-            self._window.events.loaded += self.page_ready
-        except Exception as e:
-            logger.debug("scroll-fix hook attach failed: %s", e)
-        threading.Thread(target=self._device_refresh_loop, daemon=True).start()
-        if not self._canvas_listener_started:
-            self._canvas_listener_started = True
-            threading.Thread(target=self._canvas_listen_loop, daemon=True).start()
-        # W3 (Windows): the recording overlay owns the pywebview event loop and
-        # already called webview.start() from win_overlay.setup(). pywebview
-        # only supports one start() per process, so if that flag is set the
-        # newly-created window is already live on the running loop and we
-        # must not start() again. On macOS this path isn't reached (Mac uses
-        # flume_web_dashboard, not SharedDashboard) so the flag stays False.
-        if not getattr(webview, "_verbal_started", False):
-            webview._verbal_started = True
+            api = DashboardApi(self)
+            # A rebuild means a fresh page: a stale `_page_ready` from the previous
+            # window would let emits fire at a page that has no VerbalNative yet.
+            self._page_ready = False
+            self._window = webview.create_window(
+                "Flume",
+                html=flume_html(),
+                js_api=api,
+                # 2026-08-17 (corrected): WIDE default (matches macOS) — the
+                # multi-pane screens want horizontal room, and >1000px keeps the
+                # Notes Studio pane visible. Height stays modest.
+                width=1240,
+                height=740,
+                min_size=(760, 520),
+                background_color="#0e1012",
+            )
+            # Windows: inject a CSS override that anchors `.screen` sections to
+            # viewport height. WKWebView on macOS resolves the shared HTML's
+            # `.main { height: 100% }` against an implicit viewport-height
+            # ancestor; WebView2 doesn't, so `.main` collapses to content and
+            # overflow-y:auto has nothing to scroll (History/Notes escape this
+            # because .threepane already sets height:100vh explicitly). Keep the
+            # shared HTML untouched — this fix is host-side only.
+            try:
+                # X on the title bar destroys the pywebview window; drop our
+                # reference so the next show() (tray, or a second launch signalling
+                # the running app) rebuilds instead of poking a dead handle.
+                self._window.events.closed += self._on_window_closed
+                self._window.events.loaded += self._inject_scroll_fix
+                # Belt-and-braces flush, same reasoning as win_meeting_window._on_loaded:
+                # on WebView2 the JS-initiated handshake can lose the bridge-init race
+                # on a freshly-created window. Idempotent — the second flush finds an
+                # empty queue.
+                self._window.events.loaded += self.page_ready
+            except Exception as e:
+                logger.debug("scroll-fix hook attach failed: %s", e)
+            if not self._device_refresh_started:
+                self._device_refresh_started = True
+                threading.Thread(target=self._device_refresh_loop, daemon=True).start()
+            if not self._canvas_listener_started:
+                self._canvas_listener_started = True
+                threading.Thread(target=self._canvas_listen_loop, daemon=True).start()
+            # W3 (Windows): win_main already called webview.start() with the
+            # hidden anchor. pywebview only supports one start() per process.
+            # Do NOT start() while holding `_build_lock` — start() blocks the
+            # GUI loop until every window is gone.
+            if not getattr(webview, "_verbal_started", False):
+                webview._verbal_started = True
+                need_start = True
+        if need_start:
             webview.start(debug=False)
 
     def _inject_scroll_fix(self):
@@ -386,11 +482,15 @@ class SharedDashboard:
         self._emit("result", {"text": text})
 
     def _on_tab_select(self, idx):
-        # Map tray indices to Flume screen ids (see flume_dashboard_html.show()).
-        # Indices match the win_main tray callbacks: canvas=3, settings=4, notes=5.
-        TAB_MAP = {0: "history", 1: "history", 2: "home", 3: "canvas", 4: "settings", 5: "notes"}
-        tab_name = TAB_MAP.get(idx, "home")
+        tab_name = DASHBOARD_TAB.get(idx, "home")
         self._emit("selectTab", {"tab": tab_name})
+
+    def show_tab(self, tab: str):
+        """Open the dashboard on a named screen (`history`/`home`/`canvas`/
+        `settings`/`notes`). Preferred over `_on_tab_select(int)` so Mac and
+        Windows cannot drift on the integer map again."""
+        self.show()
+        self._emit("selectTab", {"tab": tab})
 
     def _refresh(self):
         self._emit("state", DashboardApi(self).get_state())
@@ -627,36 +727,99 @@ class DashboardApi:
 
     def get_update_status(self):
         """Polled by the dashboard's update banner + Settings > Updates. Read-only
-        snapshot of state main.py's App owns (_update_available/_phase/_progress) —
-        this never mutates anything, so it's safe to poll on a timer."""
+        snapshot of state the host App owns (_update_available/_phase/_progress;
+        main.py on macOS, win_main.py on Windows) — this never mutates anything,
+        so it's safe to poll on a timer.
+
+        Fail-closed via getattr: this used to read `app._update_available`
+        directly, and on Windows — where VerbalWinApp only had `_pending_update`
+        — every 30 s poll raised AttributeError into the log for the whole
+        session (2026-08-26 report, Flume 1.0.33). A host that lacks the state
+        machine now just reports "no update" instead of erroring.
+        """
         from app.config import APP_VERSION
-        app = self.app
-        avail = app._update_available
-        return _ok(
-            current_version=APP_VERSION,
-            available=({"version": avail.get("version"),
-                        "changelog": avail.get("changelog", "")} if avail else None),
-            phase=app._update_phase,
-            progress=app._update_progress,
-        )
+        try:
+            app = self.app
+            avail = getattr(app, "_update_available", None)
+            return _ok(
+                current_version=APP_VERSION,
+                available=({"version": avail.get("version"),
+                            "changelog": avail.get("changelog", "")} if avail else None),
+                phase=getattr(app, "_update_phase", "idle"),
+                progress=float(getattr(app, "_update_progress", 0.0) or 0.0),
+            )
+        except Exception as e:
+            return _err(str(e))
+
+    # How long check_for_updates waits for the Supabase round-trip before
+    # answering anyway. updater.check_for_update's httpx timeout is 5 s, so
+    # this only trips on a hung socket — and then the answer is simply "no
+    # update known yet"; the 30 s get_update_status poll catches up later.
+    CHECK_UPDATES_WAIT_S = 8.0
 
     def check_for_updates(self):
         """Settings > Updates' "Check for Updates" button. suppress_prompt=True
         because this is an explicit, user-visible dashboard action — the native
-        rumps.alert popping up on top of it would be a redundant second prompt
-        for the same click. get_update_status() (polled right after) is what
-        actually shows the result in the dashboard."""
-        import threading
-        threading.Thread(target=self.app._check_update,
-                          kwargs={"suppress_prompt": True}, daemon=True).start()
-        return _ok()
+        rumps.alert / tk dialog popping up on top of it would be a redundant
+        second prompt for the same click. force=True skips updater's 30-second
+        post-launch gate: that gate guards AUTOMATIC checks against auto-install
+        loops, but a human clicking the button can't loop, and on Windows the
+        gated click was a silent no-op (2026-08-26). (This is a small mac delta
+        too: a click within 30 s of launch used to be a silent no-op there as
+        well; now it performs the check. Harmless — mac has no auto-install
+        loop to guard.)
+
+        SYNCHRONOUS, bounded by CHECK_UPDATES_WAIT_S: the check runs to
+        completion before this returns, and the reply carries `available`.
+        It used to fire-and-forget and the JS polled get_update_status on a
+        fixed 1.5 s timer — but check_for_update's request can take up to 5 s,
+        so a slow Supabase round-trip made the very click this fix is about
+        toast "You're up to date" and then grow an update banner on the next
+        30 s poll. Blocking here is safe: both bridges (pywebview's js_api and
+        flume_web_dashboard._dispatch) run API calls on their own daemon
+        thread, never the GUI thread.
+        """
+        check = getattr(self.app, "_check_update", None)
+        if not callable(check):
+            return _err("update check unavailable")
+
+        def _run():
+            try:
+                check(suppress_prompt=True, force=True)
+            except Exception as e:
+                logger.error(f"check_for_updates failed: {e}")
+
+        try:
+            t = threading.Thread(target=_run, name="update-check-now", daemon=True)
+            t.start()
+            t.join(self.CHECK_UPDATES_WAIT_S)
+            if t.is_alive():
+                logger.debug("check_for_updates: still running after %.0fs; answering with known state",
+                             self.CHECK_UPDATES_WAIT_S)
+        except Exception as e:
+            return _err(str(e))
+        avail = getattr(self.app, "_update_available", None)
+        return _ok(available=bool(avail),
+                   version=(avail.get("version") if isinstance(avail, dict) else None))
 
     def start_update_download(self):
-        self.app._start_update_download()
+        fn = getattr(self.app, "_start_update_download", None)
+        if not callable(fn):
+            return _err("update download unavailable")
+        try:
+            fn()
+        except Exception as e:
+            return _err(str(e))
         return _ok()
 
     def install_ready_update(self):
-        self.app._install_ready_update()
+        fn = getattr(self.app, "_install_ready_update", None)
+        if not callable(fn):
+            return _err("update install unavailable")
+        try:
+            fn()
+        except Exception as e:
+            return _err(str(e))
         return _ok()
 
     def get_insights(self):

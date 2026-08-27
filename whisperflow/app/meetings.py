@@ -865,7 +865,16 @@ class MeetingSession:
     def __init__(self, app, title="", use_mic=True, use_system=True, language=""):
         self.app = app
         self.id = str(uuid.uuid4())
-        self.title = title or f"Meeting — {time.strftime('%b %-d, %H:%M')}"
+        if not title:
+            # Default title without the glibc-only '%-d' (no-pad day) directive:
+            # the Windows CRT strftime raises ValueError("Invalid format string")
+            # on it, so every meeting started without a typed title failed with
+            # "manager start failed: Invalid format string" (2026-08-26 report).
+            # tm_mday is already unpadded on every platform.
+            lt = time.localtime()
+            title = (f"Meeting — {time.strftime('%b', lt)} {lt.tm_mday}, "
+                     f"{time.strftime('%H:%M', lt)}")
+        self.title = title
         self.use_mic = bool(use_mic)
         self.use_system = bool(use_system)
         # spoken language for THIS meeting ('' → global setting; 'auto' → detect)

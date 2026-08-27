@@ -693,9 +693,27 @@ mark.hl{background:rgba(200,90,62,.32);color:inherit;border-radius:3px;padding:0
 .pillbtn.acc{background:var(--acc-soft);border-color:var(--acc-bd);color:var(--acc)}
 .pillrow{display:flex;gap:8px;margin-bottom:12px}
 .pillrow .pillbtn{flex:1;justify-content:center}
-.scards{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px}
-.scards .nmenuwrap{display:block}
-.scards .nmenuwrap .scard{width:100%;height:100%}
+.scards{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px;align-items:stretch}
+/* The Export card sits inside .nmenuwrap so its popup has an anchor. That wrapper
+   used to be display:block with the card at height:100% — a percentage height
+   inside a block grid item, which WebView2 resolved differently from the bare
+   sibling cards, so the bottom row rendered two different card heights ("align
+   these icons", 2026-08-26). A flex-column wrapper the card flex-fills needs no
+   percentage height and is deterministic in every engine. position:relative
+   stays: .nmenu is absolutely positioned inside it until toggleNoteMenu()
+   re-anchors it position:fixed to the trigger's rect (so the card growing
+   taller cannot misplace the popup). */
+.scards .nmenuwrap{display:flex;flex-direction:column;min-width:0;position:relative}
+.scards .nmenuwrap .scard{flex:1 1 auto;width:100%}
+/* Top-anchored content. .sdisc carried margin-bottom:auto, which pinned the
+   title+description to the card's BOTTOM edge — so a card whose description
+   wrapped to two lines drew its title ~2px higher than its row-mate (Notes
+   'Clean transcript' vs 'Export'; Meetings 'Ask this meeting' vs 'Export').
+   Icon → title → description now flow from the top with a fixed gap, and the
+   description reserves two lines so 1- and 2-line copy yield identical cards. */
+.scards .scard{min-height:108px;gap:7px;justify-content:flex-start}
+.scards .scard .sdisc{margin-bottom:0}
+.scards .scard .ss{min-height:calc(2 * 1.35em)}
 .scard{border:0;border-radius:16px;padding:12px;min-height:88px;display:flex;flex-direction:column;align-items:flex-start;gap:7px;cursor:pointer;text-align:left}
 .scard:hover{filter:brightness(1.05)}
 .scard:disabled{opacity:.45;cursor:default;filter:none}
@@ -1543,12 +1561,19 @@ function installReadyUpdate(){
   api('install_ready_update');
 }
 function dismissUpdateBanner(version){ UPDATE_DISMISSED=version; renderUpdateBanner(); }
+// check_for_updates is SYNCHRONOUS on the Python side (bounded, ~8 s) and its
+// reply carries {available, version}. It used to fire-and-forget while this
+// side waited a fixed 1.5 s and then read UPDATE_STATE — which pollUpdateStatus
+// only fills in asynchronously, so a slow Supabase round-trip toasted "You're
+// up to date" for the very click that was asking (2026-08-26, Windows 1.0.33
+// never seeing 1.0.34). Decide from the reply, then refresh the banner.
 function checkForUpdatesNow(){
   toast('Checking for updates…');
-  api('check_for_updates').then(()=>{ setTimeout(()=>{
+  api('check_for_updates').then(r=>{
     pollUpdateStatus();
-    if(!(UPDATE_STATE && UPDATE_STATE.available)) toast("You're up to date");
-  }, 1500); });
+    if(r && r.ok===false){ toast(r.error || "Couldn't check for updates"); return; }
+    if(!(r && r.available)) toast("You're up to date");
+  });
 }
 const esc = s => String(s==null?'':s).replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const keyText = v => Array.isArray(v) ? v.join('\n') : (v==null?'':String(v));
@@ -2706,7 +2731,7 @@ function meetStudioHtml(){
         <button class="scard cream" onclick="openNotes()"><span class="sdisc">${SVG.book}</span><span class="sl">AI Notes</span><span class="ss">The full notes page</span></button>
         <button class="scard sage" onclick="sumRegen()"><span class="sdisc">${SVG_REFRESH}</span><span class="sl">Regenerate</span><span class="ss">Re-run the summary</span></button>
         <button class="scard plum" onclick="askThisMeeting()"><span class="sdisc">${SVG.search}</span><span class="sl">Ask this meeting</span><span class="ss">Who said what, when</span></button>
-        <span class="nmenuwrap">
+        <div class="nmenuwrap">
           <button class="scard slate" aria-haspopup="true" onclick="toggleNoteMenu(event,'meetExpMenu')"><span class="sdisc">${SVG.send}</span><span class="sl">Export</span><span class="ss">Markdown, text, note</span></button>
           <div class="nmenu" id="meetExpMenu" hidden>
             <button onclick="sumShare(this)">${SVG.copy}Copy summary</button>
@@ -2714,7 +2739,7 @@ function meetStudioHtml(){
             <button id="expTxtBtn" onclick="sumExport('txt')">Export as .txt…</button>
             <div class="nmsep"></div>
             <button onclick="sendMeetingToNotes()">${SVG_IMPORT}Send to Notes</button>
-          </div></span>
+          </div></div>
       </div>
       ${stats.length?`<div class="shead">Speakers · tap to filter</div>${spkRows}
         ${filt?`<div class="spkhint">Showing only ${esc(filt.name)}'s lines in the transcript — tap again for everyone.</div>`:''}`:''}

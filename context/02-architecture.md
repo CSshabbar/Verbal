@@ -119,9 +119,12 @@ separate users purely by `user_id` (the Supabase auth id after sign-in). Details
   the **pre-injection** frontmost app (`transcriptions.app`), which is what `org_app_breakdown` aggregates
   into the per-person app mix. iOS has no equivalent and writes nothing.
 - **Config:** `~/.verbal/config.json`, written by `config.py::save_config` — **atomic** (`tempfile.mkstemp`
-  unique name + `os.replace`, with a Windows PermissionError retry) under a module-level `_config_lock`
-  (RLock). `load_config` reads under that lock and only writes when the dict actually changed. This is
-  the desktop source of truth for user data/settings; cloud syncs on top.
+  unique name + `os.replace`, with a Windows lock-error retry/backoff and, if the rename still loses, an
+  in-place write guarded by a `config.json.prev` snapshot) under a module-level `_config_lock`
+  (RLock). `load_config` reads under that lock (same retry), only writes when the dict actually changed,
+  and **never overwrites a file it could not read** — an out-of-process lock serves the last in-memory
+  copy or read-only defaults, and only a JSON/UTF-8 error moves the file to `.bak` (2026-08-26; rules in
+  `05-conventions.md` #3). This is the desktop source of truth for user data/settings; cloud syncs on top.
 - **Fonts:** Geist + JetBrains Mono. AppKit views use CoreText-registered faces (`theme.py`); WKWebViews
   can't resolve those by name, so `fonts_css.py::web_font_css()` inlines the TTFs as base64 `@font-face`.
 
@@ -143,11 +146,35 @@ bounded `config['meetings']` (`MEETINGS_CAP`). The HUD appears when the meeting 
 
 ## Windows stack (`whisperflow/app/win_*.py`)
 
-- **Runtime:** `win_main.py::VerbalWinApp` (893 lines) is the Windows equivalent of `main.py::VerbalApp` —
+- **Runtime:** `win_main.py::VerbalWinApp` (~2600 lines) is the Windows equivalent of `main.py::VerbalApp` —
   same role, different shell: **`pystray`** owns the tray icon + menu (recording mode, Whisper model,
-  Groq/Gemini key management, auth toggle, Open Verbal/Canvas/Notes/Settings) instead of `rumps`. No
-  Cocoa-style run loop to own; the pywebview window and pystray tray each run their own loop, wired
-  together rather than sharing one.
+  Groq/Gemini key management, auth toggle, Open Verbal/Canvas/Notes/Settings, "Check for updates...",
+  Quit) instead of `rumps`. No Cocoa-style run loop to own; the pywebview window and pystray tray each
+  run their own loop, wired together rather than sharing one.
+  - **Update state-machine parity (2026-08-26):** `VerbalWinApp` mirrors `VerbalApp`'s
+    `_update_available` / `_update_phase` (`idle|downloading|ready|installing|failed`) /
+    `_update_progress` / `_update_ready_path` and the same `_check_update(announce_current,
+    suppress_prompt, force)` / `_start_update_download` / `_install_ready_update` method surface, so the
+    shared `DashboardApi` update bridge is oblivious to the platform (`_pending_update` is a property
+    alias for the tray badge/menu code). Checks run on a daemon `_update_check_loop`: first after
+    `UPDATE_STARTUP_DELAY` (35 s — past `updater`'s 30 s post-launch gate), then every
+    `UPDATE_CHECK_INTERVAL` (4 h), the cadence main.py gets from its `rumps.Timer`. Silent auto-install
+    parks the installer as `ready` and waits for `_app_busy()` (recording/processing/meeting) to be
+    False for two consecutive 1 s polls before it `os._exit`s the app — see `03-features.md` §Updater.
+  - **Process model + quit:** the shipped exe is PyInstaller **one-file** — a bootloader parent plus the
+    real app child (two `Flume.exe` in Task Manager). `_watch_bootloader_parent` makes the child
+    `_hard_exit` when its bootloader parent dies (frozen one-file builds only, fail-closed), and every
+    exit path (tray Quit, popover `quit_app`, elevated relaunch, that watcher) goes through the single
+    time-bounded `_hard_exit` → `os._exit(0)` — `05-conventions.md` #59b.
+  - **Windows are built once and hide on close:** `WinMeetingWindow` and `WinPopover` intercept
+    pywebview's `closing` (hide — or collapse to the bar mid-meeting — and cancel the destroy, like the
+    Mac panel's `windowShouldClose_`) and `closed` (drop the handle so the next `show()` rebuilds);
+    only the user's own X / Alt+F4 is vetoed — a native `FormClosing` handler lets Windows
+    shutdown/log-off and Task Manager through. `SharedDashboard` (the dashboard window) still lets X
+    destroy and rebuilds on the next show (`_window_alive()` — `Window.show()` is a silent no-op on a
+    dead uid, same class of bug as Start meeting); on Windows it toasts once where Quit lives.
+    Menubar/tray/popover open a named tab via `dashboard.show_tab("canvas"|"settings"|"notes")` —
+    `DASHBOARD_TAB` is the one integer map for Mac and Windows (`05-conventions.md` #67, #70).
 - **Shares the SAME pipeline core as macOS:** `Recorder`, `transcriber` (`transcribe`/
   `transcribe_with_status`), `ai_cleanup.process_text`, `recordings`, `auth` — imported directly from
   `app.*`, not reimplemented. This is *why* Windows parity work is additive (new shell code) rather than

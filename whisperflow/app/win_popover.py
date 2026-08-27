@@ -14,12 +14,35 @@ are added as overrides.
 Fail-closed: tray behavior — and dictation — must not depend on the popover
 building. show()/toggle() and every bridge method are wrapped so a broken
 popover degrades to a no-op.
+
+Window lifetime (DO NOT remove the closing/closed hooks):
+    The popover window is built once and re-used. It is frameless, but Alt+F4
+    (and a Windows session end) still routes through Form.Close, and pywebview's
+    winforms backend then DESTROYS the form -- dropping it from
+    `BrowserView.instances`/`webview.windows` while our `self._window` keeps
+    pointing at the corpse. show() -> `gui.show(uid)` on a dead uid is a silent
+    no-op, so the tray's left-click would do nothing, forever. This is the same
+    dead-handle failure that broke "Start meeting" on Windows (user report
+    2026-08-26, see win_meeting_window.py). `_on_closing` hides and returns
+    False (cancels the close); `_on_closed` resets every reference so the next
+    show() rebuilds if the form was destroyed anyway.
+
+    The veto is for USER closes only. The popover is built on the very first
+    tray left-click, and WinForms routes Windows shutdown / log-off
+    (WM_QUERYENDSESSION), Task Manager "End task" and Application.Exit through
+    the same FormClosing -- hidden forms included -- while pywebview's
+    `closing` Event hides the CloseReason from us. Cancelling those made nearly
+    every Flume install block shutdown ("Flume is preventing you from shutting
+    down", review of the 2026-08-26 fix). `_on_native_closing`, subscribed on
+    the BrowserForm after pywebview's handler, clears args.Cancel for every
+    CloseReason other than UserClosing.
 """
 
 import ctypes
 import ctypes.wintypes as wt
 import json
 import logging
+import threading
 
 from app.flume_popover_html import popover_html
 from app.shared_dashboard import DashboardApi
@@ -29,6 +52,10 @@ logger = logging.getLogger("verbal.popover")
 WIN_W = 380
 WIN_H = 600
 WIN_TITLE = "Flume Popover"
+# Bound on waiting for the fresh form's `shown` Event before calling the
+# `_shown_call`-decorated move()/show() (each blocks 20s if Shown never
+# fires) -- see win_meeting_window.SHOWN_WAIT_S.
+SHOWN_WAIT_S = 5
 
 SPI_GETWORKAREA = 0x0030
 
@@ -58,28 +85,26 @@ class _PopoverBridge(DashboardApi):
         app._on_main(self._popover.hide)
         return {"ok": True}
 
-    def _open_tab(self, idx):
+    def _open_tab(self, tab):
         app = self._popover.app
 
         def go():
             try:
-                app.dashboard.show()
-                app.dashboard._on_tab_select(idx)
+                app.dashboard.show_tab(tab)
             except Exception as e:
-                logger.debug("dashboard tab select %s failed: %s", idx, e)
+                logger.debug("dashboard tab select %s failed: %s", tab, e)
 
         app._on_main(go)
         return {"ok": True}
 
-    # Tab indices come from SharedDashboard._on_tab_select's TAB_MAP.
     def open_canvas(self):
-        return self._open_tab(4)
+        return self._open_tab("canvas")
 
     def open_history(self):
-        return self._open_tab(0)
+        return self._open_tab("history")
 
     def open_preferences(self):
-        r = self._open_tab(3)  # settings
+        r = self._open_tab("settings")
         self._popover.app._on_main(self._popover.hide)
         return r
 
@@ -109,6 +134,11 @@ class WinPopover:
         self._loaded = False
         self._visible = False
         self._pending_events = []
+        # True inside destroy() (and set by _on_native_closing for session end
+        # / Task Manager): the paths on which _on_closing lets pywebview tear
+        # the form down. Only the user's Alt+F4 / X are intercepted.
+        self._destroying = False
+        self._build_lock = threading.Lock()
 
     # ── window lifecycle ────────────────────────────────────────
     def _build(self):
@@ -128,10 +158,147 @@ class WinPopover:
             background_color="#0e1012",
             hidden=True,
         )
+        self._destroying = False
         try:
             self._window.events.loaded += self._on_loaded
         except Exception as e:
             logger.debug("popover loaded-hook attach failed: %s", e)
+        # Alt+F4 must HIDE, not destroy -- see module docstring (dead-handle
+        # failure, 2026-08-26). `closing` handlers run synchronously on the
+        # WinForms UI thread; returning False sets FormClosingEventArgs.Cancel.
+        try:
+            self._window.events.closing += self._on_closing
+            self._window.events.closed += self._on_closed
+        except Exception as e:
+            logger.warning("popover close-hook attach failed (window will die "
+                           "on Alt+F4): %s", e)
+        self._attach_native_closing()
+
+    def _attach_native_closing(self):
+        """Subscribe `_on_native_closing` on the WinForms BrowserForm.
+
+        create_window is synchronous for non-master windows (Control.Invoke),
+        so `self._window.native` is the BrowserForm by now; subscribing after
+        pywebview's own FormClosing handler lets ours undo the args.Cancel
+        that `_on_closing`'s False return set. Fail-closed: without it the
+        popover just keeps the pre-review behavior (hides on every close).
+        """
+        try:
+            form = getattr(self._window, "native", None)
+            if form is None:
+                logger.debug("popover native form not available; session-end "
+                             "close will be vetoed like a user close")
+                return
+            form.FormClosing += self._on_native_closing
+        except Exception as e:
+            logger.debug("popover native closing-hook attach failed: %s", e)
+
+    def _on_native_closing(self, sender, args):
+        """Native FormClosing, runs AFTER pywebview's `on_closing` on the
+        WinForms UI thread. Windows shutdown / log-off (WindowsShutDown), Task
+        Manager "End task" (TaskManagerClosing) and Application.Exit
+        (ApplicationExitCall) must not be cancelled -- a cancelled
+        WM_QUERYENDSESSION returns 0 and Windows blocks the shutdown on the
+        "Flume is preventing..." screen. Only UserClosing (X / Alt+F4, and
+        Form.Close() from destroy(), which _on_closing already lets through)
+        keeps the veto.
+        """
+        try:
+            import System.Windows.Forms as WinForms
+            if args.CloseReason == WinForms.CloseReason.UserClosing:
+                return
+            logger.info("popover: close reason %s -- allowing destroy",
+                        args.CloseReason)
+            self._destroying = True
+            args.Cancel = False
+        except Exception as e:
+            logger.debug("popover native closing-hook failed: %s", e)
+
+    def _on_closing(self, window=None, *_):
+        """FormClosing interceptor -- runs ON the WinForms UI thread.
+
+        Keep it trivial: `hide()` is safe (Control.Invoke on the owning thread
+        runs synchronously) but `evaluate_js` -- so `_emit`/`_refresh` -- would
+        deadlock here (it blocks on a semaphore released via the UI thread's
+        sync context). Returning False cancels the destruction.
+        """
+        # Programmatic teardown -- allow. `app._exiting` covers win_main
+        # _hard_exit's generic `for w in webview.windows: w.destroy()` sweep,
+        # which bypasses our destroy() and would otherwise be vetoed here.
+        if self._destroying or getattr(self.app, "_exiting", False):
+            return None
+        try:
+            logger.info("popover: close intercepted -- hiding (window kept alive)")
+            self._visible = False
+            w = window if window is not None else self._window
+            if w is not None:
+                w.hide()
+        except Exception as e:
+            logger.debug("popover close intercept failed: %s", e)
+        return False
+
+    def _reset_refs(self):
+        self._window = None
+        self._bridge = None
+        self._api = None
+        self._loaded = False
+        self._visible = False
+        self._pending_events = []
+        self._destroying = False
+
+    def _on_closed(self, window=None, *_):
+        """The form really was destroyed. Drop every reference so the next
+        show()/toggle() rebuilds instead of calling show() on a dead handle
+        (silent no-op -- the 2026-08-26 failure mode)."""
+        try:
+            with self._build_lock:
+                if window is None or window is self._window:
+                    self._reset_refs()
+            logger.info("popover window destroyed -- next show() rebuilds")
+        except Exception as e:
+            logger.debug("popover closed-hook failed: %s", e)
+
+    def destroy(self):
+        """Programmatic teardown (quit). The only path _on_closing lets through."""
+        w = self._window
+        self._destroying = True
+        try:
+            if w is not None:
+                w.destroy()
+        except Exception as e:
+            logger.debug("popover destroy failed: %s", e)
+        with self._build_lock:
+            if self._window is w:
+                self._reset_refs()
+
+    def _window_alive(self):
+        """False once pywebview has pruned our window from `webview.windows`
+        (its on_close does that before `closed` fires)."""
+        if self._window is None:
+            return False
+        try:
+            import webview
+            return self._window in webview.windows
+        except Exception:
+            return True                      # can't tell -- keep old behavior
+
+    def _wait_shown(self):
+        """True once the form raised Shown. move()/show() are `_shown_call`
+        methods that each block 20s and raise when `shown` never fires
+        (WebView2 failed to initialise the form); bound that here so a tray
+        click degrades to one warning instead of a silent 40s stall. The
+        handle is kept -- still alive in `webview.windows` -- so the next
+        click retries."""
+        try:
+            ev = self._window.events.shown
+            if ev.is_set() or ev.wait(SHOWN_WAIT_S):
+                return True
+            logger.warning("popover: form not shown after %ss -- skipping "
+                           "this open", SHOWN_WAIT_S)
+            return False
+        except Exception as e:
+            logger.debug("popover shown-wait failed (%s) -- proceeding", e)
+            return True                      # can't tell -- keep old behavior
 
     def _on_loaded(self):
         self._loaded = True
@@ -175,11 +342,29 @@ class WinPopover:
     # ── show / hide / toggle ────────────────────────────────────
     def show(self):
         try:
-            if not self._window:
-                self._build()
-            self._position()
-            self._window.show()
+            with self._build_lock:
+                if self._window is not None and not self._window_alive():
+                    # closed-hook missed / raced -- never show() a dead handle.
+                    logger.info("popover: stale handle -- rebuilding")
+                    self._reset_refs()
+                if not self._window:
+                    self._build()
+            if self._window is None:
+                return
+            # _visible BEFORE wait_shown: `_on_loaded` fires on a pywebview
+            # thread and hides when _visible is False, so a load during the
+            # Shown wait used to hide the first open.
             self._visible = True
+            if not self._wait_shown():
+                self._visible = False
+                return
+            self._position()
+            # Window.show() does NOT raise on a dead handle (winforms show(uid)
+            # silently returns when the uid has no BrowserView), so there is
+            # deliberately no rebuild-on-exception here: _window_alive() above
+            # is the dead-handle guard, and a rebuild triggered by the `shown`
+            # timeout would only orphan a second form.
+            self._window.show()
             self._refresh()
         except Exception as e:
             logger.error("popover show failed: %s", e)
