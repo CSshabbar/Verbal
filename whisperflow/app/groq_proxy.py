@@ -44,7 +44,8 @@ def transcribe_via_proxy(wav_path: str, config: dict, prompt: str | None = None,
                          chain: dict | None = None,
                          sidecar: dict | None = None,
                          provider: str | None = None,
-                         alt_model: str | None = None) -> str | None:
+                         alt_model: str | None = None,
+                         words: bool = False) -> str | None:
     """Transcribe an audio file via the proxy (multipart → Groq /audio/transcriptions).
     language=None → Whisper auto-detects; the proxy forwards the form as-is.
 
@@ -83,6 +84,12 @@ def transcribe_via_proxy(wav_path: str, config: dict, prompt: str | None = None,
             data["asr_provider"] = provider
             if alt_model:
                 data["asr_alt_model"] = alt_model
+        # Per-word timestamps (meetings → speaker-turn splitting). Groq's
+        # verbose_json keeps the same `text` field, so nothing else changes;
+        # alternate providers are normalized to `{text}` and never carry words.
+        if words and not (provider and provider != "groq"):
+            data["response_format"] = "verbose_json"
+            data["timestamp_granularities[]"] = "word"
         # The server only chains when it is sent a system prompt (see index.ts
         # `wantChain && chainSystem`), so an empty/malformed chain dict degrades
         # to a plain transcription rather than to an error.
@@ -109,6 +116,8 @@ def transcribe_via_proxy(wav_path: str, config: dict, prompt: str | None = None,
             logger.warning("groq-proxy transcription %s: %s", resp.status_code, resp.text[:200])
             return None
         body = resp.json()
+        if sidecar is not None and words and isinstance(body.get("words"), list):
+            sidecar["words"] = body["words"]      # [{word, start, end}] relative seconds
         if sidecar is not None:
             _c = body.get("chain") or {}
             _fmt = (_c.get("formatted") or "").strip()
@@ -164,7 +173,8 @@ def chat_via_proxy(messages: list, config: dict, model: str = "openai/gpt-oss-12
         return None
 
 
-def diarize_submit(object_path: str, config: dict, timeout: float = 20.0) -> str | None:
+def diarize_submit(object_path: str, config: dict, timeout: float = 20.0,
+                   language: str | None = None) -> str | None:
     """Ask the proxy to start speaker diarization for an uploaded meeting WAV.
 
     `object_path` is the bare `meeting-audio` bucket path (`<user>/<meeting>.wav`).
@@ -174,7 +184,9 @@ def diarize_submit(object_path: str, config: dict, timeout: float = 20.0) -> str
     try:
         import httpx
         resp = httpx.post(_endpoint(), headers=_headers(config, json=True),
-                          json={"diarize": {"object": object_path}}, timeout=timeout)
+                          json={"diarize": {"object": object_path,
+                                            "language": (language or "").strip().lower() or None}},
+                          timeout=timeout)
         if resp.status_code != 200:
             logger.warning("diarize submit %s: %s", resp.status_code, resp.text[:160])
             return None

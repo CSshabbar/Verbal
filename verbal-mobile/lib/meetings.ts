@@ -52,6 +52,10 @@ export type Meeting = {
   notesMd: string | null;             // full AI meeting notes (markdown; lazy on desktop)
   pinned: boolean;
   recognized: Record<string, { name: string; meetings: number }>;  // voiceprint hits
+  // Provenance of the speaker split: 'diarized' = real who-spoke-when from the
+  // audio; 'estimated' = 90 s silence-gap guess (diarization didn't run). null on
+  // meetings older than the column (2026-08-27) — render as estimated.
+  speakersSource: 'diarized' | 'estimated' | null;
   live: boolean;                  // currently being captured on another device
   updatedAt: string;
   dateLabel: string;              // "Today · 9:24 AM" | "Yesterday" | "Mon · 2:08 PM"
@@ -96,6 +100,8 @@ export function toMeeting(row: any): Meeting {
     notesMd: row.notes_md || null,
     pinned: !!row.pinned,
     recognized: row.recognized && typeof row.recognized === 'object' ? row.recognized : {},
+    speakersSource: row.speakers_source === 'diarized' || row.speakers_source === 'estimated'
+      ? row.speakers_source : null,
     live: !!row.live,
     updatedAt: row.updated_at || row.started_at || new Date().toISOString(),
     dateLabel: dateLabel(row.started_at),

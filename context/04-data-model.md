@@ -162,6 +162,7 @@ per captured meeting.
 | `live` | bool | default `false` — set while a meeting is actively being captured; surfaced to mobile as the live-transcript-in-progress flag |
 | `audio_expired` | bool | default `false` — MER-31, 2026-07. Set by the `reap-meeting-audio` reaper once the audio object is actually deleted; the single authoritative "no audio left" signal (never inferred from `audio_url` alone) |
 | `retention_days` | int | nullable, MER-31. `null`/`0` = never expire (default). Stamped **per meeting at capture time** from desktop's `meetings_keep_audio_days` setting — not a live/retroactive per-user lookup |
+| `speakers_source` | text | nullable, CHECK ∈ `diarized`\|`estimated` — 2026-08-27 (`whisperflow/supabase_migration_2026-08-27_meetings_speakers_source.sql`, applied live). Provenance of the speaker split: `diarized` = AssemblyAI turns applied by desktop `_diarize()`, `estimated` = 90 s-gap heuristic only. `null` = pre-column meeting → clients render as estimated. Drives the SPEAKERS VERIFIED/ESTIMATED tag on both platforms |
 
 Indexes `(user_id)`, `(user_id, started_at desc)`. **Realtime publication: yes** (mobile subscribes
 INSERT+UPDATE on `verbal_meetings_<uid>` — the live-transcript stream). **`REPLICA IDENTITY FULL`**
@@ -358,7 +359,8 @@ read `transcriptions.text` to COUNT words and sum `duration_ms`, and return **on
 (`dictations`, `words`, `speech_ms`, `last_active`). There is no column in either return type that could
 carry transcript content. A member without `usage_consent` is **absent from the result entirely** rather
 than returned as zeroes, so their silence is not itself a signal. `org_leaderboard` additionally
-requires `organizations.leaderboard_enabled` AND the member's own `leaderboard_opt_in`, and is readable
+requires `organizations.leaderboard_enabled` (the per-member `leaderboard_opt_in` stopped gating it on
+2026-08-27 — the column remains, written by `org_set_consent`, but unused), and is readable
 by every active member (not just admins) — that is the deliberate Phase-5b design, gated behind two
 independent opt-ins.
 
@@ -637,6 +639,10 @@ Pragmatic, matches code + `GOOGLE_AUTH_SETUP.md`:
 - Local-only config keys: `voice_prints` (per-name embeddings — NEVER synced), `meetings_opened` (read tracking).
 
 ## Schema gaps & stale docs (important) ⚠️
+
+- Transcript utterances may carry a transient `words: [[text, t0, t1]]` array **in memory only** during a
+  live desktop meeting (per-word timestamps for turn splitting). The `transcript` jsonb shape above is
+  unchanged: `_public_transcript()` strips `words` from every persisted/synced/emitted copy.
 
 - ~~No committed SQL for `transcriptions`, `devices`, `canvas`~~ — **closed** (MER-28, 2026-07):
   `whisperflow/supabase_transcriptions.sql` / `supabase_devices.sql` / `supabase_canvas.sql` now reproduce

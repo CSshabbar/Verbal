@@ -314,8 +314,8 @@ Each feature: **what it does · desktop impl · mobile impl · backend · status
 ## Team / Organization (IDI-216, Aug 2026)
 
 - **What:** a named group ABOVE the single-user account. An owner creates a team, invites people by
-  email, manages roles, and shares a dictionary + snippets with everyone on it; members can opt in to
-  usage insights and a team leaderboard. **One team per user** — enforced by a partial unique index on
+  email, manages roles, and shares a dictionary + snippets with everyone on it; members share usage
+  counts (on by default) and the owner can switch on a team leaderboard for everyone. **One team per user** — enforced by a partial unique index on
   `organization_members(user_id) where status='active'`, not by app code, so a racing invite claim
   cannot create a second membership.
 - **Why it did NOT need IDI-29 first.** The obvious reading of "team mode" is cross-account access, which
@@ -378,8 +378,12 @@ Each feature: **what it does · desktop impl · mobile impl · backend · status
   that read `transcriptions` to COUNT words and sum durations and return **only** aggregates — there is
   no column in either return type that could carry transcript text. A member who hasn't set
   `usage_consent` is **absent from the result entirely** rather than shown as zeroes, so their silence
-  isn't itself a signal. The leaderboard needs BOTH the owner's org-wide switch (default off) and the
-  member's own `leaderboard_opt_in`; turning `usage_consent` off turns the opt-in off with it.
+  isn't itself a signal. **The leaderboard is owner-controlled and all-or-nothing (2026-08-27):**
+  `org_leaderboard` lists every active member with `usage_consent` once `leaderboard_enabled` is on; the
+  per-member `leaderboard_opt_in` column no longer gates it and the "Show me on the ranking" toggle is
+  gone from both Settings screens (owner decision — "either open for everyone or closed for everyone").
+  Turning `usage_consent` off still removes you from the board, because it removes you from every
+  cross-member view.
   **The toggles live in Settings, not on Team** (2026-08-21): desktop adds a `privacy` group to
   `SETTINGS_GROUPS` (label "Team privacy", rail badge `sharing`/`private`), mobile a `TEAM PRIVACY`
   section. Both are rendered **only when the user is on a team**, and desktop falls the group back to
@@ -464,7 +468,12 @@ Each feature: **what it does · desktop impl · mobile impl · backend · status
   in the title row opens **Team settings** — roster (role toggle/remove), pending invites, the on-demand
   invite form, the owner's leaderboard + team-wide-visibility switches, the dictionary/privacy pointers
   and Leave team (hidden for the owner). One long scroll with all of it read as "complicated"; the
-  numbers are what people open the screen for, the management is a tap away. Same sections as desktop: the shared
+  numbers are what people open the screen for, the management is a tap away. **The numbers block is the
+  shared `flume-ui/components/TeamInsights.tsx`** (stat tiles, usage ranking + sparklines, "Where the team
+  writes", leaderboard list) — the Team screen's main view renders it, and so does **Insights under a
+  `Mine | <team>` segment** (2026-08-27; same control as Dictionary's scope, drawn only when `hasTeam`,
+  snaps back to Mine if the team disappears, hides the share-recap button in team scope). One component so
+  the two views can't drift. Same sections as desktop: the shared
   dictionary is a pointer here too (the editing is a `Mine | <team>` scope on `DictionaryScreen`), the
   usage list is a ranking with the bar behind the text rather than beside it (a separate chart column
   leaves no room for a name at phone width), and "Where the team writes" renders the same stacked share
@@ -1043,6 +1052,36 @@ deletes real files under `~/.verbal/` and this development machine has a real, i
   - Fails closed at every step (flag off, no upload/signed-out, key unset → proxy 503s, timeout, any
     exception): the meeting keeps the gap-heuristic labels exactly as today. Requires keep-audio + being
     signed in, since AssemblyAI fetches the WAV from the bucket.
+- **Speaker accuracy pass (2026-08-27)** — why "3 people showed as 2" and what changed:
+  - **Turn-level labelling, not chunk-level.** System-audio chunks are now transcribed with Groq
+    `verbose_json` + `timestamp_granularities[]=word` (`transcribe_with_status(..., words=True)` →
+    `sidecar["words"]`); each utterance carries transient `words: [[w, t0, t1]]` (absolute s) during the
+    session — **never persisted or synced** (`_public_transcript()` strips them; the live `utterance`
+    event too). At diarize time `split_utterances_by_turns()` (pure, fixture-pinned) cuts a chunk where
+    the diarized speaker changes, THEN `map_diarized_speakers()` labels the pieces. Before, one 8–22 s
+    chunk got one label, so a person who only interjected inside someone else's chunk was erased.
+    Utterances without words (local Whisper, ElevenLabs/AssemblyAI ASR, `self`) pass through unchanged.
+  - **Self-cluster exclusion needs a clear majority** (`SELF_CLUSTER_SHARE = 0.7`): a diarized cluster is
+    "the user" only when ≥70 % of its overlap lands on self utterances. The old bare plurality dropped a
+    remote participant who talked over the user as a phantom.
+  - **Language:** `diarize_submit(..., language=)` sends the meeting's pinned language; the proxy pins
+    `language_code` when given, else `language_detection: true` (was hard-coded `"en"`). Deployed live
+    as `groq-proxy` **v16** (2026-08-27); older clients that omit `language` get auto-detect.
+  - **Provenance is visible on both platforms:** `speakers_source` = `diarized` | `estimated` — a cloud
+    column (migration `meetings_speakers_source`, applied 2026-08-27; `null` on older meetings = treat as
+    estimated) written by `row()`, mirrored in local meta, and merged by `get_meeting()`. Desktop Summary
+    header shows **SPEAKERS VERIFIED / SPEAKERS ESTIMATED** with a tooltip explaining the fallback;
+    mobile `MeetingDetailScreen` shows the same tag next to the speaker chips (`speakersSource` in
+    `lib/meetings.ts`). A gap-heuristic guess is never shown with false confidence.
+  - **Automatic names from the transcript:** the summary JSON now includes `speaker_names`
+    (`{sid: name}`) — only for placeholder-labelled speakers whose name is unambiguous in the transcript
+    (self-introduction or being addressed by name). Hard-validated in `_parse_summary_json` (real
+    `s<N>` id, 1–2 alphabetic words, not "Speaker…", unique). `apply_speaker_names()` renames only
+    "Speaker N" labels (never a user/voiceprint name), rewrites "Speaker N" mentions in the produced
+    prose, and each rename feeds `voiceprint.learn_speaker` so the person is auto-named next meeting.
+    Applied in `run_summary()` and the retry path (`rerun_row`, which now PATCHes `speakers`).
+  - Not done (deliberate): no `speakers_expected` hint (participant count unknown), no reading of the
+    meeting app's active-speaker label, no calendar attendees.
 
 
 > **UI v4 — Notes-language panes (2026-08-16, user-approved proposal).** The desktop Meetings screen now

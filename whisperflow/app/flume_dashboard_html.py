@@ -2946,6 +2946,14 @@ function fillMeetDetail(){
         (rec[sid]?'<span class="avFp" title="Voice recognized"></span>':'')+
         '<span class="avNm">'+esc(nm)+'</span></span>';
     }).join('')+
+    // Speaker-split provenance: real who-spoke-when (diarized) vs the 90 s-gap
+    // guess (estimated) — so a wrong count is never presented with false confidence.
+    (Object.keys(spk).length>1 && ROW.status!=='processing' && ROW.speakers_source ?
+      '<span class="mono" title="'+(ROW.speakers_source==='diarized'
+        ? 'Speakers separated from the meeting audio (voice diarization)'
+        : 'Speaker split is a guess from silence gaps — diarization did not run (needs Keep audio + signed in). Double-click a speaker to rename.')+
+        '" style="font-size:10px;letter-spacing:.06em;color:var(--mut);text-transform:uppercase">'+
+        (ROW.speakers_source==='diarized' ? 'Speakers verified' : 'Speakers estimated')+'</span>' : '')+
     Object.keys(rec).map(function(sid){
       const r=rec[sid]||{};
       return '<span class="fpBanner" style="flex-basis:100%">'+
@@ -4931,17 +4939,13 @@ function settingsPane(id){
     return `
       <div class="ssection"><h3>What ${esc(TEAM.name||'your team')} can see</h3>
         <p class="ssub">Sharing your dictation counts is <b style="color:var(--tx)">on by default</b> &mdash;
-          switch it off and your numbers vanish from every admin view immediately. The ranking is
-          separate and stays off until you opt in.</p>
+          switch it off and your numbers vanish from every admin view, and from the team ranking,
+          immediately. Whether the ranking is shown at all is the team owner's call.</p>
         <div class="scard">
           <div class="saverow"><button class="toggle ${TEAM.usage_consent?'on':''}"
               aria-label="Let admins see my dictation counts"
-              onclick="setTeamConsent(${TEAM.usage_consent?'false':'true'}, ${TEAM.leaderboard_opt_in?'true':'false'})"></button>
+              onclick="setTeamConsent(${TEAM.usage_consent?'false':'true'}, ${TEAM.usage_consent?'false':'true'})"></button>
             <span style="font:500 13px Geist">Let admins see my dictation counts</span></div>
-          <div class="saverow" style="margin-top:9px"><button class="toggle ${TEAM.leaderboard_opt_in?'on':''}"
-              aria-label="Show me on the team ranking"
-              onclick="setTeamConsent(true, ${TEAM.leaderboard_opt_in?'false':'true'})"></button>
-            <span style="font:500 13px Geist">Show me on the team ranking</span></div>
         </div>
         <div class="tmnote" style="margin-top:14px">${SVG.lock}
           <span>What you dictate &mdash; the text, the audio, your notes &mdash; is never shared with your
@@ -6409,7 +6413,7 @@ function teamRosterHtml(){
 // A ranking needs a source of truth about who is in front. Two exist and they are
 // not interchangeable:
 //   TEAM_USAGE  — admin-only, gated on each member's usage_consent (on by default)
-//   TEAM_BOARD  — team-visible, gated on leaderboard_opt_in (off by default)
+//   TEAM_BOARD  — team-visible once the owner enables it; every sharing member is on it
 // Admins rank from usage because it is the fuller set and already theirs to see;
 // everyone else sees the opt-in board. Same rows, same order, different audience.
 // EXCEPT when the owner opened stats team-wide (stats_visible_to_members,
@@ -6645,7 +6649,7 @@ function teamEveryoneHtml(){
         <button class="tmskip" style="padding:0;color:var(--acc);text-transform:none;letter-spacing:.02em"
           onclick="showTeamPrivacy()">Open in Settings &rarr;</button></div>
       <p class="ssub" style="margin:0">You are ${TEAM.usage_consent
-        ? `<b style="color:var(--tx)">sharing your dictation counts</b> with admins${TEAM.leaderboard_opt_in?' and appearing on the ranking':', and staying off the ranking'}.`
+        ? `<b style="color:var(--tx)">sharing your dictation counts</b> with admins${TEAM.leaderboard_enabled?' and appear on the team ranking':''}.`
         : `<b style="color:var(--tx)">not sharing anything</b> — your numbers appear in no admin view.`}
         What you dictate is never shared either way. Change it under
         <b style="color:var(--tx)">Settings</b> &rarr; Team privacy.</p>
@@ -6697,7 +6701,7 @@ function teamMemberHtml(uid){
         <p>${isMe
           ? 'Your dictation counts stay private until you switch sharing on. Nothing you dictate is ever shared either way.'
           : esc((m.display_name||'They').split(' ')[0])+' hasn&rsquo;t turned usage sharing on. Only they can change that — an admin can&rsquo;t do it for them.'}</p>
-        ${isMe?`<button class="btn primary" style="width:auto;padding:11px 18px;margin-top:18px" onclick="setTeamConsent(true, ${TEAM.leaderboard_opt_in?'true':'false'})">Share my counts</button>`:''}
+        ${isMe?`<button class="btn primary" style="width:auto;padding:11px 18px;margin-top:18px" onclick="setTeamConsent(true, true)">Share my counts</button>`:''}
       </div>
     </div>`;
   }

@@ -27,6 +27,7 @@ closed. A meeting failure never touches the dictation path.
 import json
 import logging
 import os
+import re
 import threading
 import time
 import uuid
@@ -64,6 +65,7 @@ CHUNK_MAX_S = 22.0              # hard cut
 SILENCE_RMS = 0.008             # "quiet" threshold for a cut window
 SILENCE_WIN_S = 0.7             # trailing window that must be quiet to cut
 SPEAKER_GAP_S = 90.0            # system-audio silence gap → new speaker id
+SELF_CLUSTER_SHARE = 0.7        # diarized cluster is "the user" only at >=70% self overlap
 MEETINGS_DIR = os.path.expanduser("~/.verbal/meetings")
 TRANSCRIPT_CHAR_BUDGET = 24000  # LLM input cap: head + tail kept, middle elided
 
@@ -74,9 +76,15 @@ _SUMMARY_SYSTEM = """You summarize meeting transcripts. Reply with ONE JSON obje
  "decisions": ["each explicit decision made, one string each; [] if none"],
  "action_items": [{"owner": "<speaker id like self/s1, or null if unclear>", "task": "the commitment",
                    "due": "<short due label like 'Thursday', 'Jul 24', 'EOW' ONLY if a deadline was said, else null>"}],
- "hybrid_notes": [{"user_line": "<verbatim line from USER NOTES>", "ai_addition": "<ONE short sentence of context from the transcript, or empty string>"}]}
+ "hybrid_notes": [{"user_line": "<verbatim line from USER NOTES>", "ai_addition": "<ONE short sentence of context from the transcript, or empty string>"}],
+ "speaker_names": {"<speaker id>": "<that person's name as spoken in the transcript>"}}
 Rules:
 - Use only information present in the transcript/notes. Never invent facts, names, dates or numbers.
+- speaker_names: ONLY for speakers whose current label is a placeholder like "Speaker 2", and ONLY
+  when the transcript makes their name unambiguous — they introduce themselves ("I'm Sara"), or
+  another participant addresses them by name right before/after they speak ("thanks Sara" ↔ Sara's
+  line). One or two words, as spelled in the transcript. Never guess, never name "self", never
+  reuse a name already assigned to another speaker. {} when unsure.
 - decisions are things the participants AGREED or RESOLVED, not topics discussed.
 - action_items owner must be one of the speaker ids given, else null.
 - action_items due: only when the transcript states a deadline for THAT task; keep it under 12
@@ -188,7 +196,12 @@ def map_diarized_speakers(transcript, dz):
                     continue
                 bucket = self_ov if u.get("speaker") == "self" else sys_ov
                 bucket[d["speaker"]] = bucket.get(d["speaker"], 0.0) + ov
-        self_clusters = {k for k, v in self_ov.items() if v > sys_ov.get(k, 0.0)}
+        # A cluster is "the user" only on a CLEAR majority of its overlap landing on
+        # self utterances (>=70%). A bare plurality used to be enough, which let a
+        # remote participant who talked over the user get excluded as a phantom —
+        # i.e. a real person silently disappeared from the speaker list.
+        self_clusters = {k for k, v in self_ov.items()
+                         if v >= SELF_CLUSTER_SHARE * (v + sys_ov.get(k, 0.0))}
 
         order, alias = [], {}
         new_ids, votes = [], {}          # votes: old sid -> {new sid: count}
@@ -219,6 +232,128 @@ def map_diarized_speakers(transcript, dz):
         return new_ids, remap_hint
     except Exception:
         return [u.get("speaker") for u in (transcript or [])], {}
+
+
+def split_utterances_by_turns(transcript, dz, min_words=1):
+    """Split system-audio utterances at diarized speaker-turn boundaries using
+    per-word timestamps, so `map_diarized_speakers` labels TURNS, not 8–22 s
+    Groq chunks.
+
+    Why: one chunk often holds two people ("...sounds good." / "Great, so next
+    week..."). With one label per chunk the shorter voice is erased — a third
+    participant who only interjects can vanish from the speaker list entirely.
+
+    Each utterance may carry `words`: [[text, t0, t1], ...] in ABSOLUTE seconds.
+    Utterances without words (local Whisper, alt ASR providers, older meetings)
+    and "self" utterances pass through unchanged. A word belongs to the diarized
+    turn containing its midpoint; words in no turn stick with the previous word.
+    Splits are only made where the diarized speaker actually changes, and a
+    fragment shorter than `min_words` is merged back into its neighbour rather
+    than becoming a one-word "utterance".
+
+    Pure and total: never raises; on any doubt returns the input list unchanged.
+    Output utterances drop the `words` key (they are consumed here).
+    """
+    try:
+        if not transcript or not dz:
+            return [dict((k, v) for k, v in u.items() if k != "words")
+                    for u in (transcript or [])]
+        turns = sorted(({"speaker": d["speaker"], "start": float(d["start"]),
+                         "end": float(d["end"])} for d in dz), key=lambda d: d["start"])
+
+        def turn_at(t):
+            for d in turns:
+                if d["start"] <= t <= d["end"]:
+                    return d["speaker"]
+            return None
+
+        out = []
+        for u in transcript:
+            words = u.get("words")
+            base = {k: v for k, v in u.items() if k != "words"}
+            if u.get("speaker") == "self" or not isinstance(words, list) or len(words) < 2:
+                out.append(base)
+                continue
+            groups, cur, cur_spk = [], [], None
+            for w in words:
+                try:
+                    txt, ws, we = str(w[0]), float(w[1]), float(w[2])
+                except Exception:
+                    continue
+                spk = turn_at((ws + we) / 2.0)
+                if spk is None:
+                    spk = cur_spk
+                if cur and spk != cur_spk:
+                    groups.append((cur_spk, cur))
+                    cur = []
+                cur_spk = spk
+                cur.append((txt, ws, we))
+            if cur:
+                groups.append((cur_spk, cur))
+            if len(groups) <= 1:
+                out.append(base)
+                continue
+            # fold tiny fragments into the previous (or next) group
+            merged = []
+            for spk, ws in groups:
+                if merged and len(ws) < min_words:
+                    merged[-1] = (merged[-1][0], merged[-1][1] + ws)
+                else:
+                    merged.append((spk, list(ws)))
+            if len(merged) > 1 and len(merged[0][1]) < min_words:
+                merged[1] = (merged[1][0], merged[0][1] + merged[1][1])
+                merged = merged[1:]
+            if len(merged) <= 1:
+                out.append(base)
+                continue
+            for i, (_, ws) in enumerate(merged):
+                t0 = ws[0][1] if i else float(u.get("t0") or ws[0][1])
+                t1 = ws[-1][2] if i < len(merged) - 1 else float(u.get("t1") or ws[-1][2])
+                text = " ".join(x[0].strip() for x in ws if x[0].strip())
+                if not text:
+                    continue
+                part = dict(base, t0=round(t0, 2), t1=round(max(t1, t0), 2), text=text)
+                out.append(part)
+        out.sort(key=lambda x: float(x.get("t0") or 0))
+        return out
+    except Exception:
+        return list(transcript or [])
+
+
+def apply_speaker_names(speakers, names, parsed=None):
+    """Apply transcript-derived names (from the summary's `speaker_names`) to a
+    speakers map — ONLY onto placeholder labels ("Speaker N"), never over a name
+    the user or the voiceprint already set. Returns the list of ids renamed.
+
+    When `parsed` (the summary dict) is given, "Speaker N" mentions in the prose
+    it produced are rewritten to the new name too, so the notes read coherently.
+    Pure over its inputs (mutates `speakers`/`parsed` in place, never raises)."""
+    renamed = []
+    try:
+        taken = {str(v).strip().lower() for v in (speakers or {}).values()}
+        for sid, name in (names or {}).items():
+            cur = (speakers or {}).get(sid)
+            if cur is None or not re.match(r"(?i)^speaker\s+\d+$", str(cur).strip()):
+                continue
+            if name.strip().lower() in taken:
+                continue
+            speakers[sid] = name
+            taken.add(name.strip().lower())
+            renamed.append((sid, str(cur).strip(), name))
+        if parsed and renamed:
+            def fix(s):
+                for _, old, new in renamed:
+                    s = re.sub(r"\b" + re.escape(old) + r"\b", new, s)
+                return s
+            parsed["summary"] = fix(parsed.get("summary") or "")
+            parsed["decisions"] = [fix(d) for d in parsed.get("decisions") or []]
+            for it in parsed.get("action_items") or []:
+                it["task"] = fix(it.get("task") or "")
+            for hn in parsed.get("hybrid_notes") or []:
+                hn["ai_addition"] = fix(hn.get("ai_addition") or "")
+    except Exception:
+        pass
+    return [sid for sid, _, _ in renamed]
 
 
 def _transcript_text(transcript, speakers, budget=TRANSCRIPT_CHAR_BUDGET):
@@ -261,7 +396,24 @@ def _parse_summary_json(raw):
         "decisions": [str(d) for d in data.get("decisions", []) if str(d).strip()],
         "action_items": [],
         "hybrid_notes": [],
+        "speaker_names": {},
     }
+    # Names the model read off the transcript — validated hard, because a wrong
+    # name is worse than "Speaker 2": sid must be a real non-self id, name must be
+    # 1–2 alphabetic words, not itself a placeholder, and unique.
+    sn = data.get("speaker_names")
+    if isinstance(sn, dict):
+        seen = set()
+        for sid, name in sn.items():
+            sid = str(sid).strip()
+            name = " ".join(str(name or "").strip().split())
+            if (not re.fullmatch(r"s\d{1,2}", sid) or not name
+                    or not re.fullmatch(r"[^\W\d_]+(?: [^\W\d_]+)?", name, re.UNICODE)
+                    or len(name) > 32 or re.match(r"(?i)^speaker\b", name)
+                    or name.lower() in seen):
+                continue
+            seen.add(name.lower())
+            out["speaker_names"][sid] = name
     for it in data.get("action_items", []) or []:
         if isinstance(it, dict) and str(it.get("task", "")).strip():
             owner = it.get("owner")
@@ -729,6 +881,7 @@ class MeetingSession:
         self.action_items = []
         self.hybrid_notes = []
         self.recognized = {}          # {sid: {name, meetings}} — voiceprint hits
+        self.speakers_source = "estimated"   # → "diarized" once AssemblyAI turns are applied
         self.audio_url = None
         self.error = None
 
@@ -1119,6 +1272,16 @@ class MeetingSession:
                 session_language=getattr(self, "language", ""))
             if not parsed:
                 return False
+            # Names read off the transcript ("thanks Sara" / "I'm Marco") replace
+            # placeholder labels only; a renamed speaker also feeds the voiceprint
+            # learner so the same person is auto-named next meeting.
+            for sid in apply_speaker_names(self.speakers, parsed.get("speaker_names"), parsed):
+                try:
+                    from app import voiceprint
+                    voiceprint.learn_speaker(self.app.config, self.id, self.transcript,
+                                             sid, self.speakers.get(sid))
+                except Exception:
+                    pass
             self.summary = parsed["summary"]
             self.decisions = parsed["decisions"]
             self.action_items = merge_action_done(self.action_items, parsed["action_items"])
@@ -1156,9 +1319,14 @@ class MeetingSession:
                 peak = float(np.abs(audio).max()) if audio.size else 0.0
                 if peak < 0.01:
                     continue  # silence gate — matches the dictation pipeline
+                # Per-word timestamps (system audio only) let the post-meeting
+                # diarization split a chunk at real speaker turns. Best-effort:
+                # only the Groq-proxy path returns them; empty otherwise.
+                side = {}
                 text, status = transcribe_with_status(
                     audio, self.app.config, sample_rate=SR,
-                    language=self.language or None)
+                    language=self.language or None,
+                    sidecar=side, words=(source != "self"))
                 if text and text.strip().lower() in _MEETING_HALLUCINATIONS:
                     logger.debug("meeting: dropped hallucination chunk %r", text)
                     text, status = "", "silent"
@@ -1169,9 +1337,19 @@ class MeetingSession:
                 speaker = self._speaker_for(source, t0, t1)
                 utt = {"speaker": speaker, "t0": round(t0, 2), "t1": round(t1, 2),
                        "text": text.strip()}
+                words = side.get("words") if isinstance(side, dict) else None
+                if source != "self" and isinstance(words, list) and len(words) >= 2:
+                    try:
+                        utt["words"] = [[str(w.get("word", "")).strip(),
+                                         round(t0 + float(w.get("start", 0)), 2),
+                                         round(t0 + float(w.get("end", 0)), 2)]
+                                        for w in words if str(w.get("word", "")).strip()]
+                    except Exception:
+                        utt.pop("words", None)
                 self.transcript.append(utt)
                 self.transcript.sort(key=lambda u: u["t0"])
-                self._emit("utterance", dict(utt, speakers=self.speakers, mid=self.id))
+                pub = {k: v for k, v in utt.items() if k != "words"}
+                self._emit("utterance", dict(pub, speakers=self.speakers, mid=self.id))
                 now = time.time()
                 if now - getattr(self, "_last_live_push", 0.0) > 4.0:
                     self._last_live_push = now
@@ -1197,7 +1375,10 @@ class MeetingSession:
         if not any(u.get("speaker") != "self" for u in self.transcript):
             return          # nothing but the user's own mic — nothing to partition
         from app.groq_proxy import diarize_submit, diarize_poll
-        tid = diarize_submit(self.audio_url, self.app.config)
+        # The meeting's spoken language (or auto-detect) — turn detection on
+        # code-switched speech degrades when the model is pinned to English.
+        tid = diarize_submit(self.audio_url, self.app.config,
+                             language=(self.language or None))
         if not tid:
             return
         deadline, dz = time.time() + max_wait, None
@@ -1212,9 +1393,15 @@ class MeetingSession:
         if not dz:
             logger.warning("diarization timed out after %.0fs — keeping gap labels", max_wait)
             return
+        # 1) split chunks at speaker-turn boundaries (needs per-word timestamps;
+        #    utterances without them pass through), 2) map turns → speaker ids.
+        before = len(self.transcript)
+        self.transcript = split_utterances_by_turns(self.transcript, dz)
         new_ids, remap_hint = map_diarized_speakers(self.transcript, dz)
         changed = sum(1 for u, nid in zip(self.transcript, new_ids)
                       if u.get("speaker") != nid)
+        self.speakers_source = "diarized"
+        logger.info("diarization: %d utterances → %d after turn split", before, len(self.transcript))
         # Rebuild the speakers map around the new partition. A name the user typed
         # mid-meeting follows the id that received the majority of that speaker's
         # utterances; everything else gets the familiar default.
@@ -1374,6 +1561,9 @@ class MeetingSession:
             "duration_seconds": self.elapsed, "status": self.state,
             "speakers": self.speakers, "utterances": len(self.transcript),
             "audio_url": self.audio_url, "cloud": self._cloud_ok,
+            # "diarized" (real who-spoke-when) vs "estimated" (90 s-gap guess).
+            # LOCAL-ONLY for now — no cloud column; get_meeting() merges it in.
+            "speakers_source": getattr(self, "speakers_source", "estimated"),
         }
 
     def row(self):
@@ -1386,7 +1576,7 @@ class MeetingSession:
             "ended_at": _now_iso() if self.state in ("ready", "failed", "processing") else None,
             "duration_seconds": self.elapsed,
             "audio_url": self.audio_url,
-            "transcript": self.transcript,
+            "transcript": self._public_transcript(),
             "speakers": self.speakers,
             "scratchpad": self.scratchpad,
             "summary": self.summary,
@@ -1395,6 +1585,8 @@ class MeetingSession:
             "marked_moments": self.marked_moments,
             "hybrid_notes": self.hybrid_notes,
             "recognized": getattr(self, "recognized", {}) or {},
+            # cloud column added 2026-08-27 (migration meetings_speakers_source)
+            "speakers_source": getattr(self, "speakers_source", "estimated"),
             "device_id": cfg.get("sync_device_name", "") or "",
             "device_name": cfg.get("sync_device_name", "") or "",
             "status": {"ready": "ready", "failed": "failed"}.get(self.state, "processing"),
@@ -1405,6 +1597,12 @@ class MeetingSession:
             # the change, not retroactively. 0/None = never expire (default).
             "retention_days": cfg.get("meetings_keep_audio_days") or 0,
         }
+
+    def _public_transcript(self):
+        """Transcript as persisted/synced: per-word timestamps (`words`) are a
+        transient diarization aid and never leave the session."""
+        return [{k: v for k, v in u.items() if k != "words"} if "words" in u else u
+                for u in self.transcript]
 
     def _persist_local(self):
         try:
@@ -1449,7 +1647,7 @@ class MeetingSession:
             httpx.patch(
                 f"{SUPABASE_URL}/rest/v1/meetings?id=eq.{self.id}",
                 headers=auth_header(self.app.config, json=True),
-                json={"transcript": self.transcript, "speakers": self.speakers,
+                json={"transcript": self._public_transcript(), "speakers": self.speakers,
                       "duration_seconds": self.elapsed, "live": True,
                       "status": "processing", "updated_at": _now_iso()}, timeout=10)
         except Exception as e:
@@ -1775,10 +1973,13 @@ class MeetingManager:
                         self.app.config, row.get("transcript", []),
                         row.get("speakers", {}), row.get("scratchpad", ""),
                         row.get("marked_moments", []))
+                    speakers = dict(row.get("speakers") or {})
+                    if parsed:
+                        apply_speaker_names(speakers, parsed.get("speaker_names"), parsed)
                     patch = ({"summary": parsed["summary"], "decisions": parsed["decisions"],
                               "action_items": merge_action_done(
                                   row.get("action_items"), parsed["action_items"]),
-                              "hybrid_notes": parsed["hybrid_notes"],
+                              "hybrid_notes": parsed["hybrid_notes"], "speakers": speakers,
                               "status": "ready", "updated_at": _now_iso()}
                              if parsed else {"status": "failed", "updated_at": _now_iso()})
                     row.update(patch)
@@ -2148,7 +2349,13 @@ class MeetingManager:
                     headers=auth_header(self.app.config), timeout=10)
                 rows = r.json() if r.status_code == 200 else []
                 if rows:
-                    return {"ok": True, "meeting": rows[0], "live": False}
+                    row = rows[0]
+                    # speakers_source lives only in local metadata (no cloud column)
+                    for m in self.app.config.get("meetings", []):
+                        if m.get("id") == meeting_id and m.get("speakers_source"):
+                            row = dict(row, speakers_source=m["speakers_source"])
+                            break
+                    return {"ok": True, "meeting": row, "live": False}
             for m in self.app.config.get("meetings", []):
                 if m.get("id") == meeting_id:
                     return {"ok": True, "meeting": m, "live": False}

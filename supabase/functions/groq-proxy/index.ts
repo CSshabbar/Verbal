@@ -524,7 +524,11 @@ Deno.serve(async (req) => {
             // speech, and diarization only needs turns + times anyway.
             speech_models: ["universal-2"],
             speaker_labels: true,
-            language_code: "en",
+            // The meeting's spoken language when pinned; otherwise let the model
+            // detect it. Pinning "en" on code-switched speech blurred turn detection.
+            ...(typeof d.language === "string" && /^[a-z]{2}(-[a-z]{2})?$/i.test(d.language)
+              ? { language_code: d.language.toLowerCase() }
+              : { language_detection: true }),
           }),
         });
         if (!sub.ok) return json({ error: { message: `submit ${sub.status}: ${(await sub.text()).slice(0, 160)}` } }, 502);

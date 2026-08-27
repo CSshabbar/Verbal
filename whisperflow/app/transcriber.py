@@ -51,7 +51,8 @@ def resolve_language(config: dict, override: str | None = None) -> str | None:
 
 def transcribe_with_status(audio: np.ndarray, config: dict, sample_rate: int = 48000,
                            language: str | None = None,
-                           chain: dict | None = None, sidecar: dict | None = None):
+                           chain: dict | None = None, sidecar: dict | None = None,
+                           words: bool = False):
     """Like transcribe() but returns (text, status) where status is:
       'ok'      — got a transcription
       'silent'  — audio was empty/near-silent (no speech; not an error)
@@ -244,7 +245,7 @@ def transcribe_with_status(audio: np.ndarray, config: dict, sample_rate: int = 4
             model=(None if _alt else _model_id),
             provider=(_ch["provider"] if _alt else None),
             alt_model=(_ch["model"] if _alt else None),
-            chain=chain, sidecar=sidecar)
+            chain=chain, sidecar=sidecar, words=words)
         # FAIL CLOSED: an alternate provider that is unconfigured, down or out of
         # credit must never cost a dictation, so fall straight back to Groq — the
         # provider is a preference, not a dependency.
@@ -257,7 +258,8 @@ def transcribe_with_status(audio: np.ndarray, config: dict, sample_rate: int = 4
                          else "whisper-large-v3-turbo")
             _alt, _prompt_for_call = False, prompt
             proxy_text = transcribe_via_proxy(tmp, config, prompt=prompt, language=lang,
-                                              model=_model_id, chain=chain, sidecar=sidecar)
+                                              model=_model_id, chain=chain, sidecar=sidecar,
+                                              words=words)
         if proxy_text and proxy_text not in (".", "...", "uh", "um", "ah", "hm"):
             # The chain formatted the RAW ASR output, so its result has not been
             # through finalize() yet. Run it through the same scrub the unchained

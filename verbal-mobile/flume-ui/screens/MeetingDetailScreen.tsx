@@ -112,6 +112,16 @@ export const MeetingDetailScreen: React.FC<Props> = ({ meetingId, onBack, onOpen
               </View>
             );
           })}
+          {/* Speaker-split provenance (mirrors desktop): never show a gap-heuristic
+              guess with the same confidence as real diarization. */}
+          {speakers.length > 1 && meeting.status !== 'processing' && (
+            <Text variant="metaSm" color={colors.textMuted}
+              accessibilityLabel={meeting.speakersSource === 'diarized'
+                ? 'Speakers separated from the meeting audio'
+                : 'Speaker split is estimated from silence gaps; rename speakers on your Mac'}>
+              {meeting.speakersSource === 'diarized' ? 'SPEAKERS VERIFIED' : 'SPEAKERS ESTIMATED'}
+            </Text>
+          )}
         </View>
 
         {/* summary */}

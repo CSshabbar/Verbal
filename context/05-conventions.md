@@ -129,11 +129,14 @@
    added to that teardown. Device-level config (Groq key, device name, feature-flag prefs) is preserved.
    `signOut` uses `supabase.auth.signOut({ scope: 'local' })` so it can't hang on the network.
 
-14. **Don't use the custom `confirm()`/`ConfirmDialog` inside a screen presented as a native-stack MODAL
-   (mobile).** `ConfirmHost` renders a JS `<Modal>` from the root; on iOS a JS modal shown over a
-   native-stack `presentation:'modal'` screen (e.g. **Settings**) doesn't reliably receive touches, so the
-   dialog looks dead — this is why the Sign-out button "did nothing." Inside modal screens use React
-   Native's native `Alert.alert(...)`. `confirm()` is fine on tab/stack screens (e.g. notes multi-select).
+14. **Mobile `confirm()`/`notify()` are native-`Alert`-backed on iOS (since 2026-08-27); the JS
+   `ConfirmDialog` only renders on Android/web.** History: `ConfirmHost` renders a JS `<Modal>` from the
+   root, and on iOS a JS modal shown over a native-stack `presentation:'modal'` screen (**Settings,
+   Devices, Snippets, Team**) never appears, so every confirm there was a dead tap — first seen as the
+   Sign-out button "doing nothing", then re-found on the simulator with Settings → "Replay onboarding".
+   Team's Remove/Leave had the same bug while its comment claimed otherwise. Rather than each screen
+   remembering to import `Alert`, `confirm()` itself routes to `Alert.alert` on iOS, so callers stay
+   uniform. Don't add a JS `<Modal>` dialog to a Menu-modal screen.
 
 15. **All Groq access goes through the `groq-proxy` Edge Function — never a client-side key.** The Groq key
    is a Supabase **function secret** (`GROQ_API_KEY`), server-side only. Every client POSTs to
@@ -463,6 +466,25 @@
   `verbal_sync_enabled` gate that `lib/useSync` reads. Show the devices sheet from the ROOT
   host (`DevicesSyncHost`), never from inside the Settings/Menu native-stack modal (JS
   `<Modal>` touches are unreliable there — the same reason `confirmSignOut` uses native Alert).
+
+### Meeting speaker labels (desktop)
+
+- **Speaker ids are labelled per TURN, not per Groq chunk.** `split_utterances_by_turns()` runs before
+  `map_diarized_speakers()` in `MeetingSession._diarize()`. Any change to either must keep
+  `diarize_fixtures.py` green (32 cases, incl. the "interjecting third voice survives" case — the bug
+  that made 3 people show as 2). Keep both functions pure/total: no I/O, never raise.
+- **`words` never leave the session.** Utterance `words` (per-word timestamps) are a diarization aid;
+  every persisted/synced/emitted transcript copy goes through `_public_transcript()` (or strips the key
+  inline, as the live `utterance` event does). Do not add a new code path that writes `self.transcript`
+  out raw.
+- **Only placeholder labels are auto-renamed.** Transcript-derived `speaker_names` and voiceprint hits
+  may replace "Speaker N" only; a name the user typed always wins (`apply_speaker_names` checks the
+  current label, `voiceprint.learn_speaker` rejects `_DEFAULT_NAME`). A wrong name is worse than a
+  placeholder, so `_parse_summary_json` validates hard (real `s<N>` id, 1–2 alphabetic words, unique).
+- **Never present an estimated split as fact.** `speakers_source` drives the SPEAKERS VERIFIED /
+  ESTIMATED tag; when adding a speaker surface (mobile, widgets), carry the state or omit the count.
+- Self-cluster exclusion threshold is `SELF_CLUSTER_SHARE = 0.7` — a bare plurality silently deleted
+  remote participants who talked over the user. Don't lower it without a fixture that shows why.
 
 ### Meeting-notes generation (both platforms)
 
@@ -1281,7 +1303,8 @@
     not just the code: `grep -rn "counts and durations"` is what caught all three.
 
 53. **When a screen has two audiences, pick the data source per audience rather than showing one of them
-    an empty box.** The first team ranking read only from the opt-in `org_leaderboard`, which is off by
+    an empty box.** (Superseded 2026-08-27: the per-member opt-in is gone; the board lists every sharing
+    member once the owner enables it.) The first team ranking read only from the opt-in `org_leaderboard`, which is off by
     default and needs BOTH an org switch and a per-member opt-in — so a brand-new owner's ranking said
     "nobody has opted in yet" while the admin usage list right above it had rows. Now owners/admins rank
     from the consent-gated `org_usage_summary` they can already see and everyone else ranks from the
@@ -1401,6 +1424,20 @@
     docs updated for the above" — the quality-tier references got fixed, the speed-tier one didn't. Doc
     sync claims in a commit message are not self-verifying; grep the actual model constant name across
     `context/` when a model swap lands, don't trust that the commit already did it.
+
+59c. **Mobile `Card` (and any Pressable-or-View wrapper): never hand a plain `View` a function-valued
+    `style`.** `Card` used `Wrap = onPress ? Pressable : View` but always passed the
+    `({pressed}) => [...]` callback form; `View` silently ignores it, so every Card WITHOUT `onPress`
+    rendered with no surface, no padding and no `flex: 1` — History detail's transcript card collapsed
+    to zero height (found on the simulator 2026-08-27; regression from the app-wide press-feedback pass,
+    commit `4bfe159`). Branch on `onPress` and pass a static style array to `View`.
+
+59a. **Mobile: any `<Text>` with a large `fontSize` must set `lineHeight` too.** The shared
+    `components/Text` applies the `body` variant by default (`fontSize 17 / lineHeight 25`) and a style
+    prop that only overrides `fontSize` keeps that 25px line box — iOS clips glyphs to it, so a 52px
+    number renders with its top half missing (Insights WPM hero, 2026-08-26). Rule of thumb:
+    `lineHeight ≈ fontSize × 1.08` for display numerals; check any `fontSize > 25` on a variant-less
+    `<Text>`.
 
 59b. **Windows: never `sys.exit()` off the main thread — quit with `os._exit(0)`, and a second launch must
     WAKE the first, not die.** `win_main._tray_quit` runs on the pystray thread (or an `_on_main` daemon
