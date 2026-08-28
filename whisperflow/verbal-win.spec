@@ -2,6 +2,7 @@
 
 import sys
 import os
+import re
 
 import faster_whisper
 import ctranslate2
@@ -35,10 +36,48 @@ ct2_dir = os.path.dirname(ctranslate2.__file__)
 # `assets/app_icon.png` is the real 1024x1024 Flume brand icon.
 icon_src = 'assets/app_icon.png'
 icon_ico = 'assets/icon.ico'
-if os.path.exists(icon_src) and not os.path.exists(icon_ico):
+# Regenerate when the .ico is MISSING *or* OLDER than app_icon.png. The old
+# "only if missing" check meant a stale icon.ico lying around from a previous
+# build (local dist/ dirs, a cached CI checkout) kept shipping the retired
+# Verbal art after the 2026-08-25 mascot rebrand.
+def _ico_stale():
+    if not os.path.exists(icon_ico):
+        return True
+    try:
+        return os.path.getmtime(icon_ico) < os.path.getmtime(icon_src)
+    except OSError:
+        return True
+if os.path.exists(icon_src) and _ico_stale():
     from PIL import Image
     img = Image.open(icon_src)
     img.save(icon_ico, format='ICO', sizes=[(16,16),(32,32),(48,48),(64,64),(128,128),(256,256)])
+
+# Windows file-version metadata (what Task Manager, Explorer "Details" and
+# Settings > Apps display). Generated from config.APP_VERSION at build time so
+# it can never drift: the checked-in version_info.txt shipped "Verbal
+# Speech-to-Text 1.0.10" on every build through 1.0.35, which is why Task
+# Manager still said "Verbal" long after the Flume rebrand (2026-08-28).
+def _app_version():
+    with open(os.path.join('app', 'config.py'), encoding='utf-8') as f:
+        m = re.search(r'^APP_VERSION\s*=\s*"([^"]+)"', f.read(), re.M)
+    return m.group(1) if m else '0.0.0'
+
+def _write_version_info():
+    ver = _app_version()
+    nums = [int(x) for x in re.findall(r'\d+', ver)][:3]
+    while len(nums) < 4:
+        nums.append(0)
+    tpl = open('version_info.txt', encoding='utf-8').read()
+    tpl = re.sub(r'filevers=\([^)]*\)', 'filevers=(%d, %d, %d, %d)' % tuple(nums), tpl)
+    tpl = re.sub(r'prodvers=\([^)]*\)', 'prodvers=(%d, %d, %d, %d)' % tuple(nums), tpl)
+    tpl = re.sub(r"(u'(?:File|Product)Version', u')[^']*(')", r'\g<1>%s\g<2>' % ver, tpl)
+    os.makedirs('build', exist_ok=True)
+    out = os.path.join('build', 'version_info.txt')
+    with open(out, 'w', encoding='utf-8') as f:
+        f.write(tpl)
+    return out
+
+version_file = _write_version_info()
 
 a = Analysis(
     ['app/win_main.py'],
@@ -190,16 +229,13 @@ pyz = PYZ(a.pure)
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.datas,
     [],
+    exclude_binaries=True,
     name='Flume',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
-    upx_exclude=[],
-    runtime_tmpdir=None,
+    upx=False,
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
@@ -207,5 +243,26 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon=icon_ico if os.path.exists(icon_ico) else None,
-    version='version_info.txt',
+    version=version_file,
+)
+
+# ONEDIR (COLLECT), not one-file — deliberately, 2026-08-28. The one-file exe
+# was a ~9 MB bootloader that unpacked ~600 MB to %TEMP%\_MEIxxxx on EVERY
+# launch and then spawned the real app as a CHILD Flume.exe: two processes in
+# Task Manager, "End task" on the wrong one orphaned the child (still holding
+# VerbalSingletonMutex_v1 → the next launch silently exited), slow cold starts,
+# AV scanners chewing on the extraction, and a stale _MEI dir left behind on
+# every crash. onedir is ONE process, no extraction, dist\Flume\Flume.exe +
+# dist\Flume\_internal\. win_main._watch_bootloader_parent detects this
+# layout and disarms itself; sys._MEIPASS now points at _internal, so every
+# `sys._MEIPASS/...` asset lookup keeps working. verbal-setup.iss packages
+# `dist\Flume\*` recursively (was `dist\Flume.exe`).
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.datas,
+    strip=False,
+    upx=False,
+    upx_exclude=[],
+    name='Flume',
 )

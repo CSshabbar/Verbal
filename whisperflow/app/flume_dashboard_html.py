@@ -1420,6 +1420,8 @@ def _nav(icon, label, sid, badge=""):
 
 
 def flume_html() -> str:
+    import sys as _sys_early
+    _is_win_early = _sys_early.platform == "win32"
     sidebar = f"""
     <aside class="sidebar">
       <div class="brand"><span class="brandmark">✳</span><span class="brandname">FLUME</span></div>
@@ -1455,7 +1457,7 @@ def flume_html() -> str:
     <div id="signin" hidden>
       <div class="siLeft">
         <div class="siBrand"><span class="siLogo">{_logo}</span><span class="siWord">FLUME</span></div>
-        <div class="siHeadline">Speak on your phone.<br>Land on <span class="acc">your Mac.</span></div>
+        <div class="siHeadline">Speak on your phone.<br>Land on <span class="acc">your {'PC' if _is_win_early else 'Mac'}.</span></div>
         <p class="siLead">Sign in once — Flume keeps your phone and computer in sync for voice typing, canvas, notes, and meeting transcripts.</p>
         <div class="siFoot">END-TO-END ENCRYPTED&nbsp;&nbsp;&middot;&nbsp;&nbsp;MAC + WINDOWS</div>
       </div>
@@ -1656,7 +1658,7 @@ function renderSidebar(){
     ? devs.map(d=>`<div class="devrow${d.online?'':' off'}" onclick="toggleSyncPop(event,this)">
         <span class="ddot${d.online?' on':''}"></span>${esc(d.device_name||'Device')}
         ${d.device_id===target?'<span class="dtgt">SYNC</span>':''}</div>`).join('')
-    : `<div class="devrow" onclick="toggleSyncPop(event,this)"><span class="ddot on"></span>This Mac</div>`;
+    : `<div class="devrow" onclick="toggleSyncPop(event,this)"><span class="ddot on"></span>${THIS_DEVICE}</div>`;
   renderDeadBanner();
 }
 function statusPill(){
@@ -2153,7 +2155,7 @@ function renderCanvas(){
     || '<span class="cvdev muted">no other devices online</span>';
   // Live slot
   let liveBody='';
-  const from = CANVAS.own ? 'This Mac' : (CANVAS.from || '');
+  const from = CANVAS.own ? THIS_DEVICE : (CANVAS.from || '');
   const when = CANVAS.at ? cvRel(CANVAS.at) : '';
   if(!(CANVAS.content||'').trim() && !CANVAS.image_url){
     liveBody = '<div class="cvempty">Nothing shared right now — whatever you send lands on every device instantly.</div>';
@@ -2182,7 +2184,7 @@ function renderCanvas(){
     <div class="cvrow">
       <span class="cvric">${e.kind==='image'?SVG.grid:(e.kind==='link'?SVG.bolt:SVG.lines)}</span>
       <div class="cvrtx"><div class="cvr1">${esc(e.text)}</div>
-        <div class="cvr2">${esc(cvRel(e.at))} · ${e.own?'from this Mac':('from '+esc(e.from||'another device'))}</div></div>
+        <div class="cvr2">${esc(cvRel(e.at))} · ${e.own?('from this '+DEVICE_NOUN):('from '+esc(e.from||'another device'))}</div></div>
       <button class="cvrcopy" title="Copy" onclick="api('copy_text', ${esc(JSON.stringify(e.text))});toast('Copied')">Copy</button>
     </div>`).join('')
     : '<div class="cvempty" style="padding:6px 0 2px">Sends and receipts will appear here.</div>';
@@ -2617,7 +2619,7 @@ function renderMeetList(){
       : `<span class="mav" style="background:#D9B36B">·</span>`;
     const prev = m.status==='processing' ? 'Summarizing…'
       : m.status==='failed' ? 'Summary failed — open to retry'
-      : ((m.summary||'').split('\n')[0] || ((m.utterances||0)+' segments'+(m.cloud?'':' · this Mac only')));
+      : ((m.summary||'').split('\n')[0] || ((m.utterances||0)+' segments'+(m.cloud?'':' · this '+DEVICE_NOUN+' only')));
     const isNew = m.status==='ready' && (MEETS.opened||[]).indexOf(m.id)<0;
     const marks=(m.marked_moments||[]).length, acts=(m.action_items||[]).length;
     const meta=[fmtHM(m.duration_seconds)];
@@ -2971,14 +2973,6 @@ function fillMeetDetail(){
         (rec[sid]?'<span class="avFp" title="Voice recognized"></span>':'')+
         '<span class="avNm">'+esc(nm)+'</span></span>';
     }).join('')+
-    // Speaker-split provenance: real who-spoke-when (diarized) vs the 90 s-gap
-    // guess (estimated) — so a wrong count is never presented with false confidence.
-    (Object.keys(spk).length>1 && ROW.status!=='processing' && ROW.speakers_source ?
-      '<span class="mono" title="'+(ROW.speakers_source==='diarized'
-        ? 'Speakers separated from the meeting audio (voice diarization)'
-        : 'Speaker split is a guess from silence gaps — diarization did not run (needs Keep audio + signed in). Double-click a speaker to rename.')+
-        '" style="font-size:10px;letter-spacing:.06em;color:var(--mut);text-transform:uppercase">'+
-        (ROW.speakers_source==='diarized' ? 'Speakers verified' : 'Speakers estimated')+'</span>' : '')+
     Object.keys(rec).map(function(sid){
       const r=rec[sid]||{};
       return '<span class="fpBanner" style="flex-basis:100%">'+
@@ -4759,6 +4753,10 @@ const ASR_MODELS=[
    desc:'Best with Urdu mixed into English.', wait:'5s'},
   {id:'aai-universal-3-5-pro',  vendor:'AssemblyAI', name:'Universal-3.5',
    desc:'Strong English. Struggles with Urdu.', wait:'5s'},
+  {id:'gemini-3-5-transcribe',       vendor:'Google', name:'Gemini 3.5 Transcribe',
+   desc:'Verbatim words, then Flume formats. Top benchmark accuracy.', wait:'?', tag:'trial'},
+  {id:'gemini-3-5-transcribe-smart', vendor:'Google', name:'Gemini 3.5 Smart',
+   desc:'Gemini removes fillers and punctuates itself before Flume formats.', wait:'?', tag:'trial'},
 ];
 
 function pickRow(o, group, current, onchange){
@@ -5080,7 +5078,7 @@ function settingsPane(id){
       <div class="scard">
         <div class="saverow" style="margin-bottom:14px"><button class="toggle ${s.sync_enabled?'on':''}" id="syncToggle" onclick="this.classList.toggle('on')"></button><span style="font:500 13px Geist">Enable sync</span></div>
         <div class="field"><label>ACCOUNT ID</label><input id="userId" value="${esc(s.sync_user_id||'')}"/></div>
-        <div class="field"><label>DEVICE NAME</label><input id="devName" value="${esc(s.sync_device_name||'This Mac')}"/></div>
+        <div class="field"><label>DEVICE NAME</label><input id="devName" value="${esc(s.sync_device_name||THIS_DEVICE)}"/></div>
         <button class="btn primary" style="flex:none;width:130px" onclick="saveSettings()">Save sync</button>
       </div></div>
     <div class="ssection"><h3>History</h3><p class="ssub">Your dictations are kept on this device and, when sync is on, in your account.</p>
@@ -5764,7 +5762,7 @@ function renderWizard(){
       return `<div class="permrow${(!ok&&!p.optional)?' need':''}"><div class="permicon ${ok?'ok':(p.optional?'':'need')}">${WIZ_ICON[p.icon]}</div>
         <div class="perminfo"><div class="permname">${p.name}${p.optional?'<span class="opt">Optional</span>':''}</div><div class="permsub">${p.sub}</div></div>${right}</div>`;
     }).join('');
-    content=`<div class="gstitle">A few permissions.</div><div class="gslead">Flume needs these to paste transcriptions and record meetings on this Mac.</div>${rows}`;
+    content=`<div class="gstitle">A few permissions.</div><div class="gslead">Flume needs these to paste transcriptions and record meetings on this ${DEVICE_NOUN}.</div>${rows}`;
   } else if(WSTEP===2){
     // The wizard is only ever reachable when signed_in is true — applyAuthGate
     // gives the sign-in wall priority over the onboarded check — so STATE.user
@@ -5773,10 +5771,10 @@ function renderWizard(){
     const u=(STATE&&STATE.user)||{};
     content=`<div class="gstitle">Sync across your devices.</div>
       <div class="gslead">Signed in as ${esc(u.email||'your account')}. Your dictation, notes and canvas stay in sync everywhere you sign in.</div>
-      <div class="permrow"><div class="permicon ok">${WIZ_ICON.phone}</div><div class="perminfo"><div class="permname">This Mac</div><div class="permsub">Synced to your account</div></div><span class="permpill"><span class="pdot"></span>Active</span></div>`;
+      <div class="permrow"><div class="permicon ok">${WIZ_ICON.phone}</div><div class="perminfo"><div class="permname">${THIS_DEVICE}</div><div class="permsub">Synced to your account</div></div><span class="permpill"><span class="pdot"></span>Active</span></div>`;
   } else {
     content=`<div class="gstitle">You're all set.</div>
-      <div class="gslead">Hold your hotkey anywhere to dictate — it lands in your clipboard and pastes automatically. Open Flume from the menu bar any time.</div>
+      <div class="gslead">Hold your hotkey anywhere to dictate — it lands in your clipboard and pastes automatically. Open Flume from the ${IS_WINDOWS?'system tray':'menu bar'} any time.</div>
       <div class="permrow"><div class="permicon ok">${WIZ_ICON.check}</div><div class="perminfo"><div class="permname">Ready to go</div><div class="permsub">Everything is configured.</div></div></div>`;
   }
   const back = WSTEP>1?`<button class="btn ghost" style="flex:none" onclick="wizBack()">Back</button>`:'';
@@ -5799,9 +5797,14 @@ async function load(){
   api('dashboard_page_ready');
   const r = await api('get_state');
   if(r && r.ok){ STATE=r; applyAuthGate(); renderSidebar(); }
-  await new Promise(res=>{ api('fetch_notes').then(rn=>{ if(rn&&rn.ok)NOTES=rn.notes||rn.data||[]; res(); }); });
-  loadCanvas();
+  // First paint must never wait on the network. This used to `await`
+  // fetch_notes (a Supabase round-trip) before renderActive(), so on a slow or
+  // dropped connection the window sat dark for seconds-to-timeout and read as
+  // "the app crashed on launch" (Windows, 2026-08-28). Render from local state
+  // now; loadNotes() re-renders Home/Notes when the notes arrive.
   renderActive();
+  loadNotes();
+  loadCanvas();
 }
 // Explicit navigation always lands on a screen's TOP level: clicking Meetings
 // while reading one meeting goes back to the list (MER-46), where an
@@ -6839,7 +6842,12 @@ setTimeout(()=>{ if(!LOAD_STARTED) load(); }, 400);
     _pl = "win" if _is_win else "mac"
     platform_map = ("<script>const PL_KEYS=" +
                     _json_str(_key_defs[_pl]) +
-                    f";const IS_WINDOWS={('true' if _is_win else 'false')};</script>")
+                    f";const IS_WINDOWS={('true' if _is_win else 'false')};"
+                    # Device wording for the shared page: onboarding "This Mac", the
+                    # canvas "from this Mac", the default device name… all read as a
+                    # Mac on Windows ("no matter who logs in it shows this Mac", 2026-08-28).
+                    "const THIS_DEVICE=IS_WINDOWS?'This PC':'This Mac';"
+                    "const DEVICE_NOUN=IS_WINDOWS?'PC':'Mac';</script>")
 
     # Strip the leftover placeholder line from the JS.
     js = js.replace("const IC. = {}; // placeholder\n", "")

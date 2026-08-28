@@ -14,13 +14,13 @@ VSVersionInfo(
       [
       StringTable(
         u'040904B0',
-        [StringStruct(u'CompanyName', u'Verbal'),
-        StringStruct(u'FileDescription', u'Verbal Speech-to-Text'),
+        [StringStruct(u'CompanyName', u'Flume'),
+        StringStruct(u'FileDescription', u'Flume'),
         StringStruct(u'FileVersion', u'1.0.10.0'),
-        StringStruct(u'InternalName', u'Verbal'),
-        StringStruct(u'LegalCopyright', u''),
-        StringStruct(u'OriginalFilename', u'Verbal.exe'),
-        StringStruct(u'ProductName', u'Verbal'),
+        StringStruct(u'InternalName', u'Flume'),
+        StringStruct(u'LegalCopyright', u'© Flume'),
+        StringStruct(u'OriginalFilename', u'Flume.exe'),
+        StringStruct(u'ProductName', u'Flume'),
         StringStruct(u'ProductVersion', u'1.0.10.0')])
       ]),
     VarFileInfo([VarStruct(u'Translation', [1033, 1200])])

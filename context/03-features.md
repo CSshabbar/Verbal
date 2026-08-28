@@ -131,11 +131,23 @@ Each feature: **what it does · desktop impl · mobile impl · backend · status
   **Alternate ASR providers are LIVE (2026-08-15).** `transcriber.ASR_CHOICES` is the single table mapping
   each `asr_model` value to a `{provider, model, bias}` triple, so the UI, the validator
   (`save_settings`) and the request builder cannot drift: `auto` / `whisper-large-v3-turbo` /
-  `whisper-large-v3` (Groq), `eleven-scribe-v1`, `aai-universal-2`, `aai-universal-3-5-pro`.
+  `whisper-large-v3` (Groq), `eleven-scribe-v1`, `aai-universal-2`, `aai-universal-3-5-pro`,
+  `gemini-3-5-transcribe`, `gemini-3-5-transcribe-smart`.
   Non-Groq choices send `asr_provider` + `asr_alt_model` multipart fields; `groq-proxy` holds
-  `ELEVENLABS_API_KEY` / `ASSEMBLYAI_API_KEY` as **function secrets** (Hard Rule #15 — no provider key ever
-  reaches a client) and normalizes every reply to Groq's `{text}` shape, so no client needs per-provider
-  response handling and `chain=1` still works on top of any of them. Three rules that matter:
+  `ELEVENLABS_API_KEY` / `ASSEMBLYAI_API_KEY` / `GEMINI_API_KEY` as **function secrets** (Hard Rule #15 — no
+  provider key ever reaches a client) and normalizes every reply to Groq's `{text}` shape, so no client
+  needs per-provider response handling and `chain=1` still works on top of any of them.
+  **Gemini 3.5 Transcribe (2026-08-27, TRIAL rows in every picker — desktop, Windows, mobile).** Provider
+  `gemini` → `transcribeGemini()` in `groq-proxy` (v17): one synchronous POST to the Gemini **Interactions
+  API** with the audio inline as base64 (no Files API round trip), model `gemini-3.5-transcribe`; the
+  `asr_alt_model` field carries the transcription **mode**, not a model id — `verbatim` (raw words, then
+  Flume's normal formatting hop; the apples-to-apples row) or `smart` (Gemini removes fillers, applies
+  self-corrections and punctuates itself; today Flume still formats on top — skipping that hop when smart
+  is chosen is the follow-up that would actually cut latency). Independent numbers (Artificial Analysis):
+  AA-WER 2.6 % vs Groq Whisper Turbo 4.6 %; speed factor 78× vs 165×; ~$5 vs $0.67 per 1,000 min.
+  `custom_vocabulary` (dictionary → up to 1,000 terms) is NOT wired yet (`bias: False`). Requires the
+  `GEMINI_API_KEY` function secret; unset → 503 → falls back to Groq like every other provider.
+  Three rules that matter:
   - **Fails closed to Groq.** A provider that is unconfigured, down or out of credit returns 502 and
     `transcribe_with_status` immediately retries on Groq for that dictation. The provider is a preference,
     never a dependency.
@@ -593,6 +605,20 @@ Each feature: **what it does · desktop impl · mobile impl · backend · status
   the text has an `@name.ext` in a tagging IDE, routes to `_inject_with_mentions` (falls back to plain
   paste on any failure). Windows equivalent: `win_injector.py` (clipboard + `_press_ctrl_v()` SendInput,
   `user32` foreground-window save/restore).
+- **Windows clipboard save/restore (2026-08-28).** Dictation used to clobber the user's clipboard for good.
+  `win_injector.inject_text(text, allow_mentions=, restore_clipboard=True)` now (1) snapshots the clipboard
+  TEXT before copying the transcript (`snapshot_clipboard()`, Win32 `OpenClipboard`/`GetClipboardData`
+  CF_UNICODETEXT via ctypes; retried 6× at 20 ms if another app holds it — still locked → paste proceeds
+  with **no restore**), (2) records `GetClipboardSequenceNumber()` once the transcript landed, (3) after a
+  successful Ctrl+V schedules a **delayed restore** on a daemon thread (`CLIPBOARD_RESTORE_DELAY_S` = 0.4 s,
+  so the target has consumed WM_PASTE first) that is a **no-op if the clipboard changed since** (sequence
+  number differs or text ≠ transcript). Non-text clipboards (image, files) and an empty clipboard are NOT
+  restored — the transcript stays, as before. **Never restores on the fallback path**: UIPI-blocked paste,
+  exception, or the sync-receive copy (`win_main._on_sync_receive` passes `restore_clipboard=False`) — there
+  the user needs the transcript on the clipboard. Config `restore_clipboard` (default True) disables it;
+  the dictation call site reads it from `self.config`. Pure decision logic is `should_restore_clipboard()`
+  (tested in `win_bugs_fixtures.test_clipboard_restore_decision`, runs on any OS). macOS `injector.py` does
+  **not** restore (only `transform.capture_selection` does, via try/finally) — parity is a follow-up.
 - **Blocked-paste detection** (`paste_guard.py`, 2026-08): both paste primitives can be refused by the OS
   *without failing*, so `inject_text` used to report success while nothing arrived. macOS —
   `CGEventPost` is a **silent no-op without the Accessibility grant**; `inject_text` now pre-flights
@@ -1030,7 +1056,22 @@ deletes real files under `~/.verbal/` and this development machine has a real, i
 
 ## Meetings — capture, live transcript, hybrid summary
 
-- **Speaker diarization (2026-08-16, `meetings_diarize_enabled`, default ON).** The live 90s-gap
+- **Two-speaker model — the Granola approach (2026-08-28, current).** Meetings show exactly two speakers:
+  **the signed-in user's name** (`self`, mic) and **"Them"** (`s1`, ALL system audio — everyone else on the
+  call). Rationale: without a bot inside the meeting (Otter/Fireflies/Fathom), nobody gets reliable
+  per-person names from a mixed system-audio stream; Granola — the closest comparable Mac-native product —
+  labels Me/Them and puts the value in the notes. Our diarization → "Speaker N" pipeline (below) split one
+  person in two more often than it separated two people, and a wrong split shown with confidence cost trust.
+  What changed: `_speaker_for()` always returns `s1` (`THEM_LABEL`), the 90 s-gap heuristic is gone;
+  `_diarize()` is gated by `meetings_diarize_enabled` now **default OFF** and the voiceprint step
+  (`voiceprint.process_meeting`) no longer runs at meeting end (both kept for fixtures / legacy meetings);
+  the summary prompt no longer asks for `speaker_names` and instead says "s1 is everyone else — use a
+  name from the transcript only when unambiguous, else 'the other participant(s)'"; the SPEAKERS
+  VERIFIED/ESTIMATED tag is removed from the desktop Summary header and mobile `MeetingDetailScreen`
+  (`speakers_source` is still written as `estimated`; the column stays). Renaming `s1` ("Them" → "Alice"
+  in a 1:1) still works via `rename_speaker` on desktop. Meetings recorded before 2026-08-28 keep their
+  stored `s1..sN` / "Speaker N" labels untouched.
+- **Speaker diarization (2026-08-16 → retired 2026-08-28; history).** `meetings_diarize_enabled`, was default ON. The live 90s-gap
   heuristic (`SPEAKER_GAP_S`) stays for the in-meeting view, but it cannot split two people in
   conversation — everything remote lands on one "Speaker 1". At meeting end, AFTER the WAV upload and
   BEFORE voiceprint and the summary, `MeetingSession._diarize()` re-partitions the system-audio speaker
@@ -1052,7 +1093,7 @@ deletes real files under `~/.verbal/` and this development machine has a real, i
   - Fails closed at every step (flag off, no upload/signed-out, key unset → proxy 503s, timeout, any
     exception): the meeting keeps the gap-heuristic labels exactly as today. Requires keep-audio + being
     signed in, since AssemblyAI fetches the WAV from the bucket.
-- **Speaker accuracy pass (2026-08-27)** — why "3 people showed as 2" and what changed:
+- **Speaker accuracy pass (2026-08-27; superseded by the two-speaker model above — history)** — why "3 people showed as 2" and what changed:
   - **Turn-level labelling, not chunk-level.** System-audio chunks are now transcribed with Groq
     `verbose_json` + `timestamp_granularities[]=word` (`transcribe_with_status(..., words=True)` →
     `sidecar["words"]`); each utterance carries transient `words: [[w, t0, t1]]` (absolute s) during the
@@ -1082,6 +1123,18 @@ deletes real files under `~/.verbal/` and this development machine has a real, i
     Applied in `run_summary()` and the retry path (`rerun_row`, which now PATCHes `speakers`).
   - Not done (deliberate): no `speakers_expected` hint (participant count unknown), no reading of the
     meeting app's active-speaker label, no calendar attendees.
+- **"You" → the user's real name (2026-08-28).** The mic speaker (`self`) is labelled with the signed-in
+  account's name, not "You", everywhere it appears. Desktop `meetings.self_speaker_label(config)` reads
+  `config['auth']['name']` (Google `full_name`; an e-mail-only value counts as no name → "You");
+  `MeetingSession` persists it in `speakers.self` (so the cloud row, the summary prompt's speaker key, and
+  mobile all see the name), `_diarize()` keeps it, and `with_self_name()` substitutes it at READ time in
+  `list_meetings`/`get_meeting` (`DashboardApi._named`) for pre-2026-08-28 rows that stored "You" — a
+  user-typed rename of `self` is never overridden. The meeting window fetches
+  `get_self_speaker_label` (shared_dashboard) for the pre-meeting "Microphone" card (`#preMicSub`) and the
+  live `speakerName()` fallback. Mobile: `lib/meetings.ts` `withSelfName()` runs inside `toMeeting()`
+  (name from `ensureSelfName()` ← persisted Supabase session `user_metadata.name|full_name`, refreshed by
+  `useAuth` via `setSelfSpeakerName`, cleared on sign-out); `meetingsStore.load()` awaits it before the
+  first fetch, and `MeetingLiveScreen` uses `selfSpeakerName()` for its fallback. Signed-out → "You".
 
 
 > **UI v4 — Notes-language panes (2026-08-16, user-approved proposal).** The desktop Meetings screen now
@@ -1130,7 +1183,8 @@ deletes real files under `~/.verbal/` and this development machine has a real, i
 > moments get **user notes** (`set_mark_note`), jump-to-transcript + delete. Per-row **AI regenerate** on
 > hybrid notes (`regenerate_hybrid` → one focused LLM call). Meeting list: **pinned** (cloud `pinned`
 > column, PINNED group first) and **NEW/unread** (local `meetings_opened`, cleared by `open_meeting`).
-> **Voice fingerprinting** (`app/voiceprint.py`): at meeting end each non-self speaker gets a numpy log-mel
+> **Voice fingerprinting** (`app/voiceprint.py`; **no longer run at meeting end since 2026-08-28** — one "Them"
+> bucket has nothing to fingerprint; module kept, `learn_speaker` still fires on a manual rename): each non-self speaker gets a numpy log-mel
 > mean+std embedding from the meeting WAV; named speakers update rolling prints in `config['voice_prints']`
 > (LOCAL-ONLY, never synced); unnamed speakers auto-name on a decisive cosine match (≥0.92 + 0.02 margin)
 > BEFORE the summary runs; hits land in the `recognized` jsonb column and render the fingerprint banner +
@@ -1143,7 +1197,8 @@ deletes real files under `~/.verbal/` and this development machine has a real, i
   transcript beside a personal scratchpad, and get a post-meeting hybrid summary: AI summary + decisions +
   action items + the user's own notes enhanced with transcript context. Spec: `MEETINGS_DESIGN_HANDOFF.md`
   (screens 31a–31h); availability: macOS full, iOS read-only (+ scratchpad edit), Windows capture via
-  WASAPI loopback (`win_system_audio.py`) hosted in `WinMeetingWindow` (same `meeting_html()`; the
+  WASAPI loopback (`win_system_audio.py` — keeps a silence player running and reconnects up to 3× on
+  device loss/switch, then surfaces `sysErr` in the `elapsed` tick; Rule #76) hosted in `WinMeetingWindow` (same `meeting_html()`; the
   pre-meeting language control is a custom listbox, not a native `<select>` — WebView2's OS combo
   popup ignores CSS overflow and covers Start recording; `05-conventions.md` Rule #66). No call
   auto-detect on Windows yet. **Two Windows fixes from the 2026-08-26 report:** (1) `WinMeetingWindow`
@@ -1241,7 +1296,7 @@ deletes real files under `~/.verbal/` and this development machine has a real, i
   `MeetingPlaybackScreen.tsx` (mobile) generate a signed URL (~3600s TTL — long enough for a full
   playback+scrub session) before playing. See `04-data-model.md`.
 - **Status/limitations:** system audio requires macOS 13+ and the Screen & System Audio Recording
-  permission (31h checklist + 3 s capture self-test). Speaker identity is source-based v1 (no diarization);
+  permission (31h checklist + 3 s capture self-test). Speaker identity is source-based v2 — user's name / "Them" (no diarization);
   meeting text NEVER goes to analytics; `meetings_max_minutes` (capture-length cap) is still stored but not
   enforced — a separate, not-yet-built concern from the reaper below.
 - **Meeting-audio retention reaper (MER-31, 2026-07):** audio-only deletion, **off by default**. A daily
@@ -1429,9 +1484,14 @@ delta, fail-closed paths). Both spec files declare `app.insights` in `hiddenimpo
   a Settings > Updates group (current version + Check for Updates), backed by
   `DashboardApi.get_update_status/check_for_updates/start_update_download/install_ready_update` and
   `main.py`'s `_update_phase` state machine. With that in place, AUTOMATIC checks (startup + 4h timer)
-  no longer pop the native OS dialog on either platform — badge + menu row + banner only; the native
+  no longer pop the native OS dialog on macOS — badge + menu row + banner only; the native
   dialog fires solely for the explicit "Check for Updates…" menu item or the "Update available" row
-  ("two popups per version reads as nagging" — live feedback). `install_update()` exits via `os._exit`,
+  ("two popups per version reads as nagging" — live feedback). **Windows is the exception (2026-08-28):**
+  an automatic find shows the tk dialog **once per version** (`update_dialog_seen_version`, topmost,
+  "Download and install now?" + a note that "No" lets `auto_update` install it silently when idle) —
+  badge-only was reported as "Windows is not picking up updates, no popup", because the 4 px tray badge
+  and a `/VERYSILENT` background install are invisible. "Yes" claims `_update_phase='downloading'`
+  synchronously so the auto_update branch that runs next does not start a second download. `install_update()` exits via `os._exit`,
   not `sys.exit` — every caller is on a worker thread (see `05-conventions.md` #64).
   **Windows parity + "it never actually checked" fix (2026-08-26, Flume 1.0.33 never saw 1.0.34):**
   the Windows app fired its ONLY check of the session at t=0 — inside `updater`'s 30 s post-launch
@@ -1805,3 +1865,18 @@ Fully fail-closed — both down → `None` → "Couldn't transform, try again" (
   so Undo can never delete characters in a different field.
   Mode A (trailing "…so Flume, …" trigger) is not implemented on mobile.
 - **Fixtures:** `whisperflow/transform_fixtures.py` (16 gate cases + output unwrapping, offline).
+
+### Dashboard first paint + Windows launch speed (2026-08-28)
+- `flume_dashboard_html.py::load()` renders from `get_state` (local config only) **before** any network:
+  it used to `await fetch_notes` first, so a slow/dropped connection left the window dark until the
+  Supabase call timed out ("very slow start, feels like it crashed" — Windows). Notes/canvas/team load
+  afterwards and re-render on arrival. Never put a network `await` ahead of `renderActive()`.
+- Windows `webview.start(private_mode=False, storage_path=~/.verbal/webview)`: pywebview's default made
+  a fresh Chromium profile under `%TEMP%` per launch (slow cold start, `tmpXXXX\EBWebView` litter).
+  Sign-in is PKCE in the system browser, so nothing needs a private profile.
+- Startup timing is logged at INFO: `webview loop starting`, `dashboard: window created in …`,
+  `dashboard: get_state (… after launch)` — read `app.log` before guessing where a slow launch goes.
+- Device wording in the shared page is platform-aware: `THIS_DEVICE` ("This PC"/"This Mac") and
+  `DEVICE_NOUN` are JS constants injected next to `IS_WINDOWS`; the sign-in headline and the wizard's
+  "menu bar"/"system tray" follow `_is_win_early`/`IS_WINDOWS`. Onboarding no longer says "This Mac" on
+  Windows regardless of who signs in.

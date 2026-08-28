@@ -45,6 +45,7 @@ import logging
 import threading
 
 from app.flume_popover_html import popover_html
+from app import win_geometry
 from app.shared_dashboard import DashboardApi
 
 logger = logging.getLogger("verbal.popover")
@@ -149,8 +150,9 @@ class WinPopover:
             WIN_TITLE,
             html=popover_html(),
             js_api=self._bridge,
-            width=WIN_W,
-            height=WIN_H,
+            # pywebview 5.3 applies these as PHYSICAL px (05-conventions #71)
+            width=win_geometry.create_size(WIN_W, WIN_H)[0],
+            height=win_geometry.create_size(WIN_W, WIN_H)[1],
             frameless=True,
             on_top=True,
             resizable=False,
@@ -325,19 +327,25 @@ class WinPopover:
 
     def _position(self):
         """Bottom-right of the primary work area — near the tray."""
+        # Work area is PHYSICAL; pywebview 5.3's move() multiplies by the DPI
+        # scale (logical) while create/resize are physical — at 150-200 % the
+        # popover was half-size and pushed off-screen ("tray click does
+        # nothing"). One DPI-aware SetWindowPos instead (rule #71).
         try:
             wa = wt.RECT()
             ctypes.windll.user32.SystemParametersInfoW(
                 SPI_GETWORKAREA, 0, ctypes.byref(wa), 0)
-            x = wa.right - WIN_W - 12
-            y = wa.bottom - WIN_H - 12
-        except Exception:
-            x, y = 900, 200
-        try:
-            if self._window:
-                self._window.move(x, y)
-        except Exception:
-            pass
+            form = getattr(self._window, "native", None) if self._window else None
+            hwnd = form.Handle.ToInt64() if form is not None else None
+            if hwnd:
+                scale = win_geometry.system_scale()
+                x = wa.right - int((WIN_W + 12) * scale)
+                y = wa.bottom - int((WIN_H + 12) * scale)
+                win_geometry.set_window_rect(hwnd, x, y, WIN_W, WIN_H, scale)
+            elif self._window:
+                self._window.move(wa.right - WIN_W - 12, wa.bottom - WIN_H - 12)
+        except Exception as e:
+            logger.debug("popover position failed: %s", e)
 
     # ── show / hide / toggle ────────────────────────────────────
     def show(self):

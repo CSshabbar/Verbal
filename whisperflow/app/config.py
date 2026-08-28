@@ -48,6 +48,9 @@ PLATFORM = "mac" if platform.system() == "Darwin" else "win" if platform.system(
 
 CONFIG_DIR = Path.home() / ".verbal"
 CONFIG_FILE = CONFIG_DIR / "config.json"
+# Marker key placed on a defaults dict served while config.json was unreadable
+# (see load_config); save_config refuses to persist such a dict.
+UNREAD_DEFAULTS_KEY = "__unread_defaults__"
 LOG_DIR = CONFIG_DIR / "logs"
 ENV_FILE = Path(__file__).parent.parent / ".env"
 
@@ -68,6 +71,11 @@ DEFAULT_CONFIG = {
     "pinned": [],        # list of {"text": str, "app": str, "ts": str}
     "daily": {"date": "", "words": 0},
     "auto_update": True,
+    # Windows only: put the user's previous clipboard TEXT back after a dictation
+    # paste has been consumed (win_injector.inject_text). Never restores on the
+    # fallback path where the transcript is left on the clipboard because the
+    # paste itself was blocked. macOS does not restore (yet).
+    "restore_clipboard": True,
     "sync_user_id":     "",
     "sync_device_name": "",
     # Notes v2 per-user feature flags (default ON, toggleable in Settings).
@@ -282,7 +290,7 @@ def _recover_from_prev() -> dict | None:
     prev = CONFIG_FILE.with_suffix(".json.prev")
     try:
         if prev.exists():
-            cfg = json.loads(prev.read_text(encoding="utf-8"))
+            cfg = json.loads(prev.read_bytes().decode("utf-8-sig"))
             if isinstance(cfg, dict):
                 logger.warning("config.json was corrupt; restored from config.json.prev")
                 return cfg
@@ -307,7 +315,11 @@ def load_config() -> dict:
                 # Decode INSIDE the handler: UnicodeDecodeError is a ValueError,
                 # so a torn UTF-8 file takes the corrupt path below instead of
                 # propagating out of load_config.
-                text = raw.decode("utf-8")
+                # utf-8-sig: a config.json saved by an editor/PowerShell with a
+                # UTF-8 BOM is NOT corrupt — treating it so moved the file aside
+                # and reset the user to defaults (signed out, auto_update back
+                # on), seen live 2026-08-28.
+                text = raw.decode("utf-8-sig")
                 config = json.loads(text)
                 if not isinstance(config, dict):
                     raise ValueError("config root is not a JSON object")
@@ -368,46 +380,62 @@ def load_config() -> dict:
                              "running on defaults WITHOUT persisting them", err)
                 persist = False
                 _serving_unread_defaults = True
+                # The dict itself is marked too: the module flag clears as soon
+                # as ANY later load_config() reads the file cleanly (auth.py and
+                # the dashboard call it constantly), but VerbalWinApp.config
+                # still holds THIS factory-default dict and would then save it
+                # over the user's real file (signed out, history gone).
+                # save_config refuses the marked dict regardless of the flag
+                # (the marker is applied below, once the defaults dict exists).
         else:
             # No config.json at all: a genuine first run, defaults are legitimate.
             _serving_unread_defaults = False
 
-    changed = False
-    if config is None:
-        # Deep copy: DEFAULT_CONFIG holds mutable lists (history, meetings, …) and
-        # a shallow dict() would let the first append leak into the defaults.
-        config = copy.deepcopy(DEFAULT_CONFIG)
-        changed = True
-    else:
-        # Migration: if old hotkey exists and new ones don't
-        if "hotkey" in config and "hotkey_hold" not in config:
-            old = config["hotkey"]
-            # Convert known legacy strings to keycodes/names
-            if old == "cmd_r":   val = 54
-            elif old == "alt_r":  val = "alt_r"
-            else: val = old
-            config["hotkey_hold"] = val
-            config["hotkey_toggle"] = val
+        changed = False
+        if config is None:
+            # Deep copy: DEFAULT_CONFIG holds mutable lists (history, meetings, …) and
+            # a shallow dict() would let the first append leak into the defaults.
+            config = copy.deepcopy(DEFAULT_CONFIG)
+            if _serving_unread_defaults:
+                config[UNREAD_DEFAULTS_KEY] = True
             changed = True
-
-        for key, val in DEFAULT_CONFIG.items():
-            if key not in config:
-                config[key] = copy.deepcopy(val)
+        else:
+            # Migration: if old hotkey exists and new ones don't
+            if "hotkey" in config and "hotkey_hold" not in config:
+                old = config["hotkey"]
+                # Convert known legacy strings to keycodes/names
+                if old == "cmd_r":   val = 54
+                elif old == "alt_r":  val = "alt_r"
+                else: val = old
+                config["hotkey_hold"] = val
+                config["hotkey_toggle"] = val
                 changed = True
 
-    env_key = os.getenv("GEMINI_API_KEY", "").strip()
-    if env_key and env_key not in config["gemini_api_keys"]:
-        config["gemini_api_keys"].insert(0, env_key)
-        changed = True
+            for key, val in DEFAULT_CONFIG.items():
+                if key not in config:
+                    config[key] = copy.deepcopy(val)
+                    changed = True
 
-    if (changed or restored) and persist:
-        save_config(config)
-        if restored:
-            # The recovered state is back on disk atomically; the .prev
-            # snapshot has served its purpose. Under the lock: another thread's
-            # save_config may be mid _write_in_place, and its freshly made .prev
-            # is the only copy of config.json while that file sits truncated.
-            with _config_lock:
+        env_key = os.getenv("GEMINI_API_KEY", "").strip()
+        if env_key and env_key not in config["gemini_api_keys"]:
+            config["gemini_api_keys"].insert(0, env_key)
+            changed = True
+
+        # Still under _config_lock (RLock: save_config re-enters it). The
+        # read -> decide -> persist sequence must be one critical section:
+        # before 2026-08-28 the lock was released above and re-taken inside
+        # save_config, so another thread's save could land in the gap and be
+        # overwritten by this thread's just-loaded copy (lost update — seen as a
+        # risk at Windows startup where win_main, auth and sync all load/save
+        # within the first second). Nothing below sleeps except save_config's own
+        # Windows-lock retries, which were already lock-held.
+        if (changed or restored) and persist:
+            save_config(config)
+            if restored:
+                # The recovered state is back on disk atomically; the .prev
+                # snapshot has served its purpose. Under the lock: another thread's
+                # save_config may be mid _write_in_place, and its freshly made .prev
+                # is the only copy of config.json while that file sits truncated.
                 try:
                     CONFIG_FILE.with_suffix(".json.prev").unlink()
                 except OSError:
@@ -512,7 +540,7 @@ def save_config(config: dict):
     # Unique temp file per write + a lock → safe under concurrent writers
     # (a shared "config.tmp" name caused rename races: config.tmp -> config.json).
     with _config_lock:
-        if _serving_unread_defaults:
+        if _serving_unread_defaults or (isinstance(config, dict) and config.get(UNREAD_DEFAULTS_KEY)):
             _refuse_untrusted_save()
         _sweep_stale_tmps()
         data = json.dumps(config, indent=2)

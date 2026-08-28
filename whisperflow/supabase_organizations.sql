@@ -45,7 +45,8 @@ create table if not exists public.organizations (
   -- Default OFF (IDI-216 open decision #4): a visible ranking of teammates by
   -- activity is more surveillance-adjacent than a private admin dashboard, so it
   -- never turns itself on. When it IS on, every ACTIVE MEMBER can read the board
-  -- (not just admins) — but only members who individually opted in appear on it.
+  -- (not just admins). Since 2026-08-27 this is the ONLY switch: every active
+  -- member who shares counts is on it — the owner opens or closes it for all.
   leaderboard_enabled boolean not null default false,
   created_at          timestamptz not null default now(),
   updated_at          timestamptz not null default now()
@@ -478,8 +479,11 @@ end;
 $$;
 
 -- Phase 5b — the team-visible leaderboard. Readable by EVERY active member (not
--- just admins) once the owner has switched it on org-wide, and listing only the
--- members who individually opted in. Same counts-only return shape as above.
+-- just admins) once the owner has switched it on org-wide. Lists every active
+-- member who shares counts (usage_consent) — the per-member `leaderboard_opt_in`
+-- stopped gating it on 2026-08-27 (owner decision: the ranking is open for
+-- everyone or closed for everyone; the column stays for old clients).
+-- Same counts-only return shape as above.
 create or replace function public.org_leaderboard(p_org uuid, p_days int default 7)
 returns table (
   user_id      text,
@@ -516,7 +520,7 @@ begin
            and btrim(coalesce(tr.text, '')) <> ''
       ) t on true
      where m.org_id = p_org and m.status = 'active'
-       and m.usage_consent and m.leaderboard_opt_in
+       and m.usage_consent
      order by coalesce(t.words, 0) desc;
 end;
 $$;

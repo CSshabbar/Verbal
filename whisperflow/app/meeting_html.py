@@ -496,7 +496,7 @@ def _premeeting_modal():
         </div>
         <div class="srcRow">
           <div class="disc" id="preMicDisc">{_svg('mic', 13)}</div>
-          <div class="stx"><div class="sl">Microphone</div><div class="ss">You</div></div>
+          <div class="stx"><div class="sl">Microphone</div><div class="ss" id="preMicSub">You</div></div>
           <button class="toggle on" id="preMicTgl" onclick="preToggle('mic')"></button>
         </div>
         <div class="srcRow">
@@ -846,8 +846,19 @@ function preLangPick(v){
   if(lbl) lbl.textContent=preLangLabel();
   preLangClose();
 }
+let SELF_LABEL='You';
+function loadSelfLabel(){
+  api('get_self_speaker_label').then(function(r){
+    if(!(r && r.ok && r.value)) return;
+    SELF_LABEL=String(r.value);
+    const el=document.getElementById('preMicSub');
+    if(el) el.textContent=SELF_LABEL;
+    if(MODE==='live'){ try{ renderUtts(); }catch(e){} }
+  }).catch(function(){});
+}
 function loadPreLangs(){
   if(PRE_LANGS_LOADED) return;
+  loadSelfLabel();
   api('get_spoken_language').then(function(r){
     if(!(r && r.ok)) return;
     PRE_LANGS_LOADED=true;
@@ -993,7 +1004,7 @@ function fmtT(secs){
   const mm=(h? String(m).padStart(2,'0') : String(m)), ss=String(s).padStart(2,'0');
   return h? (h+':'+mm+':'+ss) : (mm+':'+ss);
 }
-function speakerName(sid){ return MEET.speakers[sid] || (sid==='self'?'You':'Speaker'); }
+function speakerName(sid){ const n=MEET.speakers[sid]; if(sid==='self' && (!n || n==='You')) return SELF_LABEL; return n || 'Them'; }
 
 function renderLive(){
   document.getElementById('liveRoot').className = (MODE==='live') ? 'show' : '';

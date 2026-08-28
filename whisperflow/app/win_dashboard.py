@@ -33,6 +33,8 @@ WIN_ASR_MODELS = [
     ("eleven-scribe-v1",       "Scribe — most accurate on your voice (ElevenLabs)"),
     ("aai-universal-2",        "Universal-2 — best with Urdu mixed in (AssemblyAI)"),
     ("aai-universal-3-5-pro",  "Universal-3.5 — strong English, weak Urdu (AssemblyAI)"),
+    ("gemini-3-5-transcribe",       "Gemini 3.5 Transcribe — verbatim, most accurate benchmark (Google)"),
+    ("gemini-3-5-transcribe-smart", "Gemini 3.5 Transcribe Smart — cleans fillers itself (Google)"),
 ]
 
 

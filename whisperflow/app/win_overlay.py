@@ -35,6 +35,8 @@ import tkinter as tk
 
 from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageTk
 
+from app.tk_pending import PendingCalls
+
 logger = logging.getLogger("verbal.overlay")
 
 # ── DPI scaling ─────────────────────────────────────────────────────────
@@ -162,6 +164,10 @@ class WinOverlay:
         self._photo = None
         self._font_ui = None
         self._font_num = None
+        # Calls that arrive before the tk root exists (hotkey in the first
+        # ~0.5 s after launch) are queued here and replayed on the tk thread
+        # once the mainloop is running — see app/tk_pending.py.
+        self._pending = PendingCalls(name="overlay")
 
         self._status_text = ""
         self._device = "WIN"
@@ -275,9 +281,40 @@ class WinOverlay:
 
             self._load_fonts()
 
+            # Flip to ready + replay early calls from INSIDE the mainloop: a
+            # cross-thread `root.after` blocks until the loop runs, so flipping
+            # any earlier would only move the race.
+            self._root.after(0, self._replay_pending)
             self._root.mainloop()
         except Exception as e:
             logger.error("overlay tk thread crashed: %s", e, exc_info=True)
+        finally:
+            # setup() never completed (or the loop ended): drop anything
+            # queued so nothing is replayed onto a dead / missing root.
+            self._pending.close()
+
+    def _replay_pending(self):
+        """tk thread, inside mainloop: mark ready and run queued calls in order."""
+        try:
+            self._pending.mark_ready(lambda fn: fn())
+        except Exception as e:
+            logger.debug("overlay pending replay failed: %s", e)
+
+    def _tk_ready(self):
+        """True once the root exists AND the mainloop has taken over."""
+        return self._root is not None and self._pending.ready
+
+    def cleanup(self):
+        """Stop the tk thread. Closes the queue FIRST so a replay that has not
+        run yet is dropped rather than raced; then asks the loop to quit."""
+        self._pending.close()
+        root = self._root
+        if root is None:
+            return
+        try:
+            root.after(0, root.quit)
+        except Exception as e:
+            logger.debug("overlay cleanup failed: %s", e)
 
     # ── geometry ────────────────────────────────────────────────────────
     def _work_area(self):
@@ -419,16 +456,19 @@ class WinOverlay:
 
     # ── internals ───────────────────────────────────────────────────────
     def _safe(self, fn):
-        if self._root is None:
-            return
+        """Run `fn` on the tk thread. Before the root/mainloop is ready the call
+        is queued (bounded) and replayed in order once it is; afterwards it is
+        `root.after(0, fn)` exactly as before."""
+        def _post(f):
+            self._root.after(0, f)
         try:
-            self._root.after(0, fn)
+            self._pending.dispatch(fn, _post)
         except Exception as e:
             logger.debug("overlay _safe schedule failed: %s", e)
 
     def _show_internal(self):
         self._cancel_hide()
-        if self._root is None:
+        if not self._tk_ready():
             return
         self._reposition()
         if self._alpha < 0.3:
@@ -442,7 +482,7 @@ class WinOverlay:
             self._start_animation_loop()
 
     def _fade_in(self):
-        if self._root is None:
+        if not self._tk_ready():
             return
         self._alpha = min(0.98, self._alpha + 0.08)
         self._root.attributes("-alpha", self._alpha)
@@ -451,8 +491,12 @@ class WinOverlay:
             self._hide_timer = self._root.after(16, self._fade_in)
 
     def _fade_out(self):
-        if self._root is None:
+        if not self._tk_ready():
             return
+        # A fade-in tick may still be queued (show() then an immediate hide()
+        # when the recorder fails): both loops share _hide_timer and would
+        # fight +0.08/-0.08 forever, leaving a half-transparent blank capsule.
+        self._cancel_hide()
         self._alpha = max(0.0, self._alpha - 0.08)
         try:
             self._root.attributes("-alpha", self._alpha)
@@ -474,10 +518,12 @@ class WinOverlay:
             if self._done_token != token:
                 return
             self.hide()
+        if not self._tk_ready():
+            return
         self._hide_timer = self._root.after(int(max(0.4, duration) * 1000), _auto)
 
     def _start_animation_loop(self):
-        if not self._active or self._root is None:
+        if not self._active or not self._tk_ready():
             self._anim_timer = None
             return
         self._phase += 0.10

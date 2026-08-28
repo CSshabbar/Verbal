@@ -94,7 +94,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: Flume-Windows-EXE
-          path: whisperflow/dist/Flume.exe
+          # onedir build (verbal-win.spec COLLECT): the app is the whole folder.
+          path: whisperflow/dist/Flume/
           if-no-files-found: error
 
       - name: Upload Windows Installer

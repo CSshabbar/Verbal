@@ -151,7 +151,7 @@ per captured meeting.
 | `duration_seconds` | int | elapsed excluding pauses |
 | `audio_url` | text | public `meeting-audio` URL |
 | `transcript` | jsonb | `[{speaker, t0, t1, text}]` — speaker ∈ `self`/`s<N>` |
-| `speakers` | jsonb | `{speaker_id: display_name}` (`self` = "You") |
+| `speakers` | jsonb | `{speaker_id: display_name}` (`self` = the mic/user; since 2026-08-28 written as the signed-in user's name, "You" only when signed out — rows from before that hold the literal "You" and both clients substitute the account name at read time) |
 | `decisions` | jsonb | `["…"]` |
 | `action_items` | jsonb | `[{owner: speaker_id\|null, task, done}]` |
 | `marked_moments` | jsonb | `[{t, label}]` (t = secs from start) |
@@ -162,7 +162,7 @@ per captured meeting.
 | `live` | bool | default `false` — set while a meeting is actively being captured; surfaced to mobile as the live-transcript-in-progress flag |
 | `audio_expired` | bool | default `false` — MER-31, 2026-07. Set by the `reap-meeting-audio` reaper once the audio object is actually deleted; the single authoritative "no audio left" signal (never inferred from `audio_url` alone) |
 | `retention_days` | int | nullable, MER-31. `null`/`0` = never expire (default). Stamped **per meeting at capture time** from desktop's `meetings_keep_audio_days` setting — not a live/retroactive per-user lookup |
-| `speakers_source` | text | nullable, CHECK ∈ `diarized`\|`estimated` — 2026-08-27 (`whisperflow/supabase_migration_2026-08-27_meetings_speakers_source.sql`, applied live). Provenance of the speaker split: `diarized` = AssemblyAI turns applied by desktop `_diarize()`, `estimated` = 90 s-gap heuristic only. `null` = pre-column meeting → clients render as estimated. Drives the SPEAKERS VERIFIED/ESTIMATED tag on both platforms |
+| `speakers_source` | text | **vestigial since 2026-08-28** (two-speaker model: always written `estimated`, no UI reads it). nullable, CHECK ∈ `diarized`\|`estimated` — 2026-08-27 (`whisperflow/supabase_migration_2026-08-27_meetings_speakers_source.sql`, applied live). Provenance of the speaker split: `diarized` = AssemblyAI turns applied by desktop `_diarize()`, `estimated` = 90 s-gap heuristic only. `null` = pre-column meeting → clients render as estimated. Drives the SPEAKERS VERIFIED/ESTIMATED tag on both platforms |
 
 Indexes `(user_id)`, `(user_id, started_at desc)`. **Realtime publication: yes** (mobile subscribes
 INSERT+UPDATE on `verbal_meetings_<uid>` — the live-transcript stream). **`REPLICA IDENTITY FULL`**

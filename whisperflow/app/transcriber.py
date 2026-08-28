@@ -26,6 +26,14 @@ ASR_CHOICES = {
     "eleven-scribe-v1":        {"provider": "eleven",   "model": "scribe_v1",        "bias": False},
     "aai-universal-2":         {"provider": "assembly", "model": "universal-2",      "bias": False},
     "aai-universal-3-5-pro":   {"provider": "assembly", "model": "universal-3-5-pro", "bias": False},
+    # Google Gemini 3.5 Transcribe (2026-08-27 trial). `model` here is the transcription
+    # MODE, not a model id — the proxy always calls `gemini-3.5-transcribe`:
+    #   verbatim → raw words, then Flume's normal formatting hop (apples-to-apples
+    #              against every other ASR row)
+    #   smart    → Gemini removes fillers / applies self-corrections / punctuates itself
+    #              (the mode that could one day replace the formatting hop entirely)
+    "gemini-3-5-transcribe":       {"provider": "gemini", "model": "verbatim", "bias": False},
+    "gemini-3-5-transcribe-smart": {"provider": "gemini", "model": "smart",    "bias": False},
 }
 
 

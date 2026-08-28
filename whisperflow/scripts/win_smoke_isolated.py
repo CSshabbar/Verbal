@@ -32,7 +32,7 @@ import threading
 import time
 import traceback
 
-EXPECT_VERSION = "1.0.34"                 # latest published win build at the time of writing
+EXPECT_VERSION = "1.0.36"                 # latest published win build at the time of writing
 HERE = os.path.dirname(os.path.abspath(__file__))
 HOME = os.path.join(tempfile.gettempdir(), "flume_smoke_home")
 shutil.rmtree(HOME, ignore_errors=True)
@@ -88,6 +88,18 @@ def alive(mw):
         return f"err {e}"
 
 
+# The Windows automatic-find popup (2026-08-28) is a blocking tk messagebox.
+# Auto-answer "No" and count invocations so the run never waits on a click.
+import tkinter.messagebox as _mb
+DIALOGS = []
+def _fake_askyesno(title, message, **kw):
+    DIALOGS.append((title, message))
+    print(f"[dialog] {title}: {message[:120]!r}", flush=True)
+    return False
+_mb.askyesno = _fake_askyesno
+_mb.showinfo = lambda title, message, **kw: DIALOGS.append((title, message))
+
+
 def scenario():
     try:
         time.sleep(8)
@@ -104,6 +116,14 @@ def scenario():
         record("update_check", ok, f"gated={gated} available={av and av.get('version')} status={st}")
         r2 = api.check_for_updates()
         record("dashboard_check_button", r2.get("ok") and r2.get("available") and r2.get("version") == EXPECT_VERSION, r2)
+        # 1b) the forced check above was an un-suppressed find -> exactly ONE
+        # popup, remembered in update_dialog_seen_version; a second check
+        # (this dashboard one, and any later automatic one) must not re-show.
+        appobj._check_update(force=True)
+        seen = appobj.config.get("update_dialog_seen_version")
+        record("update_popup_once", len(DIALOGS) == 1 and seen == EXPECT_VERSION
+               and DIALOGS[0][0] == f"Flume {EXPECT_VERSION} available",
+               f"dialogs={len(DIALOGS)} seen={seen} first={DIALOGS[:1]}")
 
         # 2) meeting window: show
         appobj._toggle_meeting()
@@ -122,6 +142,27 @@ def scenario():
         appobj._toggle_meeting()
         time.sleep(5)
         record("meeting_show_2", mw.visible and alive(mw) is True, f"visible={mw.visible} alive={alive(mw)}")
+
+        # 4b) collapsed bar must be a borderless topmost strip with no taskbar
+        # button and no MinimumSize clamp (2026-08-28: "shows as a big window")
+        try:
+            import System.Windows.Forms as WinForms
+            mw.collapse()
+            time.sleep(2)
+            form = mw._window.native
+            bs = str(form.FormBorderStyle)
+            ok_bar = (bs == "None" and bool(form.TopMost) and not bool(form.ShowInTaskbar)
+                      and form.Height < 120)
+            record("meeting_bar_chrome", ok_bar,
+                   f"border={bs} topmost={form.TopMost} taskbar={form.ShowInTaskbar} size={form.Width}x{form.Height}")
+            mw.expand()
+            time.sleep(2)
+            bs2 = str(form.FormBorderStyle)
+            record("meeting_expand_chrome", bs2 == "Sizable" and not bool(form.TopMost)
+                   and bool(form.ShowInTaskbar) and form.Height > 400,
+                   f"border={bs2} topmost={form.TopMost} taskbar={form.ShowInTaskbar} size={form.Width}x{form.Height}")
+        except Exception as e:
+            record("meeting_bar_chrome", False, f"exception {e!r}")
 
         # 5) blank-title meeting must not raise on Windows
         from app.meetings import MeetingSession

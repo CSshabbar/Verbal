@@ -47,12 +47,18 @@ import ctypes.wintypes as wt
 import json
 import logging
 import threading
+import time
 
 from app.meeting_html import meeting_html
+from app import win_geometry
 from app.shared_dashboard import DashboardApi
 
 logger = logging.getLogger("verbal.meetingwin.win")
 
+BAR_PILL_H = 36          # the Windows pill (Mac's is 44 inside a 54 panel; slimmer here since there is
+                         # no shadow/blur halo around it — the window IS the pill, see set_bar_content_size)
+BAR_ANIM_S = 0.18        # hover expand/collapse: eased window-width animation length
+BAR_LEAVE_GRACE_S = 0.22 # cursor must be outside this long before the pill collapses (no flicker)
 BAR_W, BAR_H = 560, 54   # keep in sync with app/meeting_window.py's BAR_W — both
 # host the same meeting_html(), whose `.barOpt` cap needs this width to avoid
 # clipping the trailing button (05-conventions.md Rule #56).
@@ -134,15 +140,20 @@ class WinMeetingWindow:
         try:
             self._api = DashboardApi(self)
             x, y, w, h = self._rect_for(self._layout)
+            # pywebview 5.3 applies width/height/min_size as PHYSICAL pixels
+            # (see win_geometry) — hand it scaled values so the CSS viewport
+            # is really WIN_W x WIN_H. show() re-applies geometry anyway.
+            cw, ch = win_geometry.create_size(w, h)
+            cmin = (MIN_W, MIN_H)          # logical — WinForms autoscales it (win_geometry)
             self._window = webview.create_window(
                 WIN_TITLE,
                 html=meeting_html(),
                 js_api=self._api,
-                width=w,
-                height=h,
+                width=cw,
+                height=ch,
                 x=x,
                 y=y,
-                min_size=(MIN_W, MIN_H),
+                min_size=cmin,
                 frameless=False,
                 on_top=False,
                 background_color="#0e1012",
@@ -352,6 +363,68 @@ class WinMeetingWindow:
             self._inject_scroll_fix()
         except Exception as e:
             logger.debug("meeting window: scroll-fix failed: %s", e)
+        # Windows-only bar CSS: the window IS the pill (win_geometry pill
+        # region), so the page paints the pill colour edge to edge, drops
+        # #barRoot's padding/centering (the pill may overflow the viewport
+        # while it grows — the ResizeObserver below then widens the window)
+        # and pins the pill height. Host-side injection keeps meeting_html()
+        # untouched for macOS.
+        try:
+            css = ("body.lay-bar{background:#0d0f11 !important;overflow:hidden}"
+                   "html:has(body.lay-bar){overflow:hidden}"
+                   "body.lay-bar #barRoot{background:transparent;left:0;right:auto;width:max-content;"
+                   "justify-content:flex-start;padding:0;height:%dpx}"
+                   # The window is clipped to the pill, so the pill's own shadow can never show;
+                   # slimmer proportions than the Mac panel (no halo) and no reveal transition:
+                   # each animation frame would otherwise be a separate SetWindowPos (jitter) —
+                   # the expansion is one jump, like a native menu.
+                   "body.lay-bar .barPill{box-shadow:none;height:%dpx;padding:0 5px 0 11px;gap:8px;"
+                   "border-color:rgba(240,240,240,.08)}"
+                   "body.lay-bar #barPill .barOpt{transition:none;gap:8px}"
+                   "body.lay-bar .barDot{width:7px;height:7px}"
+                   "body.lay-bar .barTimer{font-size:12px}"
+                   "body.lay-bar .barTitle{font-size:11.5px;max-width:140px}"
+                   "body.lay-bar .barWave{min-width:32px;height:14px}"
+                   "body.lay-bar .barBtn{width:22px;height:22px}"
+                   "body.lay-bar .barBtn svg{width:11px;height:11px}" % (BAR_PILL_H, BAR_PILL_H))
+            self._eval("(function(){var s=document.createElement('style');"
+                       "s.textContent=%s;document.head.appendChild(s);})();" % json.dumps(css))
+        except Exception as e:
+            logger.debug("meeting window: chroma css failed: %s", e)
+        # WebView2 renders confirm()/alert() as an in-page dialog, which the
+        # pill-sized bar window clips to a sliver ("This page says…", nothing
+        # clickable). cancelMeeting() is the only confirm in meeting_html; on
+        # Windows route it to a native TopMost MessageBox owned by the form
+        # (DashboardApi.confirm_native -> WinMeetingWindow.native_confirm).
+        try:
+            self._eval(
+                "window.cancelMeeting=function(){"
+                "api('confirm_native','Discard this meeting? The recording and transcript will not be saved.',"
+                "'Discard meeting').then(function(r){if(r&&r.ok&&r.yes)api('cancel_meeting');});};"
+                "window.confirm=function(m){console.warn('confirm() suppressed on Windows bar:',m);return false;};")
+        except Exception as e:
+            logger.debug("meeting window: confirm override failed: %s", e)
+        # Shrink-wrap: report the visible pill's size so the host can size the
+        # borderless bar window to it (hover/peek widens the pill → the window
+        # follows; at rest it is just dot + timer). WebView2 has no per-pixel
+        # alpha and TransparencyKey does not key its surface (tested
+        # 2026-08-28), so a 560px window shows as a dark strip around the pill.
+        try:
+            self._eval(
+                "(function(){if(window.__barRO)return;"
+                "function pill(){return document.body.classList.contains('handoff')?"
+                "document.getElementById('barHandoff'):document.getElementById('barPill');}"
+                "var last='';function report(){if(!document.body.classList.contains('lay-bar'))return;"
+                "var p=pill();if(!p)return;var r=p.getBoundingClientRect();"
+                "var k=Math.round(r.width)+'x'+Math.round(r.height);if(k===last)return;"
+                "if(!(window.pywebview&&window.pywebview.api&&window.pywebview.api.meeting_bar_resize))return;"
+                "last=k;window.pywebview.api.meeting_bar_resize(Math.round(r.width),Math.round(r.height));}"
+                "var ro=new ResizeObserver(report);"
+                "['barPill','barHandoff'].forEach(function(id){var e=document.getElementById(id);if(e)ro.observe(e);});"
+                "new MutationObserver(function(){last='';report();}).observe(document.body,{attributes:true,attributeFilter:['class']});"
+                "window.__barRO=ro;report();})();")
+        except Exception as e:
+            logger.warning("meeting window: bar resize observer failed: %s", e)
         if not self._visible:
             try:
                 self._window.hide()
@@ -386,11 +459,31 @@ class WinMeetingWindow:
             # here. _window_alive() above is the dead-handle protection; a
             # rebuild-on-exception could only ever fire on the `shown` timeout
             # (now handled by _wait_shown) and would orphan a second form.
-            self._window.show()
+            if self._layout == "bar":
+                # Mac's bar is a non-activating panel; pywebview's show() ends
+                # in Activate() and would steal focus from the call app.
+                self._show_noactivate() or self._window.show()
+            else:
+                self._window.show()
             self.set_mode(mode)
             self.emit("layout", {"layout": self._layout})
+            if self._layout == "bar":
+                self._start_hover_watch()      # hide() ends the watch; re-show must restart it
         except Exception as e:
             logger.error("meeting window show failed: %s", e, exc_info=True)
+
+    def _show_noactivate(self):
+        try:
+            form = getattr(self._window, "native", None)
+            hwnd = form.Handle.ToInt64() if form is not None else None
+            if not hwnd:
+                return False
+            SW_SHOWNOACTIVATE = 4
+            ctypes.windll.user32.ShowWindow(hwnd, SW_SHOWNOACTIVATE)
+            return True
+        except Exception as e:
+            logger.debug("show-noactivate failed: %s", e)
+            return False
 
     def hide(self):
         try:
@@ -405,21 +498,301 @@ class WinMeetingWindow:
         return self._visible
 
     # ── layout ──────────────────────────────────────────────────────────
+    def _apply_chrome(self, layout):
+        """Give the collapsed bar the same chrome as the Mac bar (a floating
+        borderless strip) and the expanded view a normal window.
+
+        pywebview fixes `frameless` / `min_size` / `on_top` at create time, so
+        collapsing used to leave the 560x54 bar with a title bar, a taskbar
+        button, and a 700x480 MinimumSize that silently REFUSED the resize —
+        "the collapsed meetings bar shows up as a big window, like a tab"
+        (2026-08-28). Flip the WinForms properties on the form directly, on
+        the UI thread (Invoke; every property here must be set there).
+        Fail-closed: any error leaves the old (ugly but working) chrome.
+        """
+        form = getattr(self._window, "native", None) if self._window else None
+        if form is None:
+            logger.warning("meeting window: no native form; chrome for layout=%s not applied", layout)
+            return
+        try:
+            import System.Windows.Forms as WinForms
+            from System.Drawing import Color, Size
+
+            def _do():
+                try:
+                    # Remember what pywebview set at create time (its unit
+                    # handling differs by version — win_geometry) and restore
+                    # exactly that on expand rather than recomputing.
+                    if getattr(self, "_native_back_color", None) is None:
+                        self._native_back_color = form.BackColor
+                    # MinimumSize is physical at runtime: compute it from the
+                    # window's own DPI (never trust the create-time value —
+                    # WinForms' AutoScaleMode.Dpi may already have scaled it).
+                    scale = win_geometry.window_scale(form.Handle.ToInt64())
+                    if layout == "bar":
+                        form.MinimumSize = Size(0, 0)
+                        form.FormBorderStyle = getattr(WinForms.FormBorderStyle, "None")
+                        form.ShowInTaskbar = False
+                        form.TopMost = True
+                        # No TransparencyKey: it adds WS_EX_LAYERED, which
+                        # does not key WebView2's surface AND stopped :hover
+                        # from ever firing in the page (hover test 2026-08-28).
+                        # The pill shape comes from SetWindowRgn instead
+                        # (win_geometry.set_window_pill_region); the form is
+                        # painted the pill's own colour for the 1px seam.
+                        form.TransparencyKey = Color.Empty
+                        form.BackColor = Color.FromArgb(0x0d, 0x0f, 0x11)
+                    else:
+                        form.TransparencyKey = Color.Empty
+                        form.BackColor = self._native_back_color
+                        form.FormBorderStyle = WinForms.FormBorderStyle.Sizable
+                        form.MinimumSize = Size(int(MIN_W * scale), int(MIN_H * scale))
+                        form.ShowInTaskbar = True
+                        form.TopMost = False
+                except Exception as e:
+                    logger.warning("meeting chrome apply failed: %s", e, exc_info=True)
+
+            if form.InvokeRequired:
+                form.Invoke(WinForms.MethodInvoker(_do))
+            else:
+                _do()
+        except Exception as e:
+            logger.warning("meeting chrome failed: %s", e, exc_info=True)
+
+    # The bar window is EXACTLY the pill (no padding: the injected CSS zeroes
+    # #barRoot's padding and drops the shadow) and is clipped to a pill shape
+    # with SetWindowRgn — the only way to get a floating pill without
+    # per-pixel alpha on WebView2.
+    BAR_PAD_W = 0
+
+    def set_bar_content_size(self, width, height):
+        """Called via DashboardApi.meeting_bar_resize from the page (see
+        _on_loaded). Keeps the pill centred at the top of the work area while
+        the window width follows the pill: ~110px at rest, up to BAR_W when
+        hovered/peeked. Ignored outside bar layout."""
+        if self._layout != "bar" or not width or getattr(self, "_modal", False):
+            return
+        w = max(60, min(BAR_W, int(width) + self.BAR_PAD_W))
+        h = BAR_PILL_H                     # fixed by the injected CSS; never trust a mid-layout measurement
+        if (w, h) == getattr(self, "_bar_content_wh", None) and not getattr(self, "_bar_needs_measure", False):
+            return
+        first = getattr(self, "_bar_needs_measure", True) or getattr(self, "_bar_content_wh", None) is None
+        self._bar_needs_measure = False
+        self._bar_content_wh = (w, h)
+        if first:
+            self._bar_cur_w = w
+            self._position_and_size()      # first frame of this bar session: snap
+            return
+        self._animate_bar_width(getattr(self, "_bar_cur_w", w), w)
+
+    def _animate_bar_width(self, w_from, w_to):
+        """Ease the pill window from one logical width to another, keeping it
+        centred (both edges move, like the Mac bar). One animator at a time —
+        a newer target supersedes a running one via the generation counter."""
+        self._bar_anim_gen = getattr(self, "_bar_anim_gen", 0) + 1
+        gen = self._bar_anim_gen
+
+        def _run():
+            try:
+                form = getattr(self._window, "native", None)
+                hwnd = form.Handle.ToInt64() if form is not None else None
+                if not hwnd:
+                    return
+                # Target monitor is the primary (SPI_GETWORKAREA) — use ITS
+                # scale, not the monitor the form happens to be on now.
+                scale = win_geometry.system_scale()
+                left, top, right, bottom = self._work_area()
+                y = top + int(12 * scale)
+                t0 = time.time()
+                while True:
+                    if gen != self._bar_anim_gen or self._layout != "bar":
+                        return
+                    t = min(1.0, (time.time() - t0) / BAR_ANIM_S)
+                    e = 1 - (1 - t) ** 3            # ease-out cubic
+                    w = w_from + (w_to - w_from) * e
+                    self._bar_cur_w = w              # a superseding animation starts from HERE
+                    x = (left + right - int(w * scale)) // 2
+                    pw, ph = win_geometry.set_window_rect(hwnd, x, y, int(round(w)), BAR_PILL_H, scale)
+                    win_geometry.set_window_pill_region(hwnd, pw, ph)
+                    if t >= 1.0:
+                        return
+                    time.sleep(1 / 60)
+            except Exception as e:
+                logger.debug("bar width animation failed: %s", e)
+
+        threading.Thread(target=_run, name="meeting-bar-anim", daemon=True).start()
+
     def _position_and_size(self):
         try:
-            x, y, w, h = self._rect_for(self._layout)
-            if self._window:
+            if not self._window:
+                return
+            # Chrome first: the bar's resize is clamped by MinimumSize and a
+            # border-style change alters the client/frame size, so the
+            # geometry must be applied after it.
+            self._apply_chrome(self._layout)
+            form = getattr(self._window, "native", None)
+            hwnd = None
+            try:
+                hwnd = form.Handle.ToInt64() if form is not None else None
+            except Exception:
+                hwnd = None
+            if not hwnd:
+                logger.warning("meeting window: no native handle (form=%r) -- using pywebview resize/move fallback", form)
+            if hwnd:
+                # One DPI-aware SetWindowPos in PHYSICAL pixels for both the
+                # position (work-area space) and the size (logical constants
+                # x monitor scale). pywebview 5.3's resize() takes physical
+                # and move() logical, which halved every window at 200 %.
+                scale = win_geometry.system_scale()   # target = primary work area
+                left, top, right, bottom = self._work_area()
+                if self._layout == "bar":
+                    w, h = getattr(self, "_bar_content_wh", None) or (BAR_W, BAR_PILL_H)
+                    x = (left + right - int(w * scale)) // 2
+                    y = top + int(12 * scale)
+                else:
+                    w, h = WIN_W, WIN_H
+                    x = (left + right - int(w * scale)) // 2
+                    y = (top + bottom - int(h * scale)) // 2
+                pw, ph = win_geometry.set_window_rect(hwnd, x, y, w, h, scale)
+                if self._layout == "bar":
+                    win_geometry.set_window_pill_region(hwnd, pw, ph)
+                else:
+                    win_geometry.clear_window_region(hwnd)
+            else:
+                x, y, w, h = self._rect_for(self._layout)
                 self._window.resize(w, h)
                 self._window.move(x, y)
         except Exception as e:
-            logger.debug("meeting window position failed: %s", e)
+            logger.warning("meeting window position failed: %s", e, exc_info=True)
 
     def set_layout(self, layout, animate=True):
         if layout not in ("bar", "expanded"):
             return
+        entering_bar = layout == "bar" and layout != self._layout
+        if entering_bar:
+            # Re-measure on every entry (the pill may have a title/PAUSED tag
+            # now) but keep the LAST measured width as the interim size — the
+            # (BAR_W) fallback painted a 560 px dark strip on every collapse.
+            self._bar_needs_measure = True
         self._layout = layout
-        self._position_and_size()
-        self.emit("layout", {"layout": layout})
+        if entering_bar:
+            # Flip the page to lay-bar BEFORE the window becomes bar-shaped, so
+            # the expanded content is never shown clipped inside the pill.
+            self.emit("layout", {"layout": layout})
+            self._position_and_size()
+        else:
+            self._position_and_size()
+            self.emit("layout", {"layout": layout})
+        if layout == "bar":
+            self._start_hover_watch()
+
+    def native_confirm(self, message, title="Flume"):
+        """Yes/No MessageBox on the WinForms UI thread, owned by (and TopMost
+        with) the meeting form. Blocking on the caller's (pywebview API)
+        thread only. Fail-closed: any error means 'No'."""
+        form = getattr(self._window, "native", None) if self._window else None
+        logger.info("native confirm requested: %r (form=%s)", title, form is not None)
+        try:
+            import System.Windows.Forms as WinForms
+            result = [False]
+
+            def _ask():
+                try:
+                    r = WinForms.MessageBox.Show(
+                        form, str(message), str(title),
+                        WinForms.MessageBoxButtons.YesNo,
+                        WinForms.MessageBoxIcon.Warning,
+                        WinForms.MessageBoxDefaultButton.Button2)
+                    result[0] = (r == WinForms.DialogResult.Yes)
+                except Exception as e:
+                    logger.warning("native confirm failed: %s", e)
+
+            if form is None:
+                return False                  # no owner → no modal on a bridge thread
+            self._modal = True                # hover/resize must not shrink the owner under the box
+            try:
+                if form.InvokeRequired:
+                    form.Invoke(WinForms.MethodInvoker(_ask))
+                else:
+                    _ask()
+            finally:
+                self._modal = False
+            return bool(result[0])
+        except Exception as e:
+            logger.warning("native confirm unavailable: %s", e)
+            return False
+
+    # ── hover (peek) ────────────────────────────────────────────────────
+    def _start_hover_watch(self):
+        """Host-side hover for the bar, like meeting_window.py on macOS:
+        the page's `:hover` never fires in this window (borderless/TopMost
+        WebView2 — verified with a scripted cursor move, 2026-08-28), so poll
+        GetCursorPos and hand the page window-relative CSS coords via its
+        `VerbalMeetingHover(x, y)` hook (x < 0 = pointer left). The pill
+        toggles `.peek`, the ResizeObserver reports the new width and
+        set_bar_content_size grows/shrinks the window to match."""
+        # Generation counter, not is_alive(): an old loop can take up to
+        # ~350 ms (poll + leave-grace) to notice `_layout`/`_visible` flipped;
+        # a bar→expanded→bar within that window used to find it alive, skip
+        # spawning, and then lose hover for the whole session.
+        self._hover_gen = getattr(self, "_hover_gen", 0) + 1
+        threading.Thread(target=self._hover_loop, args=(self._hover_gen,),
+                         name="meeting-bar-hover", daemon=True).start()
+
+    def _hover_loop(self, gen=None):
+        import ctypes
+        from ctypes import wintypes
+        pt = wintypes.POINT()
+        rc = wt.RECT()
+        inside_prev = None
+        user32 = ctypes.windll.user32
+        user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wt.RECT)]
+        user32.GetCursorPos.argtypes = [ctypes.POINTER(wintypes.POINT)]
+        logger.info("bar hover watch started")
+        while (self._layout == "bar" and self._window is not None and self._visible
+               and (gen is None or gen == getattr(self, "_hover_gen", gen))):
+            try:
+                if getattr(self, "_modal", False):
+                    time.sleep(0.1)
+                    continue
+                form = getattr(self._window, "native", None)
+                hwnd = form.Handle.ToInt64() if form is not None else None
+                if not hwnd:
+                    break
+                user32.GetCursorPos(ctypes.byref(pt))
+                user32.GetWindowRect(hwnd, ctypes.byref(rc))
+                inside = rc.left <= pt.x < rc.right and rc.top <= pt.y < rc.bottom
+                if inside_prev and not inside:
+                    # Grace period: skimming off the edge and back must not
+                    # collapse + re-expand (that read as "wild" flicker).
+                    deadline = time.time() + BAR_LEAVE_GRACE_S
+                    while time.time() < deadline:
+                        time.sleep(0.03)
+                        user32.GetCursorPos(ctypes.byref(pt))
+                        user32.GetWindowRect(hwnd, ctypes.byref(rc))
+                        if rc.left <= pt.x < rc.right and rc.top <= pt.y < rc.bottom:
+                            inside = True
+                            break
+                if inside or inside_prev:
+                    scale = win_geometry.window_scale(hwnd)
+                    if inside:
+                        x, y = (pt.x - rc.left) / scale, (pt.y - rc.top) / scale
+                    else:
+                        x, y = -1, -1
+                    self._eval("if(window.VerbalMeetingHover)window.VerbalMeetingHover(%d,%d);" % (x, y))
+                if inside != inside_prev:
+                    logger.info("bar hover: inside=%s cursor=%d,%d rect=%d,%d-%d,%d", inside, pt.x, pt.y, rc.left, rc.top, rc.right, rc.bottom)
+                inside_prev = inside
+            except Exception as e:
+                logger.debug("bar hover loop: %s", e)
+                time.sleep(0.2)               # transient (e.g. mid-rebuild): keep watching
+                continue
+            time.sleep(0.05 if not inside_prev else 0.12)
+        logger.info("bar hover watch ended (layout=%s visible=%s)", self._layout, self._visible)
+        try:
+            self._eval("if(window.VerbalMeetingHover)window.VerbalMeetingHover(-1,-1);")
+        except Exception:
+            pass
 
     def expand(self):
         self.set_layout("expanded")

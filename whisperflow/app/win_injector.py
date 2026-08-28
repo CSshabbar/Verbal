@@ -372,9 +372,231 @@ def _inject_with_mentions(text: str) -> bool:
     return True
 
 
+# ── Clipboard save / restore ─────────────────────────────────────────────
+#
+# Dictation pastes by putting the transcript on the clipboard and sending
+# Ctrl+V, which used to clobber whatever the user had copied, permanently.
+# The fix is a snapshot BEFORE the copy and a DELAYED restore AFTER the paste:
+#
+#   * restore only after the target has consumed WM_PASTE — restoring too early
+#     makes the app paste the OLD clipboard instead of the transcript. Hence
+#     the CLIPBOARD_RESTORE_DELAY_S daemon thread; the inject path never waits;
+#   * restore only if the clipboard STILL holds our transcript (sequence number
+#     unchanged and text equal) — if the user or another app wrote to it in the
+#     meantime, the restore is a no-op;
+#   * NEVER restore on the fallback path (paste blocked / raised): there the
+#     transcript is deliberately left on the clipboard so the user can Ctrl+V by
+#     hand ("In clipboard · paste with Ctrl+V"). Same for the sync-receive copy
+#     in win_main — callers pass restore_clipboard=False;
+#   * only TEXT (CF_UNICODETEXT) is snapshotted. Images / file lists / other
+#     formats are not restored — the transcript simply stays on the clipboard,
+#     as before. An empty clipboard is left holding the transcript too (that
+#     mirrors macOS transform.capture_selection, which restores only a saved
+#     string);
+#   * the clipboard can be held open by another process: OpenClipboard is
+#     retried a few times with short sleeps; if it still fails the snapshot is
+#     skipped and the paste proceeds WITHOUT restore rather than failing.
+#
+# Everything here is peripheral and fails closed (logger.debug) — a bug in
+# the restore must never stop the recording→transcribe→inject path.
+
+CLIPBOARD_RESTORE_DELAY_S = 0.4     # ≥ 300 ms after Ctrl+V before we touch the clipboard
+_CLIP_OPEN_RETRIES = 6              # OpenClipboard attempts when another app holds it
+_CLIP_OPEN_RETRY_S = 0.02           # 10–30 ms between attempts
+
+CF_UNICODETEXT = 13
+GMEM_MOVEABLE = 0x0002
+
+
+class ClipboardSnapshot:
+    """What the clipboard held BEFORE we copied the transcript.
+
+    `text` is the previous plain text (never None — non-text/empty/locked
+    clipboards produce no snapshot at all). `seq_after_copy` is filled in once
+    the transcript has landed and is the cheap "changed since we set it" check.
+    """
+    __slots__ = ("text", "seq_after_copy")
+
+    def __init__(self, text: str, seq_after_copy: int = 0):
+        self.text = text
+        self.seq_after_copy = seq_after_copy
+
+
+def _open_clipboard(retries: int = _CLIP_OPEN_RETRIES, pause: float = _CLIP_OPEN_RETRY_S) -> bool:
+    """OpenClipboard with retries — another process may hold it briefly."""
+    for attempt in range(retries):
+        if user32.OpenClipboard(None):
+            return True
+        if attempt + 1 < retries:
+            time.sleep(pause)
+    return False
+
+
+def _clipboard_seq() -> int:
+    try:
+        return int(user32.GetClipboardSequenceNumber())
+    except Exception:
+        return 0
+
+
+def snapshot_clipboard() -> "ClipboardSnapshot | None":
+    """Read the current clipboard TEXT. Returns None when there is nothing we
+    would restore: non-text content, empty clipboard, or the clipboard could
+    not be opened (held by another app) — the paste proceeds without restore."""
+    if not _open_clipboard():
+        logger.debug("clipboard snapshot skipped: OpenClipboard failed (held by another app)")
+        return None
+    try:
+        if not user32.IsClipboardFormatAvailable(CF_UNICODETEXT):
+            # Image / file list / custom format (or empty) — leave it alone.
+            logger.debug("clipboard snapshot skipped: no CF_UNICODETEXT (%d formats)",
+                         user32.CountClipboardFormats())
+            return None
+        handle = user32.GetClipboardData(CF_UNICODETEXT)
+        if not handle:
+            return None
+        ptr = kernel32.GlobalLock(handle)
+        if not ptr:
+            return None
+        try:
+            text = ctypes.wstring_at(ptr)
+        finally:
+            kernel32.GlobalUnlock(handle)
+        return ClipboardSnapshot(text)
+    except Exception as e:
+        logger.debug("clipboard snapshot failed: %s", e)
+        return None
+    finally:
+        try:
+            user32.CloseClipboard()
+        except Exception:
+            pass
+
+
+def _write_clipboard_text(text: str) -> bool:
+    """SetClipboardData(CF_UNICODETEXT) via Win32; falls back to pyperclip."""
+    if _open_clipboard():
+        try:
+            data = ctypes.create_unicode_buffer(text)
+            size = ctypes.sizeof(data)
+            hglob = kernel32.GlobalAlloc(GMEM_MOVEABLE, size)
+            if hglob:
+                ptr = kernel32.GlobalLock(hglob)
+                if ptr:
+                    ctypes.memmove(ptr, data, size)
+                    kernel32.GlobalUnlock(hglob)
+                    user32.EmptyClipboard()
+                    if user32.SetClipboardData(CF_UNICODETEXT, hglob):
+                        return True          # the system now owns hglob
+                kernel32.GlobalFree(hglob)
+        except Exception as e:
+            logger.debug("Win32 clipboard write failed (%s) — trying pyperclip", e)
+        finally:
+            try:
+                user32.CloseClipboard()
+            except Exception:
+                pass
+    try:
+        pyperclip.copy(text)
+        return True
+    except Exception as e:
+        logger.debug("clipboard restore write failed: %s", e)
+        return False
+
+
+def should_restore_clipboard(snapshot_present: bool,
+                             current_matches_transcript: bool,
+                             fallback: bool,
+                             enabled: bool) -> bool:
+    """PURE decision: put the user's previous clipboard text back?
+
+    * `snapshot_present`            — we captured previous TEXT (non-text/locked → False)
+    * `current_matches_transcript`  — the clipboard STILL holds our transcript
+                                      (sequence number unchanged AND text equal)
+    * `fallback`                    — the transcript was left on the clipboard because
+                                      the paste was blocked/failed: the user NEEDS it
+    * `enabled`                     — config["restore_clipboard"]
+
+    Covered by win_bugs_fixtures.test_clipboard_restore_decision (runs anywhere).
+    """
+    if not enabled:
+        return False
+    if fallback:
+        return False
+    if not snapshot_present:
+        return False
+    return bool(current_matches_transcript)
+
+
+def _restore_clipboard_later(snapshot: "ClipboardSnapshot | None", transcript: str,
+                             fallback: bool, enabled: bool,
+                             delay: float = CLIPBOARD_RESTORE_DELAY_S) -> bool:
+    """Schedule the restore on a daemon thread. Returns True if one was
+    scheduled. Never blocks and never raises — the paste already happened."""
+    try:
+        # Cheap pre-check so the common "nothing to do" cases don't even spawn.
+        if not should_restore_clipboard(snapshot is not None, True, fallback, enabled):
+            return False
+        if snapshot.text == transcript:
+            return False                 # identical — nothing to put back
+
+        def _worker():
+            try:
+                time.sleep(delay)
+                seq_now = _clipboard_seq()
+                if snapshot.seq_after_copy and seq_now != snapshot.seq_after_copy:
+                    logger.debug("clipboard restore skipped: changed since paste (seq %d→%d)",
+                                 snapshot.seq_after_copy, seq_now)
+                    return
+                try:
+                    current = pyperclip.paste()
+                except Exception:
+                    current = None
+                if not should_restore_clipboard(True, current == transcript, fallback, enabled):
+                    logger.debug("clipboard restore skipped: content no longer the transcript")
+                    return
+                if _write_clipboard_text(snapshot.text):
+                    logger.debug("clipboard restored (%d chars) after paste", len(snapshot.text))
+            except Exception as e:
+                logger.debug("clipboard restore failed closed: %s", e)
+
+        import threading
+        threading.Thread(target=_worker, name="flume-clip-restore", daemon=True).start()
+        return True
+    except Exception as e:
+        logger.debug("clipboard restore not scheduled: %s", e)
+        return False
+
+
+def _last_pasted_chunk(text: str) -> str:
+    """The mention path pastes several plain chunks; the clipboard ends up
+    holding the LAST non-empty one (empty chunks are skipped by _paste_chunk)."""
+    for chunk in reversed(_MENTION_RE.split(text or "")):
+        if chunk:
+            return chunk
+    return text or ""
+
+
 # ── Public entry point ───────────────────────────────────────────────────
 
-def inject_text(text: str, allow_mentions: bool = False) -> bool:
+def inject_text(text: str, allow_mentions: bool = False,
+                restore_clipboard: bool = True) -> bool:
+    """Paste `text` into the saved target window.
+
+    `restore_clipboard` — put the user's previous clipboard TEXT back once the
+    paste has been consumed (see the clipboard section above). Callers that
+    WANT the text to stay on the clipboard (sync receive) pass False. Whatever
+    the flag, a blocked or failed paste always leaves the transcript on the
+    clipboard and never restores.
+    """
+    # Snapshot first — peripheral, fails closed to "no restore".
+    _snap = None
+    try:
+        if restore_clipboard:
+            _snap = snapshot_clipboard()
+    except Exception as e:
+        logger.debug("clipboard snapshot skipped: %s", e)
+        _snap = None
     # When file-tagging is on and the dictation target is a supported IDE,
     # route through the mention path so `@name.ext` becomes a real reference
     # chip. Any failure below the top-level try falls back to plain paste so
@@ -389,7 +611,13 @@ def inject_text(text: str, allow_mentions: bool = False) -> bool:
             tagging = False
         if tagging:
             try:
-                return _inject_with_mentions(text)
+                ok = _inject_with_mentions(text)
+                if ok and _snap is not None:
+                    _snap.seq_after_copy = _clipboard_seq()
+                    _restore_clipboard_later(_snap, _last_pasted_chunk(text),
+                                             fallback=False, enabled=restore_clipboard)
+                # ok=False is the UIPI-blocked FALLBACK: text stays on the clipboard.
+                return ok
             except Exception as e:
                 logger.error(
                     f"Mention injection failed, falling back to paste: {e}")
@@ -401,17 +629,24 @@ def inject_text(text: str, allow_mentions: bool = False) -> bool:
         # ceilings, so this path can only be faster, never slower.
         pyperclip.copy(text)
         _clip_ms = _await_clipboard(text) * 1000
+        if _snap is not None:
+            _snap.seq_after_copy = _clipboard_seq()
         restore_focused_app()          # now returns once focus has actually landed
         if not _press_ctrl_v():
-            # Text is on the clipboard, so nothing is lost — tell the user why
-            # it didn't land and offer the elevated relaunch that fixes it.
+            # FALLBACK: the paste was refused, so the transcript stays on the
+            # clipboard for a manual Ctrl+V — deliberately NO restore here.
             paste_guard.report_blocked(paste_guard.REASON_UIPI, _previous_app_name)
             return False
         logger.info("Pasted: '%s...' (clipboard %.0fms, was a flat 50ms + 150ms)",
                     text[:40], _clip_ms)
+        # Paste delivered — hand the user's clipboard back once the target has
+        # consumed WM_PASTE (delayed, daemon thread, no-op if it changed since).
+        _restore_clipboard_later(_snap, text, fallback=False, enabled=restore_clipboard)
         return True
     except Exception as e:
-        logger.error(f"Paste failed: {e}")
+        # FALLBACK: text may or may not have landed; it is on the clipboard,
+        # so leave it there — no restore.
+        logger.error(f"Paste failed (text in clipboard): {e}")
         return False
 
 
