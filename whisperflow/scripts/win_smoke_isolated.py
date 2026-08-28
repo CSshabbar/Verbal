@@ -32,7 +32,24 @@ import threading
 import time
 import traceback
 
-EXPECT_VERSION = "1.0.36"                 # latest published win build at the time of writing
+EXPECT_VERSION = "1.0.36"                 # fallback only — resolved live below
+
+
+def _live_latest_win_version(fallback):
+    """The version app_versions_latest currently serves for win. Releases ship
+    several times a day, so a hardcoded expectation went stale within hours
+    (three false FAILs on 2026-08-29); the assert is "the app sees what the
+    server serves", not a fixed number."""
+    try:
+        import httpx
+        from app.supabase_config import SUPABASE_URL, SUPABASE_KEY
+        r = httpx.get(f"{SUPABASE_URL}/rest/v1/app_versions_latest",
+                      headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"},
+                      params={"platform": "eq.win", "select": "version", "limit": "1"}, timeout=8)
+        v = (r.json() or [{}])[0].get("version")
+        return v or fallback
+    except Exception:
+        return fallback
 HERE = os.path.dirname(os.path.abspath(__file__))
 HOME = os.path.join(tempfile.gettempdir(), "flume_smoke_home")
 shutil.rmtree(HOME, ignore_errors=True)
@@ -67,6 +84,8 @@ win_main.APP_VERSION = "1.0.33"
 import app.shared_dashboard as sd         # noqa: E402
 sd.APP_VERSION = "1.0.33"
 record("isolation", True, f"CONFIG_DIR={cfgmod.CONFIG_DIR} LOG_DIR={cfgmod.LOG_DIR}")
+EXPECT_VERSION = _live_latest_win_version(EXPECT_VERSION)
+record("expect_version", True, f"live win latest = {EXPECT_VERSION}")
 
 # Isolated config: signed out, no auto-install, no dashboard auto-open.
 c = cfgmod.load_config()
