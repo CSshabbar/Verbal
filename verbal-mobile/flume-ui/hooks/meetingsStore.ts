@@ -30,7 +30,7 @@ import { AppState } from 'react-native';
 import {
   fetchMeetings, fetchMeeting, subscribeMeetings, rejoinMeetingsChannel,
   closeMeetingsChannel, updateScratchpadRemote, updateNotesRemote,
-  updateActionItemsRemote, Meeting, MeetingActionItem, MeetingsEvent,
+  updateActionItemsRemote, ensureSelfName, Meeting, MeetingActionItem, MeetingsEvent,
 } from '../../lib/meetings';
 import { getUserId } from '../../lib/storage';
 import * as syncStore from '../../lib/syncStore';
@@ -129,6 +129,7 @@ function adoptRows(list: Meeting[]) {
 
 async function load(): Promise<void> {
   try {
+    await ensureSelfName();   // so `self` rows render as the user's name, not "You"
     adoptRows(await fetchMeetings());
     error = null;
   } catch (e: any) {

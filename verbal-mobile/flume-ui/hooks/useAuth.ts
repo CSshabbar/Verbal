@@ -21,6 +21,7 @@ import * as historyStore from './historyStore';
 import * as canvasStore from './useCanvas';
 import * as deviceStore from './useDevices';
 import * as meetingsStore from './meetingsStore';
+import { setSelfSpeakerName } from '../../lib/meetings';
 import * as notesStore from './notesStore';
 import { notify } from '../components/ConfirmDialog';
 import { showDevicesSheet } from '../components/DevicesSyncSheet';
@@ -45,6 +46,8 @@ function fromSupabaseUser(u: { id: string; email?: string | null; user_metadata?
     u.user_metadata?.name ||
     u.user_metadata?.full_name ||
     (u.email ? u.email.split('@')[0] : undefined);
+  // Meetings label the mic speaker with this name instead of "You".
+  setSelfSpeakerName(u.user_metadata?.name || u.user_metadata?.full_name || '');
   return {
     id: u.id,
     email: u.email ?? '',
@@ -316,6 +319,7 @@ export function useAuth() {
     // on this device starts clean (no data leak). Local audio survives a plain
     // sign-out — see teardownLocalAccountState.
     await teardownLocalAccountState(false);
+    setSelfSpeakerName('');
     setUser(null);
   }, []);
 
