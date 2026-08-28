@@ -465,23 +465,75 @@ class VerbalWinApp:
             # dictation still works. Block until the tray exits.
             tray_thread.join()
 
+    _tray_base_cache = {}
+
+    def _tray_asset(self, name):
+        base = sys._MEIPASS if getattr(sys, "frozen", False) else os.path.dirname(
+            os.path.dirname(os.path.abspath(__file__)))
+        return os.path.join(base, "assets", name)
+
+    @staticmethod
+    def _taskbar_is_light():
+        """Windows taskbar theme (HKCU Themes/Personalize SystemUsesLightTheme).
+        Defaults to dark — the far more common setting — on any failure."""
+        try:
+            import winreg
+            k = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                               r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize")
+            try:
+                v, _ = winreg.QueryValueEx(k, "SystemUsesLightTheme")
+            finally:
+                winreg.CloseKey(k)
+            return int(v) == 1
+        except Exception:
+            return False
+
     def _create_icon_image(self, recording: bool, badge: bool = False):
+        """The Flume bird mark, as on the Mac menubar (2026-08-29).
+
+        `assets/icon.png` is the same black-on-transparent silhouette rumps
+        shows as a template image; here we tint it for the taskbar theme
+        (white on the default dark taskbar, near-black on a light one). While
+        recording the mark sits in a terracotta disc so the state reads from
+        across the room. Falls back to the old drawn glyph if the asset is
+        missing, so the tray can never come up blank."""
         from PIL import Image, ImageDraw
-        img = Image.new("RGBA", (32, 32), (0, 0, 0, 0))
+        SIZE = 32
+        img = Image.new("RGBA", (SIZE, SIZE), (0, 0, 0, 0))
         draw = ImageDraw.Draw(img)
-        color = (232, 82, 42, 255) if recording else (242, 239, 233, 255)
-        draw.ellipse([4, 4, 28, 28], fill=color)
-        draw.ellipse([10, 8, 22, 20], fill=(26, 25, 23, 255))
-        draw.rectangle([14, 20, 18, 26], fill=(26, 25, 23, 255))
+        mask = None
+        try:
+            mask = self._tray_base_cache.get("icon")
+            if mask is None:
+                src = Image.open(self._tray_asset("icon.png")).convert("RGBA")
+                mask = src.split()[3]                      # the silhouette IS the alpha
+                self._tray_base_cache["icon"] = mask
+        except Exception as e:
+            logger.debug("tray icon asset unavailable (%s) — drawing fallback", e)
+            mask = None
+        if mask is not None:
+            if recording:
+                draw.ellipse([1, 1, SIZE - 1, SIZE - 1], fill=(200, 90, 62, 255))   # terracotta
+                inner = int(SIZE * 0.68)
+                tint = (255, 255, 255, 255)
+            else:
+                inner = SIZE
+                tint = (28, 28, 30, 255) if self._taskbar_is_light() else (245, 245, 245, 255)
+            m = mask.resize((inner, inner), Image.LANCZOS)
+            glyph = Image.new("RGBA", (inner, inner), tint)
+            glyph.putalpha(m)
+            off = (SIZE - inner) // 2
+            img.alpha_composite(glyph, (off, off))
+        else:
+            color = (232, 82, 42, 255) if recording else (242, 239, 233, 255)
+            draw.ellipse([4, 4, 28, 28], fill=color)
+            draw.ellipse([10, 8, 22, 20], fill=(26, 25, 23, 255))
+            draw.rectangle([14, 20, 18, 26], fill=(26, 25, 23, 255))
         if badge:
-            # "Update available" notification dot, composited onto whichever
-            # base icon is currently active (idle or recording) — pystray
-            # supports live-swapping `.icon` on a running Icon instance
-            # (Icon.icon has a setter that calls _update_icon() while
-            # visible), so _update_tray_icon() can apply this at any time
-            # without tearing down/recreating the tray icon. A dark ring
-            # keeps the dot legible against both the cream idle color and
-            # the terracotta recording color.
+            # "Update available" dot — pystray supports live-swapping `.icon`
+            # on a running Icon, so _update_tray_icon() applies this any time.
+            # A dark ring keeps the green legible on every base.
+            draw = ImageDraw.Draw(img)
             draw.ellipse([20, 0, 32, 12], fill=(26, 25, 23, 255))
             draw.ellipse([22, 2, 30, 10], fill=(58, 166, 92, 255))
         return img

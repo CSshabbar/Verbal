@@ -200,6 +200,20 @@ bounded `config['meetings']` (`MEETINGS_CAP`). The HUD appears when the meeting 
     `DashboardApi.confirm_native` → `WinMeetingWindow.native_confirm` (WinForms `MessageBox` Yes/No, default
     No, owned by the TopMost form); `window.confirm` is stubbed to `false` there. It is the only
     confirm/alert/prompt in `meeting_html.py` — keep it that way or route new ones the same way.
+  - **Tray icon + left-click menu (2026-08-29).** The tray icon is the Flume bird mark (`assets/icon.png`,
+    the same silhouette rumps shows as a template image), tinted by `_create_icon_image` for the taskbar
+    theme (white on dark, near-black when `SystemUsesLightTheme=1`); recording = white mark in a terracotta
+    disc; the green update badge composites on top. Falls back to the old drawn glyph if the asset is
+    missing. Left-click opens `WinPopover`, whose HTML (`flume_popover_html.py`) is now a **port of the Mac
+    `menubar_menu.py` NSMenu**, not the old card panel: one custom header row (mark · state dot + status ·
+    hotkey hint or live waveform + timer · words TODAY) then stock-looking rows in the SAME order/titles as
+    `menubar_menu.build()` (Update available ↑ / Start Recording / Start Meeting / Recent ▸ / Canvas (n) ▸ /
+    Notes / Recording Mode ▸ / Offline Model ▸ / Sync ✓ / Open Flume / Settings… / Sign in|out / Check for
+    Updates… / About / Quit), with the same sign-in gating. Submenus disclose inline. The page measures
+    itself and the host fits the window (`popover_resize` → `set_content_height`, clamped to the work
+    area); state is read fresh on open via `_PopoverBridge.popover_state()` (mirrors `menuNeedsUpdate:`)
+    and the header animates via `popover_tick()` (~12 fps, only while recording). Esc / focus loss hide it.
+    Auto-detect Meetings has no Windows implementation, so that row is omitted.
   - **Windows are built once and hide on close:** `WinMeetingWindow` and `WinPopover` intercept
     pywebview's `closing` (hide — or collapse to the bar mid-meeting — and cancel the destroy, like the
     Mac panel's `windowShouldClose_`) and `closed` (drop the handle so the next `show()` rebuilds);
