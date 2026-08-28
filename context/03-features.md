@@ -96,7 +96,7 @@ Each feature: **what it does · desktop impl · mobile impl · backend · status
   checklist/structure-detection and `TITLE:` rules only when those flags are on (see §Notes).
   `format_note(text, cfg, …)` returns `{title, formatted_content}`; `_parse_note_response` peels a leading
   `TITLE:` line.
-- **Latency: `speed_mode` (2026-08-14, desktop; default ON since 2026-08-29 together with `chained_mode` = the "One round trip" pipeline — older configs are moved once by `load_config` unless `pipeline_choice_explicit`, which Settings sets on any pipeline pick).** One master switch in `DEFAULT_CONFIG` so
+- **Latency: `speed_mode` (2026-08-14, desktop; default ON since 2026-08-29 together with `chained_mode` and `hybrid_mode` = the **Hybrid** pipeline, the product default; transcription model default stays `asr_model="auto"`. Older configs are moved once by `load_config` (`pipeline_default_v3`) unless `pipeline_choice_explicit`, which Settings sets on any pipeline pick).** One master switch in `DEFAULT_CONFIG` so
   the pre-tuning behaviour stays reachable for A/B. When on: transcripts of **≤ 8 words**
   (`ai_cleanup._SKIP_CLEANUP_MAX_WORDS`) skip the LLM entirely; `SYSTEM_PROMPT` (~2,428 tokens) is replaced
   by `LEAN_SYSTEM_PROMPT` (~677); formatting runs on `SPEED_CLEANUP_MODEL` instead of `openai/gpt-oss-120b`.
@@ -177,7 +177,7 @@ Each feature: **what it does · desktop impl · mobile impl · backend · status
     glossary and the echo scrub for them, and **retries once on Groq** if the provider call fails.
     **`hybrid` is deliberately absent on mobile** — it streams while you speak and mobile records to a file
     then uploads, so it would be a switch that does nothing.
-- **Hybrid pipeline — BUILT (2026-08-15, `hybrid_mode`, default OFF).** Streams mic audio to the new
+- **Hybrid pipeline — BUILT (2026-08-15, `hybrid_mode`; default ON since 2026-08-29 — it is the product default pipeline).** Streams mic audio to the new
   `asr-stream` Edge Function *while you speak*, then uses the streamed transcript for takes at/over
   `asr_stream.HYBRID_THRESHOLD_SEC` (8.0s, the measured crossover) and falls back to the ordinary chained
   path below it, because Groq is genuinely faster on short takes. Selecting it in Settings writes
