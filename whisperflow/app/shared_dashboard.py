@@ -2847,6 +2847,8 @@ class DashboardApi:
         for flag in PIPELINE_FLAGS:
             if flag in settings:
                 cfg[flag] = bool(settings[flag])
+        if any(flag in settings for flag in PIPELINE_FLAGS):
+            cfg["pipeline_choice_explicit"] = True   # never auto-migrated again
         # ASR model: validated against the allowed set here rather than trusted, so a
         # bad value from anywhere can't reach Groq and 400 every dictation.
         if "asr_model" in settings:

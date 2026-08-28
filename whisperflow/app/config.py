@@ -130,7 +130,10 @@ DEFAULT_CONFIG = {
     #   3. formatting runs on a faster model (see SPEED_CLEANUP_MODEL)
     #   4. fixed sleeps in the record->inject path are skipped
     # Measured baseline it is being compared against: 1.02s ASR + ~1.2s formatting.
-    "speed_mode": False,
+    # Default ON since 2026-08-29: "One round trip" (speed + chained) is the
+    # recommended pipeline in Settings and what mobile already defaults to;
+    # desktop shipped on "Original" only because the flags predate the radio.
+    "speed_mode": True,
     # Chained transcription (2026-08-14). INDEPENDENT of speed_mode, so the two
     # can be measured separately — this one changes only the network path, not
     # the prompt, the model, or the output.
@@ -146,7 +149,13 @@ DEFAULT_CONFIG = {
     # the call, it does not change it. Fails closed: if the server-side format
     # step errors it returns chain.ok=false and the client formats locally, so
     # a chain failure costs latency, never a dictation.
-    "chained_mode": False,
+    "chained_mode": True,
+    # True once the user picked a pipeline in Settings (save_settings). Configs
+    # written before 2026-08-29 stored speed/chained=False without any choice
+    # having been made; load_config moves those to the recommended pipeline ONCE
+    # (pipeline_default_v2) unless this flag says the user chose deliberately.
+    "pipeline_choice_explicit": False,
+    "pipeline_default_v2": False,
     # Which Groq Whisper model transcribes. "auto" keeps the long-standing routing
     # (turbo for English, full large-v3 for any pinned non-English language, because
     # the distil is measurably weaker on lower-resource languages) — anything else is
@@ -415,6 +424,19 @@ def load_config() -> dict:
                 if key not in config:
                     config[key] = copy.deepcopy(val)
                     changed = True
+            # One-time move to the recommended pipeline (2026-08-29): older
+            # configs hold speed/chained=False from the pre-radio defaults, not
+            # from a choice. Users who picked a pipeline in Settings are marked
+            # explicit and left alone; hybrid users already run the fast path.
+            if not config.get("pipeline_default_v2"):
+                if (not config.get("pipeline_choice_explicit")
+                        and not config.get("hybrid_mode")
+                        and not config.get("speed_mode") and not config.get("chained_mode")):
+                    config["speed_mode"] = True
+                    config["chained_mode"] = True
+                    logger.info("pipeline: moved to the default 'One round trip' (speed + chained)")
+                config["pipeline_default_v2"] = True
+                changed = True
 
         env_key = os.getenv("GEMINI_API_KEY", "").strip()
         if env_key and env_key not in config["gemini_api_keys"]:

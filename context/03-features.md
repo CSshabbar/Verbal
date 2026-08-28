@@ -96,7 +96,7 @@ Each feature: **what it does · desktop impl · mobile impl · backend · status
   checklist/structure-detection and `TITLE:` rules only when those flags are on (see §Notes).
   `format_note(text, cfg, …)` returns `{title, formatted_content}`; `_parse_note_response` peels a leading
   `TITLE:` line.
-- **Latency: `speed_mode` (2026-08-14, desktop, default OFF).** One master switch in `DEFAULT_CONFIG` so
+- **Latency: `speed_mode` (2026-08-14, desktop; default ON since 2026-08-29 together with `chained_mode` = the "One round trip" pipeline — older configs are moved once by `load_config` unless `pipeline_choice_explicit`, which Settings sets on any pipeline pick).** One master switch in `DEFAULT_CONFIG` so
   the pre-tuning behaviour stays reachable for A/B. When on: transcripts of **≤ 8 words**
   (`ai_cleanup._SKIP_CLEANUP_MAX_WORDS`) skip the LLM entirely; `SYSTEM_PROMPT` (~2,428 tokens) is replaced
   by `LEAN_SYSTEM_PROMPT` (~677); formatting runs on `SPEED_CLEANUP_MODEL` instead of `openai/gpt-oss-120b`.
@@ -199,7 +199,7 @@ Each feature: **what it does · desktop impl · mobile impl · backend · status
   - **Caveat surfaced in the UI:** the streaming engine writes Roman-Urdu in Devanagari, so hybrid is the
     wrong choice for long code-switched dictation. Payoff over one-round-trip is 0.24–0.37s, above 8s only.
   - Fails closed at every step (no socket, dropped blocks, no final, any exception) → ordinary upload path.
-- **Latency: `chained_mode` (2026-08-14, desktop, default OFF).** INDEPENDENT of `speed_mode` and composes
+- **Latency: `chained_mode` (2026-08-14, desktop; default ON since 2026-08-29, see `speed_mode`).** INDEPENDENT of `speed_mode` and composes
   with it: it changes only the **network path**, never the prompt, model, or output. Off, dictation costs two
   client round trips (transcribe, then format) — 8 internet crossings for ~370 ms of model work. On,
   `ai_cleanup.build_chain_spec()` builds `{system, user, model, replace}` (the `user` wrapper carries
