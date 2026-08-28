@@ -179,6 +179,11 @@ class VerbalApp(rumps.App):
             logging.getLogger("verbal").warning("Flume web dashboard unavailable (%s); using AppKit", _e)
             self.dashboard = DashboardWindow(self)
 
+        # flume:// deep links (team invites). Registered up-front so a URL that
+        # launches the app is not lost: Launch Services delivers the kAEGetURL
+        # event after the app finishes launching, i.e. after this handler exists.
+        self._install_url_handler()
+
         # Transient status shown in the menubar menu's header row while
         # something long-running is happening ("Downloading update…"). Empty
         # means idle, and the header falls back to "Ready" + the hotkey hint.
@@ -2037,6 +2042,39 @@ class VerbalApp(rumps.App):
             self._set_menubar_icon(base)
         except Exception as e:
             logger.debug(f"update badge refresh failed: {e}")
+
+    # ── deep links (flume://) ─────────────────────────────────────────────
+    def _install_url_handler(self):
+        """kInternetEventClass/kAEGetURL Apple Event → app.deep_link.handle.
+        Fail-closed: without it the app simply ignores flume:// URLs."""
+        try:
+            from Foundation import NSAppleEventManager, NSObject
+            import objc
+
+            app_ref = self
+
+            class _FlumeURLHandler(NSObject):
+                def handleGetURLEvent_withReplyEvent_(self, event, reply):
+                    try:
+                        # keyDirectObject = '----' ; typeUnicodeText
+                        direct = event.paramDescriptorForKeyword_(0x2D2D2D2D)
+                        url = direct.stringValue() if direct is not None else ""
+                        from app import deep_link
+                        deep_link.handle(app_ref, url)
+                    except Exception as e:
+                        logging.getLogger("verbal.deeplink").error("GetURL event failed: %s", e)
+
+            self._url_handler = _FlumeURLHandler.alloc().init()
+            NSAppleEventManager.sharedAppleEventManager().setEventHandler_andSelector_forEventClass_andEventID_(
+                self._url_handler,
+                objc.selector(self._url_handler.handleGetURLEvent_withReplyEvent_,
+                              signature=b"v@:@@"),
+                0x4755524C,   # kInternetEventClass 'GURL'
+                0x4755524C,   # kAEGetURL          'GURL'
+            )
+            logging.getLogger("verbal.deeplink").info("flume:// URL handler installed")
+        except Exception as e:
+            logging.getLogger("verbal.deeplink").warning("URL handler not installed: %s", e)
 
     def _check_update(self, announce_current=False, suppress_prompt=False, force=False):
         """Background update poll — both the one-shot startup check

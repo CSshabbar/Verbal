@@ -1880,3 +1880,24 @@ Fully fail-closed — both down → `None` → "Couldn't transform, try again" (
   `DEVICE_NOUN` are JS constants injected next to `IS_WINDOWS`; the sign-in headline and the wizard's
   "menu bar"/"system tray" follow `_is_win_early`/`IS_WINDOWS`. Onboarding no longer says "This Mac" on
   Windows regardless of who signs in.
+
+### Team invite deep links (2026-08-29)
+- The invite e-mail (`supabase/functions/invite-member`) now links to the **`invite` Edge Function**
+  (`/functions/v1/invite?t=<token>`, public, `verify_jwt=false`) instead of the download page. That
+  landing page tries **`flume://invite?t=<token>`**; if the document is still visible ~1.6 s later
+  (no app answered) it redirects to `idiaz.io/flume/download.html?t=<token>` — token preserved. Phones
+  and token-less hits redirect straight to the download page. Override targets with `INVITE_CLAIM_URL`
+  (e-mail) / `FLUME_DOWNLOAD_URL` (fallback).
+- **macOS handles the scheme** (`CFBundleURLTypes` in `whisperflow.spec`; `main.py::_install_url_handler`
+  registers a `kAEGetURL` Apple Event handler → `app/deep_link.py::handle`). Launch Services routes the
+  URL to the running app or launches it; the handler is installed in `__init__` so a cold-start URL is
+  not lost. **Windows: not wired yet** (needs the `[Registry]` scheme in `verbal-setup.iss` + argv /
+  second-launch hand-off; `deep_link.py` is shared).
+- In the app: the token is parked in config (`pending_invite_token`), the dashboard opens on **Team** and
+  gets an `inviteLink` event; the page calls `DashboardApi.get_invite_link` (preview via
+  `org_invite_preview`) and shows the **"Join <team>"** modal; Join reuses `claimTeamInvite(token)`
+  (IDI-223 confirm round-trip included) and `clear_invite_link` drops the parked token. Signed-out users
+  hit the sign-in wall first — `checkInviteLink()` re-runs when `signed_in` flips true. Invalid/expired
+  tokens are cleared on preview; network failures keep the token for a later retry.
+- Fixtures: `whisperflow/deep_link_fixtures.py` (parser + handler); the Apple Event path was exercised
+  with a real `NSAppleEventDescriptor` (class/id `GURL`, keyDirectObject `----`).

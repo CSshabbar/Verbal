@@ -1391,6 +1391,19 @@
     assuming AppKit will call them automatically. `applicationDidUnhide_` only restores Regular if
     `self._window.isVisible()` — otherwise an unrelated hide/unhide (the dashboard already closed) would
     wrongly flip an Accessory app back to Regular.
+    **The fourth path (2026-08-29) has no event at all: the dashboard is simply LEFT OPEN** on some other
+    Space while the user goes full-screen in another app. The policy is legitimately Regular the whole time,
+    so the per-event reverts above can never help — reported as "works for the first hour, then the pill
+    never shows over full-screen VS Code" (the hour was how long it took to open the dashboard and leave
+    it). Instead of hunting for a fifth event, `overlay.py` now handles it at the point of need:
+    `_order_front()` calls `_borrow_accessory_policy()`, which flips to Accessory only when the policy is
+    Regular AND our app is inactive AND the Space under the cursor looks full-screen (no menu-bar gap
+    between `NSScreen.frame` and `visibleFrame`; errors count as full-screen so we err toward showing the
+    pill). `hide()` calls `_return_accessory_policy()`, which gives Regular back only if the dashboard
+    window is still visible, not miniaturized, and the app isn't hidden — so it never re-creates the
+    leaks above. The Dock icon blinking for the pill's lifetime is the accepted cost (and invisible on a
+    full-screen Space anyway). The other floating panels (`autolearn_widget.py`, `transform_widget.py`,
+    `meeting_prompt.py`) still rely on the dashboard-side reverts only.
 
 57. **A conditionally-shown element must be in the pixel budget, not just the steady-state one.**
     `meeting_html.py`'s ambient bar expands `.barOpt`'s `max-width` from 0 to a hardcoded cap on
@@ -1979,3 +1992,9 @@ Mobile: `npx tsc --noEmit` in `verbal-mobile/`.
     restore. Gate: `config["restore_clipboard"]` (default True). All of it is `try/except` + `logger.debug`;
     the paste has always already happened. Decision logic is the pure `should_restore_clipboard()`; any
     change to it must keep `win_bugs_fixtures.test_clipboard_restore_decision` green (runs on macOS via ast).
+
+79. **Deep links go through `app/deep_link.py`, never straight into UI code.** New `flume://` routes get a
+    parser + a `handle()` branch there (fail-closed, config-parked state, dashboard driven via
+    `show/show_tab/emit`), so macOS (Apple Event) and Windows (argv/second-launch) stay one implementation.
+    Web landing pages that try a custom scheme MUST keep the token in the fallback URL and MUST offer both
+    actions as buttons — scheme detection is a heuristic (visibility/blur within ~1.6 s), not a fact.

@@ -2004,6 +2004,33 @@ class DashboardApi:
                     "error": res.get("error", "")}
         return _err(res.get("error", ""))
 
+    def get_invite_link(self):
+        """Deep link (app/deep_link.py): a token parked by `flume://invite?t=…`
+        waiting to be offered. Returns the invite preview so the page can name
+        the team; `pending=False` when there is nothing. A dead/invalid token is
+        cleared here so it cannot nag forever."""
+        from app import deep_link, organizations
+        token = (self.app.config.get(deep_link.PENDING_KEY) or "").strip()
+        if not token:
+            return _ok(pending=False)
+        res = organizations.invite_preview(self.app.config, token)
+        if not res.get("ok"):
+            err = res.get("error", "")
+            if "reach" not in err:                 # network trouble: keep it, retry later
+                self.clear_invite_link()
+            return _ok(pending=False, error=err)
+        return _ok(pending=True, token=token, **{k: v for k, v in res.items() if k != "ok"})
+
+    def clear_invite_link(self):
+        from app import deep_link
+        cfg = self.app.config
+        if cfg.pop(deep_link.PENDING_KEY, None) is not None:
+            try:
+                save_config(cfg)
+            except Exception as e:
+                logger.debug("clear_invite_link save failed: %s", e)
+        return _ok()
+
     def preview_team_invite(self, token):
         from app import organizations
         res = organizations.invite_preview(self.app.config, token)

@@ -5609,7 +5609,7 @@ function toggleNoteFlag(name, btn){
 // Native → JS events
 window.VerbalNative = function(event, payload){
   if(event==='recordingState'){ if(STATE) STATE.recording=payload.recording; if(ACTIVE==='home')renderHome(); if(ACTIVE==='canvas')renderCanvas(); }
-  else if(event==='state'){ STATE=payload; applyAuthGate(); renderSidebar(); renderActive(); }
+  else if(event==='state'){ STATE=payload; applyAuthGate(); renderSidebar(); renderActive(); if(STATE&&STATE.signed_in) checkInviteLink(); }
   else if(event==='selectTab'){ if(payload && payload.tab) show(payload.tab); }
   else if(event==='result'){ load(); }
   else if(event==='canvasRemote'){
@@ -5625,6 +5625,10 @@ window.VerbalNative = function(event, payload){
   // the Python side until `dashboard_page_ready`, so this also works when the
   // window was built by this very click (the meeting bar's handoff).
   else if(event==='openMeeting'){ openMeetingDetail(payload); }
+  // Deep link `flume://invite?t=…` (app/deep_link.py): the token is parked in
+  // config; ask Python for the preview and offer the join. Signed-out users get
+  // the sign-in wall first — checkInviteLink re-runs on the next `state` event.
+  else if(event==='inviteLink'){ TM_LINK_SHOWN=false; checkInviteLink(); }
   // Periodic device-presence refresh (SharedDashboard._device_refresh_loop,
   // every 30s) — previously dropped client-side (no handler), so the sidebar/
   // popover/Home pill only ever reflected the device list from page load.
@@ -5819,6 +5823,7 @@ async function load(){
 let TEAM=null, TEAM_INV=[], TEAM_USAGE=null, TEAM_BOARD=null;
 let TEAM_SERIES={}, TEAM_PERSONAL=null, TEAM_SETUP=true;
 let TEAM_SEL='all', TEAM_DAYS=30, TEAM_ERR='', TEAM_PENDING=[], TM_JOIN_SHOWN=false;
+let TM_LINK=null, TM_LINK_SHOWN=false;   // invite arriving via deep link (flume://invite)
 let TEAM_APPS={};   // {user_id: [{app,dictations,words}]} — see get_team_apps
 
 const hasTeam   = () => !!(TEAM && TEAM.org_id);
@@ -5861,6 +5866,7 @@ function loadTeam(refresh){
           if(TEAM_PENDING.length && !hasTeam() && !TM_JOIN_SHOWN){ TM_JOIN_SHOWN=true; tmOpenJoin(); }
         }
       });
+      checkInviteLink();
     } else { TEAM=null; TEAM_ERR=(r&&r.error)||''; }
     teamRepaint();
   });
@@ -6175,6 +6181,48 @@ function tmOpenInvite(){ TM_MODAL='invite'; TM_INV_ROLE='member'; TM_INV_ERR='';
 // Fires after sign-in when an invite is waiting, from anywhere in the app — an
 // invitation the user has to go hunting for is an invitation they never see.
 function tmOpenJoin(){ TM_MODAL='join'; tmRenderModal(); }
+// ── invite via deep link ────────────────────────────────────────────────────
+function checkInviteLink(){
+  if(!(STATE&&STATE.signed_in)) return;           // sign-in wall first; re-checked on `state`
+  api('get_invite_link').then(r=>{
+    if(!(r&&r.ok&&r.pending)) return;
+    TM_LINK=r;
+    if(TM_LINK_SHOWN && TM_MODAL==='joinlink') return;
+    TM_LINK_SHOWN=true; TM_MODAL='joinlink'; tmRenderModal();
+  });
+}
+function tmJoinLinkModalHtml(){
+  const p=TM_LINK||{};
+  const who = p.inviter_name||p.invited_by||p.inviter_email||'';
+  return `
+  <div class="tmmodal" onclick="if(event.target===this) tmDismissJoinLink()">
+    <div class="tmmodalbox wide">
+      <div class="tmmhead">
+        <div class="tmmico cream">${SVG.mail}</div>
+        <div class="tmmtitle"><h3>Join ${esc(p.org_name||'your team')}</h3>
+          <p>${who?esc(who)+' invited you':'You were invited'} as ${esc(p.role||'member')}. Their shared dictionary and snippets start working on your next dictation.</p></div>
+        <button class="tmmx" onclick="tmDismissJoinLink()">&times;</button>
+      </div>
+      <div class="tmmnote" style="margin-top:0">
+        Your own dictionary stays yours and still wins if the two ever disagree.
+        Nothing you dictate is shared with the team.
+      </div>
+      <div class="tmmfoot">
+        <span class="grow"></span>
+        <button class="btn ghost" style="flex:none;width:auto;padding:11px 16px" onclick="tmDismissJoinLink()">Not now</button>
+        <button class="btn primary" style="flex:none;width:auto;padding:11px 20px" onclick="tmAcceptJoinLink()">Join ${esc(p.org_name||'team')}</button>
+      </div>
+    </div>
+  </div>`;
+}
+function tmDismissJoinLink(){ TM_MODAL=null; tmRenderModal(); api('clear_invite_link'); TM_LINK=null; }
+function tmAcceptJoinLink(){
+  const t=(TM_LINK&&TM_LINK.token)||''; TM_MODAL=null; tmRenderModal();
+  if(!t) return;
+  // Same claim path as the pasted-link field (IDI-223 confirm round trip included).
+  claimTeamInvite(t);
+  api('clear_invite_link'); TM_LINK=null;
+}
 
 function tmRenderModal(){
   const host=document.getElementById('tmModalHost');
@@ -6182,6 +6230,7 @@ function tmRenderModal(){
   if(!TM_MODAL){ host.innerHTML=''; return; }
   if(TM_MODAL==='invite') host.innerHTML=tmInviteModalHtml();
   else if(TM_MODAL==='join') host.innerHTML=tmJoinModalHtml();
+  else if(TM_MODAL==='joinlink') host.innerHTML=tmJoinLinkModalHtml();
 }
 
 function tmInviteModalHtml(){

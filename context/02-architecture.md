@@ -383,3 +383,9 @@ bounded `config['meetings']` (`MEETINGS_CAP`). The HUD appears when the meeting 
 
 See `05-conventions.md` for the non-obvious rules that keep all this from breaking, and the list of
 dead/legacy modules to ignore.
+
+## Deep links (`flume://`)
+`app/deep_link.py` is the shared router (`parse_invite_token`, `handle(app, url)`). macOS delivers URLs via
+the `kAEGetURL` Apple Event (`main.py::_install_url_handler`, scheme declared in `whisperflow.spec`); Windows
+is pending (installer `[Registry]` + argv). The web side is `supabase/functions/invite` — see
+`03-features.md` §Team invite deep links.
