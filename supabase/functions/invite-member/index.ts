@@ -45,7 +45,11 @@ const FROM_EMAIL = RAW_FROM.includes("<") ? RAW_FROM : `Flume <${RAW_FROM}>`;
 // invites still work end to end: the recipient downloads the app from the page they
 // land on, then pastes the same link (or bare token) into the "Have an invite?"
 // field on the desktop dashboard's Team screen or the mobile Team screen.
-const CLAIM_BASE = Deno.env.get("INVITE_CLAIM_URL") ?? "https://idiaz.io/flume/download.html";
+// 2026-08-29: the link now lands on the `invite` Edge Function, which opens the
+// installed app via `flume://invite?t=…` and falls back to the download page
+// (token preserved) when nothing answers — see supabase/functions/invite.
+const CLAIM_BASE = Deno.env.get("INVITE_CLAIM_URL") ??
+  `${Deno.env.get("SUPABASE_URL") ?? "https://ovpcthjingugwvpxlsna.supabase.co"}/functions/v1/invite`;
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",

@@ -14,10 +14,16 @@ prompt cap), and appended to the transcript as an utterance:
 
     {"speaker": "self"|"s<N>", "t0": secs, "t1": secs, "text": "..."}
 
-Speaker model (v1, approved): source-based. Mic = "self" ("You"); system audio
-starts at "s1" ("Speaker 1") and increments to a new id after a long silence
-gap (>90 s) — a weak "someone else is talking now" heuristic. Rename is
-retroactive per-id (rename_speaker), so mislabels are one double-click away.
+Speaker model (v2, 2026-08-28 — the Granola model): source-based, TWO speakers.
+Mic = "self", labelled with the signed-in user's name (`self_speaker_label()`,
+"You" when signed out); ALL system audio = "s1", labelled "Them" (everyone else
+on the call). No acoustic diarization, no "Speaker N" guesses: without a bot in
+the meeting nobody gets reliable per-person names from a mixed system-audio
+stream, and a wrong split shown with confidence costs trust. Rename is still
+retroactive per-id (rename_speaker) — in a 1:1, "Them" → "Alice" is one
+double-click. The v1 gap heuristic / AssemblyAI re-partition code below is
+retired (flag `meetings_diarize_enabled` now defaults OFF) and kept only for
+the fixtures.
 
 States: idle → preparing → recording ⇄ paused → stopping → processing → ready|failed
 
@@ -38,6 +44,45 @@ import numpy as np
 from app.config import save_config, MEETINGS_CAP
 
 logger = logging.getLogger("verbal.meetings")
+
+SELF_FALLBACK_LABEL = "You"
+THEM_LABEL = "Them"          # the single system-audio speaker (id "s1")
+
+
+def self_speaker_label(config):
+    """Display label for the mic ("self") speaker: the signed-in user's name
+    (Google `full_name`/`name` stored in config['auth']['name']), else "You".
+    `auth.name` falls back to the e-mail address at sign-in, so an address is
+    treated as "no name". Never raises."""
+    try:
+        auth = (config or {}).get("auth") or {}
+        name = str(auth.get("name") or "").strip()
+        if name and "@" not in name:
+            return name
+    except Exception:
+        pass
+    return SELF_FALLBACK_LABEL
+
+
+def with_self_name(speakers, config):
+    """Return a copy of a speakers map where a placeholder "self" label (missing
+    or the legacy literal "You") is replaced by `self_speaker_label(config)`.
+    Meetings recorded before 2026-08-28 persisted "You"; a user-typed rename of
+    "self" is left untouched. Pure; never raises."""
+    try:
+        if not isinstance(speakers, dict):
+            return speakers
+        cur = str(speakers.get("self") or "").strip()
+        if cur and cur != SELF_FALLBACK_LABEL:
+            return speakers
+        label = self_speaker_label(config)
+        if label == SELF_FALLBACK_LABEL and cur:
+            return speakers
+        out = dict(speakers)
+        out["self"] = label
+        return out
+    except Exception:
+        return speakers
 
 
 def _cloud_gate(cfg) -> bool:
@@ -64,7 +109,7 @@ CHUNK_MIN_S = 8.0               # earliest silence-aligned cut
 CHUNK_MAX_S = 22.0              # hard cut
 SILENCE_RMS = 0.008             # "quiet" threshold for a cut window
 SILENCE_WIN_S = 0.7             # trailing window that must be quiet to cut
-SPEAKER_GAP_S = 90.0            # system-audio silence gap → new speaker id
+SPEAKER_GAP_S = 90.0            # v1 only (retired): silence gap → new speaker id
 SELF_CLUSTER_SHARE = 0.7        # diarized cluster is "the user" only at >=70% self overlap
 MEETINGS_DIR = os.path.expanduser("~/.verbal/meetings")
 TRANSCRIPT_CHAR_BUDGET = 24000  # LLM input cap: head + tail kept, middle elided
@@ -76,15 +121,13 @@ _SUMMARY_SYSTEM = """You summarize meeting transcripts. Reply with ONE JSON obje
  "decisions": ["each explicit decision made, one string each; [] if none"],
  "action_items": [{"owner": "<speaker id like self/s1, or null if unclear>", "task": "the commitment",
                    "due": "<short due label like 'Thursday', 'Jul 24', 'EOW' ONLY if a deadline was said, else null>"}],
- "hybrid_notes": [{"user_line": "<verbatim line from USER NOTES>", "ai_addition": "<ONE short sentence of context from the transcript, or empty string>"}],
- "speaker_names": {"<speaker id>": "<that person's name as spoken in the transcript>"}}
+ "hybrid_notes": [{"user_line": "<verbatim line from USER NOTES>", "ai_addition": "<ONE short sentence of context from the transcript, or empty string>"}]}
 Rules:
 - Use only information present in the transcript/notes. Never invent facts, names, dates or numbers.
-- speaker_names: ONLY for speakers whose current label is a placeholder like "Speaker 2", and ONLY
-  when the transcript makes their name unambiguous — they introduce themselves ("I'm Sara"), or
-  another participant addresses them by name right before/after they speak ("thanks Sara" ↔ Sara's
-  line). One or two words, as spelled in the transcript. Never guess, never name "self", never
-  reuse a name already assigned to another speaker. {} when unsure.
+- Speakers: "self" is the user (named in SPEAKERS); "s1" ("Them") is EVERYONE else on the call, mixed
+  together. When the transcript makes clear which other person said or owns something (they introduce
+  themselves, or are addressed by name), use that name in the summary/task text; otherwise say "the
+  other participant(s)". Never guess a name.
 - decisions are things the participants AGREED or RESOLVED, not topics discussed.
 - action_items owner must be one of the speaker ids given, else null.
 - action_items due: only when the transcript states a deadline for THAT task; keep it under 12
@@ -882,7 +925,7 @@ class MeetingSession:
         self.state = "idle"
         self.started_at = None
         self.transcript = []             # utterances, ordered by t0
-        self.speakers = {"self": "You"}
+        self.speakers = {"self": self_speaker_label(getattr(app, "config", {}))}
         self.marked_moments = []
         self.scratchpad = ""
         self.summary = ""
@@ -1211,26 +1254,14 @@ class MeetingSession:
         except Exception as e:
             logger.warning("meeting audio save/upload failed: %s", e)
 
-        # Speaker diarization (2026-08-16) — replace the 90s-gap guess with real
-        # who-spoke-when from AssemblyAI, BEFORE voiceprint (which then gets clean
-        # per-speaker windows) and BEFORE the summary (which then attributes action
-        # items to the right people). Needs the uploaded WAV; fails closed to the
-        # gap-heuristic labels the meeting already has.
+        # Speaker diarization + voice fingerprinting are RETIRED under the
+        # two-speaker model (2026-08-28): system audio is one "Them" bucket, so
+        # there is nothing to re-partition or auto-name. `_diarize()` stays
+        # behind `meetings_diarize_enabled` (now default OFF) for the fixtures.
         try:
             self._diarize()
         except Exception as e:
             logger.debug("diarization skipped: %s", e)
-
-        # voice fingerprinting (33d) — auto-name unnamed speakers from local
-        # prints BEFORE the summary runs so it uses real names. Local-only,
-        # fails closed; requires the WAV (skipped when keep-audio is off).
-        try:
-            from app import voiceprint
-            rec = voiceprint.process_meeting(self.app.config, self)
-            if rec:
-                self.recognized = rec
-        except Exception as e:
-            logger.debug("voiceprint step skipped: %s", e)
 
         # post-meeting summary (31e). Silent meeting → ready with empty summary;
         # LLM failure → 'failed' (Summary card shows Retry; transcript is intact).
@@ -1377,8 +1408,8 @@ class MeetingSession:
         (state is 'working', so a minute of extra latency here is expected time,
         not perceived lag). Every exit path leaves the transcript usable."""
         from app.config import feature_flag
-        if not feature_flag(self.app.config, "meetings_diarize_enabled", True):
-            return
+        if not feature_flag(self.app.config, "meetings_diarize_enabled", False):
+            return          # retired 2026-08-28 (two-speaker model)
         if not self.audio_url or not self.transcript:
             return
         if not any(u.get("speaker") != "self" for u in self.transcript):
@@ -1417,7 +1448,7 @@ class MeetingSession:
         old_names = dict(self.speakers)
         for u, nid in zip(self.transcript, new_ids):
             u["speaker"] = nid
-        fresh = {"self": old_names.get("self", "You")}
+        fresh = {"self": old_names.get("self") or self_speaker_label(self.app.config)}
         for u in self.transcript:
             sid = u.get("speaker")
             if sid and sid != "self" and sid not in fresh:
@@ -1433,15 +1464,13 @@ class MeetingSession:
     def _speaker_for(self, source, t0, t1):
         if source == "self":
             return "self"
-        # system audio: new speaker id after a long silence gap (weak heuristic;
-        # rename is retroactive so a wrong guess costs one double-click)
-        if self._sys_speaker_n == 0 or (
-                self._sys_last_end is not None and t0 - self._sys_last_end > SPEAKER_GAP_S):
-            self._sys_speaker_n += 1
-            sid = f"s{self._sys_speaker_n}"
-            self.speakers.setdefault(sid, f"Speaker {self._sys_speaker_n}")
+        # system audio: ONE bucket — "Them" (Granola model, 2026-08-28). The
+        # silence-gap "new speaker" guess is gone; it split one person in two
+        # far more often than it separated two people.
+        self._sys_speaker_n = 1
+        self.speakers.setdefault("s1", THEM_LABEL)
         self._sys_last_end = t1
-        return f"s{self._sys_speaker_n}"
+        return "s1"
 
     # ── moments / scratchpad / title (bridge surface) ─────────────────────────
     @property
@@ -1503,11 +1532,33 @@ class MeetingSession:
                     "paused": self.state == "paused",
                     "mic": round(self._mic_level, 3),
                     "sys": round(self._sys_cap.level, 3) if self._sys_cap else 0.0,
+                    # Windows WASAPI capture reconnects on its own (Rule #76); once it
+                    # has given up `.running` is False and `.error` says why. Surface
+                    # it (UI may ignore the key) and log ONCE so a mic-only tail is
+                    # never silent in the logs.
+                    "sysErr": self._sys_audio_state(),
                 })
                 self._mic_watchdog()
             except Exception:
                 pass
             time.sleep(1.0)
+
+    def _sys_audio_state(self):
+        """None while system audio is healthy (or not in use); otherwise the
+        capture's error string. Logs the transition to 'lost' exactly once."""
+        cap = self._sys_cap
+        if cap is None:
+            return None
+        try:
+            if cap.running:
+                return None
+            err = cap.error or "system audio stopped"
+        except Exception:
+            return None
+        if not getattr(self, "_sys_lost_logged", False):
+            self._sys_lost_logged = True
+            logger.warning("meeting system audio lost — continuing mic-only: %s", err)
+        return err
 
     def _mic_watchdog(self):
         """Reopen the mic if its callbacks went silent (>5 s) while recording —
@@ -1885,8 +1936,11 @@ class MeetingManager:
             # seconds so meetings recorded on other devices (mobile, other
             # desktop) appear here too. Fail-closed: cloud outage → local only.
             self._hydrate_from_cloud_if_stale()
+            metas = [dict(m, speakers=with_self_name(m.get("speakers") or {}, self.app.config))
+                     if isinstance(m, dict) else m
+                     for m in self.app.config.get("meetings", [])]
             return {"ok": True,
-                    "meetings": list(self.app.config.get("meetings", [])),
+                    "meetings": metas,
                     "opened": list(self.app.config.get("meetings_opened") or []),
                     "active_id": a.id if a else None,
                     "active_title": a.title if a else None,
@@ -2348,7 +2402,7 @@ class MeetingManager:
         try:
             s = self.session
             if s and s.id == meeting_id:
-                return {"ok": True, "meeting": s.row(), "live": bool(self.active)}
+                return {"ok": True, "meeting": self._named(s.row()), "live": bool(self.active)}
             if _cloud_gate(self.app.config):
                 import httpx
                 from app.sync import SUPABASE_URL
@@ -2364,10 +2418,21 @@ class MeetingManager:
                         if m.get("id") == meeting_id and m.get("speakers_source"):
                             row = dict(row, speakers_source=m["speakers_source"])
                             break
-                    return {"ok": True, "meeting": row, "live": False}
+                    return {"ok": True, "meeting": self._named(row), "live": False}
             for m in self.app.config.get("meetings", []):
                 if m.get("id") == meeting_id:
-                    return {"ok": True, "meeting": m, "live": False}
+                    return {"ok": True, "meeting": self._named(m), "live": False}
             return {"ok": False, "error": "not found"}
         except Exception as e:
             return {"ok": False, "error": str(e)}
+
+    def _named(self, row):
+        """Read-side view of a meeting row with the "self" speaker shown as the
+        signed-in user's name (legacy rows persisted "You"). Never mutates the
+        stored row; falls back to the row itself on any error."""
+        try:
+            if isinstance(row, dict):
+                return dict(row, speakers=with_self_name(row.get("speakers") or {}, self.app.config))
+        except Exception:
+            pass
+        return row

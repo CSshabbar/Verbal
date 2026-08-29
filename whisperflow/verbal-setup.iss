@@ -11,7 +11,7 @@
 #endif
 #define MyAppPublisher "Flume"
 ; Must match `name=` in the EXE(...) call of verbal-win.spec — that is what
-; actually names the frozen PyInstaller output (dist\Flume.exe).
+; actually names the frozen PyInstaller output (dist\Flume\Flume.exe, onedir).
 #define MyAppExeName "Flume.exe"
 
 [Setup]
@@ -32,6 +32,11 @@ PrivilegesRequired=lowest
 OutputDir=dist
 OutputBaseFilename=FlumeSetup
 SetupIconFile=assets\icon.ico
+; Icon shown in Settings > Apps / "Programs and Features". Without this Windows
+; falls back to a generic icon (or, via the shell icon cache, whatever it last
+; saw for this AppId — the old Verbal art) after the Flume rebrand.
+UninstallDisplayIcon={app}\{#MyAppExeName}
+UninstallDisplayName={#MyAppName}
 Compression=lzma
 SolidCompression=yes
 WizardStyle=modern
@@ -45,13 +50,22 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
 [Files]
-Source: "dist\Flume.exe"; DestDir: "{app}"; Flags: ignoreversion
+; PyInstaller ONEDIR output (verbal-win.spec COLLECT, 2026-08-28): Flume.exe plus
+; an _internal\ tree. Was `dist\Flume.exe` (one-file) — see the spec for why.
+Source: "dist\Flume\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "assets\*"; DestDir: "{app}\assets"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "assets\sounds\*"; DestDir: "{app}\assets\sounds"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
-Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
+; IconFilename points at the standalone .ico (shipped via assets\*) rather than
+; the exe's embedded resource. Windows' shell icon cache is keyed on the icon
+; SOURCE path, and {app}\Flume.exe has been that source since the first install
+; — so after the 2026-08-25 rebrand the Start menu / taskbar kept serving the
+; cached old Verbal icon even though the new exe carried the new one. A new
+; source path is a new cache key. CurStepChanged below also asks the shell to
+; flush its icon cache after install.
+Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\assets\icon.ico"
+Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\assets\icon.ico"; Tasks: desktopicon
 
 [Run]
 ; Install the Edge WebView2 Evergreen runtime if it's absent. pywebview's
@@ -111,6 +125,73 @@ end;
 function WebView2Missing(): Boolean;
 begin
   Result := not WebView2Installed();
+end;
+
+// ---- Shell icon-cache refresh -----------------------------------------------
+// SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, 0, 0) tells Explorer that
+// file associations / icons changed; it re-reads shortcut icons instead of
+// serving the stale cached ones. Cheap and harmless when nothing changed.
+procedure SHChangeNotify(wEventId: Integer; uFlags: Cardinal; dwItem1, dwItem2: Cardinal);
+  external 'SHChangeNotify@shell32.dll stdcall';
+
+const
+  SHCNE_ASSOCCHANGED = $08000000;
+  SHCNF_IDLIST = $0000;
+
+// ---- Make sure a running Flume is gone before files are replaced ------------
+// CloseApplications=force relies on the Restart Manager, and RM can refuse:
+// verified live 2026-08-28 (Win11 ARM64 VM) — "Can use RestartManager to avoid
+// reboot? No (1: Permission Denied)" because a SYSTEM process (XtaCache) also
+// mapped our files, so Flume.exe was never closed, DeleteFile failed with
+// code 5 and the /SUPPRESSMSGBOXES install ABORTED and rolled back — i.e. an
+// update that looked like it ran did nothing. The app's own updater os._exit()s
+// before launching us, so this matters for a user double-clicking a new
+// FlumeSetup.exe while Flume runs; make that path deterministic: taskkill
+// (same user, no elevation needed) and wait until the process is gone.
+function FlumeRunning(): Boolean;
+var
+  ResultCode: Integer;
+begin
+  { tasklist exits 0 either way; its output contains the image name only if found.
+    FIND returns 1 when the string is absent. }
+  Result := Exec(ExpandConstant('{cmd}'), '/C tasklist /FI "IMAGENAME eq Flume.exe" | find /I "Flume.exe" >nul',
+                 '', SW_HIDE, ewWaitUntilTerminated, ResultCode) and (ResultCode = 0);
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  ResultCode, Tries: Integer;
+begin
+  Result := '';
+  if FlumeRunning() then begin
+    Log('Flume.exe is running -- terminating it before install');
+    { No /T: the app-launched installer is itself a child of Flume.exe (Popen,
+      DETACHED_PROCESS does not reparent) — a tree kill could take out this
+      very setup. WebView2 children die with their host anyway. }
+    Exec(ExpandConstant('{sys}\taskkill.exe'), '/IM Flume.exe /F', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    Tries := 0;
+    while FlumeRunning() and (Tries < 20) do begin
+      Sleep(250);
+      Tries := Tries + 1;
+    end;
+    if FlumeRunning() then
+      Log('Flume.exe still running after taskkill; Restart Manager will have to handle it')
+    else
+      Log('Flume.exe terminated');
+    { Give the OS a moment to release file handles / the tray icon. }
+    Sleep(500);
+  end;
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssPostInstall then begin
+    try
+      SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, 0, 0);
+    except
+      Log('SHChangeNotify failed: ' + GetExceptionMessage);
+    end;
+  end;
 end;
 
 function OnDownloadProgress(const Url, FileName: String; const Progress, ProgressMax: Int64): Boolean;

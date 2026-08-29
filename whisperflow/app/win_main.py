@@ -436,7 +436,25 @@ class VerbalWinApp:
             # pywebview runs `func` on a background thread once the GUI loop
             # is up — perfect place to trigger the first create_window() so
             # the taskbar entry appears at launch.
-            webview.start(func=_open_dashboard_on_start, debug=False)
+            # Persistent WebView2 profile. pywebview's default private_mode
+            # creates a brand-new Chromium profile under %TEMP% on EVERY
+            # launch (cold cache, profile setup, and a tmpXXXX\EBWebView dir
+            # left behind each run) — a visible chunk of the slow relaunch
+            # reported 2026-08-28. Nothing user-visible depends on a private
+            # profile: sign-in runs in the system browser (PKCE), not here.
+            try:
+                from app.config import CONFIG_DIR
+                _wv_dir = os.path.join(str(CONFIG_DIR), "webview")
+                os.makedirs(_wv_dir, exist_ok=True)
+            except Exception as e:
+                logger.debug("webview storage dir failed (%s); using private mode", e)
+                _wv_dir = None
+            logger.info("webview loop starting (%.1fs after launch)", time.time() - sys._verbal_start_time)
+            if _wv_dir:
+                webview.start(func=_open_dashboard_on_start, debug=False,
+                              private_mode=False, storage_path=_wv_dir)
+            else:
+                webview.start(func=_open_dashboard_on_start, debug=False)
             # start() returns when every pywebview window is gone — Windows
             # shutdown destroys the hidden anchor too. Don't fall off into a
             # tray-only zombie that still holds the singleton mutex.
@@ -447,23 +465,75 @@ class VerbalWinApp:
             # dictation still works. Block until the tray exits.
             tray_thread.join()
 
+    _tray_base_cache = {}
+
+    def _tray_asset(self, name):
+        base = sys._MEIPASS if getattr(sys, "frozen", False) else os.path.dirname(
+            os.path.dirname(os.path.abspath(__file__)))
+        return os.path.join(base, "assets", name)
+
+    @staticmethod
+    def _taskbar_is_light():
+        """Windows taskbar theme (HKCU Themes/Personalize SystemUsesLightTheme).
+        Defaults to dark — the far more common setting — on any failure."""
+        try:
+            import winreg
+            k = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                               r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize")
+            try:
+                v, _ = winreg.QueryValueEx(k, "SystemUsesLightTheme")
+            finally:
+                winreg.CloseKey(k)
+            return int(v) == 1
+        except Exception:
+            return False
+
     def _create_icon_image(self, recording: bool, badge: bool = False):
+        """The Flume bird mark, as on the Mac menubar (2026-08-29).
+
+        `assets/icon.png` is the same black-on-transparent silhouette rumps
+        shows as a template image; here we tint it for the taskbar theme
+        (white on the default dark taskbar, near-black on a light one). While
+        recording the mark sits in a terracotta disc so the state reads from
+        across the room. Falls back to the old drawn glyph if the asset is
+        missing, so the tray can never come up blank."""
         from PIL import Image, ImageDraw
-        img = Image.new("RGBA", (32, 32), (0, 0, 0, 0))
+        SIZE = 32
+        img = Image.new("RGBA", (SIZE, SIZE), (0, 0, 0, 0))
         draw = ImageDraw.Draw(img)
-        color = (232, 82, 42, 255) if recording else (242, 239, 233, 255)
-        draw.ellipse([4, 4, 28, 28], fill=color)
-        draw.ellipse([10, 8, 22, 20], fill=(26, 25, 23, 255))
-        draw.rectangle([14, 20, 18, 26], fill=(26, 25, 23, 255))
+        mask = None
+        try:
+            mask = self._tray_base_cache.get("icon")
+            if mask is None:
+                src = Image.open(self._tray_asset("icon.png")).convert("RGBA")
+                mask = src.split()[3]                      # the silhouette IS the alpha
+                self._tray_base_cache["icon"] = mask
+        except Exception as e:
+            logger.debug("tray icon asset unavailable (%s) — drawing fallback", e)
+            mask = None
+        if mask is not None:
+            if recording:
+                draw.ellipse([1, 1, SIZE - 1, SIZE - 1], fill=(200, 90, 62, 255))   # terracotta
+                inner = int(SIZE * 0.68)
+                tint = (255, 255, 255, 255)
+            else:
+                inner = SIZE
+                tint = (28, 28, 30, 255) if self._taskbar_is_light() else (245, 245, 245, 255)
+            m = mask.resize((inner, inner), Image.LANCZOS)
+            glyph = Image.new("RGBA", (inner, inner), tint)
+            glyph.putalpha(m)
+            off = (SIZE - inner) // 2
+            img.alpha_composite(glyph, (off, off))
+        else:
+            color = (232, 82, 42, 255) if recording else (242, 239, 233, 255)
+            draw.ellipse([4, 4, 28, 28], fill=color)
+            draw.ellipse([10, 8, 22, 20], fill=(26, 25, 23, 255))
+            draw.rectangle([14, 20, 18, 26], fill=(26, 25, 23, 255))
         if badge:
-            # "Update available" notification dot, composited onto whichever
-            # base icon is currently active (idle or recording) — pystray
-            # supports live-swapping `.icon` on a running Icon instance
-            # (Icon.icon has a setter that calls _update_icon() while
-            # visible), so _update_tray_icon() can apply this at any time
-            # without tearing down/recreating the tray icon. A dark ring
-            # keeps the dot legible against both the cream idle color and
-            # the terracotta recording color.
+            # "Update available" dot — pystray supports live-swapping `.icon`
+            # on a running Icon, so _update_tray_icon() applies this any time.
+            # A dark ring keeps the green legible on every base.
+            draw = ImageDraw.Draw(img)
             draw.ellipse([20, 0, 32, 12], fill=(26, 25, 23, 255))
             draw.ellipse([22, 2, 30, 10], fill=(58, 166, 92, 255))
         return img
@@ -565,14 +635,30 @@ class VerbalWinApp:
         tkinter needs its own throwaway root — the same withdraw/destroy dance
         every other dialog in this file does. Throttling lives in paste_guard.
         """
+        # Off the caller's thread: paste_guard invokes this hook inline from
+        # the inject path (win_injector -> _process_audio worker), so a modal
+        # box here kept `_processing` True — next hotkey refused, overlay stuck
+        # on "transcribing" — until the user answered (review 2026-08-28).
+        threading.Thread(target=self._prompt_paste_blocked_dialog, args=(reason, target_app),
+                         name="paste-blocked-prompt", daemon=True).start()
+        return None
+
+    def _prompt_paste_blocked_dialog(self, reason, target_app):
         try:
             from app import paste_guard
             import tkinter as tk
             from tkinter import messagebox
             root = tk.Tk()
             root.withdraw()
+            try:
+                root.attributes("-topmost", True)
+            except Exception:
+                pass
+            # parent=root: without it tkinter's commondialog uses
+            # _default_root — the OVERLAY's Tk on another thread — and the
+            # recording pill's mainloop freezes for as long as the box is open.
             yes = messagebox.askyesno(paste_guard.title(reason),
-                                      paste_guard.message(reason, target_app))
+                                      paste_guard.message(reason, target_app), parent=root)
             root.destroy()
             if yes and paste_guard.open_fix(reason):
                 # The elevated copy is starting and the singleton mutex has been
@@ -638,6 +724,18 @@ class VerbalWinApp:
             os._exit(0)
         self._exiting = True
         logger.info("exiting process: %s", reason)
+        # Release the singleton mutex FIRST: a relaunch during the ~1.5 s
+        # teardown below used to lose the mutex race, signal the dying
+        # process and exit — "I quit and reopened it, nothing came up".
+        try:
+            h = getattr(sys, "_verbal_singleton_mutex", None)
+            if h:
+                import ctypes
+                ctypes.windll.kernel32.ReleaseMutex(h)
+                ctypes.windll.kernel32.CloseHandle(h)
+                sys._verbal_singleton_mutex = None
+        except Exception as e:
+            logger.debug("mutex release failed: %s", e)
 
         def _teardown():
             try:
@@ -718,19 +816,28 @@ class VerbalWinApp:
             logger.debug("second-instance watch died: %s", e)
 
     def _tray_about(self, icon=None, item=None):
-        import tkinter as tk
-        from tkinter import messagebox
-        root = tk.Tk()
-        root.withdraw()
-        messagebox.showinfo(
-            f"Flume v{APP_VERSION}",
-            "Voice to text, instantly.\n\n"
-            "Hold Right Alt to record (Hold mode)\n"
-            "or press once to start/stop (Toggle mode).\n"
-            "Press ESC to cancel anytime.\n\n"
-            "Powered by Whisper + Gemini"
-        )
-        root.destroy()
+        # pystray runs menu callbacks ON its message-loop thread: a modal box
+        # here made the tray unresponsive until dismissed. Guarded too — an
+        # unhandled TclError would propagate into pystray's win32 handler.
+        def _show():
+            try:
+                import tkinter as tk
+                from tkinter import messagebox
+                root = tk.Tk()
+                root.withdraw()
+                messagebox.showinfo(
+                    f"Flume v{APP_VERSION}",
+                    "Voice to text, instantly.\n\n"
+                    "Hold Right Alt to record (Hold mode)\n"
+                    "or press once to start/stop (Toggle mode).\n"
+                    "Press ESC to cancel anytime.\n\n"
+                    "Powered by Whisper + Gemini",
+                    parent=root,
+                )
+                root.destroy()
+            except Exception as e:
+                logger.error("about dialog failed: %s", e)
+        threading.Thread(target=_show, name="about-dialog", daemon=True).start()
 
     def _tray_check_updates(self, icon=None, item=None):
         """Tray "Check for updates..." — an explicit click, so announce the
@@ -750,7 +857,8 @@ class VerbalWinApp:
         an explicit click here is the user asking to see it again, not the
         periodic check nagging them."""
         if self._pending_update:
-            self._offer_update(self._pending_update, force_dialog=True)
+            threading.Thread(target=self._offer_update, args=(self._pending_update,),
+                             kwargs={"force_dialog": True}, name="update-dialog", daemon=True).start()
 
     # ── Sign-in gate (IDI-183, mirrors main.py on macOS) ──────────────────
     # Flume requires an account, so nothing account-shaped may run without one.
@@ -1603,6 +1711,9 @@ class VerbalWinApp:
             success = inject_text(
                 result,
                 allow_mentions=self.config.get("filetag_enabled", False),
+                # Hand the user's clipboard back after the paste lands
+                # (delayed; never on the blocked-paste fallback).
+                restore_clipboard=self.config.get("restore_clipboard", True),
             )
             _play_sound("done")
 
@@ -1923,6 +2034,9 @@ class VerbalWinApp:
         target. A broadcast must not type into whatever window has focus."""
         record = record or {}
         logger.info(f"Sync received from {device_name}: '{text[:40]}'")
+        # FALLBACK / intentional copy: the synced text is meant to STAY on the
+        # clipboard (broadcasts are never auto-pasted), so this path must never
+        # restore the previous clipboard — hence restore_clipboard=False below.
         try:
             import pyperclip
             pyperclip.copy(text)
@@ -1952,7 +2066,7 @@ class VerbalWinApp:
         if target and target == self._this_device_id():
             try:
                 from app.win_injector import inject_text
-                success = inject_text(text)
+                success = inject_text(text, restore_clipboard=False)
             except Exception as e:
                 logger.error(f"Sync paste failed: {e}")
                 success = False
@@ -2053,6 +2167,14 @@ class VerbalWinApp:
                 update = self._update_available
 
             if not update:
+                from app import updater as _updater
+                if getattr(_updater, "LAST_CHECK_FAILED", False):
+                    # Unknown, not "current": keep whatever we knew (badge,
+                    # tray row, a parked installer) and never claim up to date.
+                    logger.info("update check failed (offline?) — keeping state")
+                    if announce_current and not suppress_prompt:
+                        self._show_check_failed_dialog()
+                    return
                 had_one = self._update_available is not None
                 self._update_available = None
                 self._update_phase = "idle"
@@ -2072,8 +2194,21 @@ class VerbalWinApp:
                 self._update_progress = 0.0
                 self._update_ready_path = None
             # Sets _update_available (via the _pending_update alias) and
-            # refreshes the badge + tray row; never shows the dialog here.
-            self._offer_update(update)
+            # refreshes the badge + tray row. On Windows an AUTOMATIC find also
+            # shows the dialog ONCE per version (`update_dialog_seen_version`):
+            # the badge-only policy meant users never learned an update existed
+            # — "Windows is not picking up updates, no popup" (2026-08-28) —
+            # because the tray badge is 4 px and the auto-install is silent.
+            # Explicit clicks handle their own dialog below (force_dialog).
+            announce_auto = (not announce_current and not suppress_prompt
+                             and self._update_phase in ("idle", "failed")
+                             and self.config.get("update_dialog_seen_version") != update.get("version"))
+            if announce_auto:
+                # Dialog "Yes" starts _download_and_install(silent=False) itself
+                # and flips the phase; "No" falls through to auto_update below.
+                self._offer_update(update, force_dialog=True, automatic=True)
+            else:
+                self._offer_update(update)
 
             auto_started = False
             if self.config.get("auto_update", True) and self._update_phase in ("idle", "failed"):
@@ -2161,7 +2296,14 @@ class VerbalWinApp:
                 logger.error(f"Update download failed for {update.get('version')}")
                 return
             self._update_ready_path = path
-            if silent:
+            # BOTH paths wait for an idle app before the installer os._exit()s
+            # us. The dialog's "Yes" used to install the instant the download
+            # finished — but since the dialog pops unsolicited 35 s after
+            # launch, "Yes" is followed by the user going back to dictating,
+            # and a multi-minute download then killed the process mid
+            # record→transcribe→inject (review 2026-08-28).
+            wait_for_idle = True
+            if wait_for_idle:
                 self._update_phase = "ready"
                 idle_polls = 0
                 while idle_polls < 2:
@@ -2279,6 +2421,19 @@ class VerbalWinApp:
             self._update_phase = "failed"
             logger.error(f"Update install failed: {e}")
 
+    def _show_check_failed_dialog(self):
+        try:
+            import tkinter as tk
+            from tkinter import messagebox
+            root = tk.Tk()
+            root.withdraw()
+            messagebox.showwarning("Couldn't check for updates",
+                                   "Flume couldn't reach the update server. "
+                                   "Check your connection and try again.", parent=root)
+            root.destroy()
+        except Exception as e:
+            logger.debug(f"check-failed dialog failed: {e}")
+
     def _show_up_to_date_dialog(self):
         """Explicit "Check for updates" with nothing newer — silence there
         reads as a broken button (same rationale as main.py's rumps.alert)."""
@@ -2287,12 +2442,13 @@ class VerbalWinApp:
             from tkinter import messagebox
             root = tk.Tk()
             root.withdraw()
-            messagebox.showinfo("You're up to date", f"Flume v{APP_VERSION} is the latest version.")
+            messagebox.showinfo("You're up to date", f"Flume v{APP_VERSION} is the latest version.",
+                                parent=root)
             root.destroy()
         except Exception as e:
             logger.debug(f"up-to-date dialog failed: {e}")
 
-    def _offer_update(self, update, force_dialog=False):
+    def _offer_update(self, update, force_dialog=False, automatic=False):
         """Show (or re-show) the update-available dialog and keep the
         persistent tray badge + menu item (_menu_update) in sync with it.
 
@@ -2318,13 +2474,38 @@ class VerbalWinApp:
         if not force_dialog:
             return
 
+        # One dialog at a time. The automatic announce is decided on
+        # `update_dialog_seen_version`, which is only persisted AFTER the
+        # user answers — so a second check landing while the box is open
+        # (the 35 s periodic check racing a forced one, seen live 2026-08-28)
+        # would stack a second identical popup. Mark the version as seen
+        # up-front, in memory, and hold a flag for the duration.
+        if getattr(self, "_update_dialog_open", False):
+            logger.info("update dialog already open; not stacking another")
+            return
+        self._update_dialog_open = True
+        self._update_dialog_automatic = bool(automatic)
+        try:
+            self._show_update_dialog(update)
+        finally:
+            self._update_dialog_open = False
+
+    def _show_update_dialog(self, update):
         try:
             import tkinter as tk
             from tkinter import messagebox
             version = update.get("version")
+            self.config["update_dialog_seen_version"] = version
             phase = self._update_phase
             root = tk.Tk()
             root.withdraw()
+            # A withdrawn root has no window for the messagebox to sit over,
+            # so the OS may open it BEHIND the app the user is typing in and
+            # it is never noticed — indistinguishable from "no popup".
+            try:
+                root.attributes("-topmost", True)
+            except Exception:
+                pass
             try:
                 if phase in ("downloading", "installing"):
                     # The dashboard/auto path already has this in hand — a
@@ -2333,18 +2514,24 @@ class VerbalWinApp:
                     messagebox.showinfo(
                         f"Flume {version} available",
                         "Flume is already downloading this update and will "
-                        "restart to install it.")
+                        "restart to install it.", parent=root)
                     return
                 if phase == "ready" and self._update_ready_path:
                     if messagebox.askyesno(
                             f"Flume {version} ready to install",
-                            "The update has been downloaded.\n\nRestart Flume to install it now?"):
+                            "The update has been downloaded.\n\nRestart Flume to install it now?",
+                            parent=root):
                         threading.Thread(target=self._install_ready_update, daemon=True).start()
                     return
-                changelog = update.get("changelog", "Bug fixes and improvements")
+                changelog = update.get("changelog") or "Bug fixes and improvements"
+                tail = "Download and install now?"
+                if getattr(self, "_update_dialog_automatic", False) and self.config.get("auto_update", True):
+                    tail += ("\n\n(If not, Flume will install it in the background "
+                             "the next time you're not dictating.)")
                 resp = messagebox.askyesno(
                     f"Flume {version} available",
-                    f"{changelog}\n\nDownload and install now?",
+                    f"{changelog}\n\n{tail}",
+                    parent=root,
                 )
             finally:
                 root.destroy()
@@ -2354,6 +2541,18 @@ class VerbalWinApp:
             except Exception as e:
                 logger.debug(f"update-seen flag save failed: {e}")
             if resp:
+                # The dashboard may have parked the installer (phase 'ready')
+                # while this box sat open: install THAT, don't download again.
+                if self._update_phase == "ready" and self._update_ready_path \
+                        and os.path.exists(self._update_ready_path):
+                    threading.Thread(target=self._install_ready_update, daemon=True).start()
+                    return
+                # Claim the phase synchronously so _check_update's auto_update
+                # branch (which runs right after this returns on an automatic
+                # find) sees it as in flight and does not start a second,
+                # silent copy of the same download.
+                self._update_phase = "downloading"
+                self._update_progress = 0.0
                 # Off the pystray callback thread so a slow download doesn't
                 # freeze the tray menu; the lock makes a duplicate a no-op.
                 threading.Thread(
@@ -2567,19 +2766,18 @@ def _acquire_single_instance_mutex():
     import ctypes
     from ctypes import wintypes
     ERROR_ALREADY_EXISTS = 183
-    kernel32 = ctypes.windll.kernel32
+    # use_last_error=True: ctypes captures GetLastError immediately after the
+    # foreign call, before the interpreter can issue another Win32 call that
+    # overwrites it (the documented way; a bare GetLastError() afterwards is
+    # racy and a stale 0 would let a second instance run).
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel32.CreateMutexW.restype = wintypes.HANDLE
     kernel32.CreateMutexW.argtypes = [
         ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR]
-    kernel32.GetLastError.restype = wintypes.DWORD
-    kernel32.GetLastError.argtypes = []
     handle = kernel32.CreateMutexW(None, False, "VerbalSingletonMutex_v1")
+    err = ctypes.get_last_error()
     if not handle:
         return True  # can't tell; let it run — mutex failure isn't fatal
-    # CreateMutexW succeeds either way when the name pre-exists; the "already
-    # running" signal is only in the LAST-ERROR field, so we MUST read it
-    # BEFORE any other Win32 call has a chance to overwrite it.
-    err = kernel32.GetLastError()
     if err == ERROR_ALREADY_EXISTS:
         kernel32.CloseHandle(handle)
         return False

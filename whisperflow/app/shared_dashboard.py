@@ -10,6 +10,7 @@ import base64
 import datetime as _dt
 import logging
 import os
+import sys
 import threading
 import time
 from typing import Any
@@ -310,7 +311,12 @@ class SharedDashboard:
         except Exception:
             return True
 
-    def _on_window_closed(self, *_):
+    def _on_window_closed(self, window=None, *_):
+        # Only the CURRENT window may drop the handle: a stale/orphaned form
+        # closing later must not null the live one (next show() would build a
+        # third window). pywebview passes the closing Window as first arg.
+        if window is not None and window is not self._window:
+            return
         self._window = None
         self._page_ready = False
         self._maybe_show_tray_close_hint()
@@ -388,10 +394,12 @@ class SharedDashboard:
             if self._window:
                 try:
                     self._window.show()
-                    return
-                except Exception:
-                    self._window = None
-                    self._page_ready = False
+                except Exception as e:
+                    # Rule #67: never rebuild on a show() exception — that is
+                    # the 20 s `shown` timeout (WebView2 mid-update), and a
+                    # rebuild orphans a live form. Keep the handle; retry later.
+                    logger.warning("dashboard show() raised (%s); keeping handle", e)
+                return
 
             # Render the SAME dark "Flume" UI the macOS app uses. flume_html() is
             # already dual-target: it waits for `pywebviewready` and calls the shared
@@ -404,6 +412,12 @@ class SharedDashboard:
             # A rebuild means a fresh page: a stale `_page_ready` from the previous
             # window would let emits fire at a page that has no VerbalNative yet.
             self._page_ready = False
+            # pywebview 5.3 applies these as PHYSICAL pixels — scale so the
+            # CSS viewport really is 1240x740 on HiDPI (app.win_geometry).
+            from app import win_geometry
+            _w, _h = win_geometry.create_size(1240, 740)
+            _min = (760, 520)              # logical — WinForms autoscales min_size itself
+            _t_create = time.time()
             self._window = webview.create_window(
                 "Flume",
                 html=flume_html(),
@@ -411,11 +425,14 @@ class SharedDashboard:
                 # 2026-08-17 (corrected): WIDE default (matches macOS) — the
                 # multi-pane screens want horizontal room, and >1000px keeps the
                 # Notes Studio pane visible. Height stays modest.
-                width=1240,
-                height=740,
-                min_size=(760, 520),
+                width=_w,
+                height=_h,
+                min_size=_min,
                 background_color="#0e1012",
             )
+            logger.info("dashboard: window created in %.2fs (%.1fs after launch)",
+                        time.time() - _t_create,
+                        time.time() - getattr(sys, "_verbal_start_time", time.time()))
             # Windows: inject a CSS override that anchors `.screen` sections to
             # viewport height. WKWebView on macOS resolves the shared HTML's
             # `.main { height: 100% }` against an implicit viewport-height
@@ -845,6 +862,8 @@ class DashboardApi:
             return _err(str(e))
 
     def get_state(self):
+        logger.info("dashboard: get_state (%.1fs after launch)",
+                    time.time() - getattr(sys, "_verbal_start_time", time.time()))
         cfg = self.app.config = load_config()
         history = cfg.get("history", [])
         pinned = cfg.get("pinned", [])
@@ -1020,6 +1039,36 @@ class DashboardApi:
         except Exception as e:
             return {"ok": False, "error": str(e)}
 
+    def meeting_bar_resize(self, width=0, height=0):
+        """Windows meeting bar: the page reports the rendered pill size
+        (ResizeObserver injected by win_meeting_window._on_loaded) and the
+        host shrink-wraps the borderless window around it, so the bar is a
+        floating pill instead of a 560px dark strip (WebView2 cannot do
+        per-pixel transparency). No-op on hosts without the hook (macOS)."""
+        fn = getattr(self.dashboard, "set_bar_content_size", None)
+        if fn is None:
+            return {"ok": False}
+        try:
+            fn(int(width or 0), int(height or 0))
+            return {"ok": True}
+        except Exception as e:
+            logger.debug("meeting_bar_resize failed: %s", e)
+            return {"ok": False}
+
+    def confirm_native(self, message="", title="Flume"):
+        """Windows meeting bar: a native Yes/No box instead of the page's
+        confirm(), which WebView2 draws inside the (pill-sized) window. Hosts
+        without the hook (macOS) report ok=False and the page keeps its own
+        confirm()."""
+        fn = getattr(self.dashboard, "native_confirm", None)
+        if fn is None:
+            return {"ok": False}
+        try:
+            return {"ok": True, "yes": bool(fn(str(message), str(title)))}
+        except Exception as e:
+            logger.debug("confirm_native failed: %s", e)
+            return {"ok": False}
+
     def meeting_page_ready(self):
         """Page-load handshake from the meeting window's JS — flushes any
         events emitted before the page was ready."""
@@ -1092,6 +1141,14 @@ class DashboardApi:
         try:
             return _ok(value=str(self.app.config.get("spoken_language", "en")),
                        options=SPOKEN_LANGUAGES)
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def get_self_speaker_label(self):
+        """Name shown for the mic speaker in a meeting (signed-in user's name, else "You")."""
+        try:
+            from app.meetings import self_speaker_label
+            return _ok(value=self_speaker_label(self.app.config))
         except Exception as e:
             return {"ok": False, "error": str(e)}
 
@@ -1947,6 +2004,33 @@ class DashboardApi:
                     "error": res.get("error", "")}
         return _err(res.get("error", ""))
 
+    def get_invite_link(self):
+        """Deep link (app/deep_link.py): a token parked by `flume://invite?t=…`
+        waiting to be offered. Returns the invite preview so the page can name
+        the team; `pending=False` when there is nothing. A dead/invalid token is
+        cleared here so it cannot nag forever."""
+        from app import deep_link, organizations
+        token = (self.app.config.get(deep_link.PENDING_KEY) or "").strip()
+        if not token:
+            return _ok(pending=False)
+        res = organizations.invite_preview(self.app.config, token)
+        if not res.get("ok"):
+            err = res.get("error", "")
+            if "reach" not in err:                 # network trouble: keep it, retry later
+                self.clear_invite_link()
+            return _ok(pending=False, error=err)
+        return _ok(pending=True, token=token, **{k: v for k, v in res.items() if k != "ok"})
+
+    def clear_invite_link(self):
+        from app import deep_link
+        cfg = self.app.config
+        if cfg.pop(deep_link.PENDING_KEY, None) is not None:
+            try:
+                save_config(cfg)
+            except Exception as e:
+                logger.debug("clear_invite_link save failed: %s", e)
+        return _ok()
+
     def preview_team_invite(self, token):
         from app import organizations
         res = organizations.invite_preview(self.app.config, token)
@@ -2790,6 +2874,8 @@ class DashboardApi:
         for flag in PIPELINE_FLAGS:
             if flag in settings:
                 cfg[flag] = bool(settings[flag])
+        if any(flag in settings for flag in PIPELINE_FLAGS):
+            cfg["pipeline_choice_explicit"] = True   # never auto-migrated again
         # ASR model: validated against the allowed set here rather than trusted, so a
         # bad value from anywhere can't reach Groq and 400 every dictation.
         if "asr_model" in settings:

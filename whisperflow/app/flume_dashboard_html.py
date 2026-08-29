@@ -1420,6 +1420,8 @@ def _nav(icon, label, sid, badge=""):
 
 
 def flume_html() -> str:
+    import sys as _sys_early
+    _is_win_early = _sys_early.platform == "win32"
     sidebar = f"""
     <aside class="sidebar">
       <div class="brand"><span class="brandmark">✳</span><span class="brandname">FLUME</span></div>
@@ -1455,7 +1457,7 @@ def flume_html() -> str:
     <div id="signin" hidden>
       <div class="siLeft">
         <div class="siBrand"><span class="siLogo">{_logo}</span><span class="siWord">FLUME</span></div>
-        <div class="siHeadline">Speak on your phone.<br>Land on <span class="acc">your Mac.</span></div>
+        <div class="siHeadline">Speak on your phone.<br>Land on <span class="acc">your {'PC' if _is_win_early else 'Mac'}.</span></div>
         <p class="siLead">Sign in once — Flume keeps your phone and computer in sync for voice typing, canvas, notes, and meeting transcripts.</p>
         <div class="siFoot">END-TO-END ENCRYPTED&nbsp;&nbsp;&middot;&nbsp;&nbsp;MAC + WINDOWS</div>
       </div>
@@ -2182,7 +2184,7 @@ function renderCanvas(){
     <div class="cvrow">
       <span class="cvric">${e.kind==='image'?SVG.grid:(e.kind==='link'?SVG.bolt:SVG.lines)}</span>
       <div class="cvrtx"><div class="cvr1">${esc(e.text)}</div>
-        <div class="cvr2">${esc(cvRel(e.at))} · ${e.own?('from '+THIS_DEVICE_LC):('from '+esc(e.from||'another device'))}</div></div>
+        <div class="cvr2">${esc(cvRel(e.at))} · ${e.own?('from this '+DEVICE_NOUN):('from '+esc(e.from||'another device'))}</div></div>
       <button class="cvrcopy" title="Copy" onclick="api('copy_text', ${esc(JSON.stringify(e.text))});toast('Copied')">Copy</button>
     </div>`).join('')
     : '<div class="cvempty" style="padding:6px 0 2px">Sends and receipts will appear here.</div>';
@@ -2617,7 +2619,7 @@ function renderMeetList(){
       : `<span class="mav" style="background:#D9B36B">·</span>`;
     const prev = m.status==='processing' ? 'Summarizing…'
       : m.status==='failed' ? 'Summary failed — open to retry'
-      : ((m.summary||'').split('\n')[0] || ((m.utterances||0)+' segments'+(m.cloud?'':' · '+THIS_DEVICE_LC+' only')));
+      : ((m.summary||'').split('\n')[0] || ((m.utterances||0)+' segments'+(m.cloud?'':' · this '+DEVICE_NOUN+' only')));
     const isNew = m.status==='ready' && (MEETS.opened||[]).indexOf(m.id)<0;
     const marks=(m.marked_moments||[]).length, acts=(m.action_items||[]).length;
     const meta=[fmtHM(m.duration_seconds)];
@@ -2971,14 +2973,6 @@ function fillMeetDetail(){
         (rec[sid]?'<span class="avFp" title="Voice recognized"></span>':'')+
         '<span class="avNm">'+esc(nm)+'</span></span>';
     }).join('')+
-    // Speaker-split provenance: real who-spoke-when (diarized) vs the 90 s-gap
-    // guess (estimated) — so a wrong count is never presented with false confidence.
-    (Object.keys(spk).length>1 && ROW.status!=='processing' && ROW.speakers_source ?
-      '<span class="mono" title="'+(ROW.speakers_source==='diarized'
-        ? 'Speakers separated from the meeting audio (voice diarization)'
-        : 'Speaker split is a guess from silence gaps — diarization did not run (needs Keep audio + signed in). Double-click a speaker to rename.')+
-        '" style="font-size:10px;letter-spacing:.06em;color:var(--mut);text-transform:uppercase">'+
-        (ROW.speakers_source==='diarized' ? 'Speakers verified' : 'Speakers estimated')+'</span>' : '')+
     Object.keys(rec).map(function(sid){
       const r=rec[sid]||{};
       return '<span class="fpBanner" style="flex-basis:100%">'+
@@ -4759,6 +4753,10 @@ const ASR_MODELS=[
    desc:'Best with Urdu mixed into English.', wait:'5s'},
   {id:'aai-universal-3-5-pro',  vendor:'AssemblyAI', name:'Universal-3.5',
    desc:'Strong English. Struggles with Urdu.', wait:'5s'},
+  {id:'gemini-3-5-transcribe',       vendor:'Google', name:'Gemini 3.5 Transcribe',
+   desc:'Verbatim words, then Flume formats. Top benchmark accuracy.', wait:'?', tag:'trial'},
+  {id:'gemini-3-5-transcribe-smart', vendor:'Google', name:'Gemini 3.5 Smart',
+   desc:'Gemini removes fillers and punctuates itself before Flume formats.', wait:'?', tag:'trial'},
 ];
 
 function pickRow(o, group, current, onchange){
@@ -5611,7 +5609,7 @@ function toggleNoteFlag(name, btn){
 // Native → JS events
 window.VerbalNative = function(event, payload){
   if(event==='recordingState'){ if(STATE) STATE.recording=payload.recording; if(ACTIVE==='home')renderHome(); if(ACTIVE==='canvas')renderCanvas(); }
-  else if(event==='state'){ STATE=payload; applyAuthGate(); renderSidebar(); renderActive(); }
+  else if(event==='state'){ STATE=payload; applyAuthGate(); renderSidebar(); renderActive(); if(STATE&&STATE.signed_in) checkInviteLink(); }
   else if(event==='selectTab'){ if(payload && payload.tab) show(payload.tab); }
   else if(event==='result'){ load(); }
   else if(event==='canvasRemote'){
@@ -5627,6 +5625,10 @@ window.VerbalNative = function(event, payload){
   // the Python side until `dashboard_page_ready`, so this also works when the
   // window was built by this very click (the meeting bar's handoff).
   else if(event==='openMeeting'){ openMeetingDetail(payload); }
+  // Deep link `flume://invite?t=…` (app/deep_link.py): the token is parked in
+  // config; ask Python for the preview and offer the join. Signed-out users get
+  // the sign-in wall first — checkInviteLink re-runs on the next `state` event.
+  else if(event==='inviteLink'){ TM_LINK_SHOWN=false; checkInviteLink(); }
   // Periodic device-presence refresh (SharedDashboard._device_refresh_loop,
   // every 30s) — previously dropped client-side (no handler), so the sidebar/
   // popover/Home pill only ever reflected the device list from page load.
@@ -5764,7 +5766,7 @@ function renderWizard(){
       return `<div class="permrow${(!ok&&!p.optional)?' need':''}"><div class="permicon ${ok?'ok':(p.optional?'':'need')}">${WIZ_ICON[p.icon]}</div>
         <div class="perminfo"><div class="permname">${p.name}${p.optional?'<span class="opt">Optional</span>':''}</div><div class="permsub">${p.sub}</div></div>${right}</div>`;
     }).join('');
-    content=`<div class="gstitle">A few permissions.</div><div class="gslead">Flume needs these to paste transcriptions and record meetings on ${THIS_DEVICE_LC}.</div>${rows}`;
+    content=`<div class="gstitle">A few permissions.</div><div class="gslead">Flume needs these to paste transcriptions and record meetings on this ${DEVICE_NOUN}.</div>${rows}`;
   } else if(WSTEP===2){
     // The wizard is only ever reachable when signed_in is true — applyAuthGate
     // gives the sign-in wall priority over the onboarded check — so STATE.user
@@ -5776,7 +5778,7 @@ function renderWizard(){
       <div class="permrow"><div class="permicon ok">${WIZ_ICON.phone}</div><div class="perminfo"><div class="permname">${THIS_DEVICE}</div><div class="permsub">Synced to your account</div></div><span class="permpill"><span class="pdot"></span>Active</span></div>`;
   } else {
     content=`<div class="gstitle">You're all set.</div>
-      <div class="gslead">Hold your hotkey anywhere to dictate — it lands in your clipboard and pastes automatically. Open Flume from the menu bar any time.</div>
+      <div class="gslead">Hold your hotkey anywhere to dictate — it lands in your clipboard and pastes automatically. Open Flume from the ${IS_WINDOWS?'system tray':'menu bar'} any time.</div>
       <div class="permrow"><div class="permicon ok">${WIZ_ICON.check}</div><div class="perminfo"><div class="permname">Ready to go</div><div class="permsub">Everything is configured.</div></div></div>`;
   }
   const back = WSTEP>1?`<button class="btn ghost" style="flex:none" onclick="wizBack()">Back</button>`:'';
@@ -5799,9 +5801,14 @@ async function load(){
   api('dashboard_page_ready');
   const r = await api('get_state');
   if(r && r.ok){ STATE=r; applyAuthGate(); renderSidebar(); }
-  await new Promise(res=>{ api('fetch_notes').then(rn=>{ if(rn&&rn.ok)NOTES=rn.notes||rn.data||[]; res(); }); });
-  loadCanvas();
+  // First paint must never wait on the network. This used to `await`
+  // fetch_notes (a Supabase round-trip) before renderActive(), so on a slow or
+  // dropped connection the window sat dark for seconds-to-timeout and read as
+  // "the app crashed on launch" (Windows, 2026-08-28). Render from local state
+  // now; loadNotes() re-renders Home/Notes when the notes arrive.
   renderActive();
+  loadNotes();
+  loadCanvas();
 }
 // Explicit navigation always lands on a screen's TOP level: clicking Meetings
 // while reading one meeting goes back to the list (MER-46), where an
@@ -5816,6 +5823,7 @@ async function load(){
 let TEAM=null, TEAM_INV=[], TEAM_USAGE=null, TEAM_BOARD=null;
 let TEAM_SERIES={}, TEAM_PERSONAL=null, TEAM_SETUP=true;
 let TEAM_SEL='all', TEAM_DAYS=30, TEAM_ERR='', TEAM_PENDING=[], TM_JOIN_SHOWN=false;
+let TM_LINK=null, TM_LINK_SHOWN=false;   // invite arriving via deep link (flume://invite)
 let TEAM_APPS={};   // {user_id: [{app,dictations,words}]} — see get_team_apps
 
 const hasTeam   = () => !!(TEAM && TEAM.org_id);
@@ -5858,6 +5866,7 @@ function loadTeam(refresh){
           if(TEAM_PENDING.length && !hasTeam() && !TM_JOIN_SHOWN){ TM_JOIN_SHOWN=true; tmOpenJoin(); }
         }
       });
+      checkInviteLink();
     } else { TEAM=null; TEAM_ERR=(r&&r.error)||''; }
     teamRepaint();
   });
@@ -6172,6 +6181,48 @@ function tmOpenInvite(){ TM_MODAL='invite'; TM_INV_ROLE='member'; TM_INV_ERR='';
 // Fires after sign-in when an invite is waiting, from anywhere in the app — an
 // invitation the user has to go hunting for is an invitation they never see.
 function tmOpenJoin(){ TM_MODAL='join'; tmRenderModal(); }
+// ── invite via deep link ────────────────────────────────────────────────────
+function checkInviteLink(){
+  if(!(STATE&&STATE.signed_in)) return;           // sign-in wall first; re-checked on `state`
+  api('get_invite_link').then(r=>{
+    if(!(r&&r.ok&&r.pending)) return;
+    TM_LINK=r;
+    if(TM_LINK_SHOWN && TM_MODAL==='joinlink') return;
+    TM_LINK_SHOWN=true; TM_MODAL='joinlink'; tmRenderModal();
+  });
+}
+function tmJoinLinkModalHtml(){
+  const p=TM_LINK||{};
+  const who = p.inviter_name||p.invited_by||p.inviter_email||'';
+  return `
+  <div class="tmmodal" onclick="if(event.target===this) tmDismissJoinLink()">
+    <div class="tmmodalbox wide">
+      <div class="tmmhead">
+        <div class="tmmico cream">${SVG.mail}</div>
+        <div class="tmmtitle"><h3>Join ${esc(p.org_name||'your team')}</h3>
+          <p>${who?esc(who)+' invited you':'You were invited'} as ${esc(p.role||'member')}. Their shared dictionary and snippets start working on your next dictation.</p></div>
+        <button class="tmmx" onclick="tmDismissJoinLink()">&times;</button>
+      </div>
+      <div class="tmmnote" style="margin-top:0">
+        Your own dictionary stays yours and still wins if the two ever disagree.
+        Nothing you dictate is shared with the team.
+      </div>
+      <div class="tmmfoot">
+        <span class="grow"></span>
+        <button class="btn ghost" style="flex:none;width:auto;padding:11px 16px" onclick="tmDismissJoinLink()">Not now</button>
+        <button class="btn primary" style="flex:none;width:auto;padding:11px 20px" onclick="tmAcceptJoinLink()">Join ${esc(p.org_name||'team')}</button>
+      </div>
+    </div>
+  </div>`;
+}
+function tmDismissJoinLink(){ TM_MODAL=null; tmRenderModal(); api('clear_invite_link'); TM_LINK=null; }
+function tmAcceptJoinLink(){
+  const t=(TM_LINK&&TM_LINK.token)||''; TM_MODAL=null; tmRenderModal();
+  if(!t) return;
+  // Same claim path as the pasted-link field (IDI-223 confirm round trip included).
+  claimTeamInvite(t);
+  api('clear_invite_link'); TM_LINK=null;
+}
 
 function tmRenderModal(){
   const host=document.getElementById('tmModalHost');
@@ -6179,6 +6230,7 @@ function tmRenderModal(){
   if(!TM_MODAL){ host.innerHTML=''; return; }
   if(TM_MODAL==='invite') host.innerHTML=tmInviteModalHtml();
   else if(TM_MODAL==='join') host.innerHTML=tmJoinModalHtml();
+  else if(TM_MODAL==='joinlink') host.innerHTML=tmJoinLinkModalHtml();
 }
 
 function tmInviteModalHtml(){
@@ -6837,19 +6889,14 @@ setTimeout(()=>{ if(!LOAD_STARTED) load(); }, 400);
         },
     }
     _pl = "win" if _is_win else "mac"
-    # Local-device label. The page was written Mac-only and hardcoded
-    # "This Mac" everywhere; on a Windows box that read as someone else's
-    # Mac (2026-08-28 report: "why is it showing mac? whose mac is that?").
-    # THIS_DEVICE / THIS_DEVICE_LC are injected beside IS_WINDOWS so the JS
-    # render functions share one source of truth; on macOS the values are
-    # exactly "This Mac"/"this Mac", so that build's wording is unchanged.
-    _dev = "This PC" if _is_win else "This Mac"
     platform_map = ("<script>const PL_KEYS=" +
                     _json_str(_key_defs[_pl]) +
                     f";const IS_WINDOWS={('true' if _is_win else 'false')};"
-                    f"const THIS_DEVICE={_json_str(_dev)};"
-                    f"const THIS_DEVICE_LC={_json_str(_dev[0].lower() + _dev[1:])};"
-                    "</script>")
+                    # Device wording for the shared page: onboarding "This Mac", the
+                    # canvas "from this Mac", the default device name… all read as a
+                    # Mac on Windows ("no matter who logs in it shows this Mac", 2026-08-28).
+                    "const THIS_DEVICE=IS_WINDOWS?'This PC':'This Mac';"
+                    "const DEVICE_NOUN=IS_WINDOWS?'PC':'Mac';</script>")
 
     # Strip the leftover placeholder line from the JS.
     js = js.replace("const IC. = {}; // placeholder\n", "")

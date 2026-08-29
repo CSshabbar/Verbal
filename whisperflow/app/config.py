@@ -43,11 +43,14 @@ _last_good_json: str | None = None
 _serving_unread_defaults = False
 _last_tmp_sweep = 0.0
 
-APP_VERSION = "1.0.36"
+APP_VERSION = "1.0.41"
 PLATFORM = "mac" if platform.system() == "Darwin" else "win" if platform.system() == "Windows" else "linux"
 
 CONFIG_DIR = Path.home() / ".verbal"
 CONFIG_FILE = CONFIG_DIR / "config.json"
+# Marker key placed on a defaults dict served while config.json was unreadable
+# (see load_config); save_config refuses to persist such a dict.
+UNREAD_DEFAULTS_KEY = "__unread_defaults__"
 LOG_DIR = CONFIG_DIR / "logs"
 ENV_FILE = Path(__file__).parent.parent / ".env"
 
@@ -68,6 +71,11 @@ DEFAULT_CONFIG = {
     "pinned": [],        # list of {"text": str, "app": str, "ts": str}
     "daily": {"date": "", "words": 0},
     "auto_update": True,
+    # Windows only: put the user's previous clipboard TEXT back after a dictation
+    # paste has been consumed (win_injector.inject_text). Never restores on the
+    # fallback path where the transcript is left on the clipboard because the
+    # paste itself was blocked. macOS does not restore (yet).
+    "restore_clipboard": True,
     "sync_user_id":     "",
     "sync_device_name": "",
     # Notes v2 per-user feature flags (default ON, toggleable in Settings).
@@ -122,7 +130,10 @@ DEFAULT_CONFIG = {
     #   3. formatting runs on a faster model (see SPEED_CLEANUP_MODEL)
     #   4. fixed sleeps in the record->inject path are skipped
     # Measured baseline it is being compared against: 1.02s ASR + ~1.2s formatting.
-    "speed_mode": False,
+    # Default ON since 2026-08-29: the default pipeline is "Hybrid" = speed +
+    # chained + hybrid (streams while you talk, chained short branch). Desktop
+    # shipped on "Original" only because the flags predate the Settings radio.
+    "speed_mode": True,
     # Chained transcription (2026-08-14). INDEPENDENT of speed_mode, so the two
     # can be measured separately — this one changes only the network path, not
     # the prompt, the model, or the output.
@@ -138,7 +149,13 @@ DEFAULT_CONFIG = {
     # the call, it does not change it. Fails closed: if the server-side format
     # step errors it returns chain.ok=false and the client formats locally, so
     # a chain failure costs latency, never a dictation.
-    "chained_mode": False,
+    "chained_mode": True,
+    # True once the user picked a pipeline in Settings (save_settings). Configs
+    # written before 2026-08-29 stored the pre-radio defaults without any choice
+    # having been made; load_config moves those to the default pipeline ONCE
+    # (pipeline_default_v3) unless this flag says the user chose deliberately.
+    "pipeline_choice_explicit": False,
+    "pipeline_default_v3": False,
     # Which Groq Whisper model transcribes. "auto" keeps the long-standing routing
     # (turbo for English, full large-v3 for any pinned non-English language, because
     # the distil is measurably weaker on lower-resource languages) — anything else is
@@ -152,9 +169,10 @@ DEFAULT_CONFIG = {
     # Hybrid (2026-08-15). Streams audio to `asr-stream` WHILE you speak, then uses
     # the streamed transcript for takes at/over asr_stream.HYBRID_THRESHOLD_SEC and
     # falls back to the ordinary chained path for shorter ones (Groq is faster there).
-    # Implies chained_mode for the short branch. Default False; every failure path
-    # degrades to the normal upload, so this can only ever cost latency.
-    "hybrid_mode": False,
+    # Implies chained_mode for the short branch. Default True since 2026-08-29
+    # (the "Hybrid" pipeline is the product default); every failure path degrades
+    # to the normal upload, so this can only ever cost latency.
+    "hybrid_mode": True,
     # Post-meeting speaker diarization (2026-08-16). The live 90s-gap heuristic can
     # only split remote speakers across long silences; this re-partitions them from
     # real who-spoke-when (AssemblyAI, via the proxy, on the already-uploaded WAV)
@@ -282,7 +300,7 @@ def _recover_from_prev() -> dict | None:
     prev = CONFIG_FILE.with_suffix(".json.prev")
     try:
         if prev.exists():
-            cfg = json.loads(prev.read_text(encoding="utf-8"))
+            cfg = json.loads(prev.read_bytes().decode("utf-8-sig"))
             if isinstance(cfg, dict):
                 logger.warning("config.json was corrupt; restored from config.json.prev")
                 return cfg
@@ -307,7 +325,11 @@ def load_config() -> dict:
                 # Decode INSIDE the handler: UnicodeDecodeError is a ValueError,
                 # so a torn UTF-8 file takes the corrupt path below instead of
                 # propagating out of load_config.
-                text = raw.decode("utf-8")
+                # utf-8-sig: a config.json saved by an editor/PowerShell with a
+                # UTF-8 BOM is NOT corrupt — treating it so moved the file aside
+                # and reset the user to defaults (signed out, auto_update back
+                # on), seen live 2026-08-28.
+                text = raw.decode("utf-8-sig")
                 config = json.loads(text)
                 if not isinstance(config, dict):
                     raise ValueError("config root is not a JSON object")
@@ -368,46 +390,83 @@ def load_config() -> dict:
                              "running on defaults WITHOUT persisting them", err)
                 persist = False
                 _serving_unread_defaults = True
+                # The dict itself is marked too: the module flag clears as soon
+                # as ANY later load_config() reads the file cleanly (auth.py and
+                # the dashboard call it constantly), but VerbalWinApp.config
+                # still holds THIS factory-default dict and would then save it
+                # over the user's real file (signed out, history gone).
+                # save_config refuses the marked dict regardless of the flag
+                # (the marker is applied below, once the defaults dict exists).
         else:
             # No config.json at all: a genuine first run, defaults are legitimate.
             _serving_unread_defaults = False
 
-    changed = False
-    if config is None:
-        # Deep copy: DEFAULT_CONFIG holds mutable lists (history, meetings, …) and
-        # a shallow dict() would let the first append leak into the defaults.
-        config = copy.deepcopy(DEFAULT_CONFIG)
-        changed = True
-    else:
-        # Migration: if old hotkey exists and new ones don't
-        if "hotkey" in config and "hotkey_hold" not in config:
-            old = config["hotkey"]
-            # Convert known legacy strings to keycodes/names
-            if old == "cmd_r":   val = 54
-            elif old == "alt_r":  val = "alt_r"
-            else: val = old
-            config["hotkey_hold"] = val
-            config["hotkey_toggle"] = val
+        changed = False
+        if config is None:
+            # Deep copy: DEFAULT_CONFIG holds mutable lists (history, meetings, …) and
+            # a shallow dict() would let the first append leak into the defaults.
+            config = copy.deepcopy(DEFAULT_CONFIG)
+            if _serving_unread_defaults:
+                config[UNREAD_DEFAULTS_KEY] = True
             changed = True
-
-        for key, val in DEFAULT_CONFIG.items():
-            if key not in config:
-                config[key] = copy.deepcopy(val)
+        else:
+            # Migration: if old hotkey exists and new ones don't
+            if "hotkey" in config and "hotkey_hold" not in config:
+                old = config["hotkey"]
+                # Convert known legacy strings to keycodes/names
+                if old == "cmd_r":   val = 54
+                elif old == "alt_r":  val = "alt_r"
+                else: val = old
+                config["hotkey_hold"] = val
+                config["hotkey_toggle"] = val
                 changed = True
 
-    env_key = os.getenv("GEMINI_API_KEY", "").strip()
-    if env_key and env_key not in config["gemini_api_keys"]:
-        config["gemini_api_keys"].insert(0, env_key)
-        changed = True
+            # Pipeline flags as they were BEFORE the defaults fill below: a
+            # config written before a flag existed must read as "off", not as
+            # today's default, or the migration sees hybrid=True and leaves
+            # speed/chained False (caught by the VM migration test, 2026-08-29).
+            _pre_pipeline = {k: bool(config.get(k, False)) for k in ("speed_mode", "chained_mode", "hybrid_mode")}
+            for key, val in DEFAULT_CONFIG.items():
+                if key not in config:
+                    config[key] = copy.deepcopy(val)
+                    changed = True
+            # One-time move to the default pipeline, Hybrid (2026-08-29): older
+            # configs hold the pre-radio defaults (Original, or One round trip
+            # from the short-lived v2 default), not a choice. Users who picked a
+            # pipeline in Settings are marked explicit and left alone.
+            if not config.get("pipeline_default_v3"):
+                if config.get("pipeline_choice_explicit"):
+                    # Deliberate choice: keep exactly what was stored (a
+                    # missing hybrid flag on an explicit config means off).
+                    config["hybrid_mode"] = _pre_pipeline["hybrid_mode"]
+                elif not _pre_pipeline["hybrid_mode"]:
+                    config["speed_mode"] = True
+                    config["chained_mode"] = True
+                    config["hybrid_mode"] = True
+                    logger.info("pipeline: moved to the default 'Hybrid' (speed + chained + hybrid)")
+                config["pipeline_default_v3"] = True
+                changed = True
 
-    if (changed or restored) and persist:
-        save_config(config)
-        if restored:
-            # The recovered state is back on disk atomically; the .prev
-            # snapshot has served its purpose. Under the lock: another thread's
-            # save_config may be mid _write_in_place, and its freshly made .prev
-            # is the only copy of config.json while that file sits truncated.
-            with _config_lock:
+        env_key = os.getenv("GEMINI_API_KEY", "").strip()
+        if env_key and env_key not in config["gemini_api_keys"]:
+            config["gemini_api_keys"].insert(0, env_key)
+            changed = True
+
+        # Still under _config_lock (RLock: save_config re-enters it). The
+        # read -> decide -> persist sequence must be one critical section:
+        # before 2026-08-28 the lock was released above and re-taken inside
+        # save_config, so another thread's save could land in the gap and be
+        # overwritten by this thread's just-loaded copy (lost update — seen as a
+        # risk at Windows startup where win_main, auth and sync all load/save
+        # within the first second). Nothing below sleeps except save_config's own
+        # Windows-lock retries, which were already lock-held.
+        if (changed or restored) and persist:
+            save_config(config)
+            if restored:
+                # The recovered state is back on disk atomically; the .prev
+                # snapshot has served its purpose. Under the lock: another thread's
+                # save_config may be mid _write_in_place, and its freshly made .prev
+                # is the only copy of config.json while that file sits truncated.
                 try:
                     CONFIG_FILE.with_suffix(".json.prev").unlink()
                 except OSError:
@@ -512,7 +571,7 @@ def save_config(config: dict):
     # Unique temp file per write + a lock → safe under concurrent writers
     # (a shared "config.tmp" name caused rename races: config.tmp -> config.json).
     with _config_lock:
-        if _serving_unread_defaults:
+        if _serving_unread_defaults or (isinstance(config, dict) and config.get(UNREAD_DEFAULTS_KEY)):
             _refuse_untrusted_save()
         _sweep_stale_tmps()
         data = json.dumps(config, indent=2)

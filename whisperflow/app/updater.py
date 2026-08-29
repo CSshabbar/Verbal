@@ -23,6 +23,12 @@ from app.sync import SUPABASE_URL, SUPABASE_KEY
 logger = logging.getLogger("verbal.updater")
 
 
+# True when the most recent check_for_update() could not reach/parse the
+# server (network down, non-200). Callers use it to tell "up to date" from
+# "unknown" — both return None below.
+LAST_CHECK_FAILED = False
+
+
 def check_for_update(force: bool = False) -> dict | None:
     """Poll Supabase for the latest version. Returns info dict or None.
 
@@ -75,10 +81,13 @@ def check_for_update(force: bool = False) -> dict | None:
             },
             timeout=5,
         )
+        global LAST_CHECK_FAILED
         if resp.status_code != 200:
             logger.debug(f"Update check returned {resp.status_code}")
+            LAST_CHECK_FAILED = True
             return None
         data = resp.json()
+        LAST_CHECK_FAILED = False
         if not data:
             return None
         latest = data[0]
@@ -88,6 +97,7 @@ def check_for_update(force: bool = False) -> dict | None:
         return None
     except Exception as e:
         logger.debug(f"Update check failed: {e}")
+        LAST_CHECK_FAILED = True
         return None
 
 
@@ -128,6 +138,10 @@ def download_update(version_info: dict, on_progress=None) -> str | None:
             return tmp_path
         except Exception as e:
             logger.error(f"Download failed (attempt {attempt + 1}/{max_retries}): {e}")
+            try:
+                os.unlink(tmp_path)          # no partial installers left in %TEMP%
+            except Exception:
+                pass
             if attempt < max_retries - 1:
                 time.sleep(2 ** attempt)  # Exponential backoff
             else:
@@ -216,10 +230,12 @@ def _is_newer(remote: str, current: str) -> bool:
             
         return r_parts > c_parts
     except (ValueError, IndexError):
-        # If we can't parse versions, assume remote is newer
-        # This prevents getting stuck on a broken version
+        # An unparsable published version ("v1.0.37", "1.0.37-hotfix") must
+        # NOT count as newer: with auto_update on, "newer" every 4 h check
+        # meant download + silent reinstall + restart forever, including on
+        # the build that was just installed.
         logger.warning(f"Could not parse versions: remote={remote}, current={current}")
-        return True
+        return False
 
 
 def _sha256(path: str) -> str:

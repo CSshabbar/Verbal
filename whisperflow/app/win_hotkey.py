@@ -277,8 +277,13 @@ class WinHotkeyListener:
                         except Exception as e:
                             logger.error("hold on_start failed: %s", e, exc_info=True)
                 else:
+                    # Latch per physical press: WH_KEYBOARD_LL delivers
+                    # keyboard auto-repeat for Alt too, so holding the toggle
+                    # key > ~0.6 s used to toggle recording on and straight
+                    # back off (empty take). Released in _on_release.
                     now = time.time()
-                    if now - self._last_toggle_time > 0.3:
+                    if not getattr(self, "_toggle_down", False) and now - self._last_toggle_time > 0.3:
+                        self._toggle_down = True
                         self._last_toggle_time = now
                         try: self._on_toggle()
                         except Exception as e:
@@ -294,7 +299,8 @@ class WinHotkeyListener:
                         logger.error("split-hold on_start failed: %s", e, exc_info=True)
             if self._keys_match(key, toggle_key):
                 now = time.time()
-                if now - self._last_toggle_time > 0.3:
+                if not getattr(self, "_toggle_down", False) and now - self._last_toggle_time > 0.3:
+                    self._toggle_down = True
                     self._last_toggle_time = now
                     try: self._on_toggle()
                     except Exception as e:
@@ -315,6 +321,8 @@ class WinHotkeyListener:
             if (self._transform_key_held
                     and self._key_to_char(key) == self._transform_key_char):
                 self._transform_key_held = False
+            if self._keys_match(key, self._parsed_toggle_key):
+                self._toggle_down = False          # re-arm the toggle latch
             if self._keys_match(key, self._parsed_hold_key):
                 if self._parsed_hold_key == self._parsed_toggle_key:
                     if self._mode == MODE_HOLD and self._pressed:

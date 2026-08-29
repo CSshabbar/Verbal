@@ -3,7 +3,7 @@
 
 set -e
 
-echo "Building Verbal for Windows v1.0.9..."
+echo "Building Flume for Windows..."
 
 # Create venv if it doesn't exist
 if [ ! -d ".venv" ]; then
@@ -33,4 +33,4 @@ pyinstaller verbal-win.spec --clean --noconfirm
 echo "Build completed!"
 ls -lh dist/
 
-echo "Build successful! Verbal.exe is ready for distribution."
+echo "Build successful! dist/Flume/ (onedir) is ready — package it with verbal-setup.iss."

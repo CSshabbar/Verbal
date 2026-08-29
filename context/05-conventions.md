@@ -25,7 +25,11 @@
    `load_config` itself used to rewrite the file on every call, which on Windows collided with a
    reader and raised WinError 5 Access Denied (`os.replace` of an open destination). Reads take the
    same lock; `os.replace` retries a short backoff on PermissionError. `load_config` only saves when
-   defaults/migrations actually mutated the dict.
+   defaults/migrations actually mutated the dict, and (2026-08-28) that read → migrate → `save_config`
+   sequence runs inside ONE `_config_lock` hold — releasing between the read and the persist let another
+   thread's save land in the gap and be overwritten by the just-loaded copy (lost update at Windows
+   startup). Callers that do their own load → mutate → save must wrap all three in `with
+   config._config_lock:` for the same reason; `config_lock_fixtures.py` stress-tests this.
    **Windows hardening (2026-08-26 — user logs showed ~12 WinError 5s per session, each of which
    discarded the save and dropped auth to the anon key):** (a) both the read and the `os.replace`
    retry the Windows lock family only (`_is_lock_error`: WinError 5/32/33, `PermissionError`) with a
@@ -490,7 +494,12 @@
 
 ### Meeting speaker labels (desktop)
 
-- **Speaker ids are labelled per TURN, not per Groq chunk.** `split_utterances_by_turns()` runs before
+- **Two speakers, period (2026-08-28).** `self` = the signed-in user's name, `s1` = "Them" (`THEM_LABEL`).
+  Do not reintroduce "Speaker N" guesses, gap heuristics, or the VERIFIED/ESTIMATED tag; if per-person
+  names ever come back it must be from a source that knows them (meeting-platform bot/SDK, calendar),
+  not from audio. The rules below describe the retired diarization code, which must stay green in
+  `diarize_fixtures.py` while it exists but no longer runs in the end flow.
+- **(retired) Speaker ids are labelled per TURN, not per Groq chunk.** `split_utterances_by_turns()` runs before
   `map_diarized_speakers()` in `MeetingSession._diarize()`. Any change to either must keep
   `diarize_fixtures.py` green (32 cases, incl. the "interjecting third voice survives" case — the bug
   that made 3 people show as 2). Keep both functions pure/total: no I/O, never raise.
@@ -502,8 +511,8 @@
   may replace "Speaker N" only; a name the user typed always wins (`apply_speaker_names` checks the
   current label, `voiceprint.learn_speaker` rejects `_DEFAULT_NAME`). A wrong name is worse than a
   placeholder, so `_parse_summary_json` validates hard (real `s<N>` id, 1–2 alphabetic words, unique).
-- **Never present an estimated split as fact.** `speakers_source` drives the SPEAKERS VERIFIED /
-  ESTIMATED tag; when adding a speaker surface (mobile, widgets), carry the state or omit the count.
+- **(retired) Never present an estimated split as fact.** `speakers_source` used to drive the SPEAKERS VERIFIED /
+  ESTIMATED tag (removed 2026-08-28 on both platforms; column still written as `estimated`).
 - Self-cluster exclusion threshold is `SELF_CLUSTER_SHARE = 0.7` — a bare plurality silently deleted
   remote participants who talked over the user. Don't lower it without a fixture that shows why.
 
@@ -1096,27 +1105,14 @@
     their window object across open/close, so a running app serves the OLD page until process restart —
     "feature missing on Windows" is often just a stale process (restart via the `FlumeRun` scheduled task
     on the winvm).
-    **Three more unit/geometry traps from the meeting window's bar mode (2026-08-28 report — the
-    collapsed bar rendered as a full 700×480 titled window with the tiny pill floating inside it):**
-    (a) `create_window(min_size=…)` becomes WinForms `MinimumSize` and **CLAMPS every later
-    `resize()`** — the shrink to 560×54 silently snapped back to 700×480. Any layout smaller than the
-    window's minimum must mutate the native form on the WinForms UI thread (`form.Invoke`): clear
-    `MinimumSize` BEFORE the shrink, restore it (in physical px) AFTER the re-expand so it can't fight
-    the resize, and toggle `FormBorderStyle`/`TopMost` in the same hop —
-    `win_meeting_window.py::_apply_layout_native` is the reference (every mutation individually
-    guarded so a partial apply still beats a stuck-large window). Do NOT toggle `ShowInTaskbar` there:
-    it RECREATES the win32 handle, orphaning the WebView2 child and every subscribed event hook.
-    (b) `move()` is NOT symmetric with `resize()`: pywebview multiplies x/y by the form's
-    `scale_factor` (the primary display's scale) before `SetWindowPos`, while `resize()` takes raw
-    physical px — divide physical coordinates back down before `move()` or the position double-scales
-    and the window lands right/below center, potentially half off-screen.
-    (c) When the geometry target is the primary work area (`SPI_GETWORKAREA`, which is physical px in
-    a DPI-aware process), the scale must be the PRIMARY monitor's effective DPI
-    (`GetDpiForMonitor(MDT_EFFECTIVE)`, falling back `GetDpiForWindow` → `GetDpiForSystem` → 1.0) —
-    `GetDpiForWindow` follows the form's CURRENT monitor and mis-sized the pill on mixed-DPI setups
-    (a 100% external next to a 150% laptop panel drew it at 2/3 size, clipping the trailing button
-    Rule #56 exists to protect). Keep design constants LOGICAL module-wide and convert to physical in
-    ONE place (`win_meeting_window._rect_for`).
+    **The meeting window's bar mode hit the same unit trap plus WinForms `MinimumSize` clamping
+    (2026-08-28 report — the collapsed bar rendered as a full 700×480 titled window with the tiny
+    pill floating inside it).** The canonical fix lives in `win_meeting_window._apply_chrome`
+    (native `MinimumSize(0,0)`/`FormBorderStyle`/`TopMost` flips on the UI thread) +
+    `app/win_geometry.py` (one DPI-aware `SetWindowPos` in physical px, pill region via
+    `SetWindowRgn`) — see rule #71 (pywebview unit mixing) and #75 (bar hover invariants), and the
+    Windows meeting-surface notes in `02-architecture.md`. Keep design constants LOGICAL module-wide
+    and convert to physical in ONE place.
 
 42. **A bulk backend UPDATE on a synced table REPLAYS every touched row to every connected client** —
     Realtime `postgres_changes` emits an UPDATE event per row, and the desktop's `_deliver` used to treat
@@ -1403,6 +1399,19 @@
     assuming AppKit will call them automatically. `applicationDidUnhide_` only restores Regular if
     `self._window.isVisible()` — otherwise an unrelated hide/unhide (the dashboard already closed) would
     wrongly flip an Accessory app back to Regular.
+    **The fourth path (2026-08-29) has no event at all: the dashboard is simply LEFT OPEN** on some other
+    Space while the user goes full-screen in another app. The policy is legitimately Regular the whole time,
+    so the per-event reverts above can never help — reported as "works for the first hour, then the pill
+    never shows over full-screen VS Code" (the hour was how long it took to open the dashboard and leave
+    it). Instead of hunting for a fifth event, `overlay.py` now handles it at the point of need:
+    `_order_front()` calls `_borrow_accessory_policy()`, which flips to Accessory only when the policy is
+    Regular AND our app is inactive AND the Space under the cursor looks full-screen (no menu-bar gap
+    between `NSScreen.frame` and `visibleFrame`; errors count as full-screen so we err toward showing the
+    pill). `hide()` calls `_return_accessory_policy()`, which gives Regular back only if the dashboard
+    window is still visible, not miniaturized, and the app isn't hidden — so it never re-creates the
+    leaks above. The Dock icon blinking for the pill's lifetime is the accepted cost (and invisible on a
+    full-screen Space anyway). The other floating panels (`autolearn_widget.py`, `transform_widget.py`,
+    `meeting_prompt.py`) still rely on the dashboard-side reverts only.
 
 57. **A conditionally-shown element must be in the pixel budget, not just the steady-state one.**
     `meeting_html.py`'s ambient bar expands `.barOpt`'s `max-width` from 0 to a hardcoded cap on
@@ -1514,8 +1523,11 @@
     `_exiting`) — users read the vanished window as "closed" and then found Flume.exe in Task Manager.
     All fail-closed: if the Event plumbing breaks, behavior is exactly the old tray-only one. The Event
     name is a machine identity like the mutex — see #60.
-    **The shipped build is TWO processes (PyInstaller ONE-FILE).** `verbal-win.spec` is `EXE(...)` with
-    no `COLLECT`, so a running Flume is a ~9 MB **bootloader parent** (child of explorer.exe; unpacks
+    **The shipped build is ONE process (PyInstaller ONEDIR) since 2026-08-28** — `verbal-win.spec` ends
+    in `COLLECT(...)`, `verbal-setup.iss` packages `dist\Flume\*`. Everything below about the bootloader
+    parent describes builds ≤ 1.0.35 and stays as the reason the watcher exists (it self-disarms in
+    onedir). *History:* `verbal-win.spec` was `EXE(...)` with
+    no `COLLECT`, so a running Flume was a ~9 MB **bootloader parent** (child of explorer.exe; unpacks
     to `%TEMP%\_MEIxxxx` and waits) plus the ~300 MB **real app child** that owns the tray icon, hotkey,
     WebView2 windows and `VerbalSingletonMutex_v1`. Task Manager shows both `Flume.exe`. "End task" on
     the parent used to orphan the child — headless, still holding the mutex, so the next double-click
@@ -1527,9 +1539,23 @@
     there "parent is another Flume.exe" is legitimate: the elevated relaunch gets reparented onto the
     requester, and the healthy copy would die when the old one quits); parent image path ==
     `sys.executable`; parent created before us (PID-reuse guard) — and any ctypes failure just means no
-    watcher (old behavior). Never in a dev run (the parent is your terminal). The **structural** fix is a
-    onedir (`COLLECT`) build — one process, no bootloader — but that touches CI and the Inno Setup
-    `Source` paths and is deliberately a separate change.
+    watcher (old behavior). Never in a dev run (the parent is your terminal). The **structural** fix — the
+    onedir (`COLLECT`) build — landed 2026-08-28; the watcher is now a safety net only.
+    **Windows branding lives in three places, all must say Flume:** the exe icon (`assets/icon.ico`,
+    regenerated by the spec whenever it is missing OR older than `app_icon.png`), the exe version
+    resource (`version_info.txt` is a *template* — the spec stamps `APP_VERSION` into
+    `build/version_info.txt`; it shipped "Verbal Speech-to-Text 1.0.10" on every build through 1.0.35,
+    which is what Task Manager showed), and the installer (`UninstallDisplayIcon` for Settings > Apps;
+    `[Icons] IconFilename` → `{app}\assets\icon.ico` so the shell icon cache gets a NEW key instead of
+    serving the cached Verbal art for `{app}\Flume.exe`; `CurStepChanged` calls
+    `SHChangeNotify(SHCNE_ASSOCCHANGED)` after install to flush the cache).
+    **The installer kills a running Flume itself** (`PrepareToInstall` → `taskkill /IM Flume.exe /F /T` +
+    wait): `CloseApplications=force` depends on the Restart Manager, which can answer "Permission
+    Denied" (seen live 2026-08-28 when a SYSTEM process also mapped our files) — then `Flume.exe` is
+    never closed, `DeleteFile` fails (code 5) and a `/SUPPRESSMSGBOXES` install silently **aborts and
+    rolls back**. Always read the Inno `/LOG=` when an update "did nothing".
+    `config.py` decodes `config.json` as **utf-8-sig**: a BOM (PowerShell `Set-Content -Encoding UTF8`, some
+    editors) used to be treated as corruption → file moved to `.bak`, defaults restored, user signed out.
 
 60. **The product is branded "Flume" everywhere user-facing (renamed from "Verbal", 2026-08-23) — but
     every internal identity string stays "Verbal"/`com.verbal.app`, deliberately.** App bundle/executable
@@ -1665,21 +1691,27 @@
     `_on_window_closed` drops the handle — but `Window.show()` does not raise on a dead uid, so a
     reopen that races `closed` (or a missed hook) was the same silent no-op as Start meeting. `show()`
     checks `self._window in webview.windows` and rebuilds; `_device_refresh_loop` is latched once
-    (`_device_refresh_started`), not spawned on every rebuild.
+    (`_device_refresh_started`), not spawned on every rebuild. **Known race (2026-08-28, unfixed):**
+    with the persistent WebView2 profile (`private_mode=False, storage_path=…`), a window CREATED
+    within ~2 s of another window's `destroy()` can have its WebView2 init bail and Close the fresh
+    form (observed in the smoke harness: "close intercepted" 2 s after a rebuild; the fresh dashboard
+    closed itself). Test-only in practice — the user path hides windows, destroy happens at quit —
+    the smoke's rebuild steps settle 6 s and retry once; if a real destroy→recreate flow ever ships,
+    it needs a settle or a re-init retry.
     (h) **Minimize mid-meeting collapses to the bar, and the interception has its own traps
     (2026-08-28 report — "when I minimize it should only show that record and time button not the
     whole window").** `WinMeetingWindow._attach_native_minimize` subscribes a native `Resize` handler
     (`_on_native_resize`); when `WindowState` hits `Minimized` while `_recording_active()`, it
     collapses to the bar (macOS parity: losing key while recording auto-collapses) — idle minimize
-    stays a plain taskbar minimize. Three rules inside the handler: a **re-entrancy guard**
+    stays a plain taskbar minimize. Two rules inside the handler: a **re-entrancy guard**
     (`_minimize_intercepting`) is mandatory, because assigning `WindowState` back inside a Resize
-    handler fires Resize again; the chrome/geometry half runs **INLINE** — the handler IS the WinForms
-    UI thread, so `_apply_layout_native` needs no Invoke round-trip, whereas the first cut deferred
-    the whole collapse to `app._on_main` and flashed the full expanded window before snapping to the
-    bar; and only the page half (`set_layout`/`emit`) is deferred via `app._on_main`, since
-    `evaluate_js` deadlocks this thread exactly as in (a). Fail-closed: no hook → today's plain
-    minimize; native apply unavailable → at least restore `WindowState.Normal`, because a live
-    recording must never run invisibly.
+    handler fires Resize again; and the WHOLE `set_layout("bar")` is deferred via `app._on_main` —
+    `set_layout` emits to the page FIRST when entering the bar (so expanded content is never shown
+    clipped inside the pill) and `emit` → `evaluate_js` would deadlock the UI thread the handler runs
+    on, exactly as in (a). The cost is a brief flash of the restored window before it snaps to the
+    pill — accepted, because inverting the order clips the page. Fail-closed: no hook → a plain
+    minimize; anything else failing → at least restore `WindowState.Normal`, because a live recording
+    must never run invisibly.
 
 68. **No glibc-only `strftime` directives — the Windows CRT raises `ValueError("Invalid format
     string")`.** The `-` (no-pad) flag family (`%-d`, `%-I`, `%-m`, `%-H`, …) is a glibc/BSD extension,
@@ -1731,7 +1763,7 @@
     Canvas. Call `dashboard.show_tab("settings")` / `"canvas"` / `"notes"` from the menubar, tray, and
     popover; do not pass a raw index. `win_bugs_fixtures.py` asserts the map and the popover wiring.
 
-71. **Shared HTML renderers must route every user-visible platform-ism through the platform seam — no
+80. **Shared HTML renderers must route every user-visible platform-ism through the platform seam — no
     hardcoded "This Mac", no raw ⌘ chords.** The Flume surfaces were written Mac-only and the literal
     strings survived the Windows port: the dashboard's sidebar/canvas/settings/wizard all said
     "This Mac" on a Windows box (2026-08-28 report — "why is it showing mac? whose mac is that?"),
@@ -1739,9 +1771,9 @@
     `flume_dashboard_html.py` injects `PL_KEYS` (the per-platform key-label table) and `IS_WINDOWS`
     ahead of the body — so the fix extends it rather than sprinkling ternaries: **`THIS_DEVICE` /
     `THIS_DEVICE_LC`** ("This PC"/"this PC" vs "This Mac"/"this Mac") are injected beside
-    `IS_WINDOWS`; `flume_popover_html._js()` prepends its own `THIS_DEVICE` const (the popover is
-    Windows-only at runtime per IDI-183, but the label stays platform-conditional so a macOS revival
-    keeps the exact wording byte-identical); `meeting_html.py` builds chord labels from Python `_MOD`
+    `IS_WINDOWS` (the tray popover needs no const since its 2026-08-29 rewrite into the menu-style
+    flyout — its labels come from live `popover_state()`, which is the seam there);
+    `meeting_html.py` builds chord labels from Python `_MOD`
     for the static HTML plus a JS `MOD` mirror (from `IS_WIN`) for re-rendered hints — the two must
     agree. Two details worth keeping: on Windows the chord label is **"Ctrl+"**, never a ⊞ glyph —
     the keydown handlers fire on `metaKey||ctrlKey`, the Win key is OS-reserved (Win+. is the emoji
@@ -1887,8 +1919,9 @@ cd whisperflow
 # for dashboard/widget JS changes: node --check each rendered <script> block — scripted:
 .venv/bin/python scripts/js_check.py       # extracts every inline <script> from flume_html/meeting_html/popover_html
 # Windows shell live smoke (safe next to the installed app — isolated USERPROFILE, no mutex, signed out):
-PYTHONUTF8=1 .venv/Scripts/python.exe scripts/win_smoke_isolated.py   # update check, meeting X/re-show, bar/expanded layout geometry, minimize-to-bar, rendered platform strings (#71), dashboard rebuild, quit
+PYTHONUTF8=1 .venv/Scripts/python.exe scripts/win_smoke_isolated.py   # update check, meeting X/re-show, bar/expanded layout geometry, minimize-to-bar, rendered platform strings (#80), dashboard rebuild, quit
 .venv/Scripts/python.exe win_bugs_fixtures.py   # Windows bug-pass unit fixtures (strftime, update gate, tabs, config lock)
+.venv/bin/python win_sysaudio_fixtures.py  # if win_system_audio / meeting sys-audio state touched (fake soundcard, any OS)
 .venv/bin/python autolearn_fixtures.py     # if autolearn touched
 .venv/bin/python qa_filetags_fixtures.py    # if filetags touched
 .venv/bin/python insights_fixtures.py      # if insights/stats touched
@@ -1910,3 +1943,108 @@ Mobile: `npx tsc --noEmit` in `verbal-mobile/`.
 - `FILE_TAGGING_SWARM.md` — the file-tagging feature spec.
 - `GOOGLE_AUTH_SETUP.md` — auth provider setup facts (accurate table inventory).
 - `DESIGN_SYSTEM.md` — design tokens.
+
+- **Meeting `self` speaker label:** never hard-code "You". Desktop → `app.meetings.self_speaker_label(config)` /
+  `with_self_name(speakers, config)`; mobile → `selfSpeakerName()` / `withSelfName()` in `lib/meetings.ts`.
+  Older rows persisted the literal "You" — treat that string as a placeholder, not a user rename (2026-08-28).
+
+71. **pywebview 5.3 (pinned in `requirements-win.txt`) mixes units: `create_window(width, height)` and
+    `Window.resize()` are PHYSICAL pixels, `Window.move()` is LOGICAL, and `min_size` is set before
+    `AutoScaleMode.Dpi` so WinForms doubles it itself.** Measured 2026-08-28 on a 200 % display: the
+    880×620 meeting window rendered a 440×310 CSS viewport ("the meeting-name popup is square, options
+    don't fit"), the 560×54 bar a 280×27 one (only dot + timer visible), and a pre-scaled `min_size`
+    pinned the window to the whole work area. Rules: size pywebview windows through
+    `app/win_geometry.py` — `create_size()` for width/height (identity on pywebview ≥ 6, which scales
+    itself), **logical** values for `min_size`, and `set_window_rect()` (one `SetWindowPos` in physical
+    px from `GetDpiForWindow`) for any runtime geometry. Never read `form._scale` (6.x only) or
+    `form.scale_factor` (5.x only) directly. When testing on a HiDPI box, also make the screenshot
+    process DPI-aware or `CopyFromScreen` captures only the top-left quarter.
+
+72. **Windows tk dialogs: always `parent=root`, never on the pystray / inject / UI thread.** Every throwaway
+    `tk.Tk(); root.withdraw(); messagebox.*(...)` MUST pass `parent=root` — without it tkinter's commondialog
+    uses `_default_root`, which is the FIRST `Tk()` in the process = the overlay's root on the `overlay-tk`
+    thread, so the recording pill's mainloop froze for as long as the box was open (and hung forever if that
+    thread had died). pystray runs menu callbacks synchronously on its message loop, so tray rows that open a
+    dialog (`_tray_about`, `_tray_open_update`) run it on a daemon thread; the paste-blocked prompt is
+    invoked inline from the inject path by `paste_guard`, so `_prompt_paste_blocked` spawns the dialog and
+    returns at once (a modal there kept `_processing` True → next hotkey refused). Review 2026-08-28.
+
+73. **Updater rules (Windows) — 2026-08-28 review.** (a) `updater.check_for_update()` returns `None` for
+    BOTH "current" and "failed"; read `updater.LAST_CHECK_FAILED` before clearing update state or saying
+    "You're up to date" (a dead network used to drop the badge/parked installer and claim current).
+    (b) `_is_newer` returns **False** on an unparsable version — "v1.0.37"/"1.0.37-hotfix" in `app_versions`
+    would otherwise be "newer" on every 4-h check → download + silent reinstall + restart forever.
+    (c) `_download_and_install` waits for `_app_busy()` to clear on BOTH the silent and the dialog-"Yes"
+    path (the dialog pops unsolicited; "Yes" then dictating must not be killed by `os._exit`). (d) Dialog
+    "Yes" while an installer is already parked (`ready`) installs it instead of re-downloading.
+    (e) `_hard_exit` releases the singleton mutex FIRST so a relaunch during the ≤1.5 s teardown wins
+    the mutex instead of signalling the dying process. (f) The mutex probe uses
+    `ctypes.WinDLL("kernel32", use_last_error=True)` + `ctypes.get_last_error()`. (g) `verbal-setup.iss`
+    taskkills `Flume.exe` WITHOUT `/T` — the app-launched installer is a child of Flume.exe.
+
+74. **`load_config()` marks a defaults dict served while `config.json` was unreadable
+    (`config[UNREAD_DEFAULTS_KEY]`) and `save_config()` refuses it regardless of the module flag.** The
+    flag alone cleared as soon as any later `load_config()` read the file cleanly (auth/dashboard call it
+    constantly) while `VerbalWinApp.config` still held the factory-default dict — the next `save_config`
+    then wrote it over the real file (signed out, history gone). Also: `.prev` recovery decodes utf-8-sig.
+
+75. **Windows meeting bar hover/anim invariants.** `_start_hover_watch` uses a generation counter (never
+    `is_alive()`), the loop `continue`s on transient errors, `show()` restarts it (hide() ends it), and both
+    hover and shrink-wrap are suspended while `native_confirm` is modal (`_modal`). Geometry uses the
+    PRIMARY monitor's scale (`system_scale()` — the target is `SPI_GETWORKAREA`), animations start from the
+    live width (`_bar_cur_w`), entering the bar emits `layout` BEFORE resizing and keeps the last measured
+    width (no 560 px strip flash), and the bar is shown with `SW_SHOWNOACTIVATE` (non-activating like the Mac
+    panel). `WinPopover` sizes/positions through `win_geometry` too (was half-size + off-screen at ≠100 %).
+
+76. **WASAPI loopback blocks while silent — keep a silence player running.** (`win_system_audio.py`,
+    2026-08-28.) A loopback IAudioClient yields NO frames while the endpoint plays nothing, so a blocking
+    `soundcard` `record()` can outlive `stop()`'s 2 s join and leave the handle open until process exit
+    (next `start()` → device-in-use). While capture runs, `_SilencePlayer` writes zero blocks
+    (`sc.default_speaker().player(rate, channels, blocksize=480)`, 10 ms) into the default output — zeros
+    add nothing to the mix, but the loopback stream keeps producing, so `record()` returns within one
+    block and `stop()` is deterministic (join < 2 s, idempotent, always clears state; a stuck handle is
+    logged at WARNING instead of hanging). Second half: a device unplug / `AUDCLNT_E_DEVICE_INVALIDATED`
+    (soundcard raises `RuntimeError('Error 0x88890004')`) or a default-output switch (WASAPI keeps the
+    OLD endpoint's stream alive but silent — detected by polling `default_speaker().id` every 2 s) must
+    NOT silently `break` the loop: the supervisor sets `.error`, logs WARNING, re-resolves the default
+    loopback device and restarts under `RestartPolicy` (3 attempts × 1 s backoff, budget refunded after
+    10 s healthy). Retries apply only AFTER one successful segment — a first-segment failure is a
+    `start()=False` (no orphan thread keeps calling back after `meetings.py` went mic-only). Exhausted →
+    `.running=False` + `.error`, which `MeetingSession._sys_audio_state()` logs once and emits as
+    `sysErr` on the `elapsed` tick. Nothing in the capture thread may propagate (Rule #1). Pinned by
+    `whisperflow/win_sysaudio_fixtures.py` (fake `soundcard` in `sys.modules`, runs on macOS).
+
+77. **Windows tk pills: calls that arrive before the root exists are QUEUED and replayed on the tk thread.**
+    `WinOverlay` / `WinAutoLearnWidget` build their `tk.Tk()` on a daemon thread, so `show()` /
+    `show_briefly()` / `hide()` from the hotkey or inject thread can land before `_root` exists — a hotkey
+    in the first ~0.5 s after launch recorded with NO pill and its "Pasted…" toast was silently dropped
+    (`_safe()` early-returned on `_root is None`). Both widgets now own an `app/tk_pending.PendingCalls`:
+    `_safe(fn)` → `dispatch(fn, post)` queues in order (bounded, 32, oldest dropped) until ready, then is
+    `root.after(0, fn)` exactly as before. The ready flip + replay run via `root.after(0, _replay_pending)`
+    scheduled right before `mainloop()` — i.e. **inside** the loop — because a cross-thread `root.after`
+    blocks in Tcl's `WaitForMainloop` until the loop runs; replayed callables are executed directly on the
+    tk thread before control returns to the event loop, so anything posted concurrently after the flip is
+    processed strictly after the replay (order preserved, no lock held across tk calls). A queued
+    `show_briefly` arms its auto-hide at replay time (the closure calls `_schedule_hide` when it runs), not
+    at enqueue time. `_run_tk`'s `finally` and the new `cleanup()` call `close()`, which drops the queue and
+    refuses further dispatches — so a replay can never race exit, and a failed `setup()` leaks nothing.
+    `_show_internal` / `_fade_in` / `_fade_out` / `_schedule_hide` / `_start_animation_loop` gate on
+    `_tk_ready()` (root exists AND ready). Tests: `tk_pending_fixtures.py` (pure Python, no tkinter).
+    Still true: tkinter objects are touched ONLY from the owning tk thread — the caller thread never
+    calls tk methods, ready or not.
+78. **Windows clipboard restore: only after the paste was consumed, never on the fallback path.**
+    `win_injector.inject_text` snapshots clipboard TEXT before copying the transcript and restores it on a
+    daemon thread ≥ `CLIPBOARD_RESTORE_DELAY_S` (0.4 s) after Ctrl+V — restoring synchronously makes the
+    target paste the OLD clipboard. The restore is a no-op unless the clipboard still holds our transcript
+    (`GetClipboardSequenceNumber()` unchanged AND text equal). It is skipped when the paste was blocked
+    (UIPI) or raised, and for `_on_sync_receive` (`restore_clipboard=False`) — on those paths the transcript
+    MUST stay on the clipboard for a manual Ctrl+V. Non-text/empty/locked clipboards → no snapshot → no
+    restore. Gate: `config["restore_clipboard"]` (default True). All of it is `try/except` + `logger.debug`;
+    the paste has always already happened. Decision logic is the pure `should_restore_clipboard()`; any
+    change to it must keep `win_bugs_fixtures.test_clipboard_restore_decision` green (runs on macOS via ast).
+
+79. **Deep links go through `app/deep_link.py`, never straight into UI code.** New `flume://` routes get a
+    parser + a `handle()` branch there (fail-closed, config-parked state, dashboard driven via
+    `show/show_tab/emit`), so macOS (Apple Event) and Windows (argv/second-launch) stay one implementation.
+    Web landing pages that try a custom scheme MUST keep the token in the fallback URL and MUST offer both
+    actions as buttons — scheme detection is a heuristic (visibility/blur within ~1.6 s), not a fact.

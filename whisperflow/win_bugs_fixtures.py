@@ -199,7 +199,63 @@ def test_config_hardening():
          cfgmod._last_tmp_sweep) = orig
 
 
+# ── 6. Clipboard restore decision (pure — runs on any OS) ────────────────────
+# app.win_injector imports ctypes.windll at module level, so the pure function is
+# lifted out of the source via ast and exec'd. Keeps the test runnable on the
+# macOS dev box: python3 -c "import win_bugs_fixtures as f; f.test_clipboard_restore_decision()"
+
+def _load_should_restore_clipboard():
+    import ast
+    src = Path(HERE, "app", "win_injector.py").read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name == "should_restore_clipboard":
+            mod = ast.Module(body=[node], type_ignores=[])
+            ns = {}
+            exec(compile(mod, "win_injector.should_restore_clipboard", "exec"), ns)
+            return ns["should_restore_clipboard"]
+    raise AssertionError("should_restore_clipboard not found in app/win_injector.py")
+
+
+def test_clipboard_restore_decision():
+    f = _load_should_restore_clipboard()
+    # (snapshot_present, current_matches_transcript, fallback, enabled) -> expected
+    cases = [
+        ((True,  True,  False, True),  True,  "happy path: restore"),
+        ((False, True,  False, True),  False, "no snapshot (non-text/locked/empty): leave transcript"),
+        ((True,  False, False, True),  False, "clipboard changed since paste: no-op"),
+        ((True,  True,  True,  True),  False, "FALLBACK (paste blocked): user needs the transcript"),
+        ((True,  True,  False, False), False, "config restore_clipboard=False"),
+        ((False, False, True,  False), False, "everything against: no restore"),
+        ((True,  False, True,  True),  False, "fallback + changed: no restore"),
+        ((False, True,  True,  True),  False, "fallback wins over everything"),
+    ]
+    for args, expected, why in cases:
+        got = f(*args)
+        check("clip_restore_%s" % "_".join("1" if a else "0" for a in args),
+              got is expected, "%s: got %r want %r" % (why, got, expected))
+
+    # Module constant guard: the delayed restore must wait >= 300 ms after Ctrl+V.
+    import ast, re
+    src = Path(HERE, "app", "win_injector.py").read_text(encoding="utf-8")
+    m = re.search(r"^CLIPBOARD_RESTORE_DELAY_S\s*=\s*([0-9.]+)", src, re.M)
+    check("clip_restore_delay_constant_present", m is not None)
+    check("clip_restore_delay_ge_300ms", m is not None and float(m.group(1)) >= 0.3)
+    # The fallback call sites must be explicit about NOT restoring.
+    check("clip_restore_fallback_explicit_in_injector",
+          "fallback=False, enabled=restore_clipboard" in src
+          and "deliberately NO restore" in src)
+    wm = Path(HERE, "app", "win_main.py").read_text(encoding="utf-8")
+    check("clip_restore_sync_receive_opts_out",
+          "inject_text(text, restore_clipboard=False)" in wm)
+    check("clip_restore_dictation_reads_config",
+          'restore_clipboard=self.config.get("restore_clipboard", True)' in wm)
+    cfg = Path(HERE, "app", "config.py").read_text(encoding="utf-8")
+    check("clip_restore_config_default_true", '"restore_clipboard": True' in cfg)
+
+
 def main():
+    test_clipboard_restore_decision()
     test_meeting_default_title()
     test_updater_gate()
     test_update_bridge_fail_closed()

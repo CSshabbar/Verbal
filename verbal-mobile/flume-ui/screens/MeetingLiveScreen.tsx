@@ -18,7 +18,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { Text } from '../components';
 import { colors, radius, fonts, pressedStyle } from '../theme';
-import { fetchMeeting, updateScratchpadRemote, subscribeMeetings, isLiveNow } from '../../lib/meetings';
+import { fetchMeeting, updateScratchpadRemote, subscribeMeetings, isLiveNow, selfSpeakerName } from '../../lib/meetings';
 import type { Meeting } from '../../lib/meetings';
 import { getUserId } from '../../lib/storage';
 
@@ -117,7 +117,7 @@ export const MeetingLiveScreen: React.FC<Props> = ({ meetingId, onBack, onFinish
     padTimer.current = setTimeout(() => updateScratchpadRemote(meetingId, t), 700);
   };
 
-  const speakerName = (sid: string) => meeting?.speakers[sid] || (sid === 'self' ? 'You' : sid);
+  const speakerName = (sid: string) => meeting?.speakers[sid] || (sid === 'self' ? selfSpeakerName() : 'Them');
   const speakerIdx = (sid: string) => Object.keys(meeting?.speakers || {}).indexOf(sid);
 
   return (

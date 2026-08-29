@@ -277,12 +277,19 @@ class SyncClient:
         the backoff."""
         delay = 5
         while not self._stop.is_set():
+            self._had_open = False
             try:
                 self._listen()
-                delay = 5           # a real connection happened → reset backoff
             except Exception as e:
-                logger.warning(f"Sync listener crashed: {e} — retry in {delay}s")
+                logger.warning(f"Sync listener crashed: {e}")
+            # _listen swallows run_forever errors itself, so "returned" is not
+            # "connected": only an on_open during this attempt resets the
+            # backoff — otherwise a dead network retried every 5 s forever.
+            if getattr(self, "_had_open", False):
+                delay = 5
+            else:
                 delay = min(delay * 2, 60)
+                logger.info(f"Sync not connected — retry in {delay}s")
             if self._stop.is_set():
                 break
             self._stop.wait(delay)
@@ -454,9 +461,14 @@ class SyncClient:
         # a future auth.uid()-scoped policy on `transcriptions` doesn't also
         # require a Realtime protocol change at cutover time.
         ws_token = get_access_token() or SUPABASE_KEY
+        # Per-connection lifetime signal: on_close sets it so the token-refresh
+        # thread below exits at once instead of sleeping out its 20-min wait
+        # (a laptop offline for an hour used to accumulate hundreds of them).
+        conn_closed = threading.Event()
 
         def on_open(ws):
             self._connected = True
+            self._had_open = True           # _run: a real connection → reset backoff
             logger.info("Sync WebSocket connected — subscribing to postgres_changes")
 
             # Single join message with postgres_changes config
@@ -527,6 +539,7 @@ class SyncClient:
             # so connections could stack. `run_forever` returns right after
             # this, `_listen` unwinds, and `_run` owns the retry/backoff.
             self._connected = False
+            conn_closed.set()
             if self._ws is ws:
                 self._ws = None
             logger.info(f"Sync WebSocket closed (code={code})")
@@ -542,9 +555,9 @@ class SyncClient:
             # joined channel every 20 min so a long session doesn't silently
             # start running on a stale/expired JWT. Exits once this specific
             # connection is replaced (reconnect) or closed.
-            while self._ws is ws and not self._stop.is_set():
-                self._stop.wait(1200)
-                if self._ws is not ws or not self._connected or self._stop.is_set():
+            while self._ws is ws and not self._stop.is_set() and not conn_closed.is_set():
+                conn_closed.wait(1200)
+                if self._ws is not ws or not self._connected or self._stop.is_set() or conn_closed.is_set():
                     return
                 try:
                     fresh = get_access_token()

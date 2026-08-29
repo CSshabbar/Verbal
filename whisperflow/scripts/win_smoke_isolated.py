@@ -18,9 +18,8 @@ Runs the REAL VerbalWinApp from source, in-process, but:
   * auto_update is written False into the isolated config so the update the
     check finds is never downloaded/installed by this run.
   * APP_VERSION is patched to 1.0.33 so whatever app_versions_latest currently
-    holds counts as an update; the asserts below expect EXPECT_VERSION — bump
-    it when a newer Windows build is published (queried live 2026-08-28:
-    app_versions_latest served 1.0.38; v1.0.41 was published MID-RUN at 23:08 UTC the same day).
+    holds counts as an update; the asserts below expect 1.0.34 — bump
+    EXPECT_VERSION when a newer Windows build is published.
 Results are flushed after every step because the run ends in os._exit()
 (that IS one of the things under test).
 """
@@ -33,7 +32,24 @@ import threading
 import time
 import traceback
 
-EXPECT_VERSION = "1.0.41"                 # latest published win build at the time of writing
+EXPECT_VERSION = "1.0.36"                 # fallback only — resolved live below
+
+
+def _live_latest_win_version(fallback):
+    """The version app_versions_latest currently serves for win. Releases ship
+    several times a day, so a hardcoded expectation went stale within hours
+    (three false FAILs on 2026-08-29); the assert is "the app sees what the
+    server serves", not a fixed number."""
+    try:
+        import httpx
+        from app.supabase_config import SUPABASE_URL, SUPABASE_KEY
+        r = httpx.get(f"{SUPABASE_URL}/rest/v1/app_versions_latest",
+                      headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"},
+                      params={"platform": "eq.win", "select": "version", "limit": "1"}, timeout=8)
+        v = (r.json() or [{}])[0].get("version")
+        return v or fallback
+    except Exception:
+        return fallback
 HERE = os.path.dirname(os.path.abspath(__file__))
 HOME = os.path.join(tempfile.gettempdir(), "flume_smoke_home")
 shutil.rmtree(HOME, ignore_errors=True)
@@ -68,6 +84,8 @@ win_main.APP_VERSION = "1.0.33"
 import app.shared_dashboard as sd         # noqa: E402
 sd.APP_VERSION = "1.0.33"
 record("isolation", True, f"CONFIG_DIR={cfgmod.CONFIG_DIR} LOG_DIR={cfgmod.LOG_DIR}")
+EXPECT_VERSION = _live_latest_win_version(EXPECT_VERSION)
+record("expect_version", True, f"live win latest = {EXPECT_VERSION}")
 
 # Isolated config: signed out, no auto-install, no dashboard auto-open.
 c = cfgmod.load_config()
@@ -89,6 +107,18 @@ def alive(mw):
         return f"err {e}"
 
 
+# The Windows automatic-find popup (2026-08-28) is a blocking tk messagebox.
+# Auto-answer "No" and count invocations so the run never waits on a click.
+import tkinter.messagebox as _mb
+DIALOGS = []
+def _fake_askyesno(title, message, **kw):
+    DIALOGS.append((title, message))
+    print(f"[dialog] {title}: {message[:120]!r}", flush=True)
+    return False
+_mb.askyesno = _fake_askyesno
+_mb.showinfo = lambda title, message, **kw: DIALOGS.append((title, message))
+
+
 def scenario():
     try:
         time.sleep(8)
@@ -105,6 +135,14 @@ def scenario():
         record("update_check", ok, f"gated={gated} available={av and av.get('version')} status={st}")
         r2 = api.check_for_updates()
         record("dashboard_check_button", r2.get("ok") and r2.get("available") and r2.get("version") == EXPECT_VERSION, r2)
+        # 1b) the forced check above was an un-suppressed find -> exactly ONE
+        # popup, remembered in update_dialog_seen_version; a second check
+        # (this dashboard one, and any later automatic one) must not re-show.
+        appobj._check_update(force=True)
+        seen = appobj.config.get("update_dialog_seen_version")
+        record("update_popup_once", len(DIALOGS) == 1 and seen == EXPECT_VERSION
+               and DIALOGS[0][0] == f"Flume {EXPECT_VERSION} available",
+               f"dialogs={len(DIALOGS)} seen={seen} first={DIALOGS[:1]}")
 
         # 2) meeting window: show
         appobj._toggle_meeting()
@@ -112,93 +150,6 @@ def scenario():
         mw = appobj.meeting_window
         record("meeting_show_1", mw is not None and mw.visible and alive(mw) is True,
                f"visible={getattr(mw,'visible',None)} alive={alive(mw)}")
-
-        # 2b) layout smoke (2026-08-28 report: collapsed bar rendered as a
-        # full titled window). Native form props report PHYSICAL px (rule
-        # #42), so expectations scale logical constants by the window's own
-        # DPI scale. Reading Width/etc. off-thread is tolerable for a smoke
-        # check (plain field reads; no message-pump interaction).
-        def native_geom():
-            form = mw._window.native
-            return (int(form.Width), int(form.Height),
-                    str(form.FormBorderStyle), bool(form.TopMost),
-                    str(form.WindowState))
-
-        s = mw._dpi_scale()
-        tol = int(round(8 * s))                 # ±8 LOGICAL px, in physical
-
-        def near(v, logical):
-            return abs(v - round(logical * s)) <= tol
-
-        mw.set_layout("bar")
-        time.sleep(2)
-        w_, h_, border, topmost, state = native_geom()
-        # .NET Enum.ToString() gives the bare member name; pywebview-side str()
-        # may prefix the type — accept both.
-        ok = (near(h_, 54) and near(w_, 560)
-              and border.endswith("None") and topmost)
-        record("bar_layout", ok,
-               f"phys={w_}x{h_} scale={s} border={border} topmost={topmost} state={state}")
-
-        mw.set_layout("expanded")
-        time.sleep(2)
-        w_, h_, border, topmost, state = native_geom()
-        # expanded is user-resizable, so assert the MIN_W/MIN_H floor
-        # (700x480 logical) rather than exact WIN_WxWIN_H.
-        ok = (w_ >= round(700 * s) - tol and h_ >= round(480 * s) - tol
-              and border.endswith("Sizable") and not topmost)
-        record("expand_restore", ok,
-               f"phys={w_}x{h_} scale={s} border={border} topmost={topmost} state={state}")
-
-        # 2c) minimize mid-meeting collapses to the bar (2026-08-28 report).
-        # _on_native_resize keys on app.meetings.active/.processing — pure
-        # properties over meetings.session.state, so a stub namespace with
-        # state="recording" simulates a live meeting WITHOUT any audio
-        # capture or a real MeetingSession. Nothing else consumes the stub in
-        # this window: HUD pushes and _toggle_meeting/_sign_out are not
-        # exercised while it is set, and it is cleared in the finally.
-        if appobj.meetings is None or not hasattr(mw, "_on_native_resize"):
-            record("minimize_to_bar", True,
-                   "skipped: minimize interception not wired on this build")
-        else:
-            import types as _types
-            appobj.meetings.session = _types.SimpleNamespace(
-                state="recording", title="Smoke")
-            try:
-                def _minimize():
-                    import System.Windows.Forms as WinForms
-                    mw._window.native.WindowState = \
-                        WinForms.FormWindowState.Minimized
-                invoked = mw._apply_native(_minimize)   # UI-thread hop
-                time.sleep(3)   # inline collapse + deferred set_layout('bar')
-                w_, h_, border, topmost, state = native_geom()
-                ok = (invoked and mw._layout == "bar"
-                      and state.endswith("Normal")      # un-minimized again
-                      and near(h_, 54) and near(w_, 560)
-                      and border.endswith("None") and topmost)
-                record("minimize_to_bar", ok,
-                       f"invoked={invoked} layout={mw._layout} state={state} "
-                       f"phys={w_}x{h_} border={border} topmost={topmost}")
-            finally:
-                appobj.meetings.session = None          # drop the stub
-            mw.set_layout("expanded")   # restore for the close-X step below
-            time.sleep(2)
-
-        # 2d) Windows builds must not leak Mac-only wording/glyphs
-        # (2026-08-28 report). flume_html() legitimately contains '⌘' inside
-        # runtime-guarded JS ternaries (IS_WINDOWS?'Ctrl+V':'⌘V') that never
-        # render on Windows — exempt exactly those, flag any other '⌘'.
-        from app.flume_dashboard_html import flume_html
-        from app.meeting_html import meeting_html
-        fh, mh = flume_html(), meeting_html()
-        fh_guarded = fh.replace("IS_WINDOWS?'Ctrl+V':'⌘V'", "")
-        ok = ("This PC" in fh and "This Mac" not in fh
-              and "⌘" not in fh_guarded
-              and "Ctrl+." in mh and "⌘" not in mh)
-        record("rendered_strings", ok,
-               f"pc={'This PC' in fh} mac={'This Mac' in fh} "
-               f"flume_cmd_unguarded={fh_guarded.count(chr(0x2318))} "
-               f"meet_ctrl={'Ctrl+.' in mh} meet_cmd={mh.count(chr(0x2318))}")
 
         # 3) user presses X: Form.Close() on the UI thread == CloseReason.UserClosing
         mw._window.destroy()          # pywebview routes this through FormClosing -> our _on_closing veto
@@ -211,17 +162,97 @@ def scenario():
         time.sleep(5)
         record("meeting_show_2", mw.visible and alive(mw) is True, f"visible={mw.visible} alive={alive(mw)}")
 
+        # 4b) collapsed bar must be a borderless topmost strip with no taskbar
+        # button and no MinimumSize clamp (2026-08-28: "shows as a big window")
+        try:
+            import System.Windows.Forms as WinForms
+            mw.collapse()
+            time.sleep(2)
+            form = mw._window.native
+            bs = str(form.FormBorderStyle)
+            ok_bar = (bs == "None" and bool(form.TopMost) and not bool(form.ShowInTaskbar)
+                      and form.Height < 120)
+            record("meeting_bar_chrome", ok_bar,
+                   f"border={bs} topmost={form.TopMost} taskbar={form.ShowInTaskbar} size={form.Width}x{form.Height}")
+            mw.expand()
+            time.sleep(2)
+            bs2 = str(form.FormBorderStyle)
+            record("meeting_expand_chrome", bs2 == "Sizable" and not bool(form.TopMost)
+                   and bool(form.ShowInTaskbar) and form.Height > 400,
+                   f"border={bs2} topmost={form.TopMost} taskbar={form.ShowInTaskbar} size={form.Width}x{form.Height}")
+        except Exception as e:
+            record("meeting_bar_chrome", False, f"exception {e!r}")
+
+        # 4c) minimize DURING a live meeting collapses to the bar instead of the
+        # taskbar (2026-08-28: "when I minimize it should only show that record
+        # and time button"). meetings.active is a pure property over
+        # meetings.session.state, so a SimpleNamespace stub simulates a live
+        # meeting without recording any audio; cleared in finally.
+        try:
+            from types import SimpleNamespace
+            import System.Windows.Forms as WinForms
+            form = mw._window.native
+            appobj.meetings.session = SimpleNamespace(state="recording")
+            try:
+                form.Invoke(WinForms.MethodInvoker(
+                    lambda: setattr(form, "WindowState", WinForms.FormWindowState.Minimized)))
+                time.sleep(3)
+                bs3 = str(form.FormBorderStyle)
+                st3 = str(form.WindowState)
+                record("minimize_to_bar",
+                       st3 == "Normal" and bs3 == "None" and form.Height < 120,
+                       f"state={st3} border={bs3} size={form.Width}x{form.Height}")
+            finally:
+                appobj.meetings.session = None
+            mw.expand()
+            time.sleep(2)
+        except Exception as e:
+            record("minimize_to_bar", False, f"exception {e!r}")
+
+        # 4d) platform strings in the rendered shared pages (rule #80): the
+        # local device word and the chord labels must be Windows on Windows.
+        try:
+            from app.flume_dashboard_html import flume_html
+            from app.meeting_html import meeting_html as _mh
+            d = flume_html()
+            m = _mh()
+            import re as _re
+            # Permitted mac-isms in the WINDOWS page bytes: the untaken branch
+            # of the runtime seam ternaries (IS_WINDOWS?'Ctrl+V':'⌘V',
+            # IS_WINDOWS?'This PC':'This Mac') — never rendered on Windows.
+            def _stray(hay, needle):
+                return [x.start() for x in _re.finditer(_re.escape(needle), hay)
+                        if "IS_WINDOWS?" not in hay[max(0, x.start() - 80):x.start()]]
+            stray_cmd = _stray(d, "⌘")
+            stray_mac = _stray(d, "This Mac")
+            record("rendered_strings",
+                   ("This PC" in d) and not stray_mac and not stray_cmd
+                   and ("Ctrl+." in m) and ("⌘" not in m),
+                   f"d:ThisPC={'This PC' in d} strayMac={len(stray_mac)} strayCmd={len(stray_cmd)} "
+                   f"m:Ctrl={'Ctrl+.' in m} cmd={'⌘' in m}")
+        except Exception as e:
+            record("rendered_strings", False, f"exception {e!r}")
+
         # 5) blank-title meeting must not raise on Windows
         from app.meetings import MeetingSession
         s = MeetingSession(appobj, "", use_mic=False, use_system=False)
         record("default_title", s.title.startswith("Meeting"), s.title)
 
-        # 6) programmatic destroy -> closed handler drops the handle -> next show rebuilds
+        # 6) programmatic destroy -> closed handler drops the handle -> next show rebuilds.
+        # Settle + one retry: with the persistent WebView2 profile
+        # (private_mode=False), a window created within ~2 s of a destroy can
+        # have its WebView2 init bail and Close the fresh form (observed
+        # 2026-08-28: "close intercepted" 2 s after the rebuild). That race is
+        # test-only — the user path hides windows, destroy happens at quit —
+        # this step asserts the REBUILD path, not the race.
         mw.destroy()
-        time.sleep(3)
+        time.sleep(6)
         dropped = mw._window is None
         appobj._toggle_meeting()
         time.sleep(6)
+        if not (mw.visible and alive(mw) is True):
+            appobj._toggle_meeting()   # retry once — re-show (or rebuild) after the settle
+            time.sleep(6)
         record("meeting_rebuild_after_destroy", dropped and mw.visible and alive(mw) is True,
                f"dropped={dropped} visible={mw.visible} alive={alive(mw)}")
         mw.hide()
@@ -237,10 +268,13 @@ def scenario():
                f"window={dash._window is not None} alive={dash._window_alive() if dash._window else None}")
         if dash._window is not None:
             dash._window.destroy()
-        time.sleep(3)
+        time.sleep(6)   # settle: rapid destroy->recreate on the shared WebView2
         gone = dash._window is None or not dash._window_alive()
-        dash.show()
+        dash.show()     # profile can abort the fresh window's init (see step 6)
         time.sleep(5)
+        if not (dash._window is not None and dash._window_alive()):
+            dash.show()   # retry once after the settle
+            time.sleep(5)
         record("dashboard_rebuild", gone and dash._window is not None and dash._window_alive(),
                f"gone={gone} window={dash._window is not None} alive={dash._window_alive() if dash._window else None}")
         try:

@@ -43,14 +43,17 @@ import ctypes.wintypes as wt
 import json
 import logging
 import threading
+import time
 
 from app.flume_popover_html import popover_html
+from app import win_geometry
 from app.shared_dashboard import DashboardApi
 
 logger = logging.getLogger("verbal.popover")
 
-WIN_W = 380
-WIN_H = 600
+WIN_W = 300               # menu width (Mac header is 284 + item chrome)
+WIN_H = 560               # initial height; the page reports its real content
+MIN_H, MAX_H = 120, 900   # height via popover_resize() and we fit the window to it
 WIN_TITLE = "Flume Popover"
 # Bound on waiting for the fresh form's `shown` Event before calling the
 # `_shown_call`-decorated move()/show() (each blocks 20s if Shown never
@@ -112,6 +115,178 @@ class _PopoverBridge(DashboardApi):
         self._popover.app._on_main(self._popover.app._tray_quit)
         return {"ok": True}
 
+    # ── menu-style popover (2026-08-29, port of menubar_menu.py) ──────────
+    def hide_popover(self):
+        self._popover.app._on_main(self._popover.hide)
+        return {"ok": True}
+
+    def popover_resize(self, height):
+        try:
+            self._popover.set_content_height(int(height))
+        except Exception as e:
+            logger.debug("popover resize failed: %s", e)
+        return {"ok": True}
+
+    def popover_state(self):
+        """Everything the menu renders, read fresh — the Mac menu rebuilds on
+        open (`menuNeedsUpdate:`) instead of being pushed into; same idea."""
+        app = self._popover.app
+        try:
+            from app.config import load_config, get_daily_words, _entry_text, _entry_app
+            from app import auth
+            cfg = app.config = load_config()
+            signed_in = False
+            try:
+                signed_in = bool(auth.current_user())
+            except Exception:
+                signed_in = False
+            session_dead = False
+            try:
+                session_dead = bool(signed_in and auth.session_dead(cfg))
+            except Exception:
+                pass
+            meeting_active, meeting_label = False, ""
+            try:
+                m = getattr(app, "meetings", None)
+                meeting_active = bool(m and m.active)
+                if meeting_active:
+                    src = str(getattr(m, "source_label", "") or "")
+                    meeting_label = " · ".join(x for x in ("Meeting", src) if x)
+            except Exception:
+                meeting_active = False
+            history = cfg.get("history", []) or []
+            pinned = cfg.get("pinned", []) or []
+            recent = []
+            for e in history[:10]:
+                ts = (e.get("ts", "") if isinstance(e, dict) else "") or ""
+                recent.append({"text": _entry_text(e), "app": _entry_app(e) or "",
+                               "ts": ts[-5:] if len(ts) >= 5 else ts})
+            upd = getattr(app, "_update_available", None) or {}
+            allowed = False
+            try:
+                allowed = bool(auth.cloud_allowed(cfg) and (cfg.get("sync_user_id") or "").strip())
+            except Exception:
+                pass
+            sync_on = bool(cfg.get("sync_enabled") and allowed)
+            live = bool(getattr(app, "_sync", None) and getattr(app._sync, "connected", False))
+            return {
+                "ok": True,
+                "signed_in": signed_in,
+                "session_dead": session_dead,
+                "recording": bool(getattr(app, "_is_recording", False)),
+                "processing": bool(getattr(app, "_processing", False)),
+                "rec_elapsed": self._popover.rec_elapsed(),
+                "meeting_active": meeting_active,
+                "meeting_label": meeting_label,
+                "status_line": str(getattr(app, "_status_line", "") or ""),
+                "hotkey_label": str(cfg.get("hotkey_label", "") or "").strip(),
+                "mode": str(cfg.get("recording_mode", "toggle") or "toggle"),
+                "model": str(cfg.get("whisper_model", "base") or "base"),
+                "daily_words": int(get_daily_words(cfg) or 0) if signed_in else 0,
+                "recent": recent if signed_in else [],
+                "pinned": [{"text": _entry_text(e)} for e in pinned[:10]] if signed_in else [],
+                "sync_enabled": sync_on,
+                "sync_allowed": allowed,
+                "sync_connecting": bool(cfg.get("sync_enabled") and allowed and not live),
+                "update_version": str(upd.get("version", "") or "") if upd else "",
+                "auth_label": app._auth_menu_label() if hasattr(app, "_auth_menu_label") else "",
+                "version": getattr(app, "APP_VERSION", ""),
+            }
+        except Exception as e:
+            logger.warning("popover_state failed: %s", e)
+            return {"ok": False, "error": str(e)}
+
+    def popover_tick(self):
+        app = self._popover.app
+        try:
+            lvl = 0.0
+            try:
+                lvl = float(getattr(app.recorder, "level", 0.0) or 0.0)
+            except Exception:
+                pass
+            return {"ok": True, "recording": bool(getattr(app, "_is_recording", False)),
+                    "processing": bool(getattr(app, "_processing", False)),
+                    "level": max(0.0, min(1.0, lvl)), "elapsed": self._popover.rec_elapsed()}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def start_meeting(self):
+        app = self._popover.app
+        app._on_main(self._popover.hide)
+        try:
+            return self.open_meeting_launcher()
+        except Exception as e:
+            logger.debug("start_meeting via popover failed: %s", e)
+            return {"ok": False, "error": str(e)}
+
+    def open_notes(self):
+        return self._open_tab("notes")
+
+    def set_mode(self, mode):
+        app = self._popover.app
+        fn = app._tray_set_mode_hold if str(mode) == "hold" else app._tray_set_mode_toggle
+        app._on_main(fn)
+        return {"ok": True}
+
+    def set_model(self, name):
+        app = self._popover.app
+        name = str(name or "base")
+        if name not in ("tiny", "base", "small", "medium"):
+            return {"ok": False, "error": "unknown model"}
+        app._on_main(lambda: app._tray_change_model(None, name))
+        return {"ok": True}
+
+    def set_sync(self, on):
+        """Checkmark semantics like the Mac `sync_item`: routed through the shared
+        save_settings so the device row / realtime channel follow the flag."""
+        try:
+            st = self.get_state()
+            s = (st or {}).get("settings") or {}
+            return self.save_settings({
+                "groq_api_keys": s.get("groq_api_keys", []),
+                "gemini_api_keys": s.get("gemini_api_keys", []),
+                "whisper_model": (st or {}).get("model", "base"),
+                "sync_enabled": bool(on),
+                "sync_user_id": s.get("sync_user_id", ""),
+                "sync_device_name": s.get("sync_device_name", "This PC"),
+            })
+        except Exception as e:
+            logger.warning("popover set_sync failed: %s", e)
+            return {"ok": False, "error": str(e)}
+
+    def toggle_auth(self):
+        app = self._popover.app
+        app._on_main(self._popover.hide)
+        threading.Thread(target=app._tray_toggle_auth, name="popover-auth", daemon=True).start()
+        return {"ok": True}
+
+    def open_update(self):
+        app = self._popover.app
+        app._on_main(self._popover.hide)
+        try:
+            app._tray_open_update()
+        except Exception as e:
+            logger.debug("open_update failed: %s", e)
+        return {"ok": True}
+
+    def check_updates(self):
+        app = self._popover.app
+        app._on_main(self._popover.hide)
+        try:
+            app._tray_check_updates()
+        except Exception as e:
+            logger.debug("check_updates failed: %s", e)
+        return {"ok": True}
+
+    def about(self):
+        app = self._popover.app
+        app._on_main(self._popover.hide)
+        try:
+            app._tray_about()
+        except Exception as e:
+            logger.debug("about failed: %s", e)
+        return {"ok": True}
+
 
 class WinPopover:
     """Compact Flume popover for Windows. Lazily builds its pywebview window
@@ -139,6 +314,8 @@ class WinPopover:
         # the form down. Only the user's Alt+F4 / X are intercepted.
         self._destroying = False
         self._build_lock = threading.Lock()
+        self._content_h = WIN_H          # set by popover_resize (page-measured)
+        self._rec_started_at = 0.0       # header timer; win_main has no _rec_started_at
 
     # ── window lifecycle ────────────────────────────────────────
     def _build(self):
@@ -149,13 +326,14 @@ class WinPopover:
             WIN_TITLE,
             html=popover_html(),
             js_api=self._bridge,
-            width=WIN_W,
-            height=WIN_H,
+            # pywebview 5.3 applies these as PHYSICAL px (05-conventions #71)
+            width=win_geometry.create_size(WIN_W, WIN_H)[0],
+            height=win_geometry.create_size(WIN_W, WIN_H)[1],
             frameless=True,
             on_top=True,
             resizable=False,
             easy_drag=False,
-            background_color="#0e1012",
+            background_color="#1c1c1e",
             hidden=True,
         )
         self._destroying = False
@@ -325,19 +503,52 @@ class WinPopover:
 
     def _position(self):
         """Bottom-right of the primary work area — near the tray."""
+        # Work area is PHYSICAL; pywebview 5.3's move() multiplies by the DPI
+        # scale (logical) while create/resize are physical — at 150-200 % the
+        # popover was half-size and pushed off-screen ("tray click does
+        # nothing"). One DPI-aware SetWindowPos instead (rule #71).
         try:
             wa = wt.RECT()
             ctypes.windll.user32.SystemParametersInfoW(
                 SPI_GETWORKAREA, 0, ctypes.byref(wa), 0)
-            x = wa.right - WIN_W - 12
-            y = wa.bottom - WIN_H - 12
-        except Exception:
-            x, y = 900, 200
+            form = getattr(self._window, "native", None) if self._window else None
+            hwnd = form.Handle.ToInt64() if form is not None else None
+            h = self._height()
+            if hwnd:
+                scale = win_geometry.system_scale()
+                x = wa.right - int((WIN_W + 12) * scale)
+                y = wa.bottom - int((h + 12) * scale)
+                win_geometry.set_window_rect(hwnd, x, y, WIN_W, h, scale)
+            elif self._window:
+                self._window.move(wa.right - WIN_W - 12, wa.bottom - h - 12)
+        except Exception as e:
+            logger.debug("popover position failed: %s", e)
+
+    def _height(self):
+        """Window height in CSS px: the page-reported content height, clamped
+        to the work area so a long Recent list can never push the menu off
+        the top of the screen."""
         try:
-            if self._window:
-                self._window.move(x, y)
+            wa = wt.RECT()
+            ctypes.windll.user32.SystemParametersInfoW(SPI_GETWORKAREA, 0, ctypes.byref(wa), 0)
+            scale = win_geometry.system_scale() or 1.0
+            cap = int((wa.bottom - wa.top) / scale) - 24
         except Exception:
-            pass
+            cap = MAX_H
+        return max(MIN_H, min(int(self._content_h or WIN_H), min(MAX_H, cap)))
+
+    def set_content_height(self, h):
+        """Called from the page (popover_resize) whenever its content height
+        changes — a submenu opening, a row appearing. Re-fit while visible."""
+        h = int(h)
+        if h <= 0 or h == self._content_h:
+            return
+        self._content_h = h
+        if self._visible:
+            self.app._on_main(self._position)
+
+    def rec_elapsed(self):
+        return (time.time() - self._rec_started_at) if self._rec_started_at else 0.0
 
     # ── show / hide / toggle ────────────────────────────────────
     def show(self):
@@ -366,6 +577,7 @@ class WinPopover:
             # timeout would only orphan a second form.
             self._window.show()
             self._refresh()
+            self._emit("opened", {})
         except Exception as e:
             logger.error("popover show failed: %s", e)
 
@@ -391,11 +603,9 @@ class WinPopover:
         return self._visible
 
     def _inject_scroll_fix(self):
-        css = (
-            "html,body{height:100vh;overflow:hidden}"
-            ".view{height:100vh;display:flex;flex-direction:column}"
-            ".recscroll{overflow-y:auto;-webkit-overflow-scrolling:touch;flex:1}"
-        )
+        # Menu-style page (2026-08-29): the window is fitted to the content, so
+        # the only job left here is to make sure nothing ever scrolls.
+        css = "html,body{overflow:hidden}"
         js = (
             "(function(){var id='__verbal_scroll_fix';"
             "var el=document.getElementById(id);"
@@ -442,6 +652,7 @@ class WinPopover:
 
     # ── methods the record → transcribe → inject pipeline calls ──
     def update_recording_state(self, is_recording):
+        self._rec_started_at = time.time() if is_recording else 0.0
         self._emit("recordingState", {"recording": bool(is_recording)})
 
     def show_result(self, text):

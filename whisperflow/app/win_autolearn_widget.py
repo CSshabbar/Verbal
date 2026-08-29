@@ -21,6 +21,8 @@ import tkinter as tk
 
 from PIL import Image, ImageDraw, ImageFont, ImageTk
 
+from app.tk_pending import PendingCalls
+
 logger = logging.getLogger("verbal.autolearn.widget.win")
 
 # ── Layout + DPI scaling ────────────────────────────────────────────────
@@ -99,6 +101,9 @@ class WinAutoLearnWidget:
         # Hit rects rebuilt per render: [(x1,y1,x2,y2,action), ...]
         self._hits = []
         self._fade_timer = None
+        # Calls that arrive before the tk root exists are queued and replayed
+        # on the tk thread once the mainloop runs — see app/tk_pending.py.
+        self._pending = PendingCalls(name="autolearn")
 
     # ── setup ───────────────────────────────────────────────────────────
     def setup(self):
@@ -135,9 +140,36 @@ class WinAutoLearnWidget:
             self._canvas.bind("<Button-1>", self._on_click)
 
             self._load_fonts()
+            # Flip to ready + replay early calls from INSIDE the mainloop (a
+            # cross-thread `root.after` blocks until the loop runs).
+            self._root.after(0, self._replay_pending)
             self._root.mainloop()
         except Exception as e:
             logger.error("autolearn tk thread crashed: %s", e, exc_info=True)
+        finally:
+            self._pending.close()      # setup failed / loop ended: drop the queue
+
+    def _replay_pending(self):
+        """tk thread, inside mainloop: mark ready and run queued calls in order."""
+        try:
+            self._pending.mark_ready(lambda fn: fn())
+        except Exception as e:
+            logger.debug("autolearn pending replay failed: %s", e)
+
+    def _tk_ready(self):
+        return self._root is not None and self._pending.ready
+
+    def cleanup(self):
+        """Close the queue first (a not-yet-run replay is dropped, never raced),
+        then ask the tk loop to quit."""
+        self._pending.close()
+        root = self._root
+        if root is None:
+            return
+        try:
+            root.after(0, root.quit)
+        except Exception as e:
+            logger.debug("autolearn cleanup failed: %s", e)
 
     def _load_fonts(self):
         for face in ("segoeui.ttf", "arial.ttf"):
@@ -165,10 +197,20 @@ class WinAutoLearnWidget:
             if self._dismiss_token != token or not self._visible:
                 return
             self._action("autolearn_close")
-        threading.Timer(20.0, _auto).start()
+        t = threading.Timer(20.0, _auto)
+        t.daemon = True                 # never keeps the interpreter alive on exit
+        try:
+            old_t = getattr(self, "_dismiss_timer", None)
+            if old_t is not None:
+                old_t.cancel()
+        except Exception:
+            pass
+        self._dismiss_timer = t
+        t.start()
 
     def hide(self):
         self._dismiss_token += 1
+        self._safe(self._cancel_fade)
         self._safe(self._fade_out)
 
     @property
@@ -177,23 +219,38 @@ class WinAutoLearnWidget:
 
     # ── internals ───────────────────────────────────────────────────────
     def _safe(self, fn):
-        if self._root is None:
-            return
+        """Run `fn` on the tk thread; queued (bounded, in order) until the
+        root + mainloop are ready, `root.after(0, fn)` afterwards."""
+        def _post(f):
+            self._root.after(0, f)
         try:
-            self._root.after(0, fn)
+            self._pending.dispatch(fn, _post)
         except Exception as e:
             logger.debug("autolearn _safe failed: %s", e)
 
+    def _cancel_fade(self):
+        """Stop whichever fade is running — a fade-in and a fade-out driving
+        alpha in opposite directions every 16 ms left a half-transparent (or
+        withdrawn-but-'visible') pill (review 2026-08-28)."""
+        t = getattr(self, "_fade_timer", None)
+        if t is not None and self._tk_ready():
+            try:
+                self._root.after_cancel(t)
+            except Exception:
+                pass
+        self._fade_timer = None
+
     def _show_internal(self):
-        if self._root is None:
+        if not self._tk_ready():
             return
+        self._cancel_fade()
         self._visible = True
         self._alpha = 0.0
         self._root.deiconify()
         self._fade_in()
 
     def _fade_in(self):
-        if self._root is None:
+        if not self._tk_ready():
             return
         self._alpha = min(0.98, self._alpha + 0.08)
         self._root.attributes("-alpha", self._alpha)
@@ -202,7 +259,7 @@ class WinAutoLearnWidget:
             self._fade_timer = self._root.after(16, self._fade_in)
 
     def _fade_out(self):
-        if self._root is None:
+        if not self._tk_ready():
             return
         self._alpha = max(0.0, self._alpha - 0.10)
         try:

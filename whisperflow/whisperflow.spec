@@ -156,6 +156,15 @@ app = BUNDLE(
         'NSMicrophoneUsageDescription': 'Flume needs microphone access for voice dictation.',
         'NSAccessibilityUsageDescription': 'Flume needs accessibility access to inject text into apps.',
         'LSUIElement': False,
+        # Deep links: `flume://invite?t=<token>` from the team-invite landing
+        # page (supabase/functions/invite) — handled in main.py via the
+        # kAEGetURL Apple Event, see app/deep_link.py. Launch Services routes
+        # the URL to the running instance, or launches the app with it.
+        'CFBundleURLTypes': [{
+            'CFBundleURLName': 'com.verbal.app.deeplink',
+            'CFBundleURLSchemes': ['flume'],
+            'LSHandlerRank': 'Owner',
+        }],
         'CFBundleShortVersionString': APP_VERSION,
         'CFBundleVersion': APP_VERSION,
     },

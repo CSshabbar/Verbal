@@ -40,7 +40,7 @@ export type Meeting = {
   audioUrl: string | null;
   audioExpired: boolean;          // MER-31: reaped by retention — notes/transcript survive
   transcript: MeetingUtterance[];
-  speakers: Record<string, string>;   // speaker id → display name ('self' = You)
+  speakers: Record<string, string>;   // speaker id → display name ('self' = the signed-in user's name, see withSelfName)
   scratchpad: string;
   summary: string;
   decisions: string[];
@@ -76,6 +76,47 @@ function dateLabel(iso: string): string {
   }
 }
 
+/* ── "self" speaker label ──────────────────────────────────────────────────
+ * The mic speaker is stored as `self`. Desktop now persists the signed-in
+ * user's name there, but meetings recorded before 2026-08-28 (and any
+ * signed-out capture) persisted the literal "You". Show the account's name
+ * instead, resolved once from the Supabase session (user_metadata name), and
+ * kept fresh by useAuth via setSelfSpeakerName(). A user-typed rename of
+ * `self` is left alone. */
+const SELF_FALLBACK = 'You';
+let _selfName = '';
+let _selfNameLoaded: Promise<void> | null = null;
+
+export function setSelfSpeakerName(name: string | null | undefined) {
+  const n = (name || '').trim();
+  _selfName = n && n.indexOf('@') === -1 ? n : '';
+  _selfNameLoaded = Promise.resolve();
+}
+
+export function selfSpeakerName(): string { return _selfName || SELF_FALLBACK; }
+
+/** Resolve the name from the persisted session (fast, local). Best-effort. */
+export function ensureSelfName(): Promise<void> {
+  if (_selfNameLoaded) return _selfNameLoaded;
+  _selfNameLoaded = supabase.auth.getSession()
+    .then(({ data }) => {
+      const u = data.session?.user;
+      if (!u) return;
+      const meta: any = u.user_metadata || {};
+      setSelfSpeakerName(meta.name || meta.full_name || '');
+    })
+    .catch(() => {});
+  return _selfNameLoaded;
+}
+
+/** Copy of a speakers map with a placeholder `self` ("You"/missing) replaced by the user's name. */
+export function withSelfName(speakers: Record<string, string>): Record<string, string> {
+  const cur = (speakers?.self || '').trim();
+  if (cur && cur !== SELF_FALLBACK) return speakers;
+  if (!_selfName && cur) return speakers;
+  return { ...speakers, self: selfSpeakerName() };
+}
+
 /** Map a `meetings` row (snake_case, jsonb) → the UI Meeting shape. */
 export function toMeeting(row: any): Meeting {
   const status: MeetingStatus =
@@ -88,7 +129,7 @@ export function toMeeting(row: any): Meeting {
     audioUrl: row.audio_url || null,
     audioExpired: !!row.audio_expired,
     transcript: Array.isArray(row.transcript) ? row.transcript : [],
-    speakers: row.speakers && typeof row.speakers === 'object' ? row.speakers : {},
+    speakers: withSelfName(row.speakers && typeof row.speakers === 'object' ? row.speakers : {}),
     scratchpad: row.scratchpad || '',
     summary: row.summary || '',
     decisions: Array.isArray(row.decisions) ? row.decisions : [],

@@ -818,7 +818,7 @@ def app_breakdown(config, days=30) -> dict:
 
 def leaderboard(config, days=7) -> dict:
     """The team-visible ranking (Phase 5b). Readable by every active member once
-    the owner has enabled it org-wide; lists only members who opted in."""
+    the owner has enabled it org-wide; lists every active member who shares counts."""
     org = get(config)
     if not org["org_id"] or not org["leaderboard_enabled"]:
         return {"ok": True, "enabled": False, "rows": []}
