@@ -106,12 +106,16 @@ create policy "meetings owner" on public.meetings
   for all to authenticated
   using (user_id = auth.uid()::text) with check (user_id = auth.uid()::text);
 
--- pairings: deliberately UNCHANGED — the claiming device isn't signed in as
--- the host yet, so `user_id = auth.uid()` cannot apply to its own rows.
--- Kept on the existing safe model (random token, ~2 min TTL, single-use
--- claim), per the ticket's own guidance. See supabase_pairings.sql.
+commit;
+
+-- pairings: deliberately UNCHANGED. The row is written by the host (who IS
+-- signed in) and read via the `claim_pairing` RPC, not over REST, so the table
+-- has no per-user policy to tighten. Its safety comes from the token model
+-- (random, ~2 min TTL, single-use). Note that since IDI-29 a claim no longer
+-- GRANTS account access — it confirms a session the device already has — so
+-- the token is no longer an access-bearing credential. See supabase_pairings.sql.
 
 -- push_tokens / device_presence: NOT included — out of this ticket's listed
 -- scope (acceptance criteria names transcriptions/notes/dictionary/canvas/
--- devices/meetings only). push_tokens has the same USING(true) pattern and
--- is a reasonable follow-up once the two blockers above are resolved.
+-- devices/meetings only). push_tokens has the same USING(true) pattern and is
+-- the natural follow-up now that the blockers above are cleared.
