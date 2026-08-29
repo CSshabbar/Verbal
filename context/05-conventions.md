@@ -1096,6 +1096,27 @@
     their window object across open/close, so a running app serves the OLD page until process restart —
     "feature missing on Windows" is often just a stale process (restart via the `FlumeRun` scheduled task
     on the winvm).
+    **Three more unit/geometry traps from the meeting window's bar mode (2026-08-28 report — the
+    collapsed bar rendered as a full 700×480 titled window with the tiny pill floating inside it):**
+    (a) `create_window(min_size=…)` becomes WinForms `MinimumSize` and **CLAMPS every later
+    `resize()`** — the shrink to 560×54 silently snapped back to 700×480. Any layout smaller than the
+    window's minimum must mutate the native form on the WinForms UI thread (`form.Invoke`): clear
+    `MinimumSize` BEFORE the shrink, restore it (in physical px) AFTER the re-expand so it can't fight
+    the resize, and toggle `FormBorderStyle`/`TopMost` in the same hop —
+    `win_meeting_window.py::_apply_layout_native` is the reference (every mutation individually
+    guarded so a partial apply still beats a stuck-large window). Do NOT toggle `ShowInTaskbar` there:
+    it RECREATES the win32 handle, orphaning the WebView2 child and every subscribed event hook.
+    (b) `move()` is NOT symmetric with `resize()`: pywebview multiplies x/y by the form's
+    `scale_factor` (the primary display's scale) before `SetWindowPos`, while `resize()` takes raw
+    physical px — divide physical coordinates back down before `move()` or the position double-scales
+    and the window lands right/below center, potentially half off-screen.
+    (c) When the geometry target is the primary work area (`SPI_GETWORKAREA`, which is physical px in
+    a DPI-aware process), the scale must be the PRIMARY monitor's effective DPI
+    (`GetDpiForMonitor(MDT_EFFECTIVE)`, falling back `GetDpiForWindow` → `GetDpiForSystem` → 1.0) —
+    `GetDpiForWindow` follows the form's CURRENT monitor and mis-sized the pill on mixed-DPI setups
+    (a 100% external next to a 150% laptop panel drew it at 2/3 size, clipping the trailing button
+    Rule #56 exists to protect). Keep design constants LOGICAL module-wide and convert to physical in
+    ONE place (`win_meeting_window._rect_for`).
 
 42. **A bulk backend UPDATE on a synced table REPLAYS every touched row to every connected client** —
     Realtime `postgres_changes` emits an UPDATE event per row, and the desktop's `_deliver` used to treat
@@ -1645,6 +1666,20 @@
     reopen that races `closed` (or a missed hook) was the same silent no-op as Start meeting. `show()`
     checks `self._window in webview.windows` and rebuilds; `_device_refresh_loop` is latched once
     (`_device_refresh_started`), not spawned on every rebuild.
+    (h) **Minimize mid-meeting collapses to the bar, and the interception has its own traps
+    (2026-08-28 report — "when I minimize it should only show that record and time button not the
+    whole window").** `WinMeetingWindow._attach_native_minimize` subscribes a native `Resize` handler
+    (`_on_native_resize`); when `WindowState` hits `Minimized` while `_recording_active()`, it
+    collapses to the bar (macOS parity: losing key while recording auto-collapses) — idle minimize
+    stays a plain taskbar minimize. Three rules inside the handler: a **re-entrancy guard**
+    (`_minimize_intercepting`) is mandatory, because assigning `WindowState` back inside a Resize
+    handler fires Resize again; the chrome/geometry half runs **INLINE** — the handler IS the WinForms
+    UI thread, so `_apply_layout_native` needs no Invoke round-trip, whereas the first cut deferred
+    the whole collapse to `app._on_main` and flashed the full expanded window before snapping to the
+    bar; and only the page half (`set_layout`/`emit`) is deferred via `app._on_main`, since
+    `evaluate_js` deadlocks this thread exactly as in (a). Fail-closed: no hook → today's plain
+    minimize; native apply unavailable → at least restore `WindowState.Normal`, because a live
+    recording must never run invisibly.
 
 68. **No glibc-only `strftime` directives — the Windows CRT raises `ValueError("Invalid format
     string")`.** The `-` (no-pad) flag family (`%-d`, `%-I`, `%-m`, `%-H`, …) is a glibc/BSD extension,
@@ -1695,6 +1730,28 @@
     so the Windows tray popover's Preferences button (`_open_tab(3)` with a "settings" comment) opened
     Canvas. Call `dashboard.show_tab("settings")` / `"canvas"` / `"notes"` from the menubar, tray, and
     popover; do not pass a raw index. `win_bugs_fixtures.py` asserts the map and the popover wiring.
+
+71. **Shared HTML renderers must route every user-visible platform-ism through the platform seam — no
+    hardcoded "This Mac", no raw ⌘ chords.** The Flume surfaces were written Mac-only and the literal
+    strings survived the Windows port: the dashboard's sidebar/canvas/settings/wizard all said
+    "This Mac" on a Windows box (2026-08-28 report — "why is it showing mac? whose mac is that?"),
+    and `meeting_html`'s shortcut hints showed ⌘ chords. The seam already existed for keys —
+    `flume_dashboard_html.py` injects `PL_KEYS` (the per-platform key-label table) and `IS_WINDOWS`
+    ahead of the body — so the fix extends it rather than sprinkling ternaries: **`THIS_DEVICE` /
+    `THIS_DEVICE_LC`** ("This PC"/"this PC" vs "This Mac"/"this Mac") are injected beside
+    `IS_WINDOWS`; `flume_popover_html._js()` prepends its own `THIS_DEVICE` const (the popover is
+    Windows-only at runtime per IDI-183, but the label stays platform-conditional so a macOS revival
+    keeps the exact wording byte-identical); `meeting_html.py` builds chord labels from Python `_MOD`
+    for the static HTML plus a JS `MOD` mirror (from `IS_WIN`) for re-rendered hints — the two must
+    agree. Two details worth keeping: on Windows the chord label is **"Ctrl+"**, never a ⊞ glyph —
+    the keydown handlers fire on `metaKey||ctrlKey`, the Win key is OS-reserved (Win+. is the emoji
+    picker) and browsers surface it as `metaKey` inconsistently — and there is a deliberate style gap
+    ("⌘." vs "Ctrl+."); the JS mirror writes the mac symbol as the `\u2318` escape so the raw glyph
+    never lands in the Windows page bytes. `scripts/win_smoke_isolated.py`'s `rendered_strings` step pins all of
+    this: on Windows, `flume_html()` must contain "This PC", no "This Mac", and no `⌘` outside the
+    runtime-guarded `IS_WINDOWS?'Ctrl+V':'⌘V'` ternaries; `meeting_html()` must say "Ctrl+." with
+    zero `⌘`. Any new user-visible platform word or key glyph in a shared surface goes behind this
+    seam in the same change.
 
 ## Design system (Flume)
 
@@ -1830,7 +1887,7 @@ cd whisperflow
 # for dashboard/widget JS changes: node --check each rendered <script> block — scripted:
 .venv/bin/python scripts/js_check.py       # extracts every inline <script> from flume_html/meeting_html/popover_html
 # Windows shell live smoke (safe next to the installed app — isolated USERPROFILE, no mutex, signed out):
-PYTHONUTF8=1 .venv/Scripts/python.exe scripts/win_smoke_isolated.py   # update check, meeting X/re-show, dashboard rebuild, quit
+PYTHONUTF8=1 .venv/Scripts/python.exe scripts/win_smoke_isolated.py   # update check, meeting X/re-show, bar/expanded layout geometry, minimize-to-bar, rendered platform strings (#71), dashboard rebuild, quit
 .venv/Scripts/python.exe win_bugs_fixtures.py   # Windows bug-pass unit fixtures (strftime, update gate, tabs, config lock)
 .venv/bin/python autolearn_fixtures.py     # if autolearn touched
 .venv/bin/python qa_filetags_fixtures.py    # if filetags touched

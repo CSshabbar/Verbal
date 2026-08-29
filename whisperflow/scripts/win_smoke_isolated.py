@@ -18,8 +18,9 @@ Runs the REAL VerbalWinApp from source, in-process, but:
   * auto_update is written False into the isolated config so the update the
     check finds is never downloaded/installed by this run.
   * APP_VERSION is patched to 1.0.33 so whatever app_versions_latest currently
-    holds counts as an update; the asserts below expect 1.0.34 — bump
-    EXPECT_VERSION when a newer Windows build is published.
+    holds counts as an update; the asserts below expect EXPECT_VERSION — bump
+    it when a newer Windows build is published (queried live 2026-08-28:
+    app_versions_latest served 1.0.38; v1.0.41 was published MID-RUN at 23:08 UTC the same day).
 Results are flushed after every step because the run ends in os._exit()
 (that IS one of the things under test).
 """
@@ -32,7 +33,7 @@ import threading
 import time
 import traceback
 
-EXPECT_VERSION = "1.0.34"                 # latest published win build at the time of writing
+EXPECT_VERSION = "1.0.41"                 # latest published win build at the time of writing
 HERE = os.path.dirname(os.path.abspath(__file__))
 HOME = os.path.join(tempfile.gettempdir(), "flume_smoke_home")
 shutil.rmtree(HOME, ignore_errors=True)
@@ -111,6 +112,93 @@ def scenario():
         mw = appobj.meeting_window
         record("meeting_show_1", mw is not None and mw.visible and alive(mw) is True,
                f"visible={getattr(mw,'visible',None)} alive={alive(mw)}")
+
+        # 2b) layout smoke (2026-08-28 report: collapsed bar rendered as a
+        # full titled window). Native form props report PHYSICAL px (rule
+        # #42), so expectations scale logical constants by the window's own
+        # DPI scale. Reading Width/etc. off-thread is tolerable for a smoke
+        # check (plain field reads; no message-pump interaction).
+        def native_geom():
+            form = mw._window.native
+            return (int(form.Width), int(form.Height),
+                    str(form.FormBorderStyle), bool(form.TopMost),
+                    str(form.WindowState))
+
+        s = mw._dpi_scale()
+        tol = int(round(8 * s))                 # ±8 LOGICAL px, in physical
+
+        def near(v, logical):
+            return abs(v - round(logical * s)) <= tol
+
+        mw.set_layout("bar")
+        time.sleep(2)
+        w_, h_, border, topmost, state = native_geom()
+        # .NET Enum.ToString() gives the bare member name; pywebview-side str()
+        # may prefix the type — accept both.
+        ok = (near(h_, 54) and near(w_, 560)
+              and border.endswith("None") and topmost)
+        record("bar_layout", ok,
+               f"phys={w_}x{h_} scale={s} border={border} topmost={topmost} state={state}")
+
+        mw.set_layout("expanded")
+        time.sleep(2)
+        w_, h_, border, topmost, state = native_geom()
+        # expanded is user-resizable, so assert the MIN_W/MIN_H floor
+        # (700x480 logical) rather than exact WIN_WxWIN_H.
+        ok = (w_ >= round(700 * s) - tol and h_ >= round(480 * s) - tol
+              and border.endswith("Sizable") and not topmost)
+        record("expand_restore", ok,
+               f"phys={w_}x{h_} scale={s} border={border} topmost={topmost} state={state}")
+
+        # 2c) minimize mid-meeting collapses to the bar (2026-08-28 report).
+        # _on_native_resize keys on app.meetings.active/.processing — pure
+        # properties over meetings.session.state, so a stub namespace with
+        # state="recording" simulates a live meeting WITHOUT any audio
+        # capture or a real MeetingSession. Nothing else consumes the stub in
+        # this window: HUD pushes and _toggle_meeting/_sign_out are not
+        # exercised while it is set, and it is cleared in the finally.
+        if appobj.meetings is None or not hasattr(mw, "_on_native_resize"):
+            record("minimize_to_bar", True,
+                   "skipped: minimize interception not wired on this build")
+        else:
+            import types as _types
+            appobj.meetings.session = _types.SimpleNamespace(
+                state="recording", title="Smoke")
+            try:
+                def _minimize():
+                    import System.Windows.Forms as WinForms
+                    mw._window.native.WindowState = \
+                        WinForms.FormWindowState.Minimized
+                invoked = mw._apply_native(_minimize)   # UI-thread hop
+                time.sleep(3)   # inline collapse + deferred set_layout('bar')
+                w_, h_, border, topmost, state = native_geom()
+                ok = (invoked and mw._layout == "bar"
+                      and state.endswith("Normal")      # un-minimized again
+                      and near(h_, 54) and near(w_, 560)
+                      and border.endswith("None") and topmost)
+                record("minimize_to_bar", ok,
+                       f"invoked={invoked} layout={mw._layout} state={state} "
+                       f"phys={w_}x{h_} border={border} topmost={topmost}")
+            finally:
+                appobj.meetings.session = None          # drop the stub
+            mw.set_layout("expanded")   # restore for the close-X step below
+            time.sleep(2)
+
+        # 2d) Windows builds must not leak Mac-only wording/glyphs
+        # (2026-08-28 report). flume_html() legitimately contains '⌘' inside
+        # runtime-guarded JS ternaries (IS_WINDOWS?'Ctrl+V':'⌘V') that never
+        # render on Windows — exempt exactly those, flag any other '⌘'.
+        from app.flume_dashboard_html import flume_html
+        from app.meeting_html import meeting_html
+        fh, mh = flume_html(), meeting_html()
+        fh_guarded = fh.replace("IS_WINDOWS?'Ctrl+V':'⌘V'", "")
+        ok = ("This PC" in fh and "This Mac" not in fh
+              and "⌘" not in fh_guarded
+              and "Ctrl+." in mh and "⌘" not in mh)
+        record("rendered_strings", ok,
+               f"pc={'This PC' in fh} mac={'This Mac' in fh} "
+               f"flume_cmd_unguarded={fh_guarded.count(chr(0x2318))} "
+               f"meet_ctrl={'Ctrl+.' in mh} meet_cmd={mh.count(chr(0x2318))}")
 
         # 3) user presses X: Form.Close() on the UI thread == CloseReason.UserClosing
         mw._window.destroy()          # pywebview routes this through FormClosing -> our _on_closing veto

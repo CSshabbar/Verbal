@@ -30,6 +30,16 @@ Fonts must go through fonts_css.web_font_css() — WKWebView cannot resolve the
 CoreText-registered faces by name (05-conventions.md Rule #7).
 """
 from app.fonts_css import web_font_css
+import sys
+
+# Keyboard-chord label for shortcut hints. The keydown handler in the JS below
+# fires on (metaKey||ctrlKey), so on Windows the WORKING chord is Ctrl — the
+# Windows key cannot be used (Win+. is the OS emoji picker, most Win-chords are
+# OS-reserved, and browsers surface it as metaKey inconsistently). Hence the
+# label is "Ctrl+", never a ⊞ glyph (2026-08-28 report). Note the style gap:
+# mac has no plus sign ("⌘." vs "Ctrl+."). The JS mirror is MOD (built from
+# IS_WIN) so re-rendered hints agree with this static HTML.
+_MOD = "Ctrl+" if sys.platform == "win32" else "⌘"
 
 # Line-icon SVGs (stroke 1.4 — widget kit v2 canonical stroke).
 _IC = {
@@ -535,10 +545,10 @@ def _live_screen():
       <span class="mtimer mono" id="mTimer">0:00</span>
       <div class="mact">
         <button class="iconbtn" id="mCancelBtn" title="Cancel meeting (discard, no save)" onclick="cancelMeeting()">{_svg('trash', 13)}</button>
-        <button class="iconbtn accent" id="mStarBtn" title="Mark this moment (⌘.)" onclick="api('mark_moment','')">{_svg('star', 13)}<span class="stN" id="stN"></span></button>
-        <button class="iconbtn" title="Pause (⌘P)" id="mPauseBtn" onclick="api('pause_meeting')">{_svg('pause', 13)}</button>
+        <button class="iconbtn accent" id="mStarBtn" title="Mark this moment ({_MOD}.)" onclick="api('mark_moment','')">{_svg('star', 13)}<span class="stN" id="stN"></span></button>
+        <button class="iconbtn" title="Pause ({_MOD}P)" id="mPauseBtn" onclick="api('pause_meeting')">{_svg('pause', 13)}</button>
         <button class="iconbtn" title="Collapse to bar" onclick="api('collapse_meeting_window')">{_svg('collapse', 13)}</button>
-        <button class="iconbtn rec" title="Stop (⌘Enter)" onclick="liveStop()">{_svg('stop', 12)}<span>Stop</span></button>
+        <button class="iconbtn rec" title="Stop ({_MOD}Enter)" onclick="liveStop()">{_svg('stop', 12)}<span>Stop</span></button>
       </div>
     </div>
     <div class="mbody">
@@ -565,7 +575,7 @@ def _live_screen():
     </div>
     <div class="marksfoot">
       <span class="eyebrow accd">★ Marks</span>
-      <div class="markrow" id="markRow"><span class="marksEmpty">Press ⌘. (or the star) to mark a moment.</span></div>
+      <div class="markrow" id="markRow"><span class="marksEmpty">Press {_MOD}. (or the star) to mark a moment.</span></div>
     </div>
   </div>"""
 
@@ -614,6 +624,9 @@ function api(name){ const a=[].slice.call(arguments,1);
     ? window.pywebview.api[name].apply(null,a) : Promise.resolve({ok:false}); }
 const esc = s => String(s==null?'':s).replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const IS_WIN = /Windows/i.test(navigator.userAgent||'') || /^Win/.test(navigator.platform||'');
+// Chord label — mirrors Python's _MOD (the keydown chords fire on metaKey||
+// ctrlKey, and on Windows only Ctrl works; 2026-08-28 report).
+const MOD = IS_WIN ? 'Ctrl+' : '\u2318'; // \u2318 (not the raw glyph) keeps the mac symbol out of the Windows page bytes
 
 let MODE='permissions';           // permissions | premeeting | live
 let HANDOFF=null;                 // post-meeting bar state (MER-46): {state,id,title}
@@ -1129,7 +1142,7 @@ function renderMarks(){
   const n=document.getElementById('stN');
   if(n) n.textContent=MARKS.length ? (MARKS.length>99?'99+':String(MARKS.length)) : '';
   if(!MARKS.length){
-    row.innerHTML='<span class="marksEmpty">Press ⌘. (or the star) to mark a moment.</span>';
+    row.innerHTML='<span class="marksEmpty">Press '+MOD+'. (or the star) to mark a moment.</span>';
     return;
   }
   row.innerHTML=MARKS.map(function(m,i){

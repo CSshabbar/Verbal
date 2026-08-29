@@ -40,6 +40,24 @@ Window lifetime (DO NOT remove the closing/closed hooks):
     also subscribes a NATIVE FormClosing handler (`_on_native_closing`) on the
     BrowserForm; it runs after pywebview's (subscription order) and clears
     args.Cancel for every CloseReason other than UserClosing.
+
+Bar mode (2026-08-28 report — "when I minimize it should only show that
+record and time button not the whole window"):
+    The collapsed layout used to render as a full 700x480 titled window with
+    the tiny pill floating inside it, for two stacked reasons: (a) the
+    create_window min_size became WinForms MinimumSize, which CLAMPED the
+    later resize(560,54) back to 700x480; (b) rule #42 — create_window takes
+    LOGICAL px but resize()/move() operate in PHYSICAL px, and
+    _position_and_size passed logical values, so even expanded geometry
+    drifted on scaled displays. set_layout now mutates the native BrowserForm
+    on the WinForms UI thread (_apply_layout_native): bar = borderless,
+    top-most, BAR_WxBAR_H (logical, scaled by _dpi_scale) top-center of the
+    work area — macOS _bar_rect/_apply_bar_chrome parity; expanded = Sizable
+    with MinimumSize restored, centered, not top-most. Minimizing during a
+    live meeting collapses to the bar instead of the taskbar
+    (_on_native_resize), mirroring the macOS auto-collapse: a live recording
+    must never run invisibly. Every native mutation fails closed to today's
+    behavior.
 """
 
 import ctypes
@@ -58,6 +76,10 @@ BAR_W, BAR_H = 560, 54   # keep in sync with app/meeting_window.py's BAR_W — b
 # clipping the trailing button (05-conventions.md Rule #56).
 WIN_W, WIN_H = 880, 620
 MIN_W, MIN_H = 700, 480
+# UNIT CONVENTION (rule #42; 2026-08-28 report): the constants above are
+# LOGICAL design px (96-dpi). _rect_for() is the single place they become
+# PHYSICAL device px — every geometry consumer (native SetBounds, pywebview
+# resize()) wants physical, and _work_area() already returns physical.
 WIN_TITLE = "Flume Meeting"
 # How long show() waits for the freshly built form's `shown` Event. WinForms
 # raises Shown one message-pump turn after create_window returns, so this is
@@ -82,6 +104,9 @@ class WinMeetingWindow:
         # end / Task Manager): lets _on_closing allow the teardown. Only the
         # user's X / Alt+F4 (CloseReason.UserClosing) is intercepted.
         self._destroying = False
+        # Re-entrancy guard for _on_native_resize: assigning WindowState back
+        # to Normal inside the handler fires Resize again (2026-08-28 report).
+        self._minimize_intercepting = False
 
         # DashboardApi reads these on the "dashboard" argument.
         self._known_devices = []
@@ -113,14 +138,97 @@ class WinMeetingWindow:
         except Exception:
             return 0, 0, 1440, 860
 
-    def _rect_for(self, layout):
-        left, top, right, bottom = self._work_area()
+    def _dpi_scale(self):
+        """Physical device px per logical/CSS px (1.0 at 96 dpi).
+
+        Rule #42: pywebview's winforms backend mixes units — create_window
+        takes LOGICAL px but resize() and the native form APIs use PHYSICAL
+        px — and passing logical values to resize() is why the collapsed bar
+        never actually shrank / expanded geometry drifted on scaled displays
+        (2026-08-28 report).
+
+        Which monitor's DPI: every _rect_for target sits on the PRIMARY
+        work area (SPI_GETWORKAREA), so the scale must be the PRIMARY
+        monitor's effective DPI. Using GetDpiForWindow (the form's CURRENT
+        monitor) mis-sized the bar whenever the window had been dragged to
+        a monitor with a different scale factor than the primary — e.g. a
+        100% external next to a 150% laptop panel rendered the pill at 2/3
+        size, clipping the trailing button BAR_W exists to protect (rule
+        #56; mixed-DPI review of the 2026-08-28 fix). Fallback chain, each
+        step only when the previous API is unavailable:
+        GetDpiForMonitor(primary, Win8.1+) → GetDpiForWindow (Win10 1607+,
+        needs the live form handle) → GetDpiForSystem → 1.0 (assume
+        unscaled — the original behavior).
+        Reading `form.Handle` off-thread is safe: the hidden=True create path
+        Show()/Hide()s the form, so the handle already exists (same pattern
+        pywebview's own resize()/move() rely on).
+        """
+        try:
+            user32 = ctypes.windll.user32
+            # Primary monitor's effective DPI. The primary monitor owns the
+            # (0,0) origin by definition — the same monitor SPI_GETWORKAREA
+            # describes, i.e. the one all our geometry lands on.
+            try:
+                mfr = user32.MonitorFromRect
+                mfr.restype = ctypes.c_void_p    # HMONITOR truncates on x64
+                mfr.argtypes = [ctypes.POINTER(wt.RECT), wt.DWORD]
+                rect = wt.RECT(0, 0, 1, 1)
+                hmon = mfr(ctypes.byref(rect), 1)  # MONITOR_DEFAULTTOPRIMARY
+                if hmon:
+                    gdfm = ctypes.windll.shcore.GetDpiForMonitor
+                    gdfm.restype = ctypes.c_long
+                    gdfm.argtypes = [ctypes.c_void_p, ctypes.c_int,
+                                     ctypes.POINTER(ctypes.c_uint),
+                                     ctypes.POINTER(ctypes.c_uint)]
+                    dpix, dpiy = ctypes.c_uint(0), ctypes.c_uint(0)
+                    # 0 = MDT_EFFECTIVE_DPI (what the user's scale % sets)
+                    if gdfm(hmon, 0, ctypes.byref(dpix),
+                            ctypes.byref(dpiy)) == 0 and dpix.value:
+                        return dpix.value / 96.0
+            except Exception:
+                pass          # pre-8.1 / shcore missing — per-window fallback
+            form = getattr(self._window, "native", None) if self._window else None
+            if form is not None:
+                try:
+                    if form.IsHandleCreated:
+                        fn = user32.GetDpiForWindow
+                        fn.restype = ctypes.c_uint
+                        fn.argtypes = [wt.HWND]
+                        dpi = fn(int(form.Handle.ToInt64()))
+                        if dpi:
+                            return dpi / 96.0
+                except Exception:
+                    pass                     # fall through to system DPI
+            fn = user32.GetDpiForSystem
+            fn.restype = ctypes.c_uint
+            fn.argtypes = []
+            dpi = fn()
+            if dpi:
+                return dpi / 96.0
+        except Exception:
+            pass                             # pre-1607 Windows — assume 1.0
+        return 1.0
+
+    def _rect_for(self, layout, scale=None):
+        """Target geometry for `layout` in PHYSICAL device px.
+
+        Single-unit convention (rule #42; 2026-08-28 report): BAR_W/BAR_H/
+        WIN_W/WIN_H stay logical design px module-wide and are scaled to
+        physical HERE, once — _work_area() is already physical
+        (SPI_GETWORKAREA in a DPI-aware process), and both consumers (native
+        SetBounds and pywebview resize()) take physical. `scale` is
+        injectable so pure-logic tests can pin it to 1.0.
+        Bar placement mirrors macOS _bar_rect: top-center, 12px under the
+        work-area top edge.
+        """
+        s = self._dpi_scale() if scale is None else scale
+        left, top, right, bottom = self._work_area()      # physical px
         if layout == "bar":
-            w, h = BAR_W, BAR_H
+            w, h = int(round(BAR_W * s)), int(round(BAR_H * s))
             x = (left + right - w) // 2
-            y = top + 12
+            y = top + int(round(12 * s))
         else:
-            w, h = WIN_W, WIN_H
+            w, h = int(round(WIN_W * s)), int(round(WIN_H * s))
             x = (left + right - w) // 2
             y = (top + bottom - h) // 2
         return x, y, w, h
@@ -133,13 +241,21 @@ class WinMeetingWindow:
             return
         try:
             self._api = DashboardApi(self)
-            x, y, w, h = self._rect_for(self._layout)
+            # Rule #42 unit split at create time: width/height/min_size are
+            # LOGICAL px (the form auto-scales them via AutoScaleMode.Dpi),
+            # but initial x/y land on Form.Location, which is PHYSICAL screen
+            # px. _rect_for returns physical, so width/height are divided
+            # back out. Exactness doesn't matter here: the window is created
+            # hidden and show() → _position_and_size() re-asserts precise
+            # physical bounds natively (2026-08-28 report).
+            s = self._dpi_scale()             # no form yet → system DPI
+            x, y, w, h = self._rect_for(self._layout, scale=s)
             self._window = webview.create_window(
                 WIN_TITLE,
                 html=meeting_html(),
                 js_api=self._api,
-                width=w,
-                height=h,
+                width=int(round(w / s)),
+                height=int(round(h / s)),
                 x=x,
                 y=y,
                 min_size=(MIN_W, MIN_H),
@@ -165,6 +281,7 @@ class WinMeetingWindow:
                 logger.warning("meeting close-hook attach failed (window will "
                                "die on X): %s", e)
             self._attach_native_closing()
+            self._attach_native_minimize()
         except Exception as e:
             logger.error("meeting window create failed: %s", e, exc_info=True)
             self._window = None
@@ -209,6 +326,74 @@ class WinMeetingWindow:
             args.Cancel = False
         except Exception as e:
             logger.debug("meeting native closing-hook failed: %s", e)
+
+    def _attach_native_minimize(self):
+        """Subscribe `_on_native_resize` on the WinForms BrowserForm.
+
+        The caption Minimize button (or Win+Down / a taskbar click) only
+        minimizes to the taskbar, but mid-meeting the user expects it to
+        collapse to the pill instead (2026-08-28 report — "when I minimize it
+        should only show that record and time button not the whole window";
+        macOS parity: losing key while recording auto-collapses to the bar).
+        Fail-closed: without the hook, minimize keeps today's plain-taskbar
+        behavior.
+        """
+        try:
+            form = getattr(self._window, "native", None)
+            if form is None:
+                return
+            form.Resize += self._on_native_resize
+        except Exception as e:
+            logger.debug("meeting minimize-hook attach failed: %s", e)
+
+    def _on_native_resize(self, sender, args):
+        """Native Resize handler — runs ON the WinForms UI thread.
+
+        Minimize during a live meeting (recording or processing) becomes
+        collapse-to-bar; idle minimize passes through untouched.
+        `_minimize_intercepting` guards re-entrancy: assigning WindowState
+        inside a Resize handler fires Resize again. The chrome/geometry half
+        of the collapse runs INLINE (this IS the WinForms UI thread, so
+        _apply_layout_native executes without an Invoke round-trip and its
+        own WindowState=Normal restore reveals the pill directly) — the
+        first cut restored Normal here and deferred the whole collapse to
+        app._on_main, which flashed the full expanded window for a
+        thread-spawn + form.Invoke round-trip before it snapped to the bar
+        (review of the 2026-08-28 fix). Only the page-side half is deferred:
+        evaluate_js — hence set_layout()/emit() — DEADLOCKS this thread
+        (rule #67), exactly like _on_closing's mid-meeting branch.
+        """
+        if self._minimize_intercepting:
+            return
+        try:
+            import System.Windows.Forms as WinForms
+            if sender.WindowState != WinForms.FormWindowState.Minimized:
+                return
+            if not self._recording_active():
+                return          # no live meeting — let minimize be minimize
+            logger.info("meeting window: minimize intercepted mid-meeting — "
+                        "collapsing to bar")
+            self._minimize_intercepting = True
+            try:
+                # Inline bar apply: the guard above absorbs the re-entrant
+                # Resize that apply()'s WindowState=Normal assignment fires.
+                self._layout = "bar"
+                if not self._apply_layout_native("bar"):
+                    # Native apply unavailable — at least restore visibility
+                    # (a live recording must never run minimized/invisibly);
+                    # the deferred set_layout below retries the geometry.
+                    sender.WindowState = WinForms.FormWindowState.Normal
+            finally:
+                self._minimize_intercepting = False
+            try:
+                # Deferred page-side half (rule #67): set_layout re-asserts
+                # the same bar geometry (idempotent no-op after the inline
+                # apply) and emits 'layout' so the page renders the pill UI.
+                self.app._on_main(lambda: self.set_layout("bar"))
+            except Exception as e:
+                logger.debug("meeting minimize collapse schedule failed: %s", e)
+        except Exception as e:
+            logger.debug("meeting minimize intercept failed: %s", e)
 
     def _recording_active(self):
         """Mirror of meeting_window._recording_active: recording OR still
@@ -405,12 +590,136 @@ class WinMeetingWindow:
         return self._visible
 
     # ── layout ──────────────────────────────────────────────────────────
+    def _apply_native(self, fn):
+        """Run `fn` on the WinForms UI thread via form.Invoke.
+
+        Returns True when it ran (native path available), False so the caller
+        can fall back otherwise. pywebview 5.x guarantees `.native` is the
+        BrowserForm once create_window returned, and the hidden=True create
+        path Show()/Hide()s the form, so the handle already exists — which is
+        what makes InvokeRequired reliable (it reports False when no handle
+        exists yet, which would run `fn` on the wrong thread).
+        """
+        w = self._window
+        form = getattr(w, "native", None) if w is not None else None
+        if form is None:
+            return False
+        try:
+            if not form.IsHandleCreated:
+                return False
+            import System.Windows.Forms as WinForms
+            if form.InvokeRequired:
+                form.Invoke(WinForms.MethodInvoker(fn))
+            else:
+                fn()
+            return True
+        except Exception as e:
+            logger.debug("meeting native invoke failed: %s", e)
+            return False
+
+    def _apply_layout_native(self, layout):
+        """Apply chrome + geometry for `layout` natively, in PHYSICAL px.
+
+        Why native and not window.resize()/move(): the 2026-08-28 report
+        showed collapsed 'bar' mode as a full 700x480 titled window with the
+        pill floating inside — create_window's min_size became WinForms
+        MinimumSize and CLAMPED resize(560,54), and rule #42's logical/
+        physical mix-up meant even correct calls drifted on scaled displays.
+
+        bar      — borderless top-most pill, BAR_WxBAR_H top-center (macOS
+                   _bar_mask/_apply_bar_chrome/_bar_rect parity). MinimumSize
+                   is cleared BEFORE the shrink or it clamps again.
+        expanded — Sizable, MinimumSize restored (physical, AFTER the resize
+                   so it can't fight it), centered, not top-most.
+
+        Every mutation is individually guarded: a partial apply still beats
+        today's stuck-large window, and SetBounds runs regardless.
+        NOT touched here: ShowInTaskbar (toggling it RECREATES the win32
+        handle, which would orphan the WebView2 child and our event hooks).
+        """
+        x, y, w, h = self._rect_for(layout)          # physical px
+        s = self._dpi_scale()
+
+        def apply():
+            import System.Windows.Forms as WinForms
+            from System.Drawing import Size
+            form = getattr(self._window, "native", None)
+            if form is None:
+                return
+            try:
+                # Un-minimize/un-maximize first so the new bounds apply to the
+                # live window, not the stored restore-rect. Safe against the
+                # minimize interceptor: Resize re-fires with state Normal,
+                # which _on_native_resize ignores.
+                if form.WindowState != WinForms.FormWindowState.Normal:
+                    form.WindowState = WinForms.FormWindowState.Normal
+            except Exception as e:
+                logger.debug("meeting layout window-state failed: %s", e)
+            if layout == "bar":
+                try:
+                    form.MinimumSize = Size(0, 0)    # clear BEFORE the shrink
+                except Exception as e:
+                    logger.debug("meeting bar min-size failed: %s", e)
+                try:
+                    # 'None' is a Python keyword — same getattr pywebview uses
+                    form.FormBorderStyle = getattr(WinForms.FormBorderStyle,
+                                                   "None")
+                except Exception as e:
+                    logger.debug("meeting bar border failed: %s", e)
+                try:
+                    form.TopMost = True   # macOS bar floats above everything
+                except Exception as e:
+                    logger.debug("meeting bar topmost failed: %s", e)
+            else:
+                try:
+                    form.FormBorderStyle = WinForms.FormBorderStyle.Sizable
+                except Exception as e:
+                    logger.debug("meeting expanded border failed: %s", e)
+                try:
+                    form.TopMost = False
+                except Exception as e:
+                    logger.debug("meeting expanded topmost failed: %s", e)
+            try:
+                form.SetBounds(x, y, w, h)           # physical px (rule #42)
+            except Exception as e:
+                logger.debug("meeting layout bounds failed: %s", e)
+            if layout == "expanded":
+                try:
+                    form.MinimumSize = Size(int(round(MIN_W * s)),
+                                            int(round(MIN_H * s)))
+                except Exception as e:
+                    logger.debug("meeting expanded min-size failed: %s", e)
+
+        return self._apply_native(apply)
+
     def _position_and_size(self):
+        # Native path first: chrome + bounds in one UI-thread hop.
+        try:
+            if self._apply_layout_native(self._layout):
+                return
+        except Exception as e:
+            logger.debug("meeting native layout failed: %s", e)
+        # Fallback — the pre-2026-08-28 behavior, now fed PHYSICAL px so
+        # resize() is correct under DPI scaling (rule #42). No chrome changes
+        # here: fail closed to a plain resized window (restoring the border
+        # needs the native form.Invoke path — the very thing that just
+        # failed).
         try:
             x, y, w, h = self._rect_for(self._layout)
             if self._window:
-                self._window.resize(w, h)
-                self._window.move(x, y)
+                self._window.resize(w, h)    # resize() takes raw physical px
+                # move() is NOT symmetric with resize(): pywebview multiplies
+                # x/y by the form's scale_factor (GetScaleFactorForDevice(0)
+                # / 100, the primary display's scale) before SetWindowPos, so
+                # divide that back out or the position double-scales on
+                # scaled displays and the window lands right/below center —
+                # potentially half off-screen (review of the 2026-08-28 fix).
+                try:
+                    form = getattr(self._window, "native", None)
+                    s2 = float(getattr(form, "scale_factor", 1.0) or 1.0)
+                except Exception:
+                    s2 = 1.0
+                self._window.move(int(round(x / s2)), int(round(y / s2)))
         except Exception as e:
             logger.debug("meeting window position failed: %s", e)
 

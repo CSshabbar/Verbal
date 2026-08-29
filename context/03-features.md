@@ -1154,7 +1154,22 @@ deletes real files under `~/.verbal/` and this development machine has a real, i
   Windows shutdown/log-off and Task Manager are still let through). (2) The default meeting title
   (`MeetingSession.__init__`, `"Meeting — Aug 26, 14:05"`) is built from `tm_mday` instead of the
   glibc-only `%-d`, which the Windows CRT rejected with "Invalid format string" — so every meeting
-  started without a typed title failed on Windows (Rule #68).
+  started without a typed title failed on Windows (Rule #68). **And two from the 2026-08-28 report:**
+  (3) collapsed **bar** mode is now real on Windows — it used to render as a full 700×480 titled
+  window with the tiny pill floating inside, because `create_window`'s `min_size` became WinForms
+  `MinimumSize` and clamped the shrink, and the logical/physical px mix drifted even the expanded
+  geometry on scaled displays (Rule #42). `_apply_layout_native` now mutates the form on the WinForms
+  UI thread: bar = borderless top-most 560×54 pill top-center of the primary work area, expanded =
+  Sizable centered 880×620 with the minimum restored — and **minimizing during a live meeting
+  collapses to the bar** instead of the taskbar (`_on_native_resize`, macOS focus-loss parity — a
+  live recording must never run invisibly; idle minimize stays a plain minimize; Rule #67h).
+  (4) The live screen's shortcut hints render **"Ctrl+."/"Ctrl+P"/"Ctrl+Enter"** on Windows instead
+  of ⌘ chords (the keydown handlers fire on `metaKey||ctrlKey` and the Win key is OS-reserved) —
+  part of the platform-string seam (Rule #71) that also replaced the dashboard/popover's hardcoded
+  "This Mac" with `THIS_DEVICE` ("This PC" on Windows) in the sidebar, canvas, settings, meeting-list
+  "this Mac only" tag and onboarding wizard. Both 2026-08-28 fixes are pinned by
+  `scripts/win_smoke_isolated.py` (bar/expanded geometry scaled by `_dpi_scale`, minimize-to-bar
+  driven with a stubbed live session, rendered platform strings).
 - **Desktop:** `meetings.py` (`MeetingManager`/`MeetingSession` state machine: idle→preparing→recording⇄
   paused→stopping→processing→ready|failed) + `system_audio.py` (SCK audio capture) + `meeting_window.py`/
   `meeting_html.py` (ONE morphing WKWebView panel: an ambient glassy **bar** top-center — that fluidly grows

@@ -1656,7 +1656,7 @@ function renderSidebar(){
     ? devs.map(d=>`<div class="devrow${d.online?'':' off'}" onclick="toggleSyncPop(event,this)">
         <span class="ddot${d.online?' on':''}"></span>${esc(d.device_name||'Device')}
         ${d.device_id===target?'<span class="dtgt">SYNC</span>':''}</div>`).join('')
-    : `<div class="devrow" onclick="toggleSyncPop(event,this)"><span class="ddot on"></span>This Mac</div>`;
+    : `<div class="devrow" onclick="toggleSyncPop(event,this)"><span class="ddot on"></span>${THIS_DEVICE}</div>`;
   renderDeadBanner();
 }
 function statusPill(){
@@ -2153,7 +2153,7 @@ function renderCanvas(){
     || '<span class="cvdev muted">no other devices online</span>';
   // Live slot
   let liveBody='';
-  const from = CANVAS.own ? 'This Mac' : (CANVAS.from || '');
+  const from = CANVAS.own ? THIS_DEVICE : (CANVAS.from || '');
   const when = CANVAS.at ? cvRel(CANVAS.at) : '';
   if(!(CANVAS.content||'').trim() && !CANVAS.image_url){
     liveBody = '<div class="cvempty">Nothing shared right now — whatever you send lands on every device instantly.</div>';
@@ -2182,7 +2182,7 @@ function renderCanvas(){
     <div class="cvrow">
       <span class="cvric">${e.kind==='image'?SVG.grid:(e.kind==='link'?SVG.bolt:SVG.lines)}</span>
       <div class="cvrtx"><div class="cvr1">${esc(e.text)}</div>
-        <div class="cvr2">${esc(cvRel(e.at))} · ${e.own?'from this Mac':('from '+esc(e.from||'another device'))}</div></div>
+        <div class="cvr2">${esc(cvRel(e.at))} · ${e.own?('from '+THIS_DEVICE_LC):('from '+esc(e.from||'another device'))}</div></div>
       <button class="cvrcopy" title="Copy" onclick="api('copy_text', ${esc(JSON.stringify(e.text))});toast('Copied')">Copy</button>
     </div>`).join('')
     : '<div class="cvempty" style="padding:6px 0 2px">Sends and receipts will appear here.</div>';
@@ -2617,7 +2617,7 @@ function renderMeetList(){
       : `<span class="mav" style="background:#D9B36B">·</span>`;
     const prev = m.status==='processing' ? 'Summarizing…'
       : m.status==='failed' ? 'Summary failed — open to retry'
-      : ((m.summary||'').split('\n')[0] || ((m.utterances||0)+' segments'+(m.cloud?'':' · this Mac only')));
+      : ((m.summary||'').split('\n')[0] || ((m.utterances||0)+' segments'+(m.cloud?'':' · '+THIS_DEVICE_LC+' only')));
     const isNew = m.status==='ready' && (MEETS.opened||[]).indexOf(m.id)<0;
     const marks=(m.marked_moments||[]).length, acts=(m.action_items||[]).length;
     const meta=[fmtHM(m.duration_seconds)];
@@ -5080,7 +5080,7 @@ function settingsPane(id){
       <div class="scard">
         <div class="saverow" style="margin-bottom:14px"><button class="toggle ${s.sync_enabled?'on':''}" id="syncToggle" onclick="this.classList.toggle('on')"></button><span style="font:500 13px Geist">Enable sync</span></div>
         <div class="field"><label>ACCOUNT ID</label><input id="userId" value="${esc(s.sync_user_id||'')}"/></div>
-        <div class="field"><label>DEVICE NAME</label><input id="devName" value="${esc(s.sync_device_name||'This Mac')}"/></div>
+        <div class="field"><label>DEVICE NAME</label><input id="devName" value="${esc(s.sync_device_name||THIS_DEVICE)}"/></div>
         <button class="btn primary" style="flex:none;width:130px" onclick="saveSettings()">Save sync</button>
       </div></div>
     <div class="ssection"><h3>History</h3><p class="ssub">Your dictations are kept on this device and, when sync is on, in your account.</p>
@@ -5764,7 +5764,7 @@ function renderWizard(){
       return `<div class="permrow${(!ok&&!p.optional)?' need':''}"><div class="permicon ${ok?'ok':(p.optional?'':'need')}">${WIZ_ICON[p.icon]}</div>
         <div class="perminfo"><div class="permname">${p.name}${p.optional?'<span class="opt">Optional</span>':''}</div><div class="permsub">${p.sub}</div></div>${right}</div>`;
     }).join('');
-    content=`<div class="gstitle">A few permissions.</div><div class="gslead">Flume needs these to paste transcriptions and record meetings on this Mac.</div>${rows}`;
+    content=`<div class="gstitle">A few permissions.</div><div class="gslead">Flume needs these to paste transcriptions and record meetings on ${THIS_DEVICE_LC}.</div>${rows}`;
   } else if(WSTEP===2){
     // The wizard is only ever reachable when signed_in is true — applyAuthGate
     // gives the sign-in wall priority over the onboarded check — so STATE.user
@@ -5773,7 +5773,7 @@ function renderWizard(){
     const u=(STATE&&STATE.user)||{};
     content=`<div class="gstitle">Sync across your devices.</div>
       <div class="gslead">Signed in as ${esc(u.email||'your account')}. Your dictation, notes and canvas stay in sync everywhere you sign in.</div>
-      <div class="permrow"><div class="permicon ok">${WIZ_ICON.phone}</div><div class="perminfo"><div class="permname">This Mac</div><div class="permsub">Synced to your account</div></div><span class="permpill"><span class="pdot"></span>Active</span></div>`;
+      <div class="permrow"><div class="permicon ok">${WIZ_ICON.phone}</div><div class="perminfo"><div class="permname">${THIS_DEVICE}</div><div class="permsub">Synced to your account</div></div><span class="permpill"><span class="pdot"></span>Active</span></div>`;
   } else {
     content=`<div class="gstitle">You're all set.</div>
       <div class="gslead">Hold your hotkey anywhere to dictate — it lands in your clipboard and pastes automatically. Open Flume from the menu bar any time.</div>
@@ -6837,9 +6837,19 @@ setTimeout(()=>{ if(!LOAD_STARTED) load(); }, 400);
         },
     }
     _pl = "win" if _is_win else "mac"
+    # Local-device label. The page was written Mac-only and hardcoded
+    # "This Mac" everywhere; on a Windows box that read as someone else's
+    # Mac (2026-08-28 report: "why is it showing mac? whose mac is that?").
+    # THIS_DEVICE / THIS_DEVICE_LC are injected beside IS_WINDOWS so the JS
+    # render functions share one source of truth; on macOS the values are
+    # exactly "This Mac"/"this Mac", so that build's wording is unchanged.
+    _dev = "This PC" if _is_win else "This Mac"
     platform_map = ("<script>const PL_KEYS=" +
                     _json_str(_key_defs[_pl]) +
-                    f";const IS_WINDOWS={('true' if _is_win else 'false')};</script>")
+                    f";const IS_WINDOWS={('true' if _is_win else 'false')};"
+                    f"const THIS_DEVICE={_json_str(_dev)};"
+                    f"const THIS_DEVICE_LC={_json_str(_dev[0].lower() + _dev[1:])};"
+                    "</script>")
 
     # Strip the leftover placeholder line from the JS.
     js = js.replace("const IC. = {}; // placeholder\n", "")

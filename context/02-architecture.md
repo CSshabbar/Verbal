@@ -62,7 +62,7 @@ separate users purely by `user_id` (the Supabase auth id after sign-in). Details
   | ~~Menubar popover~~ | **RETIRED (IDI-183)** — the macOS menubar is a native `NSMenu`, see below. `flume_popover_html.py::popover_html()` survives as the **Windows** tray popover's HTML (`win_popover.py`) and for its `_mark_data_uri()` helper, which `flume_dashboard_html.py` imports | | |
   | Recording overlay | `overlay.py::OverlayBar` | `overlay_html.py::overlay_html()` | non-activating `NSPanel` |
   | Auto-learn widget | `autolearn_widget.py::AutoLearnWidget` | inline HTML | non-activating `NSPanel` |
-  | Meeting surface | `meeting_window.py::MeetingWindow` | `meeting_html.py::meeting_html()` | ONE morphing `NSPanel`: ambient **bar** (borderless, non-activating, top-center, 500×54) ⇄ **expanded** window (titled+hidden-titlebar, 880×620, floating level, Stage-Manager opt-out `.auxiliary`+`.canJoinAllApplications`, never activates the app — `orderFrontRegardless` + key-only-if-needed, webview subclass accepts first mouse) via `NSAnimationContext` frame animation + styleMask flip; auto-collapses to the bar on focus loss while recording; close-while-recording collapses instead. **Live-meeting-only** since MER-46 — the post-meeting summary is a dashboard view and the panel collapses to a "Notes ready →" handoff pill |
+  | Meeting surface | `meeting_window.py::MeetingWindow` | `meeting_html.py::meeting_html()` | ONE morphing `NSPanel`: ambient **bar** (borderless, non-activating, top-center, 560×54 — grown from 500 for the paused-state pixel budget, `05-conventions.md` #57) ⇄ **expanded** window (titled+hidden-titlebar, 880×620, floating level, Stage-Manager opt-out `.auxiliary`+`.canJoinAllApplications`, never activates the app — `orderFrontRegardless` + key-only-if-needed, webview subclass accepts first mouse) via `NSAnimationContext` frame animation + styleMask flip; auto-collapses to the bar on focus loss while recording; close-while-recording collapses instead. **Live-meeting-only** since MER-46 — the post-meeting summary is a dashboard view and the panel collapses to a "Notes ready →" handoff pill |
 
 - **The macOS menubar is the one surface that is NOT a webview** (IDI-183). `menubar_menu.py` builds a real
   `NSMenu` on top of rumps' items: `build(app)` returns the list `main.py` assigns to `self.menu` and
@@ -190,7 +190,15 @@ bounded `config['meetings']` (`MEETINGS_CAP`). The HUD appears when the meeting 
   of WKWebView + `_SHIM` — see "Also shared across the two desktops" below.
 - **Native-heavy features not yet ported:** auto-learn and file-tagging (macOS Accessibility → need UI Automation) — specced in `whisperflow/WINDOWS_PARITY_PLAN.md`
   and `whisperflow/windows_specs/*.md`. **Meetings capture is ported** (`win_system_audio.py` WASAPI loopback +
-  `win_meeting_window.py` / `win_meeting_hud.py` hosting the same `meeting_html()`). Granola-style call
+  `win_meeting_window.py` / `win_meeting_hud.py` hosting the same `meeting_html()`). Since 2026-08-28
+  `WinMeetingWindow` actually morphs like the Mac panel: **bar** mode is a real borderless top-most
+  pill (560×54 logical, top-center of the primary work area) and **expanded** restores a Sizable
+  centered 880×620 — chrome + geometry applied natively on the WinForms UI thread
+  (`_apply_layout_native`, physical px; before that, `create_window`'s `min_size` clamped the shrink
+  and the collapsed "bar" was a full 700×480 titled window — `05-conventions.md` #42). **Minimizing
+  during a live meeting collapses to the bar** instead of the taskbar (`_on_native_resize`, macOS
+  focus-loss parity — a live recording must never run invisibly; idle minimize is a plain minimize —
+  `05-conventions.md` #67h). Granola-style call
   auto-detect (`meeting_detect.py`) is still macOS-only.
 
 ## Mobile stack (`verbal-mobile/`)
@@ -319,7 +327,10 @@ bounded `config['meetings']` (`MEETINGS_CAP`). The HUD appears when the meeting 
 - **Also shared across the two desktops:** the Flume HTML surfaces (`flume_dashboard_html.py` et al.)
   now render on both macOS (WKWebView + `_SHIM`) and Windows (pywebview/WebView2), plus the
   cross-platform pipeline modules (`recorder`, `transcriber`, `ai_cleanup`, `dictionary`, `recordings`,
-  `auth`, `sync`, `updater`, `meetings`, `paste_guard`).
+  `auth`, `sync`, `updater`, `meetings`, `paste_guard`). User-visible platform-isms in those shared
+  surfaces — key-chord labels, the local-device name — come from an injected seam
+  (`PL_KEYS`/`IS_WINDOWS`/`THIS_DEVICE` in the dashboard, `_MOD`/JS `MOD` in `meeting_html`), never
+  hardcoded ("This Mac" on a Windows box, 2026-08-28 — `05-conventions.md` #71).
 - **What's platform-specific:** the *host container* per surface (WKWebView `NSPanel`/`NSWindow` vs
   pywebview windows), the tray/menubar shell (`rumps` vs `pystray`), input/audio natives
   (`injector`↔`win_injector`, `hotkey` NSEvent vs `pynput`, ScreenCaptureKit↔WASAPI loopback — note

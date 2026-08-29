@@ -126,7 +126,13 @@ _ICONS = {
 
 
 def _js():
-    return """
+    # Local-device label. Hardcoded "This Mac" from the Mac-only era read as
+    # someone else's Mac on Windows (2026-08-28 report). The popover is
+    # Windows-only at runtime (IDI-183) but the label stays
+    # platform-conditional so a macOS revival keeps the exact "This Mac"
+    # wording, byte-identical.
+    _dev = "This PC" if sys.platform == "win32" else "This Mac"
+    return "const THIS_DEVICE='" + _dev + "';" + """
 let STATE=null, VIEW='main', CANVAS={content:'',image_url:null};
 const $=s=>document.querySelector(s);
 const esc=s=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -137,7 +143,7 @@ function tagCls(app){app=(app||'').toLowerCase();
   if(app.includes('iphone'))return '';
   if(app.includes('ipad')||app.includes('pc')||app.includes('windows'))return 'slate';
   return 'local';}
-function tagName(app){return app && app!=='Local' ? app : 'This Mac';}
+function tagName(app){return app && app!=='Local' ? app : THIS_DEVICE;}
 
 // Each row offers Copy only. A second button next to it claimed to re-paste
 // the text but called the identical doCopy — removed in IDI-167 rather than
@@ -230,7 +236,7 @@ function toggleSync(){
   api('save_settings', {
     groq_api_keys:s.groq_api_keys||[], gemini_api_keys:s.gemini_api_keys||[],
     whisper_model:(STATE&&STATE.model)||'base', sync_enabled:on,
-    sync_user_id:s.sync_user_id||'', sync_device_name:s.sync_device_name||'This Mac',
+    sync_user_id:s.sync_user_id||'', sync_device_name:s.sync_device_name||THIS_DEVICE,
   }).then(load);
 }
 function openWindow(){ api('open_window'); }
@@ -269,7 +275,7 @@ def popover_html():
         </div>
         <button class="record" id="recordBtn" onclick="toggleRecord()">
           <span class="mic">{mic}</span><span class="rlabel" id="rlabel">Start recording</span>
-          <span class="kbd">⌘⌥</span>
+          <span class="kbd">{kbd}</span>
         </button>
         <button class="record meeting" onclick="startMeeting()">
           <span class="mic">{mic}</span><span class="rlabel">Start meeting</span>
@@ -296,7 +302,14 @@ def popover_html():
       <div class="recscroll pad"><div id="canvasBody"></div></div>
     </div>
     """.format(logo=logo_inner, mic=_ICONS["mic"], grid=_ICONS["grid"],
-               clock=_ICONS["clock"], expand=_ICONS["expand"], sun=_ICONS["sun"])
+               clock=_ICONS["clock"], expand=_ICONS["expand"], sun=_ICONS["sun"],
+               # The dictation-hotkey pill on the Start-recording button. "⌘⌥" is a
+               # Mac chord; the Windows default binding is Right Alt (win_main
+               # migrates hotkey_label to "Right Alt"), and this popover is
+               # Windows-only at runtime (IDI-183) — but keep the conditional so a
+               # mac render stays byte-identical (2026-08-28 report: no Mac glyphs
+               # on Windows surfaces).
+               kbd=("Right Alt" if sys.platform == "win32" else "⌘⌥"))
     from app.fonts_css import web_font_css
     from app.shared_css import pressed_css
     # Every interactive element in the popover: the sync toggle, both record
