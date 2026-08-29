@@ -15,10 +15,7 @@ Rendered visual approximates the Mac Flume pill:
   * timer while recording, elapsed 'Xs' while transcribing
   * animated waveform bars while recording
   * device name suffix
-
-No clickable buttons yet — the Right-Alt hotkey still starts/stops recording,
-so buttons on the pill are cosmetic for now. Adding them later means binding
-canvas click regions to app methods.
+  * pause / cancel / stop on hover (same actions as the Mac capsule)
 
 Fail-closed: setup() is wrapped by the caller; if the tkinter window can't
 build, the recording pipeline runs without a visible overlay.
@@ -818,8 +815,26 @@ class WinOverlay:
                 if self.app and hasattr(self.app, "_toggle_recording"):
                     self.app._on_main(self.app._toggle_recording)
             elif name == "overlay_cancel":
-                if self.app and hasattr(self.app, "_cancel_recording"):
-                    self.app._on_main(self.app._cancel_recording)
+                # IDI-165: must be the ESC path. `_cancel_recording` never
+                # sets `_cancel_flag`, so Cancel on Transcribing still pasted.
+                # Call `_on_esc_pressed` synchronously (Windows `_on_main` is
+                # a daemon thread — hopping would race the worker's flag check).
+                app = self.app
+                if not app:
+                    self.hide()
+                    return
+                esc = getattr(app, "_on_esc_pressed", None)
+                if callable(esc):
+                    try:
+                        esc()
+                    except Exception as e:
+                        logger.error("overlay cancel failed: %s", e)
+                    if (not getattr(app, "_processing", False)
+                            and not getattr(app, "_is_recording", False)):
+                        self.hide()
+                    return
+                if hasattr(app, "_cancel_recording"):
+                    app._on_main(app._cancel_recording)
                 else:
                     self.hide()
             elif name == "overlay_pause":

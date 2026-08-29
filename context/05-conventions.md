@@ -764,8 +764,10 @@
     `_reset_to_ready` no longer clears it** — the clear lives at RECORDING START (both platforms), so the
     flag reliably means "this dictation was canceled" for the whole cycle and the old race (reset draining
     before the worker's `is_set()` check → cancel lost) is closed; proven by `idi178_fixtures.py`.
-    `overlay.overlay_cancel` delegates to `_on_esc_pressed` (safe off the main thread — it hops itself).
-    Rule: ESC and the Cancel button must stay literally the same code path. The same ticket established three more overlay rules:
+    `overlay.overlay_cancel` and `win_overlay._action("overlay_cancel")` both delegate to
+    `_on_esc_pressed`. On Windows that call is **synchronous** — `VerbalWinApp._on_main` is a daemon
+    thread, so hopping would race the transcription worker's `_cancel_flag` check. Rule: ESC and the
+    Cancel button must stay literally the same code path. The same ticket established three more overlay rules:
     - **Failures get their own pill.** `overlay.update_status(status, error=True)` renders `mode:'error'`
       — danger red `#E05049`, a `!` disc, **no ✓ and no "Copy again"** (that CTA re-copied the *previous*
       dictation's text). `main.py` passes the flag explicitly at the `silent` / `failed` call sites; the

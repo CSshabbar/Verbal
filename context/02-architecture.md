@@ -236,8 +236,7 @@ bounded `config['meetings']` (`MEETINGS_CAP`). The HUD appears when the meeting 
 - **Dashboard:** `win_dashboard.py` + `shared_dashboard.py::DashboardApi` (the same backend class macOS
   uses) render the identical `flume_dashboard_html.py::flume_html()` via real pywebview (WebView2) instead
   of WKWebView + `_SHIM` — see "Also shared across the two desktops" below.
-- **Native-heavy features not yet ported:** auto-learn and file-tagging (macOS Accessibility → need UI Automation) — specced in `whisperflow/WINDOWS_PARITY_PLAN.md`
-  and `whisperflow/windows_specs/*.md`. **Meetings capture is ported** (`win_system_audio.py` WASAPI loopback with silence-player +
+- **Native-heavy features:** auto-learn (`win_editwatch.py`) and file-tagging (`win_ax.py`) are ported via UI Automation. **Meetings capture is ported** (`win_system_audio.py` WASAPI loopback with silence-player +
   bounded reconnect, Rule #76; `win_meeting_window.py` / `win_meeting_hud.py` hosting the same
   `meeting_html()`). **Minimizing during a live meeting collapses to the bar pill** instead of the
   taskbar (`_on_native_resize` — macOS focus-loss parity, a live recording must never run invisibly;
