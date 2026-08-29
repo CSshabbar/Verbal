@@ -84,8 +84,12 @@ class WinMeetingPrompt:
         self._hits = []
         self._fade_timer = None
         self._pending = PendingCalls(name="meeting-prompt")
+        self._setup_started = False
 
     def setup(self):
+        if self._setup_started:
+            return
+        self._setup_started = True
         t = threading.Thread(target=self._run_tk, name="meeting-prompt-tk",
                              daemon=True)
         t.start()
@@ -138,14 +142,20 @@ class WinMeetingPrompt:
         return self._root is not None and self._pending.ready
 
     def _noactivate(self):
-        """Don't steal focus from Zoom/Meet (Mac NSPanel non-activating)."""
+        """Don't steal focus from Zoom/Meet (Mac NSPanel non-activating).
+
+        `winfo_id()` is the Tk wrapper HWND, not the toplevel — apply the
+        style to `GetAncestor(..., GA_ROOT)` or ShowWindow would still activate.
+        """
         try:
             hwnd = int(self._root.winfo_id())
+            GA_ROOT = 2
+            user32 = ctypes.windll.user32
+            root = user32.GetAncestor(hwnd, GA_ROOT) or hwnd
             GWL_EXSTYLE = -20
             WS_EX_NOACTIVATE = 0x08000000
-            user32 = ctypes.windll.user32
-            style = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
-            user32.SetWindowLongW(hwnd, GWL_EXSTYLE, style | WS_EX_NOACTIVATE)
+            style = user32.GetWindowLongW(root, GWL_EXSTYLE)
+            user32.SetWindowLongW(root, GWL_EXSTYLE, style | WS_EX_NOACTIVATE)
         except Exception:
             pass
 

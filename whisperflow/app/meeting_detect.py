@@ -52,11 +52,16 @@ _WIN_EXE = {
     "msteams.exe": "Microsoft Teams",
 }
 
-# Our own windows must never count as a call (WebView2 is a *different* PID).
+# Our own windows must never count as a call. WebView2 is a *different* PID
+# from flume.exe (dashboard / meeting / popover) — skip it so a Flume page
+# titled with "Meeting" is not mistaken for a live call.
 _SKIP_TITLES = {
     "flume", "flume meeting", "flume popover", "verbalanchor",
 }
-_SKIP_EXES = {"flume.exe", "verbal.exe"}
+_SKIP_EXES = {"flume.exe", "verbal.exe", "msedgewebview2.exe"}
+
+# Bound once — mutating windll.user32.argtypes on every 5s scan races other ctypes callers.
+_WIN_ENUM = None  # (ctypes, wintypes, user32, kernel32) or False if unavailable
 
 
 def _canonical_owner(owner: str) -> str:
@@ -245,6 +250,44 @@ def _scan_via_cgwindow():
     return out
 
 
+def _win_enum_api():
+    """ctypes + bound user32/kernel32, prepared once. None if unavailable."""
+    global _WIN_ENUM
+    if _WIN_ENUM is False:
+        return None
+    if _WIN_ENUM is not None:
+        return _WIN_ENUM
+    try:
+        import ctypes
+        from ctypes import wintypes
+        user32 = ctypes.windll.user32
+        kernel32 = ctypes.windll.kernel32
+        user32.IsWindowVisible.argtypes = [wintypes.HWND]
+        user32.IsWindowVisible.restype = wintypes.BOOL
+        user32.GetWindowTextLengthW.argtypes = [wintypes.HWND]
+        user32.GetWindowTextLengthW.restype = ctypes.c_int
+        user32.GetWindowTextW.argtypes = [
+            wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+        user32.GetWindowTextW.restype = ctypes.c_int
+        user32.GetWindowThreadProcessId.argtypes = [
+            wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+        user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+        kernel32.OpenProcess.argtypes = [
+            wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.QueryFullProcessImageNameW.argtypes = [
+            wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR,
+            ctypes.POINTER(wintypes.DWORD)]
+        kernel32.QueryFullProcessImageNameW.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        _WIN_ENUM = (ctypes, wintypes, user32, kernel32)
+        return _WIN_ENUM
+    except Exception:
+        _WIN_ENUM = False
+        return None
+
+
 def _scan_via_enumwindows():
     """Top-level visible windows as (owner, title) via EnumWindows.
 
@@ -252,36 +295,11 @@ def _scan_via_enumwindows():
     no extra permission. Cloaked / empty-title windows are skipped (fail
     closed). Never raises.
     """
-    try:
-        import ctypes
-        from ctypes import wintypes
-    except Exception:
+    api = _win_enum_api()
+    if api is None:
         return []
-
-    user32 = ctypes.windll.user32
-    kernel32 = ctypes.windll.kernel32
-
-    user32.IsWindowVisible.argtypes = [wintypes.HWND]
-    user32.IsWindowVisible.restype = wintypes.BOOL
-    user32.GetWindowTextLengthW.argtypes = [wintypes.HWND]
-    user32.GetWindowTextLengthW.restype = ctypes.c_int
-    user32.GetWindowTextW.argtypes = [
-        wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
-    user32.GetWindowTextW.restype = ctypes.c_int
-    user32.GetWindowThreadProcessId.argtypes = [
-        wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
-    user32.GetWindowThreadProcessId.restype = wintypes.DWORD
-
+    ctypes, wintypes, user32, kernel32 = api
     PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-    kernel32.OpenProcess.argtypes = [
-        wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
-    kernel32.OpenProcess.restype = wintypes.HANDLE
-    kernel32.QueryFullProcessImageNameW.argtypes = [
-        wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR,
-        ctypes.POINTER(wintypes.DWORD)]
-    kernel32.QueryFullProcessImageNameW.restype = wintypes.BOOL
-    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
-    kernel32.CloseHandle.restype = wintypes.BOOL
 
     our_pid = os.getpid()
     out = []

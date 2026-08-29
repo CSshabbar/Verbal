@@ -675,7 +675,8 @@
     on the first paint, (b) alone still loops. (The Mac and Windows sessions each hit this and fixed it
     independently; the merge kept the fetch-once form of (a).)
 
-24. **A dead refresh token must fall back to the anon key, never send an expired JWT (`auth.py`).** When
+24. **A dead refresh token must drop the tokens and stop cloud access, never send an expired JWT
+    (`auth.py`).** When
     `_refresh_access_token` gets a 400/401/403 from the token endpoint (invalid_grant /
     `refresh_token_not_found` — the session is unrecoverable), it MUST return `None` (so `auth_header`
     uses the anon key, which works under the current `USING (true)` RLS) and drop the dead tokens, NOT
@@ -687,10 +688,14 @@
     `config['auth']['session_dead']` (local config only, no Supabase column) so the state survives restart:
     `auth.session_dead(cfg)` is the accessor, `get_state` exposes it, and the dashboard renders a
     "Session expired — sign in again" banner (sidebar + Settings); `delete_account` returns that actionable
-    message instead of "Not signed in". A fresh `_store_session` resets it. This is safe only because RLS
-    is still permissive — when RLS tightens to `auth.uid()`, a dead session must instead force
-    re-authentication. NOTE the asymmetry (IDI-170): a DEAD SESSION keeps `sync_user_id` (anon fallback
-    keeps working, per this rule), but an explicit SIGN-OUT clears `sync_user_id`/`sync_enabled` and
+    message instead of "Not signed in". A fresh `_store_session` resets it.
+    **AMENDED BY IDI-29:** returning `None` and dropping the dead tokens is still correct, but the anon
+    fallback no longer BUYS anything for per-user tables — under `auth.uid()` policies an anon request reads
+    zero rows, so "keep working on the anon key" silently becomes "look healthy while syncing nothing."
+    `auth.cloud_allowed()` therefore now **fails closed on `session_dead`**, and the re-sign-in banner above
+    is the user-visible outcome. The asymmetry this rule used to note (IDI-170 — a DEAD SESSION keeps
+    `sync_user_id` and keeps working, an explicit SIGN-OUT does not) is **gone**: both now stop cloud access,
+    differing only in that sign-out also clears `sync_user_id`/`sync_enabled` and
     deletes this device's `devices` row — post-sign-out, `auth.cloud_allowed()` gates every cloud path,
     and desktop now also has the mobile-style uid-change cache wipe (`auth._clear_account_caches`, which
     covers `voice_prints` + `meetings_opened` too).
@@ -766,7 +771,9 @@
     before the worker's `is_set()` check → cancel lost) is closed; proven by `idi178_fixtures.py`.
     `overlay.overlay_cancel` and `win_overlay._action("overlay_cancel")` both delegate to
     `_on_esc_pressed`. On Windows that call is **synchronous** — `VerbalWinApp._on_main` is a daemon
-    thread, so hopping would race the transcription worker's `_cancel_flag` check. Rule: ESC and the
+    thread, so hopping would race the transcription worker's `_cancel_flag` check. `_is_recording`
+    is latched **before** `recorder.start()` (same as Mac) so Cancel on the Starting pill is not a
+    no-op. Rule: ESC and the
     Cancel button must stay literally the same code path. The same ticket established three more overlay rules:
     - **Failures get their own pill.** `overlay.update_status(status, error=True)` renders `mode:'error'`
       — danger red `#E05049`, a `!` disc, **no ✓ and no "Copy again"** (that CTA re-copied the *previous*
@@ -1878,6 +1885,13 @@ Single source: desktop `app/theme.py` + `app/fonts_css.py`; mobile `flume-ui/the
 - **Deleted outright (2026-08, flow-audit batch):** mobile `lib/remoteConfig.ts` + `getGroqKey`/`setGroqKey`
   (IDI-160 — see Hard Rule #15) and desktop `pairing.py::claim_pairing` (IDI-156 — desktop only ever HOSTS
   pairing; the claiming side is mobile `lib/pairing.ts::claimPairing`). Older docs may still reference them.
+- **Retired by IDI-29 (2026-08) — the paired-account override.** `storage.ts::getPairedUserId` /
+  `setPairedUserId` are **deleted**, and `getUserId()`/`getCloudUserId()` no longer consult
+  `verbal_paired_user_id` (the key survives only in the `clearAccountData()` sweep, to purge pre-cutover
+  values). Under `auth.uid()` RLS an adopted `user_id` reads zero rows, so the override could only ever
+  produce silent no-ops. `claimPairing` now verifies the device's existing session instead of adopting an
+  id, and the Settings "Account ID" input is a read-only display — as an editable field it let anyone type
+  another user's id and read their data. Do not reintroduce a client-supplied identity override.
 - **Deleted in the IDI-179 closing pass (2026-08)** — each verified to zero live references first. Older
   docs may still name them; they are gone, do not revive them:
   - mobile `lib/useSync.ts` (superseded by `flume-ui/hooks/historyStore.ts`), `lib/useDeviceSelector.ts` +

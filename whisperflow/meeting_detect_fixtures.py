@@ -97,6 +97,8 @@ check("ms-teams.exe in-call", detects("ms-teams.exe", "Meeting with Sam | Micros
 check("Zoom.exe idle is still not a call", not detects("Zoom.exe", "Zoom"))
 check("canonical owner string is Mac-shaped",
       md._canonical_owner("chrome.exe") == "Google Chrome")
+check("own WebView2 host is skipped as a conferencing exe",
+      "msedgewebview2.exe" in md._SKIP_EXES)
 
 print("\n== key shape (drives the ask-once-per-call dedupe in main._md_apply) ==")
 check("a code becomes the key so a different room re-prompts",

@@ -1392,6 +1392,8 @@ class VerbalWinApp:
     def _on_record_start(self):
         if self._processing:
             return
+        if self._is_recording:
+            return
         # The single choke point every start path reaches — tray row, toggle key
         # and hold key (see the HotkeyListener wiring: on_start/on_toggle both
         # land here). Checked before anything is saved or harvested.
@@ -1420,6 +1422,11 @@ class VerbalWinApp:
         except Exception as e:
             logger.debug(f"filetag harvest kickoff skipped: {e}")
         self._cancel_flag.clear()
+        # Latch BEFORE the mic opens (Mac parity). Overlay Cancel on the
+        # Starting pill goes through `_on_esc_pressed` → `_cancel_recording`;
+        # if `_is_recording` is still False that path is a no-op and the
+        # dictation starts anyway after the warm-up wait.
+        self._is_recording = True
         # Acknowledge the keypress BEFORE opening the mic. recorder.start() waits for
         # the first audio buffer (~275ms of device warm-up, measured), and showing the
         # pill after that made the warm-up read as app lag. The label stays "Starting"
@@ -1443,6 +1450,7 @@ class VerbalWinApp:
                 self.recorder.start()
         except Exception as e:
             logger.error(f"Failed to start recording: {e}", exc_info=True)
+            self._is_recording = False
             try:
                 self._detach_meeting_tap()
             except Exception:
@@ -1484,7 +1492,6 @@ class VerbalWinApp:
         except Exception as e:
             logger.warning("[hybrid] setup skipped: %s", e)
             self._stream = None
-        self._is_recording = True
         _play_sound("start")
         self._update_tray_icon(True)
         self._update_tray_menu()
@@ -1967,16 +1974,24 @@ class VerbalWinApp:
                 return
 
             self._md_scanning = True
-
-            def work():
-                info = None
-                try:
-                    from app import meeting_detect
-                    info = meeting_detect.detect()
-                except Exception as e:
-                    logger.debug("meeting detect scan failed: %s", e)
-                self._on_main(lambda: self._md_apply(info))
-            threading.Thread(target=work, daemon=True).start()
+            launched = False
+            try:
+                def work():
+                    info = None
+                    try:
+                        from app import meeting_detect
+                        info = meeting_detect.detect()
+                    except Exception as e:
+                        logger.debug("meeting detect scan failed: %s", e)
+                    try:
+                        self._on_main(lambda i=info: self._md_apply(i))
+                    except Exception:
+                        self._md_scanning = False
+                threading.Thread(target=work, daemon=True).start()
+                launched = True
+            finally:
+                if not launched:
+                    self._md_scanning = False
         except Exception as e:
             logger.debug("meeting detect tick failed: %s", e)
 
@@ -2014,6 +2029,7 @@ class VerbalWinApp:
             if self.meeting_prompt is None:
                 from app.win_meeting_prompt import WinMeetingPrompt
                 self.meeting_prompt = WinMeetingPrompt(self)
+                self.meeting_prompt.setup()
             self.meeting_prompt.show(source)
         except Exception as e:
             logger.debug("meeting prompt show failed: %s", e)
