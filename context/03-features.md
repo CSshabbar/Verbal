@@ -1891,7 +1891,10 @@ Fully fail-closed — both down → `None` → "Couldn't transform, try again" (
   truth in this repo; a copy sits in `/Users/mshabbar/IDIAZ/flume-site/` for upload to
   `https://idiaz.io/flume/invite.html`). That page tries **`flume://invite?t=<token>`**; if the document
   is still visible ~1.6 s later it redirects to the download page, token preserved; phones go straight
-  there. Once hosted, set the `INVITE_LANDING_URL` secret (or the default in the function) to enable it.
+  there. **Live since 2026-08-29**: the function's default `INVITE_LANDING_URL` is that page. Publishing the
+  Flume site = `~/.agents/skills/here-now/scripts/publish.sh /Users/mshabbar/IDIAZ/flume-site --slug
+  hollow-tulip-8v5s` (idiaz.io/flume is that here.now publish; the `idiaz-io/websites` repo pipeline
+  covers only the root site).
 - **macOS handles the scheme** (`CFBundleURLTypes` in `whisperflow.spec`; `main.py::_install_url_handler`
   registers a `kAEGetURL` Apple Event handler → `app/deep_link.py::handle`). Launch Services routes the
   URL to the running app or launches it; the handler is installed in `__init__` so a cold-start URL is

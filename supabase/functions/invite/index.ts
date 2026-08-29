@@ -7,15 +7,15 @@
 // download page CANNOT be served from this function: the *.supabase.co functions
 // gateway rewrites every response Content-Type (text/html AND
 // application/xhtml+xml) to text/plain + nosniff, so browsers show the page as
-// source. It has to be hosted as a static file (idiaz.io/flume/invite.html —
-// see the repo's site/ folder). Until INVITE_LANDING_URL points at it, this is
-// a plain redirect to the download page with the token preserved, i.e. exactly
-// the pre-2026-08-29 behaviour.
+// source. It is the static file idiaz.io/flume/invite.html (source of truth:
+// Verbal repo site/flume/invite.html, published with the flume-site here.now
+// slug). Desktop browsers are sent there; phones and token-less hits go to the
+// download page with the token preserved.
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 
 const DOWNLOAD_PAGE = Deno.env.get("FLUME_DOWNLOAD_URL") ?? "https://idiaz.io/flume/download.html";
-// Static landing page (tries flume://, falls back to DOWNLOAD_PAGE). Empty = not hosted yet.
-const LANDING = Deno.env.get("INVITE_LANDING_URL") ?? "";
+// Static landing page (tries flume://, falls back to DOWNLOAD_PAGE). Set to "" to bypass.
+const LANDING = Deno.env.get("INVITE_LANDING_URL") ?? "https://idiaz.io/flume/invite.html";
 
 function isDesktop(ua: string): boolean {
   const s = ua.toLowerCase();
