@@ -13,7 +13,7 @@ import { isInviteUrl, tokenFromUrl, setPendingInvite, claimPendingInvite } from 
 import * as WebBrowser from 'expo-web-browser';
 import * as QueryParams from 'expo-auth-session/build/QueryParams';
 import { supabase, SUPABASE_URL, SUPABASE_ANON_KEY } from '../../lib/supabase';
-import { setUserId, setPairedUserId, getDeviceId, getStoredUserId, clearAccountData } from '../../lib/storage';
+import { setUserId, getDeviceId, getStoredUserId, clearAccountData } from '../../lib/storage';
 import { setSyncEnabled } from '../../lib/syncStore';
 import { clearKeyboardConfig } from '../../lib/keyboardBridge';
 import * as recordings from '../../lib/recordings';
@@ -162,10 +162,6 @@ async function afterSignIn(session: any) {
     try { await recordings.removeAll(); } catch { /* ignore */ }
     try { await clearKeyboardConfig(); } catch { /* ignore */ }
   }
-  // A real sign-in supersedes any paired-account override (IDI-156) — the
-  // session is now the identity. (An override to a DIFFERENT account was
-  // already removed by clearAccountData above.)
-  try { await setPairedUserId(null); } catch { /* ignore */ }
   await setUserId(uid);
   // A team invite deep-linked BEFORE sign-in is claimed here, now that there is a
   // session for the RPC to check the invited address against. Fail-closed and

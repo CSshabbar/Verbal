@@ -273,14 +273,20 @@ def cloud_allowed(cfg: dict | None = None) -> bool:
     `sync_user_id` without an `auth` dict no longer exists — desktop only ever
     HOSTS a pairing, and hosting requires being signed in (Hard Rule #26).
 
-    NOT gated on `session_dead`: a dead refresh token keeps the identity and
-    falls back to the anon key by design (Hard Rule #24 / IDI-166). Denying
-    cloud access there would re-break "can't open meeting notes", which is the
-    exact bug that rule exists to prevent. When RLS tightens to `auth.uid()`,
-    this is where the extra `and not session_dead(cfg)` belongs.
+    GATED on `session_dead` since IDI-29. Previously a dead refresh token kept
+    the identity and fell back to the anon key by design (Hard Rule #24 /
+    IDI-166), because permissive `USING (true)` policies made the anon key work
+    identically. Under `auth.uid()` policies that fallback silently returns ZERO
+    rows and rejects every write — sync appears alive while doing nothing, which
+    is strictly worse than the "can't open meeting notes" bug Hard Rule #24 was
+    written to prevent. So we now fail closed here and let the UI surface the
+    re-sign-in banner (`session_dead()` drives it), turning a silent data-loss
+    window into an actionable prompt.
     """
     try:
         cfg = cfg if cfg is not None else load_config()
+        if session_dead(cfg):
+            return False
         return bool((cfg.get("auth") or {}).get("user_id"))
     except Exception:
         return False
@@ -526,9 +532,19 @@ def get_access_token(cfg: dict | None = None) -> str | None:
 
 def auth_header(cfg: dict | None = None, json: bool = False) -> dict:
     """REST headers for any Supabase call: the signed-in user's JWT when
-    available and valid, else the shared anon key (signed-out desktop, or a
-    paired device that adopted a user_id without ever signing in itself —
-    see the `pairings` note in context/04-data-model.md §Security posture).
+    available and valid, else the shared anon key.
+
+    Since IDI-29 the anon fallback NO LONGER grants access to per-user tables —
+    `auth.uid()` policies are `TO authenticated`, so an anon request reads zero
+    rows. The fallback therefore only remains meaningful for endpoints that are
+    legitimately anonymous (edge functions, storage, the public `app_versions`
+    manifest). Every per-user call site must additionally gate on
+    `cloud_allowed()`, which now fails closed on a dead session, so we never
+    issue a table request that would silently return nothing.
+
+    Historically the fallback also served a paired device that adopted a
+    user_id without ever signing in itself; that mechanism was retired in
+    IDI-29 (see context/04-data-model.md §Security posture).
     `apikey` is always the project's anon key regardless — that's the
     project identifier, not the caller's identity; `Authorization` is what
     Supabase's RLS actually evaluates."""

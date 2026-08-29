@@ -1,10 +1,11 @@
 -- MER-29: tighten shared-table RLS from permissive `USING (true)` to real
 -- per-user enforcement via `auth.uid()`.
 --
--- ⚠️ NOT YET APPLIED TO PRODUCTION. This file is committed so the exact,
--- tested migration is ready to run — but it is intentionally NOT wired into
--- any auto-apply path, and was NOT run against the live project during
--- MER-29. It was verified correct live (2026-07) inside a transaction that
+-- ⚠️ READY TO APPLY — both original blockers were cleared by IDI-29 (see the
+-- "Cutover" section at the bottom of this header). Still NOT wired into any
+-- auto-apply path: run it by hand, in a transaction, against staging first.
+--
+-- It was verified correct live (2026-07) inside a transaction that
 -- applied the `notes` policy above, inserted two disposable rows for two
 -- fake users, and confirmed with simulated JWT claims: user A saw only its
 -- own row and its attempt to overwrite user B's row affected 0 rows; user B
@@ -12,29 +13,62 @@
 -- i.e. today's real anon-key-only clients) saw ZERO rows, confirming the
 -- `TO authenticated` scoping works as intended — then ROLLBACK, so
 -- production's actual policy was never changed (re-verified after: `notes
--- rw` / `{public}` / `USING(true)` unchanged, 0 leftover test rows). See
--- context/04-data-model.md §Security posture and the MER-29 Linear comment
--- for why applying this for real is being held back:
+-- rw` / `{public}` / `USING(true)` unchanged, 0 leftover test rows).
 --
---   1. Device pairing (`pairing.ts::claimPairing` / `app/pairing.py`) lets a
---      second device adopt the host's `user_id` WITHOUT ever creating its own
---      Supabase Auth session — it has no JWT at all, only the anon key. Every
---      policy below is `TO authenticated`, so a paired-but-never-signed-in
---      device would lose ALL cloud access (transcriptions, notes, dictionary,
---      canvas, devices, meetings) the instant this is applied. This is a
---      product decision, not just an engineering rollout question: either
---      accept that paired devices go local-only until they also sign in with
---      Google, or redesign pairing to mint the joining device a real session
---      for the host's account (not implemented anywhere today).
---   2. Desktop's REST/Realtime calls now forward the signed-in user's JWT
---      when available (MER-29, `app/auth.py::auth_header`/`get_access_token`),
---      falling back to the anon key otherwise — but that fallback is exactly
---      what makes today's anon-key-only *currently-installed* app builds keep
---      working. Applying this migration before those builds have actually
---      reached users would 401 every currently-running desktop app's sync
---      until it updates — a real outage, not a soft degrade.
+-- ── Why this was held back, and why it no longer is ────────────────────────
 --
--- Apply only once both of the above are resolved (see the Linear comment).
+--   1. PAIRING (was: product decision). Device pairing let a second device
+--      adopt the host's `user_id` WITHOUT ever creating its own Supabase Auth
+--      session — no JWT, only the anon key. Every policy below is `TO
+--      authenticated`, so such a device would lose ALL cloud access the
+--      instant this applied.
+--      RESOLVED: the override is retired. `claimPairing` now REQUIRES the
+--      scanning device to already hold a session for the host's account and
+--      refuses the claim with an actionable message otherwise
+--      (`verbal-mobile/lib/pairing.ts`); `getCloudUserId()` returns the session
+--      id and nothing else; the Settings "Account ID" free-text field — which
+--      let anyone type another user's id and read their data — is now a
+--      read-only display. Desktop was never affected: it only ever HOSTS a
+--      pairing, and hosting already requires being signed in (Hard Rule #26).
+--
+--   2. ROLLOUT (was: would 401 every installed desktop build). This warning
+--      was written on 2026-07-24, the same day JWT forwarding landed, when no
+--      shipped build had it yet. That commit (a9ab560) first shipped in
+--      v1.0.11; the current release is v1.0.42, ~31 releases later, and the
+--      desktop auto-updates on a 4-hour check. Any build old enough to lack
+--      JWT forwarding is long past the update horizon.
+--      RESOLVED, with one behaviour change: a desktop whose refresh token has
+--      died used to keep syncing via the anon key (Hard Rule #24 / IDI-166),
+--      which under these policies would silently read zero rows instead.
+--      `auth.py::cloud_allowed()` now fails closed on `session_dead`, so that
+--      state surfaces the existing re-sign-in banner rather than pretending to
+--      sync. This is why the client change MUST ship before the SQL.
+--
+-- ── Cutover order (do not reorder) ─────────────────────────────────────────
+--
+--   1. Ship the desktop build carrying the `cloud_allowed()` change and let it
+--      propagate (>= one 4-hour update cycle; check `app_versions` adoption).
+--   2. Apply this file to STAGING. Regression-test signed-in sync end to end:
+--      dictation history, notes, dictionary/snippets, canvas, devices, and the
+--      meetings live transcript — on desktop AND mobile.
+--   3. Verify negative cases on staging: an anon-key request with a valid
+--      `user_id` returns zero rows; an authenticated request for ANOTHER
+--      user's `user_id` returns zero rows and writes affect 0 rows.
+--   4. Apply to production inside a transaction, with the DROP/CREATE pairs
+--      below kept together so no window exists where a table has no policy.
+--
+-- Realtime note: the desktop WS listeners authenticate via the `phx_join`
+-- payload's `access_token`, and only `sync.py` refreshes that token on a timer
+-- (20 min). The canvas listeners in dashboard.py / shared_dashboard.py /
+-- flume_web_dashboard.py do NOT, so a long-lived canvas subscription can
+-- outlive its JWT and go quiet. That is pre-existing, but these policies make
+-- it user-visible — track it as follow-up, it is not a blocker for step 4.
+--
+-- Mobile note: the app has not shipped to the App Store, so there is no
+-- installed base to migrate. Applying before launch is strictly cheaper than
+-- after.
+
+begin;
 
 -- notes
 drop policy if exists "notes rw" on public.notes;

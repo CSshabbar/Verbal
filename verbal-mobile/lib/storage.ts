@@ -4,10 +4,12 @@ import { supabase } from './supabase';   // no cycle: supabase.ts imports only c
 
 const KEYS = {
   USER_ID:     'verbal_user_id',
-  // Paired-account override (IDI-156): set when this device joins ANOTHER
-  // account via QR pairing (or the Settings "Account ID" field). Outranks the
-  // local Supabase session id in getUserId() — without it, the session
-  // write-back reverts the adoption milliseconds after the claim.
+  // RETIRED by IDI-29. Was the paired-account override: a user_id this device
+  // adopted via QR pairing or the Settings "Account ID" field, which outranked
+  // the local Supabase session id. `auth.uid()` RLS made that unrepresentable —
+  // the JWT decides, so an adopted id can only ever read zero rows. Nothing
+  // reads or writes this key any more; it stays in the clearAccountData() sweep
+  // below purely to purge the value from installs that set it pre-cutover.
   PAIRED_UID:  'verbal_paired_user_id',
   DEVICE_NAME: 'verbal_device_name',
   // Stable per-INSTALL device identity (IDI-177). Minted once and never derived
@@ -60,17 +62,7 @@ export interface HistoryEntry {
 
 // ── Identity ──────────────────────────────────────────────────────────────────
 export async function getUserId(): Promise<string> {
-  // 1) Paired-account override wins (IDI-156). When this device explicitly
-  //    joined a host account (QR pair / manual Account ID), that id scopes all
-  //    cloud data even though the local Supabase session belongs to a different
-  //    Google account. Cleared on sign-in, sign-out, and account deletion.
-  //    INTERIM mechanism: replaced by real session minting once auth.uid() RLS
-  //    (IDI-29) lands — a user_id override cannot survive JWT-scoped policies.
-  try {
-    const paired = await AsyncStorage.getItem(KEYS.PAIRED_UID);
-    if (paired) return paired;
-  } catch { /* fall through */ }
-  // 2) The signed-in Supabase user id is authoritative — it scopes ALL cloud data
+  // The signed-in Supabase user id is authoritative — it scopes ALL cloud data
   // (notes, dictionary, snippets, history). Prefer it (and cache it) so a RESTORED
   // session — where afterSignIn never ran — still reads the right account instead of
   // a stray minted id, which showed everything as 0. Falls back to the stored/local
@@ -97,11 +89,14 @@ export async function setUserId(id: string) {
 
 /**
  * The id that may legitimately scope CLOUD data, or null when there isn't one
- * (IDI-174). Same first two steps as getUserId() — paired-account override,
- * then the Supabase session id — but WITHOUT the `user_<timestamp>` minting
- * fallback: a locally-minted id is a device-scoped placeholder, and writing
- * cloud rows under it just litters shared tables with orphan data no account
- * can ever read back.
+ * (IDI-174). The Supabase session id, and nothing else — WITHOUT the
+ * `user_<timestamp>` minting fallback: a locally-minted id is a device-scoped
+ * placeholder, and writing cloud rows under it just litters shared tables with
+ * orphan data no account can ever read back.
+ *
+ * Since IDI-29 this is necessarily the session id: `auth.uid()` RLS evaluates
+ * the JWT, so any id that isn't the session's own subject reads zero rows and
+ * fails every write. Returning anything else would produce silent no-ops.
  *
  * Callers use it as a gate: null ⇒ stay local-only, skip the read/write.
  * getUserId() keeps the minting fallback because other callers still depend on
@@ -109,25 +104,11 @@ export async function setUserId(id: string) {
  */
 export async function getCloudUserId(): Promise<string | null> {
   try {
-    const paired = await AsyncStorage.getItem(KEYS.PAIRED_UID);
-    if (paired) return paired;
-  } catch { /* fall through */ }
-  try {
     const { data } = await supabase.auth.getSession();
     return data.session?.user?.id ?? null;
   } catch {
     return null;
   }
-}
-
-/** The paired-account override, or null when this device isn't paired into
- *  another account. See KEYS.PAIRED_UID / getUserId() step 1. */
-export async function getPairedUserId(): Promise<string | null> {
-  try { return await AsyncStorage.getItem(KEYS.PAIRED_UID); } catch { return null; }
-}
-export async function setPairedUserId(id: string | null): Promise<void> {
-  if (id) await AsyncStorage.setItem(KEYS.PAIRED_UID, id);
-  else await AsyncStorage.removeItem(KEYS.PAIRED_UID);
 }
 
 // The stored id WITHOUT minting a new one (unlike getUserId, which generates a
@@ -152,7 +133,7 @@ export async function getStoredUserId(): Promise<string | null> {
 export async function clearAccountData(): Promise<void> {
   await AsyncStorage.multiRemove([
     KEYS.USER_ID,           // verbal_user_id
-    KEYS.PAIRED_UID,        // verbal_paired_user_id — pairing doesn't survive account changes
+    KEYS.PAIRED_UID,        // verbal_paired_user_id — retired (IDI-29); purge any pre-cutover value
     KEYS.HISTORY,           // verbal_history
     KEYS.PINNED,            // verbal_pinned
     'verbal_notes_cache',   // lib/notesStorage

@@ -16,7 +16,7 @@ import { useSyncEnabled, setSyncEnabled } from '../hooks/useSyncEnabled';
 import { useOrganization } from '../hooks/useOrganization';
 import {
   getDeviceName, setDeviceName,
-  getUserId, setUserId, setPairedUserId, getStoredUserId, clearAccountData,
+  getUserId,
   clearHistory,
   getNotesFeatureFlags, setNotesFeatureFlag,
   DEFAULT_NOTES_FLAGS, type NotesFeatureFlags,
@@ -53,7 +53,6 @@ export const SettingsScreen: React.FC<Props> = ({ onBack, onOpenDevices, onOpenS
   // the Menu toggle or the Devices self-row switch.
   const sync = useSyncEnabled();
   const [savedName, setSavedName] = useState(false);
-  const [savedUser, setSavedUser] = useState(false);
 
   const [dict, setDict] = useState<Dictionary>({ vocabulary: [], replacements: [], snippets: [] });
   // The initial state above is EMPTY, and this screen mounts long before
@@ -137,29 +136,6 @@ export const SettingsScreen: React.FC<Props> = ({ onBack, onOpenDevices, onOpenS
     await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     setSavedName(true);
     setTimeout(() => setSavedName(false), 1600);
-  };
-
-  const saveUser = async () => {
-    // Manual account link (IDI-156): writes the paired-account OVERRIDE, which
-    // outranks the session id in getUserId() — a bare setUserId() was dead UI
-    // (the session write-back reverted it on the next read). Same teardown +
-    // store-reset rules as QR pairing so caches never leak across accounts.
-    const id = userId.trim();
-    if (!id) return;
-    const prev = await getStoredUserId();
-    if (prev && prev !== id) {
-      try { await clearAccountData(); } catch { /* best effort */ }
-    }
-    await setPairedUserId(id);
-    await setUserId(id);
-    try {
-      const hist = await import('../hooks/historyStore');
-      await hist.reset();
-      await hist.refresh();
-    } catch { /* best effort */ }
-    await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    setSavedUser(true);
-    setTimeout(() => setSavedUser(false), 1600);
   };
 
   // Writing the store is the whole toggle: it re-renders every reader and fires
@@ -543,24 +519,11 @@ export const SettingsScreen: React.FC<Props> = ({ onBack, onOpenDevices, onOpenS
           <Card padding={14}>
             <Text variant="button" style={{ marginBottom: 2 }}>Account ID</Text>
             <Text variant="bodyXs" color={colors.textMuted}>
-              Use the SAME ID on your phone and computer to link them
+              Sign in with the same account on your phone and computer to link them
             </Text>
-            <View style={styles.inputRow}>
-              <TextInput
-                value={userId}
-                onChangeText={setUserIdState}
-                placeholder="your@email.com or any shared ID"
-                placeholderTextColor={colors.textDisabled}
-                autoCapitalize="none"
-                autoCorrect={false}
-                style={styles.input}
-              />
-            </View>
-            <Button
-              label={savedUser ? 'Linked ✓' : 'Save ID'}
-              variant={savedUser ? 'ghost' : 'primary'}
-              onPress={saveUser}
-            />
+            <Text variant="bodyXs" color={colors.textMuted} style={{ marginTop: 8 }} selectable>
+              {userId || 'Not signed in'}
+            </Text>
           </Card>
         </Section>
 
