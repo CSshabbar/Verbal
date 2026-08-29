@@ -566,16 +566,17 @@
 - **Borderless NSPanels refuse key-window status by default** — any panel with a TEXT INPUT needs a
   subclass overriding `canBecomeKeyWindow → YES` (transform pill: `_panel_class()`), or the field shows
   no caret and typing goes nowhere. Buttons alone don't need it (autolearn pill, `meeting_prompt.py`).
-- The **meeting-detected pill** (`meeting_prompt.py`, Granola-style auto-detect) is the newest member of
-  the non-activating-panel family — buttons only, so no key-window subclass. It must never steal focus
-  from the Zoom/Meet window. Detection (`meeting_detect.py`) reads on-screen **window titles** via
-  **`SCShareableContent`** (ScreenCaptureKit), NOT `CGWindowListCopyWindowInfo`: on macOS 14/15
-  `kCGWindowName` is empty for every window except the frontmost even WITH Screen-Recording permission, so
-  CGWindowList missed background meetings entirely ("not detecting" bug). SCShareableContent returns all
-  window titles with the SR permission Flume already holds; CGWindowList stays only as a fallback. The
-  scan can block ~1 s → run it OFF the main thread (main.py `_detect_meeting_tick` → bg thread →
-  `_md_apply` on main). Keep heuristics conservative (in-call window, not just an open app) and fail
-  closed — a detection error must never reach the capture path.
+- The **meeting-detected pill** (`meeting_prompt.py` on macOS, `win_meeting_prompt.py` on Windows) is
+  a member of the non-activating-panel family — buttons only, so no key-window subclass. It must never
+  steal focus from the Zoom/Meet window. Detection (`meeting_detect.py`) reads on-screen **window
+  titles**: on macOS via **`SCShareableContent`** (ScreenCaptureKit), NOT `CGWindowListCopyWindowInfo`
+  (on macOS 14/15 `kCGWindowName` is empty for every window except the frontmost even WITH
+  Screen-Recording permission). On Windows via **`EnumWindows` + `GetWindowTextW`** (no extra
+  permission; exe names are canonicalized onto the Mac owner strings). The scan can block → run it
+  OFF the main thread (`_detect_meeting_tick` → bg thread → `_md_apply`). Keep heuristics conservative
+  (in-call window, not just an open app) and fail closed — a detection error must never reach the
+  capture path. Dictation during a live meeting must share the meeting mic (`add_mic_tap` +
+  `recorder.start_external`) rather than opening a second InputStream.
 - The transform pill uses the same **ready-handshake** as the meeting window (`api('tf_ready')` +
   buffered emit) — without it the first open showed a BLANK pill, read as "mic/typing not working".
 - `transcribe_with_status` success status is **'ok'** (not 'done'/'success') — compare against the
@@ -2031,7 +2032,8 @@ Mobile: `npx tsc --noEmit` in `verbal-mobile/`.
     `_show_internal` / `_fade_in` / `_fade_out` / `_schedule_hide` / `_start_animation_loop` gate on
     `_tk_ready()` (root exists AND ready). Tests: `tk_pending_fixtures.py` (pure Python, no tkinter).
     Still true: tkinter objects are touched ONLY from the owning tk thread — the caller thread never
-    calls tk methods, ready or not.
+    calls tk methods, ready or not. `WinMeetingPrompt` (Granola auto-detect pill) uses the same queue.
+
 78. **Windows clipboard restore: only after the paste was consumed, never on the fallback path.**
     `win_injector.inject_text` snapshots clipboard TEXT before copying the transcript and restores it on a
     daemon thread ≥ `CLIPBOARD_RESTORE_DELAY_S` (0.4 s) after Ctrl+V — restoring synchronously makes the
@@ -2048,3 +2050,14 @@ Mobile: `npx tsc --noEmit` in `verbal-mobile/`.
     `show/show_tab/emit`), so macOS (Apple Event) and Windows (argv/second-launch) stay one implementation.
     Web landing pages that try a custom scheme MUST keep the token in the fallback URL and MUST offer both
     actions as buttons — scheme detection is a heuristic (visibility/blur within ~1.6 s), not a fact.
+
+80. **Windows meeting auto-detect is `EnumWindows`, not ScreenCaptureKit.** (`meeting_detect.py`,
+    2026-08-29.) There is no SCK on Windows. `detect()` branches on `sys.platform`: Mac keeps SCK →
+    CGWindowList fallback; Windows walks visible top-level windows (`EnumWindows` + `GetWindowTextW` +
+    `QueryFullProcessImageNameW`) and maps exe basenames onto the existing Mac owner strings
+    (`chrome.exe` → `Google Chrome`, `CptHost.exe` → `Zoom`) so `_match` / `_BROWSERS` / `_native_app`
+    stay one table. Skip our own PID, `Flume.exe`, and titles `Flume` / `Flume Meeting` / `Flume
+    Popover` / `VerbalAnchor` (WebView2 is a *different* PID than the Python process). The prompt is
+    `win_meeting_prompt.py` (tkinter sticker + `WS_EX_NOACTIVATE`), not the AppKit `meeting_prompt.py`.
+    Heuristics stay conservative; `meeting_detect_fixtures.py` pins Windows exe owners. Fail closed —
+    a scan error must never reach capture or dictation.

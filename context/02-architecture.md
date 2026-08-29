@@ -241,8 +241,9 @@ bounded `config['meetings']` (`MEETINGS_CAP`). The HUD appears when the meeting 
   bounded reconnect, Rule #76; `win_meeting_window.py` / `win_meeting_hud.py` hosting the same
   `meeting_html()`). **Minimizing during a live meeting collapses to the bar pill** instead of the
   taskbar (`_on_native_resize` — macOS focus-loss parity, a live recording must never run invisibly;
-  idle minimize is a plain minimize — `05-conventions.md` #67h). Granola-style call
-  auto-detect (`meeting_detect.py`) is still macOS-only.
+  idle minimize is a plain minimize — `05-conventions.md` #67h). Granola-style call auto-detect
+  (`meeting_detect.py`) runs on **both** desktops: ScreenCaptureKit on macOS, `EnumWindows` on
+  Windows; the prompt is `meeting_prompt.py` (NSPanel) vs `win_meeting_prompt.py` (tkinter sticker).
 
 ## Mobile stack (`verbal-mobile/`)
 

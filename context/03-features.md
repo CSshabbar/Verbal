@@ -1200,8 +1200,9 @@ deletes real files under `~/.verbal/` and this development machine has a real, i
   WASAPI loopback (`win_system_audio.py` — keeps a silence player running and reconnects up to 3× on
   device loss/switch, then surfaces `sysErr` in the `elapsed` tick; Rule #76) hosted in `WinMeetingWindow` (same `meeting_html()`; the
   pre-meeting language control is a custom listbox, not a native `<select>` — WebView2's OS combo
-  popup ignores CSS overflow and covers Start recording; `05-conventions.md` Rule #66). No call
-  auto-detect on Windows yet. **Two Windows fixes from the 2026-08-26 report:** (1) `WinMeetingWindow`
+  popup ignores CSS overflow and covers Start recording; `05-conventions.md` Rule #66). Granola-style
+  call auto-detect is on Windows too (`EnumWindows` in `meeting_detect.py`, `win_meeting_prompt.py`
+  pill, tray **Auto-detect Meetings**; dictation-during-meeting uses the shared mic tap). **Two Windows fixes from the 2026-08-26 report:** (1) `WinMeetingWindow`
   is built once and re-used like the Mac panel, so it now intercepts pywebview's `closing` — X /
   Alt+F4 **hides** it (or collapses to the bar while recording/processing, `windowShouldClose_` parity)
   instead of letting winforms destroy the form — and drops its references on `closed`; before that,
@@ -1655,21 +1656,23 @@ AI regeneration). The screen also hides the bottom tab bar (`RootNavigator.tsx`'
 ## Meeting auto-detection (Granola-style, desktop, Jul 2026)
 
 Flume notices a call in progress and pops a floating **"Meeting detected · <source>"** pill with a
-one-click **Take notes** button — no more manually hitting Start Meeting. macOS-only, meetings-only,
+one-click **Take notes** button — no more manually hitting Start Meeting. Both desktops, meetings-only,
 fails closed.
 
-- **Detection** (`app/meeting_detect.py`): a `rumps.Timer` (5 s) runs `detect()` **on a background
-  thread** (the scan can block ~1 s) and applies the result on the main thread. It enumerates windows
-  via **`SCShareableContent`** (ScreenCaptureKit) — the reliable title source: with the Screen-Recording
-  permission Flume already holds it returns EVERY on-screen window's title, including background windows.
-  `CGWindowListCopyWindowInfo` is only a **fallback** (on macOS 14/15 `kCGWindowName` is empty for all but
-  the frontmost window, so it alone misses a Meet call you've tabbed away from — this was the "not
-  detecting" bug). It looks for an *in-call* window, not just an open app: a **Zoom Meeting** window, a
-  **Google Meet** call in any browser (code `xxx-yyyy-zzz` / `meet.google.com` / `Meet - ` prefix),
-  **Zoom web**, **Teams**/**Webex** meeting windows, FaceTime. Returns `{source,key,app}`; the friendly
-  `source` (e.g. "Chrome", "Zoom") shows in the pill. `_BROWSERS`/provider matchers are easily extended.
-  Conservative on purpose (an idle Zoom / a doc titled "Meet…" must not trigger) — pinned by
-  `meeting_detect_fixtures.py`.
+- **Detection** (`app/meeting_detect.py`): a 5 s timer (`rumps.Timer` on Mac, a daemon loop in
+  `win_main.py`) runs `detect()` **on a background thread** and applies the result on the UI/`_on_main`
+  hop. macOS enumerates windows via **`SCShareableContent`** (ScreenCaptureKit) — the reliable title
+  source: with the Screen-Recording permission Flume already holds it returns EVERY on-screen window's
+  title, including background windows. `CGWindowListCopyWindowInfo` is only a **fallback** (on macOS
+  14/15 `kCGWindowName` is empty for all but the frontmost window). **Windows** uses **`EnumWindows` +
+  `GetWindowTextW`** (no extra permission); process exe names are mapped onto the same owner strings
+  the Mac matchers already use (`chrome.exe` → `Google Chrome`, `CptHost.exe` → `Zoom`) so `_match`
+  stays one table. Our own windows (`Flume Meeting`, `Flume.exe`) are skipped. It looks for an
+  *in-call* window, not just an open app: a **Zoom Meeting** window, a **Google Meet** call in any
+  browser (code `xxx-yyyy-zzz` / `meet.google.com` / `Meet - ` prefix), **Zoom web**, **Teams**/**Webex**
+  meeting windows, FaceTime (macOS). Returns `{source,key,app}`; the friendly `source` (e.g. "Chrome",
+  "Zoom") shows in the pill. Conservative on purpose (an idle Zoom / a doc titled "Meet…" must not
+  trigger) — pinned by `meeting_detect_fixtures.py` (including Windows exe owners).
 - **False-positive hardening (2026-08-19).** Because `detect()` tests EVERY on-screen title, a loose
   pattern fires on whatever is open. Three fixes: (a) `_MEET_CODE` is now boundary-anchored
   (`(?<![a-z0-9-])…(?![a-z0-9-])`) — unanchored, it matched any 3-4-3 letter run *inside* a longer
@@ -1680,18 +1683,22 @@ fails closed.
   owner check already proves the app. A `_MEET_SITE` signal was **added** (`… - Google Meet` as the
   trailing site name, end-anchored so "How to use Google Meet - YouTube" is excluded) — that catches a
   *named* call, which the old rules missed entirely.
-- **Prompt** (`app/meeting_prompt.py`): a non-activating NSPanel + WKWebView pill (same recipe as
-  `autolearn_widget.py` — never steals focus from the call), near-black Flume design with a sage accent.
-  Buttons post `md_take`/`md_dismiss` through the shared `_Bridge`.
-- **Wiring** (`main.py`): `_detect_meeting_tick` asks **once per call** (`_md_handled` keyed by call),
-  skips when a meeting is already recording, and resets after ~2 empty polls so the *next* call re-prompts
-  (also hides a stale pill). A **dismissal is durable for the session** (`_md_dismissed`, 2026-08-19):
-  that reset used to erase the refusal too, so a detection that merely flickered off-screen for 10 s
-  came back and asked again — same key, seven times. `_md_dismissed` is deliberately NOT cleared by the
-  empty-poll reset (anti-nag, like `autolearn_declined`). `_meeting_detect_result(True)` → `meetings.start(use_mic,use_system,lang)` +
-  open the live window; if capture isn't ready (permissions) it falls back to `_toggle_meeting` (the
-  permission/pre-meeting flow). Menubar **"Auto-detect meetings"** checkbox toggles `meeting_autodetect`
-  (config, default **on**).
+- **Prompt:** macOS `app/meeting_prompt.py` is a non-activating NSPanel + WKWebView pill (same recipe as
+  `autolearn_widget.py` — never steals focus from the call). Windows `app/win_meeting_prompt.py` is the
+  tkinter + PIL chroma-key sticker used by the overlay/autolearn pills (WebView2 has no per-pixel alpha),
+  with `WS_EX_NOACTIVATE` so it also does not steal focus. Near-black Flume design with a sage **Take
+  notes** button and a dismiss X.
+- **Wiring** (`main.py` / `win_main.py`): `_detect_meeting_tick` asks **once per call** (`_md_handled`
+  keyed by call), skips when a meeting is already recording, and resets after ~2 empty polls so the
+  *next* call re-prompts (also hides a stale pill). A **dismissal is durable for the session**
+  (`_md_dismissed`, 2026-08-19): that reset used to erase the refusal too, so a detection that merely
+  flickered off-screen for 10 s came back and asked again — same key, seven times. `_md_dismissed` is
+  deliberately NOT cleared by the empty-poll reset (anti-nag, like `autolearn_declined`).
+  `_meeting_detect_result(True)` → `meetings.start(use_mic,use_system,lang)` + open the live window; if
+  capture isn't ready (permissions) it falls back to `_toggle_meeting` (the permission/pre-meeting
+  flow). Menubar / tray **"Auto-detect Meetings"** checkbox toggles `meeting_autodetect` (config,
+  default **on**). Dictation while a meeting is live shares the meeting's mic (`MeetingSession.add_mic_tap`
+  + `recorder.start_external`) instead of opening a second stream.
 
 ## Mobile audit pass (Jul 2026): onboarding, buttons, per-device sync, keyboard
 
