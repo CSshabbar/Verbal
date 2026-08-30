@@ -14,7 +14,13 @@ import {
 } from './storage';
 import { registerThisDevice } from './deviceSync';
 
-export type PairResult = { userId: string; hostDevice: string };
+export type PairResult = {
+  userId: string;
+  hostDevice: string;
+  /** True when this device was ALREADY linked to that account — the scan
+   *  changed nothing (the single-use code is consumed either way). */
+  alreadyLinked: boolean;
+};
 
 /** Pull the token out of a `flume://pair?t=…` payload, or accept a raw code. */
 export function extractToken(payload: string): string | null {
@@ -53,6 +59,7 @@ export async function claimPairing(payload: string): Promise<PairResult> {
   // into the host's account. (The caller resets UI-layer stores — see the
   // PairDevice onScan handler; lib/ must not import from flume-ui/.)
   const prev = await getStoredUserId();
+  const alreadyLinked = !!prev && prev === row.user_id;
   if (prev && prev !== row.user_id) {
     try { await clearAccountData(); } catch { /* best effort */ }
   }
@@ -68,5 +75,5 @@ export async function claimPairing(payload: string): Promise<PairResult> {
   // Platform.OS, not the 'ios' literal this used to write on Android too.
   await registerThisDevice(row.user_id);
 
-  return { userId: row.user_id, hostDevice: row.host_device || '' };
+  return { userId: row.user_id, hostDevice: row.host_device || '', alreadyLinked };
 }

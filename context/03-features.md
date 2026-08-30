@@ -967,6 +967,14 @@ Each feature: **what it does · desktop impl · mobile impl · backend · status
   reflected the device list from page load; `'devices'` now updates `STATE.devices`/`target_device_id` and
   re-renders. This is still the same GLOBAL, per-installation target (`dashboard._target_device_id` /
   local config `sync_target_device_id`) described above — no new schema, no per-device-pair matrix.
+- **Already-paired scan (2026-08-30):** `claimPairing` returns `alreadyLinked` when the phone's stored
+  user id already equals the host's; the PairDevice handler then shows "Already paired — this device is
+  already linked to <host>'s account, nothing changed" instead of "Paired" and skips the store reset. The
+  single-use code is consumed either way (the host's QR expires/refreshes as usual).
+- **Row `device_name` is the SOURCE device (2026-08-30):** mobile `historyStore.addTranscription` now writes
+  `getDeviceName()` to `transcriptions.device_name`; the `deviceTag` argument is only the LOCAL history
+  label (callers pass the *target's* name in "send to <device>" mode, which used to leak into the row — the
+  Mac showed its own name on phone dictations).
 - QR-based, single-use token. Host (signed in) inserts a `pairings` row (`token`=`token_urlsafe(6)`,
   `expires_at`≈now+120 s), shows QR `flume://pair?t=<token>`. New device claims via the **`claim_pairing`
   RPC** (IDI-157: atomic guarded claim, server-side expiry — direct table reads/updates are gone) → adopt

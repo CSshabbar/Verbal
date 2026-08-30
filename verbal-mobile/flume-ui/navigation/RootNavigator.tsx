@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { View, Pressable, StyleSheet, Alert } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { NavigationContainer, DefaultTheme, Theme, getFocusedRouteNameFromRoute } from '@react-navigation/native';
@@ -34,6 +34,7 @@ import {
   DictionaryScreen,
 } from '../screens';
 import { SidePanel } from '../components/SidePanel';
+import { MenuContext } from '../components/MenuButton';
 import * as Clipboard from 'expo-clipboard';
 import { colors, type } from '../theme';
 import { useAuth } from '../hooks/useAuth';
@@ -254,6 +255,16 @@ function MenuNavigator() {
               try {
                 const { claimPairing } = await import('../../lib/pairing');
                 const info = await claimPairing(payload);
+                if (info.alreadyLinked) {
+                  // Same account as before: nothing to tear down or reload —
+                  // say so instead of a misleading "Paired" (2026-08-30).
+                  Alert.alert(
+                    'Already paired',
+                    `This device is already linked to ${info.hostDevice ? `${info.hostDevice}'s` : 'this'} account — it's in your Devices list. Nothing changed.`,
+                  );
+                  navigation.goBack();
+                  return;
+                }
                 // user_id + sync just changed — tear down the store (items +
                 // realtime channel are keyed by the OLD account) and reload
                 // under the host account so this device RECEIVES from it too.
@@ -293,7 +304,7 @@ const EmptyTab = () => null;
  * "Daily Four" tab bar (V2 nav redesign, 2026-08-16): Home · Notes ·
  * [center mic] · History · Insights — the four daily surfaces one tap away,
  * dictation as the floating centerpiece. Canvas, Meetings and the tools live
- * in the SidePanel (Home ☰), which mirrors the desktop sidebar.
+ * in the SidePanel (☰ in every tab root's header), which mirrors the desktop sidebar.
  */
 function TabsNavigator({ onRecord, onOpenMenu }: TabsNavigatorProps) {
   const insets = useSafeAreaInsets();
@@ -335,7 +346,7 @@ function TabsNavigator({ onRecord, onOpenMenu }: TabsNavigatorProps) {
           tabBarStyle: ['NoteEditor', 'MeetingNotes'].includes(getFocusedRouteNameFromRoute(route) ?? 'NotesList')
             ? { display: 'none' }
             : tabBarStyle,
-          tabBarIcon: ({ color }) => <Ionicons name="reorder-three-outline" size={27} color={color} />,
+          tabBarIcon: ({ color }) => <Ionicons name="document-text-outline" size={24} color={color} />,
         })}
       />
       <Tabs.Screen
@@ -395,6 +406,7 @@ const navStyles = StyleSheet.create({
 
 function MainWithPanel({ navigation }: { navigation: any }) {
   const [panelOpen, setPanelOpen] = useState(false);
+  const openMenu = useCallback(() => setPanelOpen(true), []);
   const go = (dest: string) => {
     setPanelOpen(false);
     switch (dest) {
@@ -416,10 +428,14 @@ function MainWithPanel({ navigation }: { navigation: any }) {
   };
   return (
     <View style={{ flex: 1 }}>
-      <TabsNavigator
-        onRecord={() => navigation.navigate('Recording')}
-        onOpenMenu={() => setPanelOpen(true)}
-      />
+      {/* MenuContext feeds the ☰ MenuButton in every tab root's header (Notes,
+          History, Insights); Home still takes the opener as a prop. */}
+      <MenuContext.Provider value={openMenu}>
+        <TabsNavigator
+          onRecord={() => navigation.navigate('Recording')}
+          onOpenMenu={openMenu}
+        />
+      </MenuContext.Provider>
       <SidePanel open={panelOpen} onClose={() => setPanelOpen(false)} onNavigate={go as any} />
     </View>
   );

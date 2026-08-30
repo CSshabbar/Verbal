@@ -25,8 +25,7 @@ import {
   getUserId,
   getDeviceId,
   mergeRemoteEntries,
-  HistoryEntry,
-} from '../../lib/storage';
+  HistoryEntry, getDeviceName } from '../../lib/storage';
 import * as syncStore from '../../lib/syncStore';
 import { runDictation } from '../../lib/dictationPipeline';
 import * as recordings from '../../lib/recordings';
@@ -348,7 +347,12 @@ export async function addTranscription(
         .insert({
           user_id: userId,
           device_id: deviceId,
-          device_name: deviceTag,
+          // The row's device_name is the SOURCE device (what the receiving
+          // desktop shows as "from …"). `deviceTag` is the LOCAL history label
+          // and, for "send to <device>" mode, callers pass the TARGET's name —
+          // which used to land here, so the Mac saw its own name on phone
+          // dictations (2026-08-30). Always send this phone's name.
+          device_name: await getDeviceName(),
           text,
           target_device_id: targetDeviceId ?? null,
           audio_url: audioUrl ?? null,
