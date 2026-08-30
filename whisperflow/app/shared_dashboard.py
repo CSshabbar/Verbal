@@ -9,6 +9,7 @@ from __future__ import annotations
 import base64
 import datetime as _dt
 import logging
+from app.supabase_config import ws_sslopt as _ws_sslopt
 import os
 import sys
 import threading
@@ -720,7 +721,7 @@ class SharedDashboard:
             on_open=on_open,
             on_message=on_message,
         )
-        ws.run_forever(ping_interval=25, ping_timeout=10)
+        ws.run_forever(ping_interval=25, ping_timeout=10, sslopt=_ws_sslopt())
 
 
 # Spoken-language options (ISO-639-1) for dictation + meetings. 'auto' lets

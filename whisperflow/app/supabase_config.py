@@ -12,3 +12,22 @@ SUPABASE_KEY = (
     ".XwTBo8L-aEUmmSl6dJXNqA2QXzGFOpIVB5W9eDI8j28"
 )
 REST_URL = f"{SUPABASE_URL}/rest/v1"
+
+
+def ws_sslopt():
+    """`sslopt` for websocket-client's run_forever().
+
+    httpx (every REST call) verifies TLS against certifi's bundle, but
+    websocket-client uses OpenSSL's default CA path, which on macOS Python
+    builds (and inside a PyInstaller bundle) is often EMPTY — every Realtime
+    connection then dies with "CERTIFICATE_VERIFY_FAILED: unable to get local
+    issuer certificate" while REST keeps working, so pushes succeed and nothing
+    is ever RECEIVED (seen live 2026-08-30: phone dictations never reached the
+    Mac). Point the WebSocket at the same certifi bundle. Fail-open to the
+    default when certifi is unavailable.
+    """
+    try:
+        import certifi
+        return {"ca_certs": certifi.where()}
+    except Exception:
+        return None

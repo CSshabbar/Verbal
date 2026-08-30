@@ -15,6 +15,7 @@ JS ↔ Python bridge:
 """
 import json
 import logging
+from app.supabase_config import ws_sslopt as _ws_sslopt
 import threading
 
 from AppKit import (
@@ -489,7 +490,7 @@ class FlumeWebDashboard:
         ws = websocket.WebSocketApp(
             WS_URL, header={"Authorization": f"Bearer {ws_token}"},
             on_open=on_open, on_message=on_message)
-        ws.run_forever(ping_interval=25, ping_timeout=10)
+        ws.run_forever(ping_interval=25, ping_timeout=10, sslopt=_ws_sslopt())
 
     # ── native image helpers (WKWebView can't do JS file-pick / image-paste) ─────
     def pick_image_native(self):

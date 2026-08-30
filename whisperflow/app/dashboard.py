@@ -1,4 +1,5 @@
 import logging
+from app.supabase_config import ws_sslopt as _ws_sslopt
 import math
 import threading
 import time
@@ -2886,7 +2887,7 @@ class DashboardWindow:
                     on_open=on_open, on_message=on_message,
                     on_error=on_error, on_close=on_close,
                 )
-                ws.run_forever(ping_interval=25, ping_timeout=10)
+                ws.run_forever(ping_interval=25, ping_timeout=10, sslopt=_ws_sslopt())
             except Exception as e:
                 logger.error(f"Canvas WS crashed: {e}")
             time.sleep(5)

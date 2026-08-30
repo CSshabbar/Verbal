@@ -15,6 +15,7 @@ import httpx
 
 from app.config import PLATFORM
 from app.supabase_config import SUPABASE_URL, SUPABASE_KEY, REST_URL
+from app.supabase_config import ws_sslopt as _ws_sslopt
 
 logger = logging.getLogger("verbal.sync")
 
@@ -582,7 +583,7 @@ class SyncClient:
             )
             self._ws = ws
             threading.Thread(target=_refresh_ws_token_loop, args=(ws,), daemon=True).start()
-            ws.run_forever(ping_interval=25, ping_timeout=10)
+            ws.run_forever(ping_interval=25, ping_timeout=10, sslopt=_ws_sslopt())
         except Exception as e:
             logger.error(f"Sync WebSocket failed to start: {e}")
             # Continue running even if sync fails

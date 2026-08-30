@@ -2048,3 +2048,11 @@ Mobile: `npx tsc --noEmit` in `verbal-mobile/`.
     `show/show_tab/emit`), so macOS (Apple Event) and Windows (argv/second-launch) stay one implementation.
     Web landing pages that try a custom scheme MUST keep the token in the fallback URL and MUST offer both
     actions as buttons — scheme detection is a heuristic (visibility/blur within ~1.6 s), not a fact.
+
+80. **Every Realtime WebSocket passes `sslopt=ws_sslopt()` (`app/supabase_config.py`).** `websocket-client`
+    verifies TLS against OpenSSL's default CA path, which is EMPTY on macOS python.org/PyInstaller builds,
+    while httpx uses certifi — so REST worked and every `wss://…/realtime` connection died with
+    `CERTIFICATE_VERIFY_FAILED: unable to get local issuer certificate`. Symptom: pushes succeed, nothing is
+    ever received (phone dictations never reached the Mac, 2026-08-25 → 08-30, 50k log lines before anyone
+    looked). Four sites: `sync.py`, `dashboard.py`, `flume_web_dashboard.py`, `shared_dashboard.py`. When
+    "sync doesn't work", grep `app.log` for `CERTIFICATE_VERIFY_FAILED` first.
