@@ -1,0 +1,174 @@
+name: Build Mac App
+
+# Mac-only, workflow_dispatch-only mirror of build-release.yml's build-mac
+# job — for iterating on the mac build/sign/notarize pipeline in isolation,
+# without needing Windows to also succeed and without cutting a real
+# versioned GitHub Release. Keep this in sync with build-release.yml's
+# build-mac job if either one changes (IDI-224, 2026-08-23).
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-mac:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install "setuptools<75" wheel
+          pip install -r whisperflow/requirements.txt
+          pip install faster-whisper
+          pip install pyinstaller
+
+      - name: Generate icons
+        run: |
+          cd whisperflow
+          # No art generation here — icon PNGs are checked in (dev-time:
+          # scripts/generate_brand_icons.py). The old generate_icons.py call
+          # overwrote the committed menu-bar icons with retired mic art on
+          # every CI build (2026-08-25). This step only converts the committed
+          # app_icon.png into the .icns container.
+          mkdir -p assets/icon.iconset
+          # NOTE: these sips calls MUST read assets/app_icon.png (the real
+          # 1024x1024 Flume app icon), NOT assets/icon.png — the latter is a
+          # tiny 44x44 flat black mic silhouette meant only for the menu bar
+          # (generate_menu_icon() in scripts/generate_icons.py, consumed by
+          # ICON_PATH/ICON_ACTIVE_PATH in app/main.py). Reading icon.png here
+          # was the root cause of the Dock/Finder/DMG icon looking wrong/blank.
+          sips -z 16 16 assets/app_icon.png --out assets/icon.iconset/icon_16x16.png
+          sips -z 32 32 assets/app_icon.png --out assets/icon.iconset/icon_16x16@2x.png
+          sips -z 32 32 assets/app_icon.png --out assets/icon.iconset/icon_32x32.png
+          sips -z 64 64 assets/app_icon.png --out assets/icon.iconset/icon_32x32@2x.png
+          sips -z 128 128 assets/app_icon.png --out assets/icon.iconset/icon_128x128.png
+          sips -z 256 256 assets/app_icon.png --out assets/icon.iconset/icon_128x128@2x.png
+          sips -z 256 256 assets/app_icon.png --out assets/icon.iconset/icon_256x256.png
+          sips -z 512 512 assets/app_icon.png --out assets/icon.iconset/icon_256x256@2x.png
+          sips -z 512 512 assets/app_icon.png --out assets/icon.iconset/icon_512x512.png
+          iconutil -c icns assets/icon.iconset -o assets/Verbal.icns
+
+      - name: Build Mac .app
+        run: |
+          cd whisperflow
+          pyinstaller whisperflow.spec --clean --noconfirm
+
+      - name: Import signing certificate
+        env:
+          MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          MACOS_KEYCHAIN_PASSWORD: ${{ secrets.MACOS_KEYCHAIN_PASSWORD }}
+        run: |
+          KEYCHAIN=build.keychain
+          CERT_PATH="$RUNNER_TEMP/cert.p12"
+          echo "$MACOS_CERTIFICATE_P12" | base64 -D -o "$CERT_PATH"
+          security create-keychain -p "$MACOS_KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$MACOS_KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$CERT_PATH" -k "$KEYCHAIN" -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$MACOS_KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security list-keychains -d user -s "$KEYCHAIN" login.keychain
+          rm -f "$CERT_PATH"
+          IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN" | grep "Developer ID Application" | head -1 | sed -E 's/.*"(.+)"/\1/')
+          if [ -z "$IDENTITY" ]; then
+            echo "::error::No 'Developer ID Application' identity found in the imported certificate."
+            exit 1
+          fi
+          echo "Signing identity: $IDENTITY"
+          echo "MACOS_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
+
+      - name: Code-sign the app bundle (hardened runtime)
+        run: |
+          cd whisperflow
+          APP=dist/Flume.app
+          find "$APP" -type f \( -perm -111 -o -name "*.dylib" -o -name "*.so" \) -print0 \
+            | xargs -0 -I{} codesign --force --options runtime --timestamp \
+                --entitlements entitlements.plist --sign "$MACOS_IDENTITY" "{}"
+          codesign --force --options runtime --timestamp \
+            --entitlements entitlements.plist --sign "$MACOS_IDENTITY" "$APP"
+          codesign --verify --deep --strict --verbose=2 "$APP"
+
+      - name: Create DMG
+        run: |
+          cd whisperflow
+          # See build-release.yml's build-mac job for why: bare-app-only DMGs
+          # give the user nothing to drag the app onto.
+          STAGING=dist/dmg_staging
+          rm -rf "$STAGING"
+          mkdir -p "$STAGING"
+          cp -R dist/Flume.app "$STAGING/"
+          ln -s /Applications "$STAGING/Applications"
+          hdiutil create -volname "Flume" -srcfolder "$STAGING" -ov dist/Flume.dmg
+          codesign --force --sign "$MACOS_IDENTITY" dist/Flume.dmg
+
+      - name: Notarize and staple
+        timeout-minutes: 40
+        env:
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+        run: |
+          cd whisperflow
+          KEY_PATH="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
+          echo "$APPLE_API_KEY_P8" | base64 -D -o "$KEY_PATH"
+          NOTARY_AUTH=(--key "$KEY_PATH" --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER_ID")
+
+          # See build-release.yml's build-mac job for why this exists: a
+          # retried `notarytool wait` hung silently for the full 6-hour
+          # GitHub Actions default job timeout instead of erroring (confirmed
+          # live, 2026-08-23). macOS doesn't ship GNU coreutils' `timeout` by
+          # default, so this is a small manual implementation.
+          run_with_timeout() {
+            local secs=$1; shift
+            "$@" &
+            local pid=$!
+            ( sleep "$secs" && kill -TERM "$pid" 2>/dev/null ) &
+            local watcher=$!
+            wait "$pid" 2>/dev/null
+            local rc=$?
+            kill "$watcher" 2>/dev/null
+            wait "$watcher" 2>/dev/null
+            return $rc
+          }
+
+          if ! SUBMIT_JSON=$(run_with_timeout 300 xcrun notarytool submit dist/Flume.dmg "${NOTARY_AUTH[@]}" --output-format json); then
+            echo "::error::notarytool submit timed out (5 min) or failed"
+            rm -f "$KEY_PATH"
+            exit 1
+          fi
+          echo "$SUBMIT_JSON"
+          SUBMISSION_ID=$(echo "$SUBMIT_JSON" | python3 -c "import json,sys; print(json.load(sys.stdin)['id'])")
+          echo "Submission ID: $SUBMISSION_ID"
+
+          STATUS=""
+          for attempt in 1 2 3 4 5; do
+            if WAIT_JSON=$(run_with_timeout 240 xcrun notarytool wait "$SUBMISSION_ID" "${NOTARY_AUTH[@]}" --output-format json); then
+              echo "$WAIT_JSON"
+              STATUS=$(echo "$WAIT_JSON" | python3 -c "import json,sys; print(json.load(sys.stdin)['status'])")
+              break
+            fi
+            echo "::warning::notarytool wait attempt ${attempt} timed out (4 min) or failed — retrying in 20s"
+            sleep 20
+          done
+
+          if [ "$STATUS" != "Accepted" ]; then
+            echo "::error::Notarization ${STATUS:-never completed after retries} — fetching Apple's rejection log"
+            xcrun notarytool log "$SUBMISSION_ID" "${NOTARY_AUTH[@]}" || true
+            rm -f "$KEY_PATH"
+            exit 1
+          fi
+
+          xcrun stapler staple dist/Flume.dmg
+          rm -f "$KEY_PATH"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Flume-Mac
+          path: whisperflow/dist/Flume.dmg

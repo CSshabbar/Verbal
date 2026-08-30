@@ -1,21 +1,22 @@
 import React, { useState } from 'react';
 import { View, StyleSheet, Pressable } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Ionicons } from '@expo/vector-icons';
 import { Text, Button, PageDots, LogoMark } from '../components';
-import { colors, radius, space } from '../theme';
+import { colors, radius, pressedStyle } from '../theme';
 
 type Props = { onDone: () => void; onSkip?: () => void };
 
 /**
- * Screens 3b/1, 3b/2, 3b/3 — onboarding with internal step state.
- * Three slides, three CTAs.
+ * Onboarding — two slides: the voice-to-text hero, then how it works.
+ * (The old "Connect a computer / pair a device" slide was removed — pairing is
+ * handled after sign-in via the devices sheet, not during onboarding.)
  */
 export const OnboardingScreen: React.FC<Props> = ({ onDone, onSkip }) => {
   const insets = useSafeAreaInsets();
   const [step, setStep] = useState(0);
+  const LAST = 1;
 
-  const next = () => (step >= 2 ? onDone() : setStep(s => s + 1));
+  const next = () => (step >= LAST ? onDone() : setStep(s => s + 1));
 
   return (
     <View
@@ -26,19 +27,18 @@ export const OnboardingScreen: React.FC<Props> = ({ onDone, onSkip }) => {
     >
       {step === 0 && <Slide1 />}
       {step === 1 && <Slide2 />}
-      {step === 2 && <Slide3 />}
 
       <View style={{ gap: 14 }}>
         <Button
-          label={step === 0 ? 'Begin →' : step === 1 ? 'Next' : "I'm ready to pair"}
+          label={step === LAST ? 'Get started' : 'Begin →'}
           onPress={next}
         />
-        {step === 2 ? (
-          <Pressable onPress={onSkip} style={{ alignItems: 'center', paddingVertical: 4 }}>
-            <Text variant="buttonSm" color={colors.textMuted}>Set up later</Text>
+        {step === LAST && onSkip ? (
+          <Pressable onPress={onSkip} style={({ pressed }) => [{ alignItems: 'center', paddingVertical: 4 }, pressed && pressedStyle]}>
+            <Text variant="buttonSm" color={colors.textMuted}>Skip for now</Text>
           </Pressable>
         ) : null}
-        <PageDots count={3} active={step} />
+        <PageDots count={2} active={step} />
       </View>
     </View>
   );
@@ -82,30 +82,6 @@ const Step: React.FC<{ n: string; title: string; sub: string }> = ({ n, title, s
   </View>
 );
 
-const Slide3: React.FC = () => (
-  <View style={{ flex: 1, justifyContent: 'center', gap: 20 }}>
-    <View>
-      <Text variant="meta" color={colors.textSubtle} style={{ marginBottom: 12 }}>STEP 3 OF 3</Text>
-      <Text variant="displaySm" style={{ marginBottom: 12 }}>Connect a computer.</Text>
-      <Text variant="body" color={colors.textMuted}>
-        Install Flume on Mac or Windows. You'll pair it next.
-      </Text>
-    </View>
-    <View style={{ gap: 10 }}>
-      <DownloadRow icon="logo-apple" label="Download for macOS" />
-      <DownloadRow icon="logo-windows" label="Download for Windows" />
-    </View>
-  </View>
-);
-
-const DownloadRow: React.FC<{ icon: any; label: string }> = ({ icon, label }) => (
-  <View style={styles.dlRow}>
-    <Ionicons name={icon} size={24} color={colors.textPrimary} />
-    <Text variant="bodySm" style={{ flex: 1 }}>{label}</Text>
-    <Ionicons name="arrow-down" size={18} color={colors.textSubtle} />
-  </View>
-);
-
 const styles = StyleSheet.create({
   root: {
     flex: 1,
@@ -120,16 +96,6 @@ const styles = StyleSheet.create({
     backgroundColor: colors.primarySoft,
     alignItems: 'center',
     justifyContent: 'center',
-  },
-  dlRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    paddingVertical: 14,
-    paddingHorizontal: 14,
-    borderRadius: radius.lg,
-    borderWidth: 1,
-    borderColor: colors.borderStrong,
   },
 });
 

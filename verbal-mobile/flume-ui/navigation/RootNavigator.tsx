@@ -1,7 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { View, Pressable, StyleSheet, Alert } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { NavigationContainer, DefaultTheme, Theme } from '@react-navigation/native';
+import { NavigationContainer, DefaultTheme, Theme, getFocusedRouteNameFromRoute } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { Ionicons } from '@expo/vector-icons';
@@ -18,25 +18,39 @@ import {
   HistoryDetailScreen,
   PairDeviceScreen,
   DevicesScreen,
+  SnippetsScreen,
+  TeamScreen,
+  InsightsScreen,
+  ModelsScreen,
   NotesListScreen,
   NoteEditorScreen,
+  MeetingListScreen,
+  MeetingDetailScreen,
+  MeetingPlaybackScreen,
+  MeetingNotesScreen,
+  MeetingLiveScreen,
   CanvasScreen,
   SettingsScreen,
+  DictionaryScreen,
 } from '../screens';
+import { SidePanel } from '../components/SidePanel';
+import { MenuContext } from '../components/MenuButton';
 import * as Clipboard from 'expo-clipboard';
 import { colors, type } from '../theme';
 import { useAuth } from '../hooks/useAuth';
 import { ConfirmHost } from '../components/ConfirmDialog';
+import { DevicesSyncHost } from '../components/DevicesSyncSheet';
 import { useHistory } from '../hooks/useHistory';
 import { useDevices } from '../hooks/useDevices';
 import { consumeLastRecording } from '../hooks/useRecorder';
+import { getSyncEnabled } from '../../lib/storage';
 
 import {
   RootStackParamList,
   TabsParamList,
   NotesStackParamList,
   HistoryStackParamList,
-  SettingsStackParamList,
+  MenuStackParamList,
 } from './types';
 
 const flumeTheme: Theme = {
@@ -67,6 +81,7 @@ function NotesNavigator() {
           <NotesListScreen
             onCreate={() => navigation.navigate('NoteEditor', { noteId: null })}
             onOpen={(n) => navigation.navigate('NoteEditor', { noteId: n.id })}
+            onOpenMeetings={() => navigation.navigate('MeetingList')}
           />
         )}
       </NotesStack.Screen>
@@ -75,6 +90,51 @@ function NotesNavigator() {
           <NoteEditorScreen
             noteId={route.params.noteId}
             onBack={() => navigation.goBack()}
+          />
+        )}
+      </NotesStack.Screen>
+      <NotesStack.Screen name="MeetingList">
+        {({ navigation }) => (
+          <MeetingListScreen
+            onBack={() => navigation.goBack()}
+            onOpen={(meetingId) => navigation.navigate('MeetingDetail', { meetingId })}
+            onOpenLive={(meetingId) => navigation.navigate('MeetingLive', { meetingId })}
+          />
+        )}
+      </NotesStack.Screen>
+      <NotesStack.Screen name="MeetingDetail">
+        {({ route, navigation }) => (
+          <MeetingDetailScreen
+            meetingId={route.params.meetingId}
+            onBack={() => navigation.goBack()}
+            onOpenPlayback={(meetingId) => navigation.navigate('MeetingPlayback', { meetingId })}
+            onOpenNotes={(meetingId) => navigation.navigate('MeetingNotes', { meetingId })}
+          />
+        )}
+      </NotesStack.Screen>
+      <NotesStack.Screen name="MeetingPlayback">
+        {({ route, navigation }) => (
+          <MeetingPlaybackScreen
+            meetingId={route.params.meetingId}
+            onBack={() => navigation.goBack()}
+          />
+        )}
+      </NotesStack.Screen>
+      <NotesStack.Screen name="MeetingLive">
+        {({ route, navigation }) => (
+          <MeetingLiveScreen
+            meetingId={route.params.meetingId}
+            onBack={() => navigation.goBack()}
+            onFinished={(meetingId) => navigation.replace('MeetingDetail', { meetingId })}
+          />
+        )}
+      </NotesStack.Screen>
+      <NotesStack.Screen name="MeetingNotes">
+        {({ route, navigation }) => (
+          <MeetingNotesScreen
+            meetingId={route.params.meetingId}
+            onBack={() => navigation.goBack()}
+            onOpenPlayback={(meetingId) => navigation.navigate('MeetingPlayback', { meetingId })}
           />
         )}
       </NotesStack.Screen>
@@ -101,17 +161,27 @@ function HistoryNavigator() {
 }
 
 const HistoryDetail: React.FC<{ itemId: string; onBack: () => void }> = ({ itemId, onBack }) => {
-  const { items, addTranscription, retryEntry, playEntry } = useHistory();
-  const { target } = useDevices();
+  const { items, addTranscription, retryEntry, playEntry, remove } = useHistory();
+  const { target, mode } = useDevices();
   const item = items.find(i => i.id === itemId);
   if (!item) return null;
   const copy = () => { Clipboard.setStringAsync(item.text); };
+  const overflow = () => {
+    Alert.alert('Transcription', undefined, [
+      { text: 'Copy', onPress: copy },
+      {
+        text: 'Delete', style: 'destructive',
+        onPress: () => { remove(item.id); onBack(); },
+      },
+      { text: 'Cancel', style: 'cancel' },
+    ]);
+  };
   return (
     <HistoryDetailScreen
       item={item}
       onBack={onBack}
-      onEdit={copy}
       onCopy={copy}
+      onOverflow={overflow}
       onPlay={item.hasAudio ? () => { playEntry(item.id); } : undefined}
       onRetry={item.status === 'failed' ? async () => {
         const r = await retryEntry(item.id);
@@ -120,33 +190,66 @@ const HistoryDetail: React.FC<{ itemId: string; onBack: () => void }> = ({ itemI
       onResend={() => {
         // Re-send: copy locally + push to the current target device.
         Clipboard.setStringAsync(item.text);
-        addTranscription(item.text, target?.name ?? item.deviceTag, 0, target?.id ?? null);
+        // pushToCloud = mode !== 'none': "This phone only" must stay local on a
+        // re-send too — the default (true) broadcast the row to every device.
+        addTranscription(item.text, (mode === 'device' && target?.name) || item.deviceTag, 0, mode === 'device' ? target?.id ?? null : null, undefined, 'done', mode !== 'none');
         onBack();
       }}
     />
   );
 };
 
-const SettingsStack = createNativeStackNavigator<SettingsStackParamList>();
-function SettingsNavigator() {
+const MenuStack = createNativeStackNavigator<MenuStackParamList>();
+// V2 nav redesign (2026-08-16): the old MenuScreen hub is gone — the SidePanel
+// owns navigation now. This modal stack hosts only the secondary destinations,
+// each with its own back affordance (or swipe-down, it's a modal).
+function MenuNavigator() {
   return (
-    <SettingsStack.Navigator screenOptions={{ headerShown: false }}>
-      <SettingsStack.Screen name="Settings">
+    <MenuStack.Navigator screenOptions={{ headerShown: false }}>
+      <MenuStack.Screen name="Canvas">
+        {({ navigation }) => (
+          <CanvasScreen onBack={() => navigation.getParent()?.goBack()} />
+        )}
+      </MenuStack.Screen>
+      <MenuStack.Screen name="Settings">
         {({ navigation }) => (
           <SettingsScreen
+            onBack={() => navigation.goBack()}
             onOpenDevices={() => navigation.navigate('Devices')}
+            onOpenSnippets={() => navigation.navigate('Snippets')}
+            onOpenModels={() => navigation.navigate('Models')}
           />
         )}
-      </SettingsStack.Screen>
-      <SettingsStack.Screen name="Devices">
+      </MenuStack.Screen>
+      <MenuStack.Screen name="Dictionary">
+        {({ navigation }) => (
+          <DictionaryScreen onBack={() => navigation.goBack()} />
+        )}
+      </MenuStack.Screen>
+      <MenuStack.Screen name="Team">
+        {({ navigation }) => (
+          <TeamScreen onBack={() => navigation.goBack()} />
+        )}
+      </MenuStack.Screen>
+      <MenuStack.Screen name="Snippets">
+        {({ navigation }) => (
+          <SnippetsScreen onBack={() => navigation.goBack()} />
+        )}
+      </MenuStack.Screen>
+      <MenuStack.Screen name="Models">
+        {({ navigation }) => (
+          <ModelsScreen onBack={() => navigation.goBack()} />
+        )}
+      </MenuStack.Screen>
+      <MenuStack.Screen name="Devices">
         {({ navigation }) => (
           <DevicesScreen
             onBack={() => navigation.goBack()}
             onAddDevice={() => navigation.navigate('PairDevice')}
           />
         )}
-      </SettingsStack.Screen>
-      <SettingsStack.Screen name="PairDevice" options={{ presentation: 'modal' }}>
+      </MenuStack.Screen>
+      <MenuStack.Screen name="PairDevice" options={{ presentation: 'modal' }}>
         {({ navigation }) => (
           <PairDeviceScreen
             onBack={() => navigation.goBack()}
@@ -154,12 +257,33 @@ function SettingsNavigator() {
               try {
                 const { claimPairing } = await import('../../lib/pairing');
                 const info = await claimPairing(payload);
-                // user_id + sync just changed — re-subscribe the realtime channel
-                // on the new account so this device RECEIVES from the host too.
+                if (info.alreadyLinked) {
+                  // Same account as before: nothing to tear down or reload —
+                  // say so instead of a misleading "Paired" (2026-08-30).
+                  Alert.alert(
+                    'Already paired',
+                    `This device is already linked to ${info.hostDevice ? `${info.hostDevice}'s` : 'this'} account — it's in your Devices list. Nothing changed.`,
+                  );
+                  navigation.goBack();
+                  return;
+                }
+                // user_id + sync just changed — tear down EVERY per-account
+                // store (items + realtime channels are keyed by the OLD
+                // account) and reload under the host account so this device
+                // RECEIVES from it too. Same reset set as useAuth.afterSignIn:
+                // resetting history alone left the previous account's notes /
+                // canvas / meetings / device target live in memory and still
+                // syncing under the old uid (review 2026-08-30).
                 try {
                   const hist = await import('../hooks/historyStore');
+                  await hist.reset();
                   await hist.refresh();
                 } catch {}
+                try { (await import('../hooks/useCanvas')).reset(); } catch {}
+                try { await (await import('../hooks/meetingsStore')).reset(); } catch {}
+                try { await (await import('../hooks/notesStore')).reset(); } catch {}
+                try { (await import('../hooks/useDevices')).reset(); } catch {}
+                try { await (await import('../../lib/recordings')).removeAll(); } catch {}
                 Alert.alert('Paired', `This device now syncs with ${info.hostDevice || 'your account'}.`);
                 navigation.goBack();
               } catch (e: any) {
@@ -167,11 +291,10 @@ function SettingsNavigator() {
                 navigation.goBack();
               }
             }}
-            onUseCode={() => {/* TODO: code-entry screen */}}
           />
         )}
-      </SettingsStack.Screen>
-    </SettingsStack.Navigator>
+      </MenuStack.Screen>
+    </MenuStack.Navigator>
   );
 }
 
@@ -183,32 +306,36 @@ const Tabs = createBottomTabNavigator<TabsParamList>();
 
 type TabsNavigatorProps = {
   onRecord: () => void;
-  onOpenSettings: () => void;
+  onOpenMenu: () => void;
 };
 
 const EmptyTab = () => null;
 
 /**
- * Minimalist-dark tab bar (wireframe 7a/8e): Home · Notes · [center mic] ·
- * Canvas · History. The mic is a floating white button that opens the
- * Recording modal — it's the primary action, so it sits in the center.
- * Settings is reached from the Home header gear.
+ * "Daily Four" tab bar (V2 nav redesign, 2026-08-16): Home · Notes ·
+ * [center mic] · History · Insights — the four daily surfaces one tap away,
+ * dictation as the floating centerpiece. Canvas, Meetings and the tools live
+ * in the SidePanel (☰ in every tab root's header), which mirrors the desktop sidebar.
  */
-function TabsNavigator({ onRecord, onOpenSettings }: TabsNavigatorProps) {
+function TabsNavigator({ onRecord, onOpenMenu }: TabsNavigatorProps) {
   const insets = useSafeAreaInsets();
+  const tabBarStyle = {
+    backgroundColor: colors.bgScreen,
+    borderTopColor: colors.borderSubtle,
+    borderTopWidth: 1,
+    // Sit the icons just above the home indicator. paddingBottom = the safe-area
+    // inset only (+4 breathing room); the previous `insets.bottom + 14` double-
+    // counted the inset and floated the whole bar ~48px off the bottom.
+    height: 56 + insets.bottom,
+    paddingTop: 8,
+    paddingBottom: insets.bottom + 4,
+  } as const;
   return (
     <Tabs.Navigator
       screenOptions={{
         headerShown: false,
         tabBarShowLabel: false,
-        tabBarStyle: {
-          backgroundColor: colors.bgScreen,
-          borderTopColor: colors.borderSubtle,
-          borderTopWidth: 1,
-          height: 72 + insets.bottom,
-          paddingTop: 10,
-          paddingBottom: insets.bottom + 14,
-        },
+        tabBarStyle,
         tabBarActiveTintColor: colors.textPrimary,
         tabBarInactiveTintColor: colors.textDisabled,
       }}
@@ -217,12 +344,21 @@ function TabsNavigator({ onRecord, onOpenSettings }: TabsNavigatorProps) {
         name="HomeTab"
         options={{ tabBarIcon: ({ color }) => <Ionicons name="home-outline" size={24} color={color} /> }}
       >
-        {() => <HomeScreen onOpenSettings={onOpenSettings} />}
+        {() => <HomeScreen onOpenMenu={onOpenMenu} />}
       </Tabs.Screen>
       <Tabs.Screen
         name="NotesTab"
         component={NotesNavigator}
-        options={{ tabBarIcon: ({ color }) => <Ionicons name="reorder-three-outline" size={27} color={color} /> }}
+        options={({ route }) => ({
+          // Hide the whole bottom tab bar (incl. the floating center mic) while a
+          // note or a meeting's full AI notes are open, so the screen owns the
+          // whole view and shows a single, centered mic. Restored automatically
+          // on returning to the notes list.
+          tabBarStyle: ['NoteEditor', 'MeetingNotes'].includes(getFocusedRouteNameFromRoute(route) ?? 'NotesList')
+            ? { display: 'none' }
+            : tabBarStyle,
+          tabBarIcon: ({ color }) => <Ionicons name="document-text-outline" size={24} color={color} />,
+        })}
       />
       <Tabs.Screen
         name="RecordTab"
@@ -241,15 +377,16 @@ function TabsNavigator({ onRecord, onOpenSettings }: TabsNavigatorProps) {
         }}
       />
       <Tabs.Screen
-        name="CanvasTab"
-        component={CanvasScreen}
-        options={{ tabBarIcon: ({ color }) => <Ionicons name="grid-outline" size={23} color={color} /> }}
-      />
-      <Tabs.Screen
         name="HistoryTab"
         component={HistoryNavigator}
         options={{ tabBarIcon: ({ color }) => <Ionicons name="time-outline" size={24} color={color} /> }}
       />
+      <Tabs.Screen
+        name="InsightsTab"
+        options={{ tabBarIcon: ({ color }) => <Ionicons name="pulse-outline" size={24} color={color} /> }}
+      >
+        {() => <InsightsScreen />}
+      </Tabs.Screen>
     </Tabs.Navigator>
   );
 }
@@ -273,6 +410,49 @@ const navStyles = StyleSheet.create({
 });
 
 /* ────────────────────────────────────────────────────────────────
+ * Main = tabs + the SidePanel overlay (V2 nav redesign, 2026-08-16).
+ * The panel is an in-tree Animated overlay (OTA-safe — no drawer package),
+ * covering the tab bar too, and routes into the Menu modal stack / tab stacks.
+ * ──────────────────────────────────────────────────────────────── */
+
+function MainWithPanel({ navigation }: { navigation: any }) {
+  const [panelOpen, setPanelOpen] = useState(false);
+  const openMenu = useCallback(() => setPanelOpen(true), []);
+  const go = (dest: string) => {
+    setPanelOpen(false);
+    switch (dest) {
+      case 'canvas':     navigation.navigate('Menu', { screen: 'Canvas' }); break;
+      // `initial: false` is load-bearing. Without it, a nested navigate seeds the
+      // Notes stack with MeetingList as its ONLY route (core/useNavigationBuilder
+      // getStateFromParams: `params?.initial !== false`), so MeetingList's Back
+      // has nothing to pop, bubbles to the tab navigator, and its default
+      // backBehavior:'firstRoute' throws you to Home — leaving NotesTab parked on
+      // MeetingList with NotesList unreachable. With it, NotesList sits underneath
+      // and Back means "up to the notes list", same as entering via Notes → Meetings.
+      case 'meetings':   navigation.navigate('Main', { screen: 'NotesTab', params: { screen: 'MeetingList', initial: false } }); break;
+      case 'dictionary': navigation.navigate('Menu', { screen: 'Dictionary' }); break;
+      case 'snippets':   navigation.navigate('Menu', { screen: 'Snippets' }); break;
+      case 'team':       navigation.navigate('Menu', { screen: 'Team' }); break;
+      case 'devices':    navigation.navigate('Menu', { screen: 'Devices' }); break;
+      case 'settings':   navigation.navigate('Menu', { screen: 'Settings' }); break;
+    }
+  };
+  return (
+    <View style={{ flex: 1 }}>
+      {/* MenuContext feeds the ☰ MenuButton in every tab root's header (Notes,
+          History, Insights); Home still takes the opener as a prop. */}
+      <MenuContext.Provider value={openMenu}>
+        <TabsNavigator
+          onRecord={() => navigation.navigate('Recording')}
+          onOpenMenu={openMenu}
+        />
+      </MenuContext.Provider>
+      <SidePanel open={panelOpen} onClose={() => setPanelOpen(false)} onNavigate={go as any} />
+    </View>
+  );
+}
+
+/* ────────────────────────────────────────────────────────────────
  * Root
  * ──────────────────────────────────────────────────────────────── */
 
@@ -283,7 +463,7 @@ const ONBOARDED_KEY = 'flume_onboarded';
 export const RootNavigator: React.FC = () => {
   const { user, isLoading, signOut } = useAuth();
   const { addTranscription } = useHistory();
-  const { target } = useDevices();
+  const { target, mode } = useDevices();
   const isSignedIn = !!user;
 
   // Onboarding is gated by its OWN flag, independent of auth — so a first-run
@@ -296,9 +476,18 @@ export const RootNavigator: React.FC = () => {
   }, []);
 
   const completeOnboarding = async () => {
-    // Clear any stale/mock session so the intended first-run Welcome (sign-in)
-    // step shows instead of bouncing straight to Home.
-    await signOut().catch(() => {});
+    // Clear a stale/MOCK session so the intended first-run Welcome (sign-in)
+    // step shows instead of bouncing straight to Home — but NEVER nuke a real
+    // signed-in user (IDI-166): if `flume_onboarded` is ever lost while a live
+    // session survives, finishing onboarding must not silently sign them out
+    // and wipe their local caches.
+    try {
+      const { supabase } = await import('../../lib/supabase');
+      const { data } = await supabase.auth.getSession();
+      if (!data.session?.user?.id) await signOut().catch(() => {});
+    } catch {
+      await signOut().catch(() => {});
+    }
     await AsyncStorage.setItem(ONBOARDED_KEY, '1').catch(() => {});
     setOnboarded(true);
   };
@@ -327,10 +516,7 @@ export const RootNavigator: React.FC = () => {
           <>
             <Root.Screen name="Main">
               {({ navigation }) => (
-                <TabsNavigator
-                  onRecord={() => navigation.navigate('Recording')}
-                  onOpenSettings={() => navigation.navigate('Settings')}
-                />
+                <MainWithPanel navigation={navigation} />
               )}
             </Root.Screen>
             <Root.Screen
@@ -340,11 +526,18 @@ export const RootNavigator: React.FC = () => {
               {({ navigation }) => (
                 <RecordingScreen
                   onCancel={() => navigation.goBack()}
-                  onComplete={(_uri, durationMs) => {
+                  onComplete={async (_uri, durationMs, send) => {
                     const last = consumeLastRecording();
                     const failed = last?.status === 'failed';
                     const hasSpeech = !!last?.text?.trim();
-                    const deviceName = target?.name ?? 'Local';
+                    // WHAT THE USER SAW IS WHAT HAPPENS: `send` is the choice
+                    // the recording screen displayed at Stop — never re-read
+                    // the device store here (it may have adopted a target
+                    // AFTER the chip said "This phone only").
+                    const targetedId = send.mode === 'device' ? send.id : null;
+                    const push = send.mode !== 'none';
+                    const deviceName = send.mode === 'device' && send.name ? send.name
+                      : send.mode === 'all' ? 'All devices' : 'Local';
                     const transcript = failed
                       ? 'Transcription failed — your audio is saved. Retry it from History.'
                       : hasSpeech ? last!.text : 'No speech detected.';
@@ -352,11 +545,16 @@ export const RootNavigator: React.FC = () => {
 
                     if (failed) {
                       // Keep the audio; save a retryable entry.
-                      addTranscription('', deviceName, durationMs, target?.id ?? null, last?.uri, 'failed');
+                      addTranscription('', deviceName, durationMs, targetedId, last?.uri, 'failed', push);
                     } else if (hasSpeech) {
                       Clipboard.setStringAsync(last!.text);
-                      addTranscription(last!.text, deviceName, durationMs, target?.id ?? null, last?.uri, 'done');
+                      addTranscription(last!.text, deviceName, durationMs, targetedId, last?.uri, 'done', push);
                     }
+
+                    // Only claim device delivery when it can actually happen:
+                    // the cloud push is gated on the Sync toggle AND a target.
+                    const syncOn = await getSyncEnabled().catch(() => false);
+                    const sent = !failed && hasSpeech && syncOn && send.mode === 'device' && !!send.id;
 
                     navigation.replace('Confirmation', {
                       transcript,
@@ -364,13 +562,14 @@ export const RootNavigator: React.FC = () => {
                       durationSeconds: Math.round(durationMs / 1000),
                       wordCount,
                       transcribeMs: last?.transcribeMs ?? 0,
+                      variant: failed ? 'failed' : !hasSpeech ? 'empty' : sent ? 'sent' : 'saved',
                     });
                   }}
                 />
               )}
             </Root.Screen>
-            <Root.Screen name="Settings" options={{ presentation: 'modal', gestureEnabled: true }}>
-              {() => <SettingsNavigator />}
+            <Root.Screen name="Menu" options={{ presentation: 'modal', gestureEnabled: true }}>
+              {() => <MenuNavigator />}
             </Root.Screen>
             <Root.Screen
               name="Confirmation"
@@ -388,7 +587,7 @@ export const RootNavigator: React.FC = () => {
                   onResendToAnother={() => {
                     Clipboard.setStringAsync(route.params.transcript ?? '');
                     if (route.params.transcript) {
-                      addTranscription(route.params.transcript, target?.name ?? 'Local', route.params.durationSeconds * 1000, target?.id ?? null);
+                      addTranscription(route.params.transcript, (mode === 'device' && target?.name) || 'Local', route.params.durationSeconds * 1000, mode === 'device' ? target?.id ?? null : null, undefined, 'done', mode !== 'none');
                     }
                     navigation.popToTop();
                   }}
@@ -399,6 +598,7 @@ export const RootNavigator: React.FC = () => {
         )}
       </Root.Navigator>
       <ConfirmHost />
+      <DevicesSyncHost />
     </NavigationContainer>
   );
 };

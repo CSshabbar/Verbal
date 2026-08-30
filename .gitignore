@@ -33,6 +33,9 @@ Thumbs.db
 # Node
 node_modules/
 
+# Supabase CLI local cache
+supabase/.temp/
+
 # Expo
 .expo/
 *.jks

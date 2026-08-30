@@ -7,10 +7,15 @@ Host side (this device already has a sync user_id):
     while not check_pairing(token)["claimed_by"]: poll
 
 New device (scans the QR, extracts the token):
-    info = claim_pairing(token, device_name)   # -> {"user_id", "host_device"}
-    ... adopt info["user_id"], enable sync ...
+    the MOBILE app claims it — verbal-mobile/lib/pairing.ts::claimPairing.
+    (Desktop only ever hosts; the old desktop claim_pairing was dead code and
+    was removed in IDI-156 — see context/05-conventions.md dead-code list.)
 
-Reuses the same Supabase project + anon key + REST pattern as sync.py.
+Reuses the same Supabase project as sync.py. Since IDI-157 the `pairings`
+table is INSERT-only over REST — status/claim/cancel go through token-gated
+SECURITY DEFINER RPCs (`pairing_status`/`claim_pairing`/`cancel_pairing`,
+migration `pairings_rpc_lockdown`), so the anon key can no longer enumerate
+user_ids and expiry is enforced server-side.
 """
 import datetime as _dt
 import logging
@@ -24,11 +29,17 @@ logger = logging.getLogger("verbal.pairing")
 
 TTL_SECONDS = 120  # tokens live 2 minutes
 
-_HEADERS = {
-    "apikey": SUPABASE_KEY,
-    "Authorization": f"Bearer {SUPABASE_KEY}",
-    "Content-Type": "application/json",
-}
+
+def _headers(cfg=None):
+    """JWT-when-available headers (auth_header), matching every other desktop
+    Supabase call site — pairing was the one hand-rolled exception (IDI-157)."""
+    try:
+        from app.auth import auth_header
+        return auth_header(cfg, json=True)
+    except Exception:
+        return {"apikey": SUPABASE_KEY,
+                "Authorization": f"Bearer {SUPABASE_KEY}",
+                "Content-Type": "application/json"}
 
 
 def _now():
@@ -44,13 +55,13 @@ def new_token():
     return secrets.token_urlsafe(6)
 
 
-def create_pairing(user_id, host_device, ttl=TTL_SECONDS):
+def create_pairing(user_id, host_device, ttl=TTL_SECONDS, cfg=None):
     """Insert a pairing row and return (token, expires_at_iso, ttl_seconds)."""
     token = new_token()
     expires_at = _now() + _dt.timedelta(seconds=ttl)
     r = httpx.post(
         f"{REST_URL}/pairings",
-        headers={**_HEADERS, "Prefer": "return=minimal"},
+        headers={**_headers(cfg), "Prefer": "return=minimal"},
         json={
             "token": token,
             "user_id": user_id,
@@ -63,12 +74,14 @@ def create_pairing(user_id, host_device, ttl=TTL_SECONDS):
     return token, _iso(expires_at), ttl
 
 
-def check_pairing(token):
-    """Host polls: returns the row (with claimed_by/claimed_at) or {} if gone."""
-    r = httpx.get(
-        f"{REST_URL}/pairings",
-        headers=_HEADERS,
-        params={"token": f"eq.{token}", "select": "claimed_by,claimed_at,expires_at"},
+def check_pairing(token, cfg=None):
+    """Host polls via the `pairing_status` RPC: returns
+    {claimed_by, claimed_at, expires_at} or {} if the row is gone. (Direct
+    SELECT is no longer allowed — see the module docstring.)"""
+    r = httpx.post(
+        f"{REST_URL}/rpc/pairing_status",
+        headers=_headers(cfg),
+        json={"p_token": token},
         timeout=8,
     )
     r.raise_for_status()
@@ -76,38 +89,21 @@ def check_pairing(token):
     return rows[0] if rows else {}
 
 
-def claim_pairing(token, device_name):
-    """New device claims a token. Succeeds only while unclaimed and unexpired.
-    Returns {"user_id", "host_device"} on success, else raises ValueError."""
-    # find a valid, unclaimed row
-    r = httpx.get(
-        f"{REST_URL}/pairings",
-        headers=_HEADERS,
-        params={
-            "token": f"eq.{token}",
-            "claimed_by": "is.null",
-            "expires_at": f"gt.{_iso(_now())}",
-            "select": "id,user_id,host_device",
-        },
-        timeout=8,
-    )
-    r.raise_for_status()
-    rows = r.json()
-    if not rows:
-        raise ValueError("This code is invalid, already used, or expired.")
-    row = rows[0]
-    # stamp it claimed (single-use: only rows still null match)
-    u = httpx.patch(
-        f"{REST_URL}/pairings",
-        headers={**_HEADERS, "Prefer": "return=representation"},
-        params={"id": f"eq.{row['id']}", "claimed_by": "is.null"},
-        json={"claimed_by": device_name or "device", "claimed_at": _iso(_now())},
-        timeout=8,
-    )
-    u.raise_for_status()
-    if not u.json():  # someone else claimed it between select and patch
-        raise ValueError("This code was just used by another device.")
-    return {"user_id": row["user_id"], "host_device": row.get("host_device", "")}
+def cancel_pairing(token, cfg=None):
+    """Host cancels: server-side revoke of an unclaimed token, so a QR that was
+    photographed before Cancel can never be claimed afterwards (IDI-157).
+    Best-effort — never raises."""
+    try:
+        httpx.post(
+            f"{REST_URL}/rpc/cancel_pairing",
+            headers=_headers(cfg),
+            json={"p_token": token},
+            timeout=8,
+        )
+        return True
+    except Exception as e:
+        logger.debug("cancel_pairing failed: %s", e)
+        return False
 
 
 def qr_svg(data, module=7, quiet=2, dark="#0e1012", light="#ffffff"):

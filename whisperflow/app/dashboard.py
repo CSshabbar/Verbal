@@ -1,4 +1,5 @@
 import logging
+from app.supabase_config import ws_sslopt as _ws_sslopt
 import math
 import threading
 import time
@@ -985,7 +986,7 @@ class DashboardWindow:
                  NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable)
         self._window = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
             NSMakeRect(x, y, WIN_W, WIN_H), style, NSBackingStoreBuffered, False)
-        self._window.setTitle_("Verbal")
+        self._window.setTitle_("Flume")
         self._window.setMinSize_(NSMakeSize(700, 500))
         self._window.setBackgroundColor_(H_BG)
 
@@ -2466,13 +2467,14 @@ class DashboardWindow:
 
     def _notes_toggle_pin(self, note_id):
         import httpx
-        from app.sync import SUPABASE_KEY, SUPABASE_URL
+        from app.sync import SUPABASE_URL
+        from app.auth import auth_header
         try:
             note = self._notes_selected
             current = note.get("is_pinned", False) if note else False
             httpx.patch(
                 f"{SUPABASE_URL}/rest/v1/notes?id=eq.{note_id}",
-                headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}", "Content-Type": "application/json"},
+                headers=auth_header(self._app.config, json=True),
                 json={"is_pinned": not current},
                 timeout=10,
             )
@@ -2511,7 +2513,8 @@ class DashboardWindow:
 
     def _notes_load(self):
         import httpx
-        from app.sync import SUPABASE_KEY, SUPABASE_URL
+        from app.sync import SUPABASE_URL
+        from app.auth import auth_header
         user_id = self._app.config.get("sync_user_id", "")
         if not user_id:
             self._notes_data = []
@@ -2520,7 +2523,7 @@ class DashboardWindow:
         try:
             resp = httpx.get(
                 f"{SUPABASE_URL}/rest/v1/notes",
-                headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"},
+                headers=auth_header(self._app.config),
                 params={"user_id": f"eq.{user_id}", "order": "updated_at.desc", "limit": "200", "select": "*"},
                 timeout=8,
             )
@@ -2532,7 +2535,8 @@ class DashboardWindow:
 
     def _notes_save(self, note_id, title, content):
         import httpx
-        from app.sync import SUPABASE_KEY, SUPABASE_URL
+        from app.sync import SUPABASE_URL
+        from app.auth import auth_header
         user_id = self._app.config.get("sync_user_id", "")
         device_name = self._app.config.get("sync_device_name", "Mac")
         if not user_id:
@@ -2542,14 +2546,14 @@ class DashboardWindow:
             if note_id:
                 httpx.patch(
                     f"{SUPABASE_URL}/rest/v1/notes?id=eq.{note_id}",
-                    headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}", "Content-Type": "application/json"},
+                    headers=auth_header(self._app.config, json=True),
                     json={"title": title, "content": content, "device_name": device_name, "updated_at": now},
                     timeout=10,
                 )
             else:
                 resp = httpx.post(
                     f"{SUPABASE_URL}/rest/v1/notes",
-                    headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}", "Content-Type": "application/json", "Prefer": "return=representation"},
+                    headers={**auth_header(self._app.config, json=True), "Prefer": "return=representation"},
                     json={"user_id": user_id, "title": title, "content": content, "device_name": device_name, "created_at": now, "updated_at": now},
                     timeout=10,
                 )
@@ -2559,11 +2563,12 @@ class DashboardWindow:
 
     def _notes_delete(self, note_id):
         import httpx
-        from app.sync import SUPABASE_KEY, SUPABASE_URL
+        from app.sync import SUPABASE_URL
+        from app.auth import auth_header
         try:
             httpx.delete(
                 f"{SUPABASE_URL}/rest/v1/notes?id=eq.{note_id}",
-                headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"},
+                headers=auth_header(self._app.config),
                 timeout=10,
             )
         except Exception as e:
@@ -2591,7 +2596,7 @@ class DashboardWindow:
                 "https://api.groq.com/openai/v1/chat/completions",
                 headers={"Authorization": f"Bearer {api_keys[0]}", "Content-Type": "application/json"},
                 json={
-                    "model": "llama-3.3-70b-versatile",
+                    "model": "openai/gpt-oss-120b",
                     "messages": [
                         {"role": "system", "content": NOTES_FORMATTER_SYSTEM_PROMPT},
                         {"role": "user", "content": f"NOTES TO FORMAT:\n```\n{content}\n```\n\nOutput the formatted markdown only."},
@@ -2753,13 +2758,14 @@ class DashboardWindow:
         """Fetch canvas content from Supabase and populate the text view."""
         try:
             import httpx
-            from app.sync import SUPABASE_URL, SUPABASE_KEY
+            from app.sync import SUPABASE_URL
+            from app.auth import auth_header
             user_id = self._app.config.get("sync_user_id", "")
             if not user_id:
                 return
             resp = httpx.get(
                 f"{SUPABASE_URL}/rest/v1/canvas",
-                headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"},
+                headers=auth_header(self._app.config),
                 params={"user_id": f"eq.{user_id}", "select": "content,image_url"},
                 timeout=5,
             )
@@ -2796,6 +2802,7 @@ class DashboardWindow:
         """WebSocket listener — auto-paste when another device saves canvas."""
         import json, websocket, time, pyperclip
         from app.sync import WS_URL, SUPABASE_KEY
+        from app.auth import get_access_token
         from app.injector import inject_text
 
         user_id     = self._app.config.get("sync_user_id", "")
@@ -2819,7 +2826,8 @@ class DashboardWindow:
                             "table":  "canvas",
                             "filter": f"user_id=eq.{user_id}",
                         }]
-                    }
+                    },
+                    "access_token": get_access_token(self._app.config) or SUPABASE_KEY,
                 },
                 "ref": "canvas_listen",
             }))
@@ -2872,13 +2880,14 @@ class DashboardWindow:
 
         while True:
             try:
+                ws_token = get_access_token(self._app.config) or SUPABASE_KEY
                 ws = websocket.WebSocketApp(
                     WS_URL,
-                    header={"Authorization": f"Bearer {SUPABASE_KEY}"},
+                    header={"Authorization": f"Bearer {ws_token}"},
                     on_open=on_open, on_message=on_message,
                     on_error=on_error, on_close=on_close,
                 )
-                ws.run_forever(ping_interval=25, ping_timeout=10)
+                ws.run_forever(ping_interval=25, ping_timeout=10, sslopt=_ws_sslopt())
             except Exception as e:
                 logger.error(f"Canvas WS crashed: {e}")
             time.sleep(5)
@@ -2894,7 +2903,8 @@ class DashboardWindow:
     def _canvas_push(self, content: str):
         try:
             import httpx, datetime
-            from app.sync import SUPABASE_URL, SUPABASE_KEY
+            from app.sync import SUPABASE_URL
+            from app.auth import auth_header
             user_id     = self._app.config.get("sync_user_id", "")
             device_name = self._app.config.get("sync_device_name", "Mac")
             if not user_id:
@@ -2904,9 +2914,7 @@ class DashboardWindow:
             resp = httpx.post(
                 f"{SUPABASE_URL}/rest/v1/canvas?on_conflict=user_id",
                 headers={
-                    "apikey":        SUPABASE_KEY,
-                    "Authorization": f"Bearer {SUPABASE_KEY}",
-                    "Content-Type":  "application/json",
+                    **auth_header(self._app.config, json=True),
                     "Prefer":        "return=minimal,resolution=merge-duplicates",
                 },
                 json={"user_id": user_id, "content": content, "device_name": device_name,
@@ -2967,7 +2975,8 @@ class DashboardWindow:
     def _canvas_push_image_removal(self):
         try:
             import httpx, datetime
-            from app.sync import SUPABASE_URL, SUPABASE_KEY
+            from app.sync import SUPABASE_URL
+            from app.auth import auth_header
             user_id     = self._app.config.get("sync_user_id", "")
             device_name = self._app.config.get("sync_device_name", "Mac")
             if not user_id: return
@@ -2975,9 +2984,7 @@ class DashboardWindow:
             httpx.post(
                 f"{SUPABASE_URL}/rest/v1/canvas?on_conflict=user_id",
                 headers={
-                    "apikey":        SUPABASE_KEY,
-                    "Authorization": f"Bearer {SUPABASE_KEY}",
-                    "Content-Type":  "application/json",
+                    **auth_header(self._app.config, json=True),
                     "Prefer":        "return=minimal,resolution=merge-duplicates",
                 },
                 json={"user_id": user_id, "content": content, "image_url": None,
@@ -3059,6 +3066,7 @@ class DashboardWindow:
         try:
             import httpx, datetime
             from app.sync import SUPABASE_URL, SUPABASE_KEY
+            from app.auth import auth_header
             user_id     = self._app.config.get("sync_user_id", "")
             device_name = self._app.config.get("sync_device_name", "Mac")
             if not user_id: return
@@ -3089,9 +3097,7 @@ class DashboardWindow:
             httpx.post(
                 f"{SUPABASE_URL}/rest/v1/canvas?on_conflict=user_id",
                 headers={
-                    "apikey":        SUPABASE_KEY,
-                    "Authorization": f"Bearer {SUPABASE_KEY}",
-                    "Content-Type":  "application/json",
+                    **auth_header(self._app.config, json=True),
                     "Prefer":        "return=minimal,resolution=merge-duplicates",
                 },
                 json={"user_id": user_id, "content": content or "",

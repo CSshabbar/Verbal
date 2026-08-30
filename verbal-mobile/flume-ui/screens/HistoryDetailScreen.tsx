@@ -3,16 +3,16 @@ import { View, StyleSheet, Pressable, ScrollView } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { Text, Card, Button } from '../components';
-import { colors, radius } from '../theme';
+import { colors, radius, pressedStyle } from '../theme';
 import { HistoryItem } from '../hooks/useHistory';
 import { DeviceTag } from './HistoryListScreen';
 
 type Props = {
   item: HistoryItem;
   onBack: () => void;
-  onEdit: () => void;
   onCopy: () => void;
   onResend: () => void;
+  onOverflow: () => void;
   onPlay?: () => void;
   onRetry?: () => void;
 };
@@ -21,7 +21,7 @@ type Props = {
  * Screen 3g — History detail. Audio playback bar + transcript + actions.
  */
 export const HistoryDetailScreen: React.FC<Props> = ({
-  item, onBack, onEdit, onCopy, onResend, onPlay, onRetry,
+  item, onBack, onCopy, onResend, onOverflow, onPlay, onRetry,
 }) => {
   const insets = useSafeAreaInsets();
   const failed = item.status === 'failed';
@@ -29,11 +29,11 @@ export const HistoryDetailScreen: React.FC<Props> = ({
   return (
     <View style={[styles.root, { paddingTop: insets.top + 10, paddingBottom: insets.bottom + 14 }]}>
       <View style={styles.topBar}>
-        <Pressable onPress={onBack} style={styles.backBtn}>
+        <Pressable onPress={onBack} style={({ pressed }) => [styles.backBtn, pressed && pressedStyle]}>
           <Ionicons name="chevron-back" size={22} color={colors.textSecondary} />
           <Text variant="buttonSm">History</Text>
         </Pressable>
-        <Pressable style={styles.overflow}>
+        <Pressable style={({ pressed }) => [styles.overflow, pressed && pressedStyle]} onPress={onOverflow} accessibilityRole="button" accessibilityLabel="More options">
           <Ionicons name="ellipsis-horizontal" size={18} color={colors.textPrimary} />
         </Pressable>
       </View>
@@ -53,7 +53,7 @@ export const HistoryDetailScreen: React.FC<Props> = ({
       {item.hasAudio && <PlaybackBar onPlay={onPlay} />}
 
       <Card padding={14} style={{ flex: 1, marginTop: 14 }}>
-        <ScrollView>
+        <ScrollView style={{ flex: 1 }}>
           <Text variant="bodySm" color={failed ? colors.textMuted : colors.textPrimary}>
             {failed
               ? 'Transcription failed. Your audio is saved — retry when you are back online.'
@@ -67,7 +67,6 @@ export const HistoryDetailScreen: React.FC<Props> = ({
           <Button label="Retry transcription" onPress={() => onRetry?.()} style={{ flex: 1 }} />
         ) : (
           <>
-            <Button label="Edit" variant="ghost" onPress={onEdit} style={{ flex: 1 }} />
             <Button label="Copy" variant="ghost" onPress={onCopy} style={{ flex: 1 }} />
             <Button label="Resend" onPress={onResend} style={{ flex: 1.3 }} />
           </>
@@ -84,7 +83,7 @@ const PlaybackBar: React.FC<{ onPlay?: () => void }> = ({ onPlay }) => {
   return (
     <Card padding={12} style={{ paddingVertical: 12 }}>
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-        <Pressable style={styles.playBtn} onPress={onPlay}>
+        <Pressable style={({ pressed }) => [styles.playBtn, pressed && pressedStyle]} onPress={onPlay}>
           <Ionicons name="play" size={18} color={colors.primaryInk} />
         </Pressable>
         <View style={{ flex: 1 }}>

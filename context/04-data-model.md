@@ -9,7 +9,7 @@
 - **Ref:** `ovpcthjingugwvpxlsna` · **URL:** `https://ovpcthjingugwvpxlsna.supabase.co`
 - One project shared by desktop + mobile. **Anon key hardcoded** in both:
   desktop `whisperflow/app/sync.py` (`SUPABASE_URL`/`SUPABASE_KEY`, reused via `from app.sync import …`
-  by auth/recordings/dictionary/pairing/canvas_window/shared_dashboard); mobile
+  by auth/recordings/dictionary/pairing/shared_dashboard); mobile
   `verbal-mobile/lib/supabase.ts` (`SUPABASE_URL`/`SUPABASE_ANON_KEY`).
 - **Transport:** desktop uses raw `httpx` REST (`/rest/v1`) + a raw Phoenix WebSocket for realtime; mobile
   uses the `@supabase/supabase-js` SDK.
@@ -35,13 +35,22 @@ to signed-in devices.
 
 **`pairings`** — `supabase_pairings.sql`. Short-lived single-use device-pairing tokens.
 `id` uuid PK · `token` text unique · `user_id` text · `host_device` text · `created_at` · `expires_at`
-(~2 min TTL) · `claimed_by` text (null until claimed) · `claimed_at`. Index on `(token)`. RLS on;
-anon insert/select/update all `true` (safe because tokens are random, short-lived, single-use).
+(~2 min TTL) · `claimed_by` text (null until claimed) · `claimed_at`. Index on `(token)`. RLS on.
+**Locked down in IDI-157** (migration `pairings_rpc_lockdown`, 2026-08): INSERT (host creating a token) is
+the ONLY direct REST access — the old `for select using(true)` let the anon key enumerate every user_id
+that ever paired. Status/claim/cancel now go through token-gated SECURITY DEFINER RPCs
+(`pairing_status`/`claim_pairing`/`cancel_pairing`): expiry enforced server-side (client clock skew
+irrelevant), claim is one guarded UPDATE (no select-then-patch race), Cancel revokes the row server-side,
+and the claim RPC sweeps rows >10 min past expiry so the table never re-accumulates. Verified live with
+anon-key curl: select returns `[]`, double-claim rejected, status never exposes `user_id`.
 
 **`notes`** — `notes_migration.sql` (base) + `supabase_notes_v2.sql` (self-contained: **creates the table if
 missing** — it was never provisioned in the live DB, so Notes was local-only until 2026-07 — then adds v2 cols).
 `id` **text** PK · `user_id` text · `title` text `''` · `content` text `''` (AI-formatted) · `folder` text `''` ·
-`is_pinned` bool `false` · `device_name` text · `created_at` · `updated_at`. Indexes on `(user_id)` and
+`is_pinned` bool `false` (LIVE since Notes v3, 2026-08: desktop `set_note_pinned` / mobile `notesStore.setPinned`.
+**Pin writes NEVER bump `updated_at`** — a pin is a preference, not an edit, so it must not reorder the
+recency-sorted lists or mint a conflict pair; both writers PATCH `{is_pinned}` alone, best-effort) ·
+`device_name` text · `created_at` · `updated_at`. Indexes on `(user_id)` and
 `(user_id, updated_at DESC)`. In the `supabase_realtime` publication.
 **`id` is `text`, not uuid** (migration `fix_notes_id_type_to_text`, applied 2026-07 after a live-schema
 audit found `supabase_notes_v2.sql`'s guarded `ALTER COLUMN id TYPE text` had never actually run against
@@ -50,12 +59,18 @@ this DB — the column was still `uuid` in production until then, verified fixed
 text column lets each client supply its **own** id so the note's local id === its cloud id. That equality
 is load-bearing: mobile `updateNote` does `.update().eq('id', localId)`, and without it every edit matches
 0 rows and the pulled-back row duplicates. Mobile `createNote` upserts **with** the id (gated on
-`getSyncEnabled`), and `useNotes.load` **back-fills** any locally-cached note missing from the cloud
-(notes created before the table existed never got pushed otherwise).
+`getSyncEnabled`), and `useNotes.load` **back-fills** locally-cached notes that have **never been
+cloud-backed** — scoped in IDI-158 to `source === 'local'` entries only, excluding `::conflict::` copies
+and tombstones (the old unscoped back-fill re-uploaded notes deleted on other devices, resurrecting them).
 **v2 columns** (`supabase_notes_v2.sql`, idempotent): `raw_content` text nullable (raw Whisper transcript;
 NULL for typed/pre-existing notes — `content` holds the formatted version, "show original" reveals this);
 `audio_segments` jsonb `'[]'` (append-only list of source recordings, shape `[{id,url,created_at}]`,
-**UNION-on-merge** during sync). **RLS:** enabled, `TO public` (`whisperflow/supabase_notes_rls.sql`,
+**UNION-on-merge** during sync); `deleted_at` timestamptz nullable (**IDI-158 tombstone**, live migration
+`notes_deleted_at_tombstone` 2026-08: deletion is a soft-delete — `deleted_at` + `updated_at` set, content
+fields cleared, never a hard DELETE. Merges on both platforms treat a tombstone as **unconditionally
+authoritative**: local copy + its `::conflict::` derivatives are dropped with no LWW comparison, so an
+offline edit can never resurrect a deleted note. Desktop `delete_note` writes the cloud tombstone FIRST
+and keeps the note + returns `ok:false` if that write fails while sync is on). **RLS:** enabled, `TO public` (`whisperflow/supabase_notes_rls.sql`,
 MER-26, 2026-07) — the base file and `supabase_notes_v2.sql` wrote none (v2's guarded `DO` block only
 broadens a *pre-existing* policy if RLS was already enabled, which it wasn't, so it was a silent no-op
 until this fix landed).
@@ -81,14 +96,14 @@ without that revoke, any client could call the RPC directly via PostgREST with a
 tamper with another identity's counter; this was caught and fixed live via the security advisor during
 MER-30 verification. Opportunistic cleanup (~1% of calls) deletes rows older than 10 minutes.
 
-**`app_config` — referenced by code, does not exist in the live DB.** The provider-secret-key-table idea
-(`GROQ_API_KEY` readable by clients) was correctly dropped — that must never exist; keys live only as the
-`groq-proxy` function's own `GROQ_API_KEY`/`OLLAMA_API_KEY` secrets. But a *same-named*, different-purpose
-table (general app-wide settings / cached shared Groq key, per `whisperflow/supabase_app_config.sql` and
-mobile's `lib/remoteConfig.ts`, warmed in `RootNavigator.tsx` and read in `storage.ts`) is still actively
-queried by mobile code — and a live-schema check found **no `app_config` table in the current `public`
-schema at all**. Either the migration was never applied live, or this code path is currently dead/failing
-silently. Needs verification, not just documentation, before relying on it.
+**`app_config` — does not exist in the live DB, and no code references it anymore (resolved, IDI-160).**
+The provider-secret-key-table idea (`GROQ_API_KEY` readable by clients) was correctly dropped — that must
+never exist; keys live only as the `groq-proxy` function's own `GROQ_API_KEY`/`OLLAMA_API_KEY` secrets.
+The mobile code that still queried a same-named settings table (`lib/remoteConfig.ts`, warmed in
+`RootNavigator.tsx`, read via `storage.ts::getGroqKey`) was **removed in 2026-08**: the table had never
+been provisioned live, so `getGroqKey()` returned `''` and its call-site gates falsely failed every in-app
+dictation/retry/note-cleanup — while `lib/groq.ts` ignored the key parameter anyway (the proxy holds it).
+`whisperflow/supabase_app_config.sql` remains in the repo as an unapplied historical file only.
 
 **`push_tokens`** — `(user_id, token)` composite PK, `platform`, `device_name`, `updated_at`. RLS on.
 Backs the meeting-start push-notification feature (`verbal-mobile/lib/notifications.ts::
@@ -113,6 +128,11 @@ the matching flat-namespaced `canvas-images` objects, then deletes the Supabase 
 last — a partial failure leaves a recoverable signed-in state). Idempotent; see `03-features.md`'s Account
 deletion entry for the full design and live-verification notes. Apple-token revocation is an intentionally
 deferred stub (`revokeAppleToken()`, Batch C).
+**Known gap (IDI-216):** `USER_TABLES` does not yet include the org layer, so deleting an account leaves
+its `organization_members` row behind (and, if it owned a team, the org itself). The FK is
+`on delete cascade` from `organizations`, not from `auth.users`, so nothing breaks — but a deleted
+owner's team is orphaned. Add `organization_members` to the purge (and decide owner-transfer-vs-delete)
+before Teams goes live.
 
 `reap-meeting-audio` (`supabase/functions/reap-meeting-audio/index.ts`, MER-31, 2026-07) — invoked by the
 daily `reap-meeting-audio-daily` `pg_cron` job (`supabase_meetings.sql`, via `pg_net.http_post` with the
@@ -131,7 +151,7 @@ per captured meeting.
 | `duration_seconds` | int | elapsed excluding pauses |
 | `audio_url` | text | public `meeting-audio` URL |
 | `transcript` | jsonb | `[{speaker, t0, t1, text}]` — speaker ∈ `self`/`s<N>` |
-| `speakers` | jsonb | `{speaker_id: display_name}` (`self` = "You") |
+| `speakers` | jsonb | `{speaker_id: display_name}` (`self` = the mic/user; since 2026-08-28 written as the signed-in user's name, "You" only when signed out — rows from before that hold the literal "You" and both clients substitute the account name at read time) |
 | `decisions` | jsonb | `["…"]` |
 | `action_items` | jsonb | `[{owner: speaker_id\|null, task, done}]` |
 | `marked_moments` | jsonb | `[{t, label}]` (t = secs from start) |
@@ -142,6 +162,7 @@ per captured meeting.
 | `live` | bool | default `false` — set while a meeting is actively being captured; surfaced to mobile as the live-transcript-in-progress flag |
 | `audio_expired` | bool | default `false` — MER-31, 2026-07. Set by the `reap-meeting-audio` reaper once the audio object is actually deleted; the single authoritative "no audio left" signal (never inferred from `audio_url` alone) |
 | `retention_days` | int | nullable, MER-31. `null`/`0` = never expire (default). Stamped **per meeting at capture time** from desktop's `meetings_keep_audio_days` setting — not a live/retroactive per-user lookup |
+| `speakers_source` | text | **vestigial since 2026-08-28** (two-speaker model: always written `estimated`, no UI reads it). nullable, CHECK ∈ `diarized`\|`estimated` — 2026-08-27 (`whisperflow/supabase_migration_2026-08-27_meetings_speakers_source.sql`, applied live). Provenance of the speaker split: `diarized` = AssemblyAI turns applied by desktop `_diarize()`, `estimated` = 90 s-gap heuristic only. `null` = pre-column meeting → clients render as estimated. Drives the SPEAKERS VERIFIED/ESTIMATED tag on both platforms |
 
 Indexes `(user_id)`, `(user_id, started_at desc)`. **Realtime publication: yes** (mobile subscribes
 INSERT+UPDATE on `verbal_meetings_<uid>` — the live-transcript stream). **`REPLICA IDENTITY FULL`**
@@ -152,10 +173,24 @@ RLS on, policy "meetings rw" `FOR ALL TO public USING(true)`
 (Hard Rule #10 — same deferred-hardening posture as the rest). Desktop also keeps a bounded metadata list
 in `config['meetings']` (`MEETINGS_CAP=30`) and the mixed WAV at `~/.verbal/meetings/<id>.wav`.
 
+**`app_versions_latest`** (view, 2026-08-20) — **the single definition of "newest build"**, read by
+both `updater.py` and the public `download` Edge Function. `distinct on (platform)` ordered by
+`public.semver_key(version) desc, released_at desc`.
+**Why it exists:** `app_versions.released_at` is NOT monotonic — CI stamps whatever is convenient —
+and live data had win `1.0.9` at `00:00:00` next to win `1.0.8` at `09:13:24` on the same day. The old
+`order=released_at.desc&limit=1` therefore resolved "latest" to **1.0.8**, so a Windows user on 1.0.7
+was offered 1.0.8 and could never reach 1.0.9. `semver_key()` sorts a version as an `int[]` (plain
+text sort ranks `1.0.9` above `1.0.10`) and strips non-numeric suffixes so a `-beta` tag degrades
+instead of erroring. **Never order `app_versions` by `released_at` again — read the view.**
+
 **`app_versions`** — `supabase_migrations/001_app_versions.sql`. Auto-update manifest.
 `id` bigserial PK · `platform` text (`mac`/`win`/`ios`) · `version` text · `changelog` · `file_url` ·
 `file_hash` (sha256) · `file_size` · `released_at` · `UNIQUE(platform,version)`. RLS on; public SELECT;
-inserts use **service_role** (release script) — no anon insert.
+inserts use **service_role** (release script) — no anon insert. **As of IDI-224 (2026-08-20),
+`file_url` is always a GitHub Releases URL** (`github.com/<repo>/releases/download/vX.Y.Z/<file>`) —
+never a Supabase Storage path; see `05-conventions.md` #50 for the release pipeline that writes these
+rows. The 9 stale pre-IDI-224 rows (dead Storage links + mismatched GitHub asset filenames) are cleared
+on ship.
 
 ### `transcriptions`, `devices`, `canvas` (MER-28, 2026-07: now have committed SQL)
 
@@ -168,20 +203,174 @@ reproduce exactly what the live DB already had — **not** a behavior change; se
 `id` uuid PK · `user_id` text · `device_id` text · `device_name` text default `''` · `text` text ·
 `created_at` timestamptz default `now()` · `is_pinned` bool default `false` · `edited_text` text nullable
 (read as `edited_text ?? text`) · `target_device_id` text nullable (Canvas-style targeting) ·
-`audio_url` text nullable (private `recordings` bucket object path, see MER-27) · `status` text default
-`'done'` (`'done'`\|`'failed'`, retryable). Indexes `(user_id, created_at desc)` and
-`(user_id, is_pinned, created_at desc)`. In the realtime publication.
+`audio_url` text nullable (private `recordings` bucket object path, see MER-27; since IDI-172 the DESKTOP
+also writes it, via a row-scoped patch after the async WAV upload) · `status` text default
+`'done'` (`'done'`\|`'failed'`, retryable) · `deleted_at` timestamptz nullable (**IDI-172 tombstone**,
+live migration `transcriptions_deleted_at_tombstone` 2026-08: delete = UPDATE with `text` cleared /
+`edited_text`+`audio_url` nulled, storage object removed — never a hard DELETE; merges drop + prune
+tombstoned ids; reconnect backfill sweeps tombstones separately since an UPDATE never moves `created_at`).
+Indexes `(user_id, created_at desc)` and `(user_id, is_pinned, created_at desc)`. In the realtime
+publication (desktop subscribes to `*`, not just INSERT). `duration_ms` int nullable (**2026-08-16**,
+live migration `transcriptions_duration_ms` + `supabase_transcriptions.sql`): the recording's real
+duration, written by both desktops' `SyncClient.push` and mobile's `addTranscription` insert; feeds the
+**account-wide WPM** on the Insights pages (mobile combines it with its local measured speech —
+`lib/insights.ts::localSpeech` + the cache's `wpmW/wpmMs` accumulator, own-device rows excluded to avoid
+double counting; insights cache is versioned `v:2` so existing installs re-read history once). Historic
+desktop rows were backfilled from their stored 16 kHz mono PCM16 WAV sizes (32 bytes/ms); compressed
+mobile uploads (m4a/caf) can't be size-derived and stayed NULL. (This replaced the old
+"local-cache-only, never pushed" posture.)
+`app` text nullable (**2026-08-21**, live migration `transcriptions_app_and_org_breakdown` +
+`whisperflow/supabase_organizations_onboarding.sql`): the name of the frontmost application at the moment
+the dictation was captured, written by both desktops' `SyncClient.push(..., app_name)` from the
+**pre-injection** `target_app` (reading it after the paste would name whatever regained focus —
+`05-conventions.md` #37). Partial index `(user_id, app) where app is not null`. **Mobile never writes
+it** — a phone has no frontmost window to read — so these numbers describe desktop dictation only.
+Historic rows are NULL and **cannot be backfilled**: the frontmost app was never recorded anywhere else,
+so `org_app_breakdown` is empty until new dictations accumulate and every client that renders it says so
+explicitly rather than showing a zero state.
 
-**`devices`** — device registry/presence. `id` uuid PK · `user_id` text · `device_id` text ·
-`device_name` text · `device_type` text default `'mac'` (`mac`/`win`/`ios`) · `last_seen` timestamptz
-default `now()` · **`sync_enabled`** bool default `true` (read/written by mobile `lib/deviceSync.ts` to
-gate per-device sync). Unique index `(user_id, device_id)` (the upsert conflict target). "Online" =
-`last_seen` within 5 min. In the realtime publication.
+**`devices`** — device registry/presence. `id` uuid PK · `user_id` text · `device_id` text (since IDI-177
+a STABLE per-install uuid — desktop `config.get_device_id()`, mobile `verbal_device_uuid` — never derived
+from hostname/name/account; one stale old-format row per upgraded device is expected and removable) ·
+`device_name` text · `device_type` text default `'mac'` (`mac`/`win`/`ios`/`android` — mobile now sends
+`Platform.OS`, the old `'iphone'` literal is gone) · `last_seen` timestamptz default `now()` ·
+**`sync_enabled`** bool default `true` (SELF-only since IDI-177: each device mirrors its own toggle here;
+nothing reads it as remote control). Unique index `(user_id, device_id)` (the upsert conflict target).
+"Online" = `last_seen` within **`sync.PRESENCE_ONLINE_SEC` = 120 s** (2026-08; was 300 s, which let a
+device that vanished four minutes ago still read "Online" — the dashboard promises "online right now", and
+the heartbeat is 60 s, so 120 s tolerates exactly one missed beat). In the realtime publication. The
+desktop device LIST reads `sync.fetch_account_devices` (ALL rows for the `user_id`, each tagged `online`,
+`last_seen` passed through so the UI can say how stale a row is), not `fetch_devices` (live set only).
+Presence heartbeats are APP-LEVEL 30 s daemons (`main._presence_loop`/`win_main`), gated on
+being signed in — not on any window being open (IDI-177); mobile's is the device store's single 60 s
+poll/upsert loop.
+**Identity survives reinstall (2026-08):** mobile `getDeviceId()` reads/writes `verbal_device_uuid` in the
+**Keychain** (`expo-secure-store`) first and AsyncStorage second, promoting a pre-Keychain AsyncStorage id
+into the Keychain on first read (so existing installs keep their row). AsyncStorage is wiped by an app
+reinstall or simulator reset, so before this every reinstall minted a fresh identity and orphaned its row:
+one test account reached **16 rows — 14 of them identically-named dead "iPhone"s**, none seen in 3 weeks,
+which buried the single device that was actually online. Those ids also record two dead schemes —
+`iphone_dcf871` (name + *cloud* `userId.slice(-6)`) and `iphone_gyoco7` etc. (same shape but seeded from an
+ephemeral **local** user id, hence one row per install) — plus `Shabbar-Windows` (desktop's old
+hostname-as-id).
+**There is NO TTL and nothing auto-prunes** — deliberate: a phone that is merely switched off is offline,
+not gone, and must not vanish from the list on its own. Cleanup is manual via
+`shared_dashboard.remove_offline_devices()` ("Remove all offline", user-confirmed, skips THIS device).
+**Lifecycle:** sign-out DELETEs this device's row (IDI-170); both platforms offer
+"Remove from list" for other devices (user_id+device_id-scoped, honestly labeled — removal doesn't revoke
+anything until IDI-29's per-device credentials).
 
 **`canvas`** — one shared row/user. `id` uuid PK (`gen_random_uuid()` default) · `user_id` text ·
-`content` text default `''` · `device_name` text default `''` · `updated_at` timestamptz default `now()` ·
-`image_url` text nullable. Unique index on `user_id` (the actual upsert conflict target — `id` is
-informational, doesn't change upsert behavior). In the realtime publication.
+`content` text default `''` · `device_name` text default `''` · `device_id` text nullable (**IDI-173**,
+live migration `canvas_device_id_origin` 2026-08: origin filtering is by stable device id — name compare
+only for rows written by old clients) · `updated_at` timestamptz default `now()` · `image_url` text
+nullable. Unique index on `user_id` (the actual upsert conflict target — `id` is informational). In the
+realtime publication. **Write contract (IDI-173):** every write stamps `device_id`+`device_name` and OMITS
+columns it isn't changing (text edits never null the image); a clear is an explicit
+`{content:'', image_url:null}` write that receivers apply — empty content is never falsy-dropped.
+
+### Organization layer (IDI-216, Aug 2026) — `whisperflow/supabase_organizations.sql`
+
+The **first tables in this project with real `auth.uid()` RLS.** Everything else is `TO public` with a
+`USING (true)` policy (see §Security posture); these four are `TO authenticated` and keyed on
+`auth.uid()::text` from their first row. That is deliberate and is what let the team layer ship without
+applying `supabase_auth_uid_rls.sql` (IDI-29): nothing in the team feature reads another user's row in a
+legacy table, so the pairing trade-off that blocks that migration is not in the way here. Consequence to
+know: a paired-but-never-signed-in device sends the anon key, reads **zero** org rows, and simply has no
+team — the correct fail-closed outcome.
+
+**`organizations`** — `id` uuid PK · `name` text · `company_name` text `''` · `owner_user_id` text ·
+`plan` text `'team'` · `seats` int `5` · `leaderboard_enabled` bool `false` (the OWNER's org-wide switch
+for the member-visible ranking; never turns itself on) · `created_at` · `updated_at`.
+Read by any active member; written by owner/admin; deleted by owner only.
+
+**`organization_members`** — PK `(org_id, user_id)` · `email` · `display_name` · `role`
+(`owner`|`admin`|`member`) · `status` (`active`|`invited`|`removed`) · `usage_consent` bool `false` ·
+`leaderboard_opt_in` bool `false` · `joined_at` · `updated_at`. Partial unique index
+`(user_id) where status='active'` enforces **one team per user** in the DB, so a racing invite claim
+can't create a second membership. **SELECT-only over REST — there is no INSERT/UPDATE/DELETE policy on
+purpose**: Postgres RLS cannot restrict which COLUMNS a policy lets you write, so a "members may update
+their own row" policy would also let a member set their own `role` to `owner`. Every write goes through
+an RPC. Removal is SOFT (`status='removed'`, consent flags cleared), which keeps the unique-active index
+coherent and makes a re-invite a clean re-claim.
+
+**`organization_invites`** — `id` uuid PK · `org_id` · `email` · **`token_hash`** text (sha256 hex —
+the raw token exists only in the invite email and claim URL, so a leaked row cannot be replayed) ·
+`role` · `invited_by` · `status` (`pending`|`claimed`|`expired`|`revoked`) · `expires_at` (default
+now()+7 days) · `claimed_by` · `claimed_at` · `created_at`. Unique index on `token_hash`. Readable by
+owner/admin only; INSERTed only by the `invite-member` Edge Function with the service role; claimed
+through `org_claim_invite` (SECURITY DEFINER, because the claimer is by definition not a member yet).
+
+**`organization_dictionary`** — `org_id` uuid PK · `vocabulary`/`replacements`/`snippets` jsonb `'[]'` ·
+`updated_by` text · `updated_at`. **Deliberately the same SHAPE as `dictionary`** so both clients reuse
+`normalize()`/`merge_dictionary()` verbatim rather than growing a second data model. Read by every
+active member (they dictate with it), written by owner/admin, **CAS on `updated_at`** exactly like the
+personal row (IDI-174's pattern): write filtered on the last-witnessed value, 0 rows → refetch, merge,
+retry once, then report.
+
+**RLS recursion note.** A policy on `organization_members` that answers "is the caller a member of this
+org?" by selecting `organization_members` would recurse. Every policy instead calls
+**`public.org_member_role(p_org uuid)`**, a SECURITY DEFINER function that reads the table with RLS
+bypassed. It is the single definition of "who may see this org" — change it and every policy follows.
+
+**RPCs** (all SECURITY DEFINER; each re-derives the caller from `auth.uid()` and checks its own
+authorization, so the `authenticated` grant is the right to ASK, never the right to act on another org):
+`org_create` (org + owner membership + empty shared dictionary, atomically) · `org_claim_invite` ·
+`org_set_role` · `org_remove_member` · `org_set_consent` (the ONLY membership columns a non-admin can
+move, and an admin cannot move them for someone else) · `org_usage_summary` · `org_leaderboard` ·
+`org_usage_series` · `org_app_breakdown`.
+
+**`org_usage_series(p_org, p_days)`** — per-member per-day word counts, backing the Team screen's roster
+sparklines and per-member activity heatmap. One call for the whole org rather than one per member. Same
+counts-only contract as the two above, with one difference worth knowing: **visibility is role-split** —
+owner/admin get every consenting member's series, anyone else gets only their OWN row, so a member can
+see their own sparkline without this becoming a way to read colleagues' activity.
+
+**GRANT GOTCHA (learned applying this live).** `revoke all on function … from public` revokes from the
+PUBLIC pseudo-role and does NOT undo Supabase's `ALTER DEFAULT PRIVILEGES` grant of `EXECUTE` to
+**`anon`** on new functions in `public`. Every org RPC was briefly anon-callable because of it. Nothing
+leaked — each derives its caller from `auth.uid()`, which is NULL for anon, so they returned
+`not_authenticated` / `forbidden` / an empty set — but **revoke from `anon` BY NAME** on any future
+SECURITY DEFINER function rather than relying on the `public` revoke.
+
+**`org_app_breakdown(p_org, p_days)`** — per-member per-app dictation and word counts, one flat row per
+`(member, app)`, ordered by member then count desc. Backs "Where the team writes" on the team overview and
+"Where <name> writes" on each member page. Same role split as `org_usage_series` (owner/admin see every
+consenting member, anyone else only themselves) and the same `usage_consent` gate — which here applies to
+**everyone including a member asking about themselves**, so turning sharing off empties the panel rather
+than leaving a private-looking row that is still being aggregated. Rows with a NULL/blank `app` or empty
+`text` are excluded, so the counts are of *app-attributed* dictations, not of all of them.
+**This RPC WIDENS the privacy contract.** Everything else in the team layer is counts and durations; an
+app name is neither. It is still metadata — never the text, never the audio — but the product copy on
+every Team surface had to change from "only counts and durations" to name app names explicitly, and it
+did (team overview privacy card, member-page footnote, mobile usage footnote).
+
+**`org_usage_summary` serves a plain member their OWN row** (live migration
+`org_usage_summary_own_row_for_members`, 2026-08-21). It was originally hard admin-only, unlike
+`org_usage_series` and `org_app_breakdown` which both already carried `or m.user_id = v_uid`. Since every
+total on the Team overview is derived from these rows, a member's screen rendered zeroes across the board
+and blamed them on consent — the "team insights are always empty" report. The clients had a matching gate
+on the *request* (`organizations.usage_summary`'s `role not in (...)`, JS `if(teamAdmin())`), removed in
+the same change: fixing one layer alone would not have changed a pixel. Nothing widened — a member still
+gets exactly one row, their own, still `usage_consent`-gated.
+
+**`org_usage_summary(p_org, p_days)` / `org_leaderboard(p_org, p_days)` — the privacy contract.** Both
+read `transcriptions.text` to COUNT words and sum `duration_ms`, and return **only** aggregates
+(`dictations`, `words`, `speech_ms`, `last_active`). There is no column in either return type that could
+carry transcript content. A member without `usage_consent` is **absent from the result entirely** rather
+than returned as zeroes, so their silence is not itself a signal. `org_leaderboard` additionally
+requires `organizations.leaderboard_enabled` (the per-member `leaderboard_opt_in` stopped gating it on
+2026-08-27 — the column remains, written by `org_set_consent`, but unused), and is readable
+by every active member (not just admins) — that is the deliberate Phase-5b design, gated behind two
+independent opt-ins.
+
+**`groq_check_rate_limit_org`** — `groq_check_rate_limit` (MER-30) plus a `p_user_id` used to look up the
+caller's org plan and RAISE their tier (`team` ×2, `enterprise` ×5; an unknown plan or no org leaves the
+default). Folded into the round trip the limiter already makes, so Phase-3 entitlements cost the hot path
+zero extra DB calls. A **separate name** rather than a replaced signature, so the original stays callable
+as `groq-proxy`'s fallback (it latches the org RPC off after one 404) and a rollback is a one-line client
+change. `EXECUTE` is revoked from `anon`/`authenticated` and granted only to `service_role` — the same
+lockdown MER-30's security-advisor pass established, for the same reason.
 
 ## Storage buckets
 
@@ -200,7 +389,11 @@ informational, doesn't change upsert behavior). In the realtime publication.
   `supabase_canvas_images_policy.sql` (idempotent: ensures the bucket exists + public, and read/insert/update
   `TO public` scoped to `bucket_id='canvas-images'`). A missing/blocked policy → mobile's anon upload fails
   silently → the shared photo never reaches the other device (now surfaced as an "Image upload failed" toast).
-- **`releases`** — auto-update binaries, public SELECT. Stays public deliberately (app-update downloads).
+- **`releases`** — **deprecated/unused as of IDI-224 (2026-08-20).** Was meant to hold auto-update
+  binaries via a TUS upload from CI, but a live check found it had **zero objects, ever** — that upload
+  path never worked. Release binaries now live entirely on **GitHub Releases** (see `05-conventions.md`
+  #50); nothing writes to this bucket anymore. Left in place rather than deleted in case something else
+  references it; do not resurrect the TUS-upload path without first explaining why the bucket was empty.
 - **`meeting-audio`** (`supabase_meetings.sql` + `supabase_recordings_meeting_audio_private.sql`,
   MER-27, 2026-07) — meeting recordings, path **`<user_id>/<meeting_id>.wav`** (16 kHz mono, mic+system
   mixed). **Private** (was public), same signed-URL mechanism as `recordings` but with a much longer TTL
@@ -224,6 +417,52 @@ informational, doesn't change upsert behavior). In the realtime publication.
   Mobile `NoteEntry` adds `source:'local'|'remote'` and an index signature so **unknown/newer-client
   fields are preserved verbatim** (forward-compat). Mobile UI `Note` maps these to camelCase
   (`rawContent`, `audioSegments`, `conflict`, `conflictOf`).
+- **Latency flags** (`config.py::DEFAULT_CONFIG`, desktop-only, both **default `False`** so an existing
+  install behaves exactly as before the 2026-08-14 latency pass; picked up by the `setdefault` backfill):
+  `speed_mode` (skip the LLM under 8 words + lean prompt + `SPEED_CLEANUP_MODEL`, `openai/gpt-oss-20b` as
+  of 2026-08-18 — `llama-3.1-8b-instant` before that, retired by Groq) and `chained_mode`
+  (transcribe+format in ONE round trip via `groq-proxy` v10). Independent and composable — see
+  03 §Models pane. Read through `config.feature_flag()`, never `config.get()` directly. Both are listed in
+  `config.PIPELINE_FLAGS` and are the ONLY store for the Settings pipeline radio, which derives its
+  position from them. Also `asr_model` (`"auto"` default; validated in `save_settings`).
+- **`chain_*` multipart fields** (desktop → `groq-proxy`, only when `chained_mode` is on):
+  `chain="1"`, `chain_model`, `chain_system`, `chain_user` (contains `{{TEXT}}`, the transcript slot),
+  `chain_replace` (JSON `[{from,to}]`, the dictionary rules — applied server-side BEFORE formatting; capped
+  at 500 rules server-side), `chain_reasoning_effort` (2026-08-22, optional — `"low"` for every current
+  caller, since both gpt-oss tiers default to `"medium"` and burn hidden reasoning tokens on this
+  mechanical task otherwise). All are deleted from the form before it is forwarded to Groq, which rejects
+  unknown fields. Response gains `chain:{ok, formatted, model, fmt_ms, asr_ms, usage, error?}`.
+- **`asr_provider` / `asr_alt_model`** (desktop → `groq-proxy`, only when `asr_model` picks a non-Groq
+  model): `asr_provider` is `eleven` | `assembly`, `asr_alt_model` the provider's own model id
+  (`scribe_v1`, `universal-2`, `universal-3-5-pro`). Also deleted before forwarding. The reply is
+  normalized to `{text, provider, asr_ms}` — deliberately Groq's shape, so no client branches per provider
+  and `chain=1` composes on top. On failure the function returns **502**, never 200-with-empty-text, which
+  the client would misread as silence; the desktop then retries on Groq.
+- **`asr-stream` Edge Function** (2026-08-15, **`verify_jwt: false`**) — the websocket relay for
+  `hybrid_mode`. Connect to `wss://<proj>/functions/v1/asr-stream?provider=assembly&apikey=<anon>&device=<id>`.
+  verify_jwt must be off because a WS upgrade cannot carry an Authorization header, so **the function checks
+  the key itself** and refuses anything that is neither the anon key nor a `eyJ…` JWT — otherwise it is an
+  open relay spending the account's ASR credit. That relaxation is quarantined in this function precisely so
+  `groq-proxy` can keep verify_jwt on. Wire protocol: client sends binary PCM16 @16 kHz and
+  `{"type":"done"}`; server sends `{"type":"ready"|"partial"|"final"|"error"}`. Needs `ASSEMBLYAI_API_KEY`.
+- **`diarize` JSON action on `groq-proxy`** (2026-08-16): `{"diarize":{"object":"<user>/<id>.wav"}}`
+  → signs a 1h URL for the private `meeting-audio` object (service role; path regex-locked to
+  `<user>/<meeting>.wav` so it cannot sign arbitrary bucket paths) and submits to AssemblyAI with
+  `speaker_labels: true`; returns `{id}`. `{"diarize":{"poll":"<id>"}}` → `{status}` or
+  `{status:"completed", utterances:[{speaker,start,end}]}` in SECONDS. Usage logged as kind `diarize`.
+  Needs `ASSEMBLYAI_API_KEY`; 503 without it and the desktop keeps gap labels (fail-closed, verified live).
+- **`groq-proxy` function secrets:** `GROQ_API_KEY`, `OLLAMA_API_KEY`, plus (2026-08-15)
+  `ELEVENLABS_API_KEY` and `ASSEMBLYAI_API_KEY`. Set with `supabase secrets set` — there is **no MCP tool
+  for secrets**. Without them the provider branch 502s naming the missing secret and dictation falls back
+  to Groq, so a half-configured deploy degrades instead of breaking.
+- **Insights stats (config-only, NO Supabase columns — Aug 2026):** desktop
+  `config['stats_daily']` (per-day `{w,n,s,fx,apps,hh}` ledger, 800-day cap; `apps` values are
+  `[words, dictations]` — bare ints from the first build are read-tolerated and upgraded on the next
+  write to that app), `stats_total`,
+  `stats_since`, and `stats_cloud` (incremental aggregate of `transcriptions` rows, high-water-marked on
+  `created_at`; merge rule in `app/insights.py` prevents double counting). Mobile mirrors the cloud
+  aggregate in AsyncStorage `verbal_insights_cache` (uid-stamped; in the `clearAccountData` teardown
+  list). The Insights feature reads `transcriptions` but never writes it.
 - **Device**: `{user_id, device_id, device_name, device_type, last_seen}`.
 - **Canvas** (mobile UI item): `{id, state:'draft'|'sent', kind:'text'|'link'|'image', …}` → collapsed to the
   single shared `{content, image_url}` row on save.
@@ -258,17 +497,36 @@ and `verbal://auth-callback` (mobile). Consent screen in "Testing" mode. No sepa
 ## Sync model
 
 **Everything keyed by the Supabase auth `user_id`.** After sign-in both platforms adopt `user.id`
-(`sync_user_id` desktop / `setUserId` mobile). Device id: desktop `platform.node()`; mobile
-`<deviceName>_<userId last6>`.
+(`sync_user_id` desktop / `setUserId` mobile). Device id: STABLE per-install uuid on both (IDI-177 —
+desktop `config.get_device_id()`, mobile `verbal_device_uuid`). **The sync toggle (one source per
+platform: `lib/syncStore.ts` mobile / `sync_enabled` desktop) is LIVE and gates
+history/notes/canvas/dictionary; meetings edits + recording uploads gate on being signed in only**
+(`auth.cloud_allowed` / `getCloudUserId()`). Mobile stores are singletons with
+`reset()`/`catchUp()`/channel-rejoin (see `05-conventions.md` #28); AppState foreground runs a catch-up;
+desktop's `SyncClient` has a single reconnect loop with a bounded backfill (content since last-seen + a
+separate tombstone sweep).
 
-- **Transcriptions (history / shared clipboard):** push = INSERT into `transcriptions`. ⚠️ **Desktop push
-  omits `audio_url`/`status`** (those live in local history) — **mobile push includes**
-  `audio_url`+`status`+`target_device_id`. Receive: desktop Phoenix WS `postgres_changes` INSERT filtered
-  `user_id=eq.<uid>`; mobile `channel('verbal_history_<uid>')` INSERT+UPDATE. Both **skip own inserts**
-  (device_id) and honor **`target_device_id`** (broadcast when null, else targeted). Mobile local cache is
-  source of truth; remote merges in (dedup by row id).
-- **Dictionary:** REST pull/push, one row/user; `fetch_remote` writes config only on change; `_push_remote`
-  upsert `on_conflict=user_id`, `resolution=merge-duplicates`. Last-write-wins on `updated_at`.
+- **History bootstrap on joining a device (2026-08-15):** `sync.bootstrap_history(config, save_config_fn)`
+  seeds local history with the account's newest 50 non-tombstoned `transcriptions` when a device signs in
+  (both desktops' after-sign-in paths) or starts sync with a near-empty local history (<5 entries). The
+  SyncClient watermark is deliberately seeded to NOW, so without this a fresh install showed an empty
+  History despite hundreds of cloud rows. QUIET merge (dedup by `sync_id`, then text+day as a backstop for
+  entries that lost their sync_id to a config-reload race) — never touches the clipboard/overlay/paste
+  path, which is `_on_sync_receive`'s job for LIVE rows only.
+- **Transcriptions (history / shared clipboard):** push = INSERT into `transcriptions`; BOTH platforms
+  include `audio_url`+`status`+`target_device_id` since IDI-172 (desktop patches `audio_url` row-scoped
+  after the async upload; local↔cloud linkage via a local `sync_id`). Receive: desktop Phoenix WS
+  `postgres_changes` `*` filtered `user_id=eq.<uid>` — received rows are APPENDED TO LOCAL HISTORY +
+  clipboard, and auto-pasted ONLY when `target_device_id` equals this device (IDI-172; broadcasts no
+  longer paste); mobile `channel('verbal_history_<uid>')` INSERT+UPDATE. Both skip own inserts
+  (device_id), honor `target_device_id`, and treat `deleted_at` tombstones as authoritative (drop +
+  prune). Desktop Settings has "Clear history" with an optional everywhere-tombstone sweep.
+- **Dictionary:** REST pull/push, one row/user — **CAS on `updated_at`** since IDI-174 (write filtered on
+  the last-witnessed value; 0 rows → refetch → pure merge — vocab case-insensitive union, snippets by
+  trigger, replacements by `from` — → one retry; double failure surfaces "Couldn't sync — will retry").
+  Mobile pushes are blocked until the first fetch resolves (edit-before-load used to wipe the row) and
+  require a real identity (`getCloudUserId()` — no junk `user_<ts>` rows). Meetings notes/scratchpad
+  writes use the same CAS pattern (freeze + Reload on conflict instead of merge).
 - **Notes:** desktop REST (`on_conflict=id`) + mobile SDK CRUD; both merge with a local cache.
   **v2 merge contract** (desktop `merge_remote_note` in `shared_dashboard.py`; mobile `mergeRemoteNote` in
   `lib/notesStorage.ts` — kept identical): (a) `audio_segments` **UNION** on every merge (de-dup by
@@ -286,7 +544,20 @@ and `verbal://auth-callback` (mobile). Consent screen in "Testing" mode. No sepa
 - **Recordings:** audio → `recordings` bucket under `<user_id>/`; `audio_url` on the row/entry. Failed
   transcriptions `status:'failed'`, retryable from saved audio.
 - **Pairing:** host inserts `pairings` row (`token_urlsafe(6)`, +120 s), QR `flume://pair?t=<token>`; new
-  device SELECTs unclaimed/unexpired → atomic UPDATE `claimed_by` (guarded) → adopts `user_id` → enables sync.
+  device calls the `claim_pairing` RPC (atomic guarded claim, server-side expiry — IDI-157) → adopts
+  `user_id` via the paired override (IDI-156) → enables sync. Host polls `pairing_status`, cancel revokes
+  via `cancel_pairing`.
+
+### Team dictionary in the sync model (IDI-216)
+
+The shared dictionary is pulled by `organizations.fetch()` (desktop) / `fetchOrg()` (mobile) into a
+LOCAL cache — `config['org']` and AsyncStorage `flume_org` respectively — and the dictation path reads
+only that cache, so adding a team costs the hot path no network call. The **sync toggle gates the shared
+dictionary but not team membership**: a user who turned sync off dictates with their personal dictionary
+only, exactly as before joining, while still being a member with a visible roster and role. Both caches
+are account-scoped and wiped on sign-out / account switch (`auth._clear_account_caches` sets
+`config['org']`; `clearAccountData` removes `flume_org` and calls `clearOrgCache()` for the in-memory
+mirror) — otherwise the next account on that machine would dictate with a team it was never in.
 
 ## Security posture (as implemented)
 
@@ -319,7 +590,7 @@ Pragmatic, matches code + `GOOGLE_AUTH_SETUP.md`:
     signed in and valid, else the anon key — **fully backward-compatible**, since RLS is still permissive
     either way). `_store_session` now also stores `expires_at`. Applied across every desktop REST call site
     for `meetings`/`notes`/`canvas`/`dictionary`/`devices` (`app/sync.py`, `app/meetings.py`,
-    `app/shared_dashboard.py`, `app/dictionary.py`, `app/canvas_window.py`, `app/dashboard.py`) and to every
+    `app/shared_dashboard.py`, `app/dictionary.py`, `app/dashboard.py`) and to every
     Phoenix Realtime `phx_join` payload (`access_token` field) + WS handshake header
     (`app/flume_web_dashboard.py` too) — Realtime evaluates `postgres_changes` RLS off that field, so this
     was needed for Realtime to ever honor a future `auth.uid()` policy. Storage calls (`recordings.py`,
@@ -351,9 +622,10 @@ Pragmatic, matches code + `GOOGLE_AUTH_SETUP.md`:
        (old builds only ever send the anon key) — a real outage, not a soft degrade, until users update.
        This must be sequenced behind an actual release + adoption window, which is outside what a single
        backend change can control.
-  - `pairings` itself is **deliberately unchanged** (kept on its existing random/short-lived/single-use
-    token model, per the ticket) — the claiming device isn't signed in as the host yet, so `auth.uid()`
-    can't apply to its own rows either.
+  - `pairings` keeps its random/short-lived/single-use token model (the claiming device isn't signed in
+    as the host yet, so `auth.uid()` can't apply to its own rows) — but is no longer wide-open: since
+    IDI-157 the table is INSERT-only over REST and everything else is token-gated RPC (see the `pairings`
+    entry above), which closed the user_id-enumeration hole without needing the JWT migration.
 - `recordings` and `meeting-audio` are **private** (MER-27, 2026-07) — signed URLs only, see Storage
   buckets above. `canvas-images` and `releases` remain public (lower-sensitivity / app binaries).
   `app_versions` inserts are service_role-gated.
@@ -367,6 +639,10 @@ Pragmatic, matches code + `GOOGLE_AUTH_SETUP.md`:
 - Local-only config keys: `voice_prints` (per-name embeddings — NEVER synced), `meetings_opened` (read tracking).
 
 ## Schema gaps & stale docs (important) ⚠️
+
+- Transcript utterances may carry a transient `words: [[text, t0, t1]]` array **in memory only** during a
+  live desktop meeting (per-word timestamps for turn splitting). The `transcript` jsonb shape above is
+  unchanged: `_public_transcript()` strips `words` from every persisted/synced/emitted copy.
 
 - ~~No committed SQL for `transcriptions`, `devices`, `canvas`~~ — **closed** (MER-28, 2026-07):
   `whisperflow/supabase_transcriptions.sql` / `supabase_devices.sql` / `supabase_canvas.sql` now reproduce
@@ -388,8 +664,8 @@ Pragmatic, matches code + `GOOGLE_AUTH_SETUP.md`:
   - ~~`groq_usage.kind`'s check constraint didn't allow `'chat-ollama'`~~ — **fixed** (migration
     `allow_chat_ollama_in_groq_usage_kind`, 2026-07): constraint now allows it, verified with a live
     insert+delete round-trip.
-  - `app_config` is referenced by mobile code (`lib/remoteConfig.ts`) but doesn't exist in the live
-    schema at all — see the `app_config` callout above.
+  - ~~`app_config` referenced by mobile code but absent from the live schema~~ — **resolved** (IDI-160,
+    2026-08): the referencing code was removed entirely; see the `app_config` callout above.
   - Two more undocumented-until-now tables: `push_tokens` (real, in active use) and `device_presence`
     (appears orphaned/unused — flag for cleanup, don't treat as a feature).
   - Undocumented columns that do exist and are actively used: `meetings.notes_md`, `meetings.live`,

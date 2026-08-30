@@ -3,6 +3,29 @@ pynput>=1.7.6
 sounddevice>=0.4.6
 soundfile>=0.12.0
 numpy>=1.24.0
+# recorder.py does `from scipy import signal` unconditionally at module load —
+# a HARD dependency for every dictation, not optional. Missing here (only
+# requirements-win.txt had it) the same way qrcode was missing below: present
+# ad hoc on the dev Mac, so `pyinstaller` + local testing never caught it, but
+# a genuinely fresh `pip install -r requirements.txt` (a real CI runner, or
+# any other clean machine) has no scipy at all — the frozen app then crashes
+# immediately on launch with "ModuleNotFoundError: No module named 'scipy'"
+# before any of the app's own logging even initializes (confirmed live via
+# `log show`, 2026-08-24 — app.log stayed silent because the crash happens
+# before Python gets far enough to open it). No upper pin: unlike Windows
+# (Python 3.11, numpy 1.x pinned — see requirements-win.txt's note), mac's
+# numpy above is already an open range, so scipy stays open too for the same
+# reason.
+# Pinned, not open-ended: scipy 1.17.1 (whatever an unpinned install resolves
+# to today) has internal restructuring (scipy._external.array_api_compat)
+# that PyInstaller's bundled hook doesn't fully capture yet — the frozen app
+# built fine but crashed on launch with
+# "No module named 'scipy._external.array_api_compat.numpy.fft'"
+# (confirmed live, 2026-08-24, in a real frozen-build launch test, not just
+# `pip install` succeeding). 1.14.1 is the same version requirements-win.txt
+# already pins and has verified working frozen — use the same one here
+# instead of separately re-discovering PyInstaller compatibility per platform.
+scipy==1.14.1
 # faster-whisper is optional - only needed for offline transcription
 # Install separately if needed: pip install faster-whisper
 # Note: May have dependency conflicts on Python 3.14+
@@ -16,4 +39,23 @@ websocket-client>=1.6.0
 httpx>=0.27.0
 pystray>=0.19.5
 pywebview>=5.3
+# QR rendering for device pairing (app/pairing.py::qr_svg). It is a LAZY import
+# inside that function, so a missing qrcode breaks nothing until you actually
+# open "Pair a device" — which is how it stayed undeclared here while working on
+# the dev Mac that had it installed ad hoc. Only the core package is needed:
+# qr_svg builds the SVG by hand from get_matrix(), so no pil/png extras.
+qrcode>=8.2
 pyobjc-framework-WebKit; sys_platform == 'darwin'
+# permissions.py's check_microphone()/request_microphone() `from AVFoundation
+# import ...` has silently failed since this file was written — never listed
+# here, never installed in ANY environment that's actually been checked (not
+# even ad hoc in a dev venv, unlike the scipy/qrcode instances of this same
+# bug class). request_microphone() catches the resulting ImportError with a
+# bare `except Exception: pass` and falls through to just opening System
+# Settings directly — which is EXACTLY the reported symptom ("hotkey opens
+# the Microphone settings tab, but Flume isn't in the list"): the real
+# TCC-registering API call never actually ran, so macOS has no record of the
+# app ever asking. Confirmed live, 2026-08-25: `from AVFoundation import
+# AVCaptureDevice, AVMediaTypeAudio` raised ModuleNotFoundError before this;
+# works immediately once this line is installed.
+pyobjc-framework-AVFoundation; sys_platform == 'darwin'

@@ -26,28 +26,94 @@ jobs:
         with:
           python-version: '3.11'
 
+      # $ErrorActionPreference = "Stop" is load-bearing on every multi-line
+      # pwsh block in this job. PowerShell (the default Windows runner shell)
+      # does NOT abort a script on a failing command the way bash -e does —
+      # it logs the error and keeps going, so the step's exit code is just
+      # whatever the LAST line returned. That's exactly how a real pywebview
+      # install failure went undetected for who-knows-how-many releases: it
+      # failed silently mid-`pip install -r requirements-win.txt`, the next
+      # line (`pip install faster-whisper`) succeeded on its own, "Install
+      # dependencies" reported green, and the real error only surfaced three
+      # steps later as a confusing ModuleNotFoundError out of PyInstaller
+      # (2026-08-22). Every run block below now fails fast and loud instead.
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install Pillow
-          pip install -r whisperflow/requirements.txt
-          pip install pyinstaller
+          $ErrorActionPreference = "Stop"
+          # $ErrorActionPreference alone governs PowerShell's own cmdlet
+          # errors, not necessarily a failing EXTERNAL process's exit code
+          # (pip.exe here) — that depends on the runner's exact pwsh version.
+          # Checking $LASTEXITCODE explicitly after each pip call is
+          # unambiguous regardless of version, which is what actually matters
+          # after being burned by a silently-swallowed pywebview install
+          # failure. exe() is a tiny helper so this isn't four copies of the
+          # same six lines below.
+          # `python -m X` pins every command to the exact interpreter
+          # actions/setup-python configured — a bare `pip`/`pyinstaller` can
+          # resolve to a DIFFERENT Python on this runner's PATH than bare
+          # `python` does (windows-latest ships several), which is exactly
+          # what caused `pip show pywebview` to succeed while
+          # `python -c "import pywebview"` failed with ModuleNotFoundError,
+          # confirmed live via build-windows-exe.yml (2026-08-22).
+          function exe { & $args[0] @($args[1..($args.Length-1)]); if ($LASTEXITCODE -ne 0) { throw "$($args[0]) failed with exit code $LASTEXITCODE" } }
+          exe python -m pip install --upgrade pip
+          exe python -m pip install Pillow
+          # Use the Windows-pinned deps (uiautomation, comtypes, soundcard,
+          # winotify, scipy, etc.) that the frozen exe's hidden imports rely on.
+          exe python -m pip install -r whisperflow/requirements-win.txt
+          # Offline transcription engine — kept out of the requirements files per
+          # the repo's "install separately" note, but the spec imports it.
+          exe python -m pip install faster-whisper
+          exe python -m pip install pyinstaller
 
       - name: Convert icon to ICO
         run: |
+          $ErrorActionPreference = "Stop"
           cd whisperflow
-          python -c "from PIL import Image; img=Image.open('assets/icon.png'); img.save('assets/icon.ico', format='ICO', sizes=[(16,16),(32,32),(48,48),(64,64),(128,128),(256,256)])"
+          # Must read assets/app_icon.png (the real 1024x1024 Flume app icon),
+          # NOT assets/icon.png (a tiny 44x44 flat black mic silhouette meant
+          # only for the menu-bar-style tray glyph — generate_menu_icon() in
+          # scripts/generate_icons.py). This step pre-creates assets/icon.ico
+          # BEFORE verbal-win.spec runs, and the spec's own inline conversion
+          # only fires when icon.ico does NOT already exist — so if this step
+          # reads the wrong source, the spec's fix is silently skipped and the
+          # frozen exe/installer still ends up with the tiny blank-looking icon.
+          python -c "from PIL import Image; img=Image.open('assets/app_icon.png'); img.save('assets/icon.ico', format='ICO', sizes=[(16,16),(32,32),(48,48),(64,64),(128,128),(256,256)])"
 
       - name: Build Windows EXE
         run: |
+          $ErrorActionPreference = "Stop"
           cd whisperflow
-          pyinstaller verbal-win.spec --clean --noconfirm
+          python -m PyInstaller verbal-win.spec --clean --noconfirm
+          if ($LASTEXITCODE -ne 0) { throw "pyinstaller failed with exit code $LASTEXITCODE" }
 
+      # updater.py runs the release file with Inno Setup silent switches
+      # (/SILENT /CLOSEAPPLICATIONS /SUPPRESSMSGBOXES /NORESTART), so the file we
+      # publish for Windows MUST be the Inno installer, not the bare Flume.exe.
+      - name: Install Inno Setup
+        run: choco install innosetup -y
+
+      - name: Build Windows installer
+        run: |
+          $ErrorActionPreference = "Stop"
+          cd whisperflow
+          # verbal-setup.iss hardcoded MyAppVersion="1.0.10" forever — every
+          # installer's "Programs and Features" entry claimed to be 1.0.10
+          # regardless of the actual build. Pass the real version explicitly
+          # so it can never drift from config.APP_VERSION again (2026-08-23).
+          $VERSION = (Select-String -Path 'app\config.py' -Pattern '^APP_VERSION\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
+          if (-not $VERSION) { throw "Could not read APP_VERSION from app/config.py" }
+          Write-Host "Building installer for version $VERSION"
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "/DMyAppVersion=$VERSION" verbal-setup.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC.exe failed with exit code $LASTEXITCODE" }
+
+      # Publish the Inno installer as the Windows release artifact. (Flume.exe is
+      # bundled inside it; we no longer ship the bare exe as the update payload.)
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Verbal-Windows
-          path: whisperflow/dist/Verbal.exe
+          name: Flume-Windows
+          path: whisperflow/dist/FlumeSetup.exe
 
   # ── Mac Build ──────────────────────────────────────────────────
   build-mac:
@@ -65,22 +131,43 @@ jobs:
           python -m pip install --upgrade pip
           pip install "setuptools<75" wheel
           pip install -r whisperflow/requirements.txt
+          # requirements.txt deliberately treats these as "install separately" —
+          # but whisperflow.spec imports both unconditionally just to locate
+          # their bundled data dirs, so PyInstaller fails at spec-parse time
+          # without them. This was missing here (while the Windows job below
+          # already had it) and is why every mac build since at least v1.0.5
+          # failed before ever reaching codesigning — confirmed by reproducing
+          # the exact CI steps locally (2026-08-22).
+          pip install faster-whisper
           pip install pyinstaller
 
       - name: Generate icons
         run: |
           cd whisperflow
-          python3 scripts/generate_icons.py
+          # Icon PNGs are CHECKED IN (regenerated at development time by
+          # scripts/generate_brand_icons.py from the mascot masters in
+          # assets/brand/ — conventions #61). This step used to also run the
+          # OLD scripts/generate_icons.py, which silently overwrote the
+          # checked-in menu-bar pair (assets/icon.png / icon_active.png) with
+          # its retired mic art on every build — v1.0.29 shipped the parrot
+          # Dock icon but the old mic menu-bar icon because of exactly that
+          # (2026-08-25). CI must never regenerate art; it only CONVERTS the
+          # committed app_icon.png into the platform container below.
           mkdir -p assets/icon.iconset
-          sips -z 16 16 assets/icon.png --out assets/icon.iconset/icon_16x16.png
-          sips -z 32 32 assets/icon.png --out assets/icon.iconset/icon_16x16@2x.png
-          sips -z 32 32 assets/icon.png --out assets/icon.iconset/icon_32x32.png
-          sips -z 64 64 assets/icon.png --out assets/icon.iconset/icon_32x32@2x.png
-          sips -z 128 128 assets/icon.png --out assets/icon.iconset/icon_128x128.png
-          sips -z 256 256 assets/icon.png --out assets/icon.iconset/icon_128x128@2x.png
-          sips -z 256 256 assets/icon.png --out assets/icon.iconset/icon_256x256.png
-          sips -z 512 512 assets/icon.png --out assets/icon.iconset/icon_256x256@2x.png
-          sips -z 512 512 assets/icon.png --out assets/icon.iconset/icon_512x512.png
+          # NOTE: these sips calls MUST read assets/app_icon.png (the real
+          # 1024x1024 app icon), NOT assets/icon.png — the latter is the tiny
+          # 44x44 menu-bar glyph (ICON_PATH/ICON_ACTIVE_PATH in app/main.py).
+          # Reading icon.png here was the root cause of the Dock/Finder/DMG
+          # icon looking wrong/blank.
+          sips -z 16 16 assets/app_icon.png --out assets/icon.iconset/icon_16x16.png
+          sips -z 32 32 assets/app_icon.png --out assets/icon.iconset/icon_16x16@2x.png
+          sips -z 32 32 assets/app_icon.png --out assets/icon.iconset/icon_32x32.png
+          sips -z 64 64 assets/app_icon.png --out assets/icon.iconset/icon_32x32@2x.png
+          sips -z 128 128 assets/app_icon.png --out assets/icon.iconset/icon_128x128.png
+          sips -z 256 256 assets/app_icon.png --out assets/icon.iconset/icon_128x128@2x.png
+          sips -z 256 256 assets/app_icon.png --out assets/icon.iconset/icon_256x256.png
+          sips -z 512 512 assets/app_icon.png --out assets/icon.iconset/icon_256x256@2x.png
+          sips -z 512 512 assets/app_icon.png --out assets/icon.iconset/icon_512x512.png
           iconutil -c icns assets/icon.iconset -o assets/Verbal.icns
 
       - name: Build Mac .app
@@ -88,18 +175,167 @@ jobs:
           cd whisperflow
           pyinstaller whisperflow.spec --clean --noconfirm
 
+      # Import the Developer ID Application cert into a throwaway keychain
+      # scoped to this job — the runner is destroyed afterward, so nothing
+      # persists. MACOS_KEYCHAIN_PASSWORD can be any string; it only unlocks
+      # this ephemeral keychain for the life of the job. The signing identity
+      # is discovered from the imported cert rather than hardcoded as a
+      # secret, so a cert rename/renewal can't silently drift out of sync
+      # with a separately-stored identity string.
+      - name: Import signing certificate
+        env:
+          MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          MACOS_KEYCHAIN_PASSWORD: ${{ secrets.MACOS_KEYCHAIN_PASSWORD }}
+        run: |
+          KEYCHAIN=build.keychain
+          CERT_PATH="$RUNNER_TEMP/cert.p12"
+          echo "$MACOS_CERTIFICATE_P12" | base64 -D -o "$CERT_PATH"
+          security create-keychain -p "$MACOS_KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$MACOS_KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$CERT_PATH" -k "$KEYCHAIN" -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$MACOS_KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security list-keychains -d user -s "$KEYCHAIN" login.keychain
+          rm -f "$CERT_PATH"
+          IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN" | grep "Developer ID Application" | head -1 | sed -E 's/.*"(.+)"/\1/')
+          if [ -z "$IDENTITY" ]; then
+            echo "::error::No 'Developer ID Application' identity found in the imported certificate."
+            exit 1
+          fi
+          echo "Signing identity: $IDENTITY"
+          echo "MACOS_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
+
+      # Hardened runtime + notarization needs every nested Mach-O binary
+      # signed BEFORE the outer .app — `codesign --deep` is explicitly
+      # discouraged by Apple for exactly this (it can sign in the wrong
+      # order on a bundle this size, full of ctranslate2/numpy/scipy
+      # dylibs). Sign leaves-first, then the app itself.
+      - name: Code-sign the app bundle (hardened runtime)
+        run: |
+          cd whisperflow
+          APP=dist/Flume.app
+          find "$APP" -type f \( -perm -111 -o -name "*.dylib" -o -name "*.so" \) -print0 \
+            | xargs -0 -I{} codesign --force --options runtime --timestamp \
+                --entitlements entitlements.plist --sign "$MACOS_IDENTITY" "{}"
+          codesign --force --options runtime --timestamp \
+            --entitlements entitlements.plist --sign "$MACOS_IDENTITY" "$APP"
+          codesign --verify --deep --strict --verbose=2 "$APP"
+
       - name: Create DMG
         run: |
           cd whisperflow
-          hdiutil create -volname "Verbal" -srcfolder dist/Verbal.app -ov dist/Verbal.dmg
+          # The DMG used to contain ONLY Flume.app — opening it just showed the
+          # bare app icon with nothing to drag it onto, unlike every other mac
+          # app's DMG (Chrome, Slack, etc. all show the app + an Applications
+          # shortcut side by side). Building from a staging folder that also
+          # has an /Applications symlink fixes that with zero extra tooling —
+          # Finder renders a symlink to a folder as that folder's normal icon.
+          STAGING=dist/dmg_staging
+          rm -rf "$STAGING"
+          mkdir -p "$STAGING"
+          cp -R dist/Flume.app "$STAGING/"
+          ln -s /Applications "$STAGING/Applications"
+          hdiutil create -volname "Flume" -srcfolder "$STAGING" -ov dist/Flume.dmg
+          codesign --force --sign "$MACOS_IDENTITY" dist/Flume.dmg
+
+      # Notarization is what actually satisfies Gatekeeper on someone else's
+      # Mac — a codesigned-but-unnotarized DMG still shows "Apple could not
+      # verify this app is free of malware" on first open. `--wait` blocks
+      # until Apple's service returns pass/fail (typically 1-5 min); stapling
+      # embeds the ticket so Gatekeeper can check it OFFLINE (a first-launch
+      # network check would otherwise be a silent failure point for anyone
+      # without connectivity at that exact moment).
+      - name: Notarize and staple
+        timeout-minutes: 40
+        env:
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+        run: |
+          cd whisperflow
+          KEY_PATH="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
+          echo "$APPLE_API_KEY_P8" | base64 -D -o "$KEY_PATH"
+          NOTARY_AUTH=(--key "$KEY_PATH" --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER_ID")
+
+          # A previous run hit a transient network error mid `notarytool wait`,
+          # then the RETRY of that same call just hung — never erroring, never
+          # returning — for the full 6 HOURS until GitHub's own default job
+          # timeout force-killed the run (confirmed live: start and end
+          # timestamps exactly 6h00m apart, 2026-08-23). The retry loop below
+          # only helps if a failing call actually returns; it does nothing
+          # against a hang. macOS doesn't ship GNU coreutils' `timeout` by
+          # default, so this is a small manual implementation: run the command
+          # in the background, race it against a sleep-then-kill watcher.
+          run_with_timeout() {
+            local secs=$1; shift
+            "$@" &
+            local pid=$!
+            ( sleep "$secs" && kill -TERM "$pid" 2>/dev/null ) &
+            local watcher=$!
+            wait "$pid" 2>/dev/null
+            local rc=$?
+            kill "$watcher" 2>/dev/null
+            wait "$watcher" 2>/dev/null
+            return $rc
+          }
+
+          # Submit and wait are deliberately SEPARATE calls. `submit --wait`
+          # bundles the (one-shot) DMG upload with a long-lived poll loop into
+          # one command — a transient network blip on the runner during that
+          # multi-minute wait (seen live: NSURLErrorDomain -1009, "Internet
+          # connection appears offline", 2026-08-22) kills the whole thing and
+          # would force a wasteful re-upload on retry. Submitting once and
+          # retrying only the `wait` means a network hiccup just costs a
+          # bounded pause, not the whole submission.
+          if ! SUBMIT_JSON=$(run_with_timeout 300 xcrun notarytool submit dist/Flume.dmg "${NOTARY_AUTH[@]}" --output-format json); then
+            echo "::error::notarytool submit timed out (5 min) or failed"
+            rm -f "$KEY_PATH"
+            exit 1
+          fi
+          echo "$SUBMIT_JSON"
+          SUBMISSION_ID=$(echo "$SUBMIT_JSON" | python3 -c "import json,sys; print(json.load(sys.stdin)['id'])")
+          echo "Submission ID: $SUBMISSION_ID"
+
+          # Re-attaching with `wait` on the same submission ID is always safe
+          # to retry — it only polls status, it never re-submits or restarts
+          # anything on Apple's side. Each attempt is capped at 4 minutes;
+          # worst case (5 attempts + 4 backoffs) is ~21 minutes, not 6 hours.
+          STATUS=""
+          for attempt in 1 2 3 4 5; do
+            if WAIT_JSON=$(run_with_timeout 240 xcrun notarytool wait "$SUBMISSION_ID" "${NOTARY_AUTH[@]}" --output-format json); then
+              echo "$WAIT_JSON"
+              STATUS=$(echo "$WAIT_JSON" | python3 -c "import json,sys; print(json.load(sys.stdin)['status'])")
+              break
+            fi
+            echo "::warning::notarytool wait attempt ${attempt} timed out (4 min) or failed — retrying in 20s"
+            sleep 20
+          done
+
+          if [ "$STATUS" != "Accepted" ]; then
+            echo "::error::Notarization ${STATUS:-never completed after retries} — fetching Apple's rejection log"
+            xcrun notarytool log "$SUBMISSION_ID" "${NOTARY_AUTH[@]}" || true
+            rm -f "$KEY_PATH"
+            exit 1
+          fi
+
+          xcrun stapler staple dist/Flume.dmg
+          rm -f "$KEY_PATH"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Verbal-Mac
-          path: whisperflow/dist/Verbal.dmg
+          name: Flume-Mac
+          path: whisperflow/dist/Flume.dmg
 
-  # ── Upload to Supabase & Register Version ──────────────────────
+  # ── Register Release (GitHub Releases is the SOLE artifact host — IDI-224) ──
+  #
+  # Supabase Storage's TUS upload used to run here too. It never worked: the
+  # `releases` bucket had ZERO objects in it, ever, on a live check (2026-08-20),
+  # while GitHub Releases assets land correctly whenever this job runs. Rather
+  # than debug a write path with no evidence it ever succeeded, GitHub Releases
+  # (free, CDN-backed, immutable, already proven) is now the ONE place a release
+  # binary lives. `app_versions.file_url` always points here.
   release:
     needs: [build-windows, build-mac]
     runs-on: ubuntu-latest
@@ -117,120 +353,102 @@ jobs:
           fi
           echo "version=$VERSION" >> $GITHUB_OUTPUT
 
+      # The tag is what names the release; config.APP_VERSION is what the RUNNING
+      # app compares against app_versions to decide it needs updating. If they
+      # disagree, the publish "succeeds" and then either nobody is offered the
+      # update or everybody is offered it forever. conventions #33 called this out
+      # as release-process discipline the spec file cannot enforce — so enforce it
+      # here, where it is cheap and impossible to forget.
+      - name: Tag must match config.APP_VERSION
+        run: |
+          # grep/sed, not a python -c one-liner: nesting quotes inside a YAML
+          # block scalar inside a shell $( ) is how you get a syntax error that
+          # only shows up in CI. This has no nested quoting at all.
+          CFG=$(grep -m1 -E '^APP_VERSION[[:space:]]*=' whisperflow/app/config.py | sed -E 's/.*"([^"]+)".*/\1/')
+          if [ -z "$CFG" ]; then
+            echo "::error::Could not read APP_VERSION from whisperflow/app/config.py"
+            exit 1
+          fi
+          TAG="${{ steps.version.outputs.version }}"
+          echo "tag=$TAG  config.APP_VERSION=$CFG"
+          if [ "$CFG" != "$TAG" ]; then
+            echo "::error::Tag v$TAG does not match config.APP_VERSION ($CFG)."
+            echo "::error::Bump APP_VERSION in whisperflow/app/config.py, or retag."
+            exit 1
+          fi
+
       - name: Download Windows artifact
         uses: actions/download-artifact@v4
         with:
-          name: Verbal-Windows
+          name: Flume-Windows
           path: dist/
 
       - name: Download Mac artifact
         uses: actions/download-artifact@v4
         with:
-          name: Verbal-Mac
+          name: Flume-Mac
           path: dist/
+
+      # Deterministic, versioned filenames — registered in app_versions BEFORE
+      # upload, so what we compute the hash/URL for is byte-identical to what
+      # gets published. Production had a live mismatch (win 1.0.9's row pointed
+      # at "Verbal-1.0.9-setup.exe", but the actual release asset was named
+      # "Verbal.exe") because the filename was hand-assembled in two different
+      # places that could drift. Renaming once, here, removes that whole class
+      # of bug.
+      - name: Rename artifacts to their versioned names
+        id: files
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          MAC_FILE="Flume-${VERSION}-mac.dmg"
+          WIN_FILE="Flume-${VERSION}-win-setup.exe"
+          mv dist/Flume.dmg "dist/${MAC_FILE}"
+          mv dist/FlumeSetup.exe "dist/${WIN_FILE}"
+          echo "mac_file=${MAC_FILE}" >> $GITHUB_OUTPUT
+          echo "win_file=${WIN_FILE}" >> $GITHUB_OUTPUT
 
       - name: Compute hashes
         id: hashes
         run: |
-          WIN_HASH=$(sha256sum dist/Verbal.exe | cut -d' ' -f1)
-          WIN_SIZE=$(stat -c%s dist/Verbal.exe)
-          MAC_HASH=$(sha256sum dist/Verbal.dmg | cut -d' ' -f1)
-          MAC_SIZE=$(stat -c%s dist/Verbal.dmg)
+          WIN_HASH=$(sha256sum "dist/${{ steps.files.outputs.win_file }}" | cut -d' ' -f1)
+          WIN_SIZE=$(stat -c%s "dist/${{ steps.files.outputs.win_file }}")
+          MAC_HASH=$(sha256sum "dist/${{ steps.files.outputs.mac_file }}" | cut -d' ' -f1)
+          MAC_SIZE=$(stat -c%s "dist/${{ steps.files.outputs.mac_file }}")
           echo "win_hash=$WIN_HASH" >> $GITHUB_OUTPUT
           echo "win_size=$WIN_SIZE" >> $GITHUB_OUTPUT
           echo "mac_hash=$MAC_HASH" >> $GITHUB_OUTPUT
           echo "mac_size=$MAC_SIZE" >> $GITHUB_OUTPUT
 
-      - name: Install upload dependencies
-        run: pip install tuspy supabase
-
-      - name: Upload Windows build to Supabase Storage
+      # Release must exist BEFORE we register app_versions rows pointing at it —
+      # a row that outraces its own asset is exactly the "row with no file"
+      # failure mode this whole ticket is about.
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          files: |
+            dist/${{ steps.files.outputs.mac_file }}
+            dist/${{ steps.files.outputs.win_file }}
         env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
-        run: |
-          python3 << 'PYEOF'
-          import os
-          from tusclient import client as tus_client
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-          supabase_url = os.environ['SUPABASE_URL']
-          service_key = os.environ['SUPABASE_SERVICE_KEY']
-          project_id = supabase_url.replace('https://', '').replace('.supabase.co', '')
-          tus_url = f'https://{project_id}.storage.supabase.co/storage/v1/upload/resumable'
-
-          file_path = 'dist/Verbal.exe'
-          storage_path = f'win/Verbal-${{ steps.version.outputs.version }}-setup.exe'
-          file_size = os.path.getsize(file_path)
-          print(f'Uploading {file_path} ({file_size} bytes) via TUS...')
-
-          tus = tus_client.TusClient(
-              tus_url,
-              headers={
-                  'Authorization': f'Bearer {service_key}',
-                  'x-upsert': 'true',
-              },
-          )
-          with open(file_path, 'rb') as f:
-              uploader = tus.uploader(
-                  file_stream=f,
-                  chunk_size=6 * 1024 * 1024,
-                  metadata={
-                      'bucketName': 'releases',
-                      'objectName': storage_path,
-                      'contentType': 'application/octet-stream',
-                  },
-              )
-              uploader.upload()
-          print('Windows upload done')
-          PYEOF
-
-      - name: Upload Mac build to Supabase Storage
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
-        run: |
-          python3 << 'PYEOF'
-          import os
-          from tusclient import client as tus_client
-
-          supabase_url = os.environ['SUPABASE_URL']
-          service_key = os.environ['SUPABASE_SERVICE_KEY']
-          project_id = supabase_url.replace('https://', '').replace('.supabase.co', '')
-          tus_url = f'https://{project_id}.storage.supabase.co/storage/v1/upload/resumable'
-
-          file_path = 'dist/Verbal.dmg'
-          storage_path = f'mac/Verbal-${{ steps.version.outputs.version }}.dmg'
-          file_size = os.path.getsize(file_path)
-          print(f'Uploading {file_path} ({file_size} bytes) via TUS...')
-
-          tus = tus_client.TusClient(
-              tus_url,
-              headers={
-                  'Authorization': f'Bearer {service_key}',
-                  'x-upsert': 'true',
-              },
-          )
-          with open(file_path, 'rb') as f:
-              uploader = tus.uploader(
-                  file_stream=f,
-                  chunk_size=6 * 1024 * 1024,
-                  metadata={
-                      'bucketName': 'releases',
-                      'objectName': storage_path,
-                      'contentType': 'application/octet-stream',
-                  },
-              )
-              uploader.upload()
-          print('Mac upload done')
-          PYEOF
-
+      # `on_conflict=platform,version` is load-bearing, not decoration. Without
+      # it, PostgREST's upsert targets the PRIMARY KEY (id — always new on an
+      # INSERT) rather than the UNIQUE(platform,version) constraint, so a
+      # second registration of the SAME version (e.g. re-running this workflow
+      # to fix a bad artifact without bumping the version) hits a real 409
+      # conflict instead of updating the existing row. `curl -f` reports that
+      # as a bare "exit code 22" with no visible body, which is exactly what
+      # happened re-releasing v1.0.14 to ship a DMG fix (2026-08-24) — every
+      # prior release happened to dodge this because it always used a brand
+      # new version number.
       - name: Register Windows version
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: |
-          curl -s -X POST \
-            "${SUPABASE_URL}/rest/v1/app_versions" \
+          curl -sf -X POST \
+            "${SUPABASE_URL}/rest/v1/app_versions?on_conflict=platform,version" \
             -H "apikey: ${SUPABASE_SERVICE_KEY}" \
             -H "Authorization: Bearer ${SUPABASE_SERVICE_KEY}" \
             -H "Content-Type: application/json" \
@@ -239,7 +457,7 @@ jobs:
               \"platform\": \"win\",
               \"version\": \"${{ steps.version.outputs.version }}\",
               \"changelog\": \"Release ${{ steps.version.outputs.version }}\",
-              \"file_url\": \"${SUPABASE_URL}/storage/v1/object/public/releases/win/Verbal-${{ steps.version.outputs.version }}-setup.exe\",
+              \"file_url\": \"https://github.com/${{ github.repository }}/releases/download/v${{ steps.version.outputs.version }}/${{ steps.files.outputs.win_file }}\",
               \"file_hash\": \"${{ steps.hashes.outputs.win_hash }}\",
               \"file_size\": ${{ steps.hashes.outputs.win_size }}
             }"
@@ -249,8 +467,8 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: |
-          curl -s -X POST \
-            "${SUPABASE_URL}/rest/v1/app_versions" \
+          curl -sf -X POST \
+            "${SUPABASE_URL}/rest/v1/app_versions?on_conflict=platform,version" \
             -H "apikey: ${SUPABASE_SERVICE_KEY}" \
             -H "Authorization: Bearer ${SUPABASE_SERVICE_KEY}" \
             -H "Content-Type: application/json" \
@@ -259,17 +477,29 @@ jobs:
               \"platform\": \"mac\",
               \"version\": \"${{ steps.version.outputs.version }}\",
               \"changelog\": \"Release ${{ steps.version.outputs.version }}\",
-              \"file_url\": \"${SUPABASE_URL}/storage/v1/object/public/releases/mac/Verbal-${{ steps.version.outputs.version }}.dmg\",
+              \"file_url\": \"https://github.com/${{ github.repository }}/releases/download/v${{ steps.version.outputs.version }}/${{ steps.files.outputs.mac_file }}\",
               \"file_hash\": \"${{ steps.hashes.outputs.mac_hash }}\",
               \"file_size\": ${{ steps.hashes.outputs.mac_size }}
             }"
 
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: v${{ steps.version.outputs.version }}
-          files: |
-            dist/Verbal.exe
-            dist/Verbal.dmg
+      # The whole point of IDI-224: a broken pipeline must be LOUD, not
+      # discovered by a user clicking "Download" and getting a 503. Hits the
+      # same public endpoint the website button does, for both platforms, and
+      # fails the job unless the fresh release is actually fetchable.
+      - name: Smoke test — verify the public download endpoint sees this release
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          fail=0
+          for platform in mac win; do
+            # Cache-bust: the endpoint sets a 60s Cache-Control, and this must see THIS release, not a response cached moments before it existed.
+            resp=$(curl -sf "${SUPABASE_URL}/functions/v1/download?platform=${platform}&json=1&_cb=${GITHUB_RUN_ID}-${platform}") || { echo "::error::download endpoint unreachable for ${platform}"; fail=1; continue; }
+            echo "${platform}: ${resp}"
+            ok=$(echo "$resp" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('ok') and d.get('reachable') and d.get('version')=='${VERSION}')")
+            if [ "$ok" != "True" ]; then
+              echo "::error::${platform} smoke test failed — expected ok+reachable version ${VERSION}, got: ${resp}"
+              fail=1
+            fi
+          done
+          exit $fail

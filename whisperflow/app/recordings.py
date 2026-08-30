@@ -101,7 +101,8 @@ def prune(max_files: int = MAX_LOCAL_FILES):
 
 # ── cloud (Supabase Storage) ───────────────────────────────────────────────────
 def upload_cloud(local_path: str, user_id: str, rec_id: str) -> str | None:
-    """Upload the WAV to the `recordings` bucket. Returns the public URL or None."""
+    """Upload the WAV to the `recordings` bucket. Returns the bare object path
+    (NOT a URL — the bucket is private, MER-27) or None."""
     if not user_id or not local_path or not os.path.exists(local_path):
         return None
     try:
@@ -119,10 +120,43 @@ def upload_cloud(local_path: str, user_id: str, rec_id: str) -> str | None:
             },
             content=data, timeout=30)
         if r.status_code in (200, 201):
-            return f"{STORAGE_URL}/object/public/{BUCKET}/{object_path}"
+            return object_path
         logger.warning(f"upload_cloud failed {r.status_code}: {r.text[:160]}")
     except Exception as e:
         logger.warning(f"upload_cloud error: {e}")
+    return None
+
+
+def extract_object_path(stored_value: str, bucket: str) -> str:
+    """`stored_value` may be a bare object path (new writes, MER-27) or a legacy
+    `.../object/public/<bucket>/<path>` URL (rows written before MER-27) — accept
+    either so old rows keep working without a backfill migration."""
+    marker = f"/object/public/{bucket}/"
+    if stored_value and marker in stored_value:
+        return stored_value.split(marker, 1)[1]
+    return stored_value
+
+
+def sign_url(bucket: str, object_path: str, expires_in: int = 180) -> str | None:
+    """Generate a short-lived signed URL for a private-bucket object. Both
+    buckets' storage.objects policies are `TO public` (Hard Rule #10), so the
+    anon key is sufficient regardless of caller identity — unlike the table
+    RLS forwarding in `app.auth` (MER-29), storage calls intentionally stay
+    on the anon key here (see conventions Hard Rule #20)."""
+    try:
+        import httpx
+        r = httpx.post(
+            f"{STORAGE_URL}/object/sign/{bucket}/{object_path}",
+            headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}",
+                     "Content-Type": "application/json"},
+            json={"expiresIn": expires_in}, timeout=15)
+        if r.status_code == 200:
+            signed = r.json().get("signedURL")
+            if signed:
+                return f"{STORAGE_URL}{signed}"
+        logger.warning(f"sign_url failed {r.status_code}: {r.text[:160]}")
+    except Exception as e:
+        logger.warning(f"sign_url error: {e}")
     return None
 
 

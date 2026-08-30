@@ -9,9 +9,11 @@ import hashlib
 import logging
 import os
 import platform
+import shlex
 import subprocess
 import sys
 import tempfile
+import time
 
 import httpx
 
@@ -21,17 +23,53 @@ from app.sync import SUPABASE_URL, SUPABASE_KEY
 logger = logging.getLogger("verbal.updater")
 
 
-def check_for_update() -> dict | None:
-    """Poll Supabase for the latest version. Returns info dict or None."""
+# True when the most recent check_for_update() could not reach/parse the
+# server (network down, non-200). Callers use it to tell "up to date" from
+# "unknown" — both return None below.
+LAST_CHECK_FAILED = False
+
+
+def check_for_update(force: bool = False) -> dict | None:
+    """Poll Supabase for the latest version. Returns info dict or None.
+
+    Returns None BOTH when we're current and when the check fails/is gated,
+    so callers that need to say "you're up to date" must decide that
+    themselves.
+
+    `force=False` (automatic checks — the startup one-shot and the periodic
+    re-check) keeps the 30-second post-launch gate: it exists so a freshly
+    auto-installed build can never find "itself" and re-download in a loop
+    if the installer failed to actually bump the version. `force=True` is
+    for an EXPLICIT user click — the dashboard's "Check for Updates" button
+    on both platforms, the mac menubar's "Check for Updates…" and the Windows
+    tray's "Check for updates..." row — and skips the gate: a human clicking
+    a button cannot loop, and gating them produced a silent no-op (or a false
+    "You're up to date") that read as a broken button. This mattered
+    on Windows (2026-08-26 report, Flume 1.0.33 never seeing 1.0.34):
+    win_main used to fire its ONLY check of the session at t=0, inside this
+    gate, so the app never actually asked Supabase at all.
+    """
     try:
         # Don't check for updates in the first 30 seconds after launch
-        # to avoid infinite auto-update loops
-        import time
-        if time.time() - getattr(sys, '_verbal_start_time', 0) < 30:
+        # to avoid infinite auto-update loops (see docstring). Skipped for
+        # an explicit user-initiated check. (`time` is a MODULE-level import
+        # on purpose: it used to be imported only here, so download_update's
+        # retry backoff below raised NameError on the first transient error
+        # and the 3-attempt retry never actually happened — 2026-08-26.)
+        if not force and time.time() - getattr(sys, '_verbal_start_time', 0) < 30:
             return None
 
+        # Reads the app_versions_latest VIEW, not the raw table.
+        #
+        # This used to be `app_versions?order=released_at.desc&limit=1`, which is
+        # wrong whenever CI stamps released_at non-monotonically — and it does. Live
+        # data had win 1.0.9 at 00:00:00 and win 1.0.8 at 09:13:24 on the SAME day,
+        # so "newest" resolved to 1.0.8 and nobody on 1.0.7 could ever be offered
+        # 1.0.9. The view orders by SEMVER (see semver_key) and returns one row per
+        # platform, so the app and the public /download redirect can never disagree
+        # about which build is current.
         resp = httpx.get(
-            f"{SUPABASE_URL}/rest/v1/app_versions",
+            f"{SUPABASE_URL}/rest/v1/app_versions_latest",
             headers={
                 "apikey": SUPABASE_KEY,
                 "Authorization": f"Bearer {SUPABASE_KEY}",
@@ -39,15 +77,17 @@ def check_for_update() -> dict | None:
             params={
                 "platform": f"eq.{PLATFORM}",
                 "select": "version,changelog,file_url,file_hash,file_size,released_at",
-                "order": "released_at.desc",
                 "limit": "1",
             },
             timeout=5,
         )
+        global LAST_CHECK_FAILED
         if resp.status_code != 200:
             logger.debug(f"Update check returned {resp.status_code}")
+            LAST_CHECK_FAILED = True
             return None
         data = resp.json()
+        LAST_CHECK_FAILED = False
         if not data:
             return None
         latest = data[0]
@@ -57,6 +97,7 @@ def check_for_update() -> dict | None:
         return None
     except Exception as e:
         logger.debug(f"Update check failed: {e}")
+        LAST_CHECK_FAILED = True
         return None
 
 
@@ -97,6 +138,10 @@ def download_update(version_info: dict, on_progress=None) -> str | None:
             return tmp_path
         except Exception as e:
             logger.error(f"Download failed (attempt {attempt + 1}/{max_retries}): {e}")
+            try:
+                os.unlink(tmp_path)          # no partial installers left in %TEMP%
+            except Exception:
+                pass
             if attempt < max_retries - 1:
                 time.sleep(2 ** attempt)  # Exponential backoff
             else:
@@ -115,8 +160,60 @@ def install_update(file_path: str, silent: bool = False):
             creationflags=0x00000008 | 0x00000200,  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
         )
     else:
-        subprocess.Popen(["open", file_path])
-    sys.exit(0)
+        _install_update_mac(file_path)
+    # os._exit, NOT sys.exit: every caller reaches here on a WORKER thread
+    # (the native alert's _do_update daemon thread, the dashboard bridge's
+    # install_ready_update) — and sys.exit() from a non-main thread raises
+    # SystemExit in that thread ONLY. The process kept running, so the mac
+    # helper script's wait-for-exit loop waited forever and the update only
+    # actually installed once the user happened to quit the app by hand
+    # (reported live twice, 2026-08-25: "restarts itself after some time,
+    # very confusing", then a banner stuck on "Installing — Flume will
+    # restart in a moment…" with the helper visible in ps still polling
+    # kill -0). Config writes are atomic (Hard Rule: atomic config writes),
+    # so a hard exit here loses nothing.
+    os._exit(0)
+
+
+def _install_update_mac(dmg_path: str):
+    """`open`-ing a .dmg only mounts it in Finder — nothing actually replaces
+    the installed app or relaunches it, so "Update" looked like it did
+    nothing (confirmed live, 2026-08-25: user reports "shows option to
+    update but doesn't restart the update"). Spawn a detached helper script
+    that waits for this process to fully exit, then mounts the dmg, copies
+    the new .app over the CURRENTLY INSTALLED one (wherever that actually is
+    — derived from sys.executable rather than assuming /Applications, so a
+    dev/manually-relocated install still gets replaced in place), unmounts,
+    and relaunches. Falls back to the old "just open the dmg" behavior at
+    any step that fails, so a user can still finish the install by hand
+    instead of being left with nothing.
+    """
+    # Frozen layout: <App>.app/Contents/MacOS/<exe> — walk up three levels.
+    target_app = os.path.dirname(os.path.dirname(os.path.dirname(sys.executable)))
+    if not target_app.endswith(".app") or not os.path.isdir(target_app):
+        logger.warning(f"Can't resolve installed app bundle from {sys.executable!r}; "
+                        "falling back to opening the dmg")
+        subprocess.Popen(["open", dmg_path])
+        return
+
+    pid = os.getpid()
+    mount_dir = tempfile.mkdtemp(prefix="flume_update_")
+    dmg_q, mount_q, target_q = (shlex.quote(p) for p in (dmg_path, mount_dir, target_app))
+    script = f"""
+    while kill -0 {pid} 2>/dev/null; do sleep 0.3; done
+    if hdiutil attach {dmg_q} -mountpoint {mount_q} -nobrowse -quiet; then
+        SRC_APP=$(find {mount_q} -maxdepth 1 -name '*.app' -print -quit)
+        if [ -n "$SRC_APP" ] && rm -rf {target_q} && ditto "$SRC_APP" {target_q}; then
+            hdiutil detach {mount_q} -quiet
+            rm -f {dmg_q}
+            open {target_q}
+            exit 0
+        fi
+        hdiutil detach {mount_q} -quiet
+    fi
+    open {dmg_q}
+    """
+    subprocess.Popen(["/bin/bash", "-c", script], start_new_session=True)
 
 
 def _is_newer(remote: str, current: str) -> bool:
@@ -133,10 +230,12 @@ def _is_newer(remote: str, current: str) -> bool:
             
         return r_parts > c_parts
     except (ValueError, IndexError):
-        # If we can't parse versions, assume remote is newer
-        # This prevents getting stuck on a broken version
+        # An unparsable published version ("v1.0.37", "1.0.37-hotfix") must
+        # NOT count as newer: with auto_update on, "newer" every 4 h check
+        # meant download + silent reinstall + restart forever, including on
+        # the build that was just installed.
         logger.warning(f"Could not parse versions: remote={remote}, current={current}")
-        return True
+        return False
 
 
 def _sha256(path: str) -> str:

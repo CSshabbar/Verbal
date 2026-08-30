@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Hardened Runtime, required for notarization (IDI-224). Verbal is NOT
+	     App-Sandboxed (Accessibility injection, ScreenCaptureKit, and hotkey
+	     capture are incompatible with the sandbox), so the com.apple.security.cs.*
+	     exceptions below apply. -->
+
+	<!-- REQUIRED for microphone access under the Hardened Runtime. This key is
+	     dual-purpose: it is a sandbox entitlement AND a Hardened Runtime
+	     "Resource Access" entitlement (Apple: Hardened Runtime > Resource
+	     Access > Audio Input). An earlier comment here dismissed it as
+	     "sandbox-only, a silent no-op" — that was WRONG, and its absence was
+	     the root cause of the shipped app's mic being dead (confirmed live,
+	     2026-08-25): without it a hardened-runtime app gets NO TCC prompt,
+	     never appears in System Settings > Privacy & Security > Microphone,
+	     and captures pure silence (peak=0.0000) — while unsigned dev builds
+	     (no hardened runtime, so no gate) worked, which is exactly why local
+	     testing kept passing while every notarized release failed. Screen
+	     Recording kept working through all of it because screen capture has
+	     no hardened-runtime entitlement gate; microphone and camera do. -->
+	<key>com.apple.security.device.audio-input</key>
+	<true/>
+
+	<!-- Same hardened-runtime prompting rule, for Apple Events (AppleScript /
+	     System Events automation). tccd logged the failure explicitly during
+	     the 2026-08-25 investigation: "Prompting policy for hardened runtime;
+	     service: kTCCServiceAppleEvents requires entitlement
+	     com.apple.security.automation.apple-events but it is missing" — so any
+	     osascript/NSAppleScript path in the shipped app was being silently
+	     denied the same way the mic was. -->
+	<key>com.apple.security.automation.apple-events</key>
+	<true/>
+
+	<!-- PyInstaller's bootloader unpacks a pure-Python interpreter at
+	     runtime; without this, the hardened runtime kills it as unsigned
+	     executable memory before app/main.py ever runs. -->
+	<key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+	<true/>
+
+	<!-- ctranslate2/numpy/scipy ship compiled .so/.dylib files that are not
+	     signed by this Team ID. Hardened runtime otherwise refuses to dlopen
+	     them, which fails only at first Whisper-model load, not at launch. -->
+	<key>com.apple.security.cs.disable-library-validation</key>
+	<true/>
+
+	<!-- PyInstaller's onedir bootloader sets DYLD_LIBRARY_PATH at relaunch. -->
+	<key>com.apple.security.cs.allow-dyld-environment-variables</key>
+	<true/>
+
+	<key>com.apple.security.cs.allow-jit</key>
+	<true/>
+</dict>
+</plist>

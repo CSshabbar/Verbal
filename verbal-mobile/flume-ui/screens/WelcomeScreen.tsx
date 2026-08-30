@@ -11,7 +11,7 @@ import { useAuth } from '../hooks/useAuth';
  */
 export const WelcomeScreen: React.FC = () => {
   const insets = useSafeAreaInsets();
-  const { signInWithGoogle } = useAuth();
+  const { signInWithGoogle, isLoading, sessionExpired, accountDeleted } = useAuth();
 
   return (
     <View
@@ -32,15 +32,27 @@ export const WelcomeScreen: React.FC = () => {
           <Text variant="body" color={colors.textMuted} align="center" style={{ paddingHorizontal: 8 }}>
             Voice typing that lands in your computer's clipboard.
           </Text>
+          {/* Deletion is the more specific (and irreversible) outcome, so it
+              outranks the generic session-expired notice. */}
+          {accountDeleted ? (
+            <Text variant="bodySm" color={colors.primary} align="center" style={{ paddingHorizontal: 8, paddingTop: 6 }}>
+              Your account has been deleted.
+            </Text>
+          ) : sessionExpired ? (
+            <Text variant="bodySm" color={colors.primary} align="center" style={{ paddingHorizontal: 8, paddingTop: 6 }}>
+              Your session expired — please sign in again.
+            </Text>
+          ) : null}
         </View>
       </View>
 
       <View style={{ gap: 10 }}>
         <Button
-          label="Continue with Google"
+          label={isLoading ? 'Opening Google…' : 'Continue with Google'}
           variant="primaryLight"
           icon={<GoogleG size={16} />}
           onPress={signInWithGoogle}
+          disabled={isLoading}
         />
 
         <Text variant="caption" color={colors.textDisabled} align="center" style={{ paddingHorizontal: 14, paddingTop: 6 }}>

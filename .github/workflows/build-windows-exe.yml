@@ -16,13 +16,49 @@ jobs:
         with:
           python-version: "3.11"
 
+      # IDI-224 debugging aid: this is the cheap, mac-free way to iterate on
+      # Windows dependency/build issues — build-release.yml runs mac+windows
+      # together (~20 min of mac notarization per attempt), this workflow is
+      # windows-only and workflow_dispatch-only. Same fail-fast pattern as
+      # build-release.yml's build-windows job: PowerShell doesn't abort a
+      # multi-line run block on a failing command, so a real pip failure was
+      # getting silently swallowed and only surfacing 3 steps later out of
+      # PyInstaller as a confusing ModuleNotFoundError (2026-08-22).
+      # `pip show pywebview` succeeded while `python -c "import pywebview"`
+      # failed with ModuleNotFoundError (confirmed live, 2026-08-22) — that
+      # combination means bare `pip`/`pyinstaller` were resolving to a
+      # DIFFERENT Python install than bare `python` on this runner's PATH
+      # (windows-latest ships several). `python -m X` pins every command to
+      # the exact interpreter actions/setup-python configured, so packages
+      # installed and packages imported/bundled can never diverge again.
       - name: Install dependencies
         shell: pwsh
         run: |
-          python -m pip install --upgrade pip
-          pip install "setuptools<75" wheel
-          pip install -r whisperflow/requirements.txt
-          pip install pyinstaller numpy
+          function exe { & $args[0] @($args[1..($args.Length-1)]); if ($LASTEXITCODE -ne 0) { throw "$($args[0]) failed with exit code $LASTEXITCODE" } }
+          exe python -m pip install --upgrade pip
+          exe python -m pip install "setuptools<75" wheel
+          # Windows-pinned deps required by verbal-win.spec's hidden imports.
+          exe python -m pip install -r whisperflow/requirements-win.txt
+          # Offline transcription engine (see requirements note; spec imports it).
+          exe python -m pip install faster-whisper
+          exe python -m pip install pyinstaller numpy
+
+      # Directly reproduces the exact statement verbal-win.spec fails on,
+      # BEFORE PyInstaller's own error handling gets a chance to obscure it —
+      # `pip install` succeeding doesn't guarantee `import pywebview` actually
+      # works under the SAME interpreter PyInstaller will run under.
+      # The pywebview PyPI package's importable name is actually "webview",
+      # not "pywebview" — confirmed by inspecting the wheel contents. This
+      # step's own `import pywebview` was testing the wrong name (2026-08-22).
+      - name: Verify webview actually imports
+        shell: pwsh
+        run: |
+          python -m pip show pywebview
+          python -m pip show pythonnet
+          # webview doesn't expose __version__ (confirmed live: AttributeError
+          # here, 2026-08-22) — importing successfully is the actual thing
+          # this step checks, not printing a version string.
+          python -c "import webview; print('webview import OK')"
 
       - name: Generate modern sounds
         shell: pwsh
@@ -30,11 +66,12 @@ jobs:
           cd whisperflow
           python generate_sounds.py assets/sounds
 
-      - name: Build Verbal.exe
+      - name: Build Flume.exe
         shell: pwsh
         run: |
           cd whisperflow
-          pyinstaller verbal-win.spec --clean --noconfirm
+          python -m PyInstaller verbal-win.spec --clean --noconfirm
+          if ($LASTEXITCODE -ne 0) { throw "pyinstaller failed with exit code $LASTEXITCODE" }
 
       - name: Install Inno Setup
         shell: pwsh
@@ -46,18 +83,24 @@ jobs:
         shell: pwsh
         run: |
           cd whisperflow
-          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" verbal-setup.iss
+          # verbal-setup.iss's AppVersion must be passed explicitly — see
+          # build-release.yml's Windows job for why (2026-08-23).
+          $VERSION = (Select-String -Path 'app\config.py' -Pattern '^APP_VERSION\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
+          if (-not $VERSION) { throw "Could not read APP_VERSION from app/config.py" }
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "/DMyAppVersion=$VERSION" verbal-setup.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC.exe failed with exit code $LASTEXITCODE" }
 
       - name: Upload Windows EXE
         uses: actions/upload-artifact@v4
         with:
-          name: Verbal-Windows-EXE
-          path: whisperflow/dist/Verbal.exe
+          name: Flume-Windows-EXE
+          # onedir build (verbal-win.spec COLLECT): the app is the whole folder.
+          path: whisperflow/dist/Flume/
           if-no-files-found: error
 
       - name: Upload Windows Installer
         uses: actions/upload-artifact@v4
         with:
-          name: Verbal-Windows-Installer
-          path: whisperflow/dist/VerbalSetup.exe
+          name: Flume-Windows-Installer
+          path: whisperflow/dist/FlumeSetup.exe
           if-no-files-found: error

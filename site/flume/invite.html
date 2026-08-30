@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Join your team on Flume</title>
+<!--
+  Team-invite landing page. Hosted at https://idiaz.io/flume/invite.html and reached
+  from the invite e-mail via the `invite` Supabase function (?t=<token>).
+  Tries the desktop deep link flume://invite?t=<token>; if this document is still
+  the visible page ~1.6 s later nothing answered → download page, token kept.
+  Static on purpose: the *.supabase.co functions gateway serves every response as
+  text/plain, so it cannot host HTML. Source of truth: Verbal repo, site/flume/invite.html.
+-->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&amp;family=JetBrains+Mono:wght@500&amp;display=swap" rel="stylesheet">
+<style>
+  :root{color-scheme:dark}
+  html,body{margin:0;height:100%;background:#0e1012;color:#f2efe9;font-family:Geist,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}
+  body{display:flex;align-items:center;justify-content:center;padding:24px}
+  .card{max-width:440px;width:100%;text-align:center}
+  .brand{color:#C85A3E;font-size:12px;letter-spacing:.2em;font-weight:600;margin-bottom:28px}
+  h1{font-size:22px;font-weight:600;margin:0 0 10px;letter-spacing:-.01em}
+  p{color:#a9a29c;font-size:14px;line-height:1.6;margin:0 0 22px}
+  .dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:#e05049;margin-right:8px;
+       animation:pulse 1.4s ease-in-out infinite;vertical-align:1px}
+  @keyframes pulse{0%,100%{opacity:.35}50%{opacity:1}}
+  .btn{display:inline-block;text-decoration:none;font-size:14px;font-weight:600;padding:12px 20px;border-radius:11px;margin:5px;
+       background:#f2efe9;color:#0e1012}
+  .btn.ghost{background:transparent;color:#f2efe9;border:1px solid rgba(240,240,240,.16)}
+  .fine{color:#6f6a64;font-size:12px;margin-top:26px;font-family:'JetBrains Mono',ui-monospace,monospace}
+  #fallback,#notoken{display:none}
+</style>
+</head>
+<body><div class="card">
+  <div class="brand">&#10029;&nbsp;FLUME</div>
+  <div id="opening"><h1><span class="dot"></span>Opening Flume…</h1>
+    <p>Your team invite is being handed to the Flume app. If nothing happens in a moment, you'll be taken to the download page.</p></div>
+  <div id="fallback"><h1>Join your team on Flume</h1>
+    <p>Install Flume, sign in with the address the invite was sent to, and the team appears on your first launch.</p>
+    <a class="btn" id="dl" href="download.html">Download Flume</a>
+    <a class="btn ghost" id="open" href="#">I already have Flume</a></div>
+  <div id="notoken"><h1>This invite link is incomplete</h1>
+    <p>Open the link from your invitation e-mail again, or ask your teammate to resend it.</p>
+    <a class="btn" href="download.html">Download Flume</a></div>
+  <div class="fine">Invite links are personal — don't forward this one.</div>
+</div>
+<script>
+(function(){
+  var q = new URLSearchParams(location.search);
+  var token = (q.get('t') || q.get('token') || '').trim();
+  var GRACE = 1600;
+  var dlBase = 'https://idiaz.io/flume/download.html';
+  if(!token){
+    document.getElementById('opening').style.display='none';
+    document.getElementById('notoken').style.display='block';
+    return;
+  }
+  var deep = 'flume://invite?t=' + encodeURIComponent(token);
+  var dl   = dlBase + '?t=' + encodeURIComponent(token);
+  document.getElementById('dl').href = dl;
+  document.getElementById('open').href = deep;
+  var ua = navigator.userAgent.toLowerCase();
+  var desktop = !/iphone|ipad|ipod|android/.test(ua);
+  if(!desktop){ location.replace(dl); return; }   // phones can't run Flume yet
+  var answered = false;
+  // If the OS switched to Flume, this document loses visibility/focus — that is
+  // the only signal a page gets that the scheme was handled.
+  function onAway(){ answered = true; }
+  document.addEventListener('visibilitychange', function(){ if(document.hidden) onAway(); });
+  window.addEventListener('blur', onAway);
+  window.addEventListener('pagehide', onAway);
+  try { location.href = deep; } catch(e) {}
+  setTimeout(function(){
+    document.getElementById('opening').style.display='none';
+    document.getElementById('fallback').style.display='block';
+    if(!answered){ location.replace(dl); }
+  }, GRACE);
+})();
+</script>
+</body>
+</html>

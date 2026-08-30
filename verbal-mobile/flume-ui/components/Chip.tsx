@@ -1,7 +1,7 @@
 import React from 'react';
 import { Pressable, View, StyleSheet, ViewStyle } from 'react-native';
 import { Text } from './Text';
-import { colors, radius } from '../theme';
+import { colors, radius, PRESSED_OPACITY } from '../theme';
 
 export type ChipProps = {
   label: string;
@@ -34,7 +34,7 @@ export const Chip: React.FC<ChipProps> = ({
         styles.base,
         size === 'sm' ? styles.sm : styles.md,
         active ? styles.active : styles.idle,
-        pressed && { opacity: 0.7 },
+        pressed && { opacity: PRESSED_OPACITY },
         style,
       ]}
     >

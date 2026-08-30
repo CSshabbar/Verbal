@@ -59,38 +59,72 @@ separate users purely by `user_id` (the Supabase auth id after sign-in). Details
   | Surface | Controller | HTML generator | Container |
   |---|---|---|---|
   | Dashboard | `flume_web_dashboard.py::FlumeWebDashboard` | `flume_dashboard_html.py::flume_html()` | `NSWindow` |
-  | Menubar popover | `flume_popover.py::FlumePopover` | `flume_popover_html.py::popover_html()` | `NSPopover` |
+  | ~~Menubar popover~~ | **RETIRED (IDI-183)** — the macOS menubar is a native `NSMenu`, see below. `flume_popover_html.py::popover_html()` survives as the **Windows** tray popover's HTML (`win_popover.py`) and for its `_mark_data_uri()` helper, which `flume_dashboard_html.py` imports | | |
   | Recording overlay | `overlay.py::OverlayBar` | `overlay_html.py::overlay_html()` | non-activating `NSPanel` |
   | Auto-learn widget | `autolearn_widget.py::AutoLearnWidget` | inline HTML | non-activating `NSPanel` |
-  | Meeting surface | `meeting_window.py::MeetingWindow` | `meeting_html.py::meeting_html()` | ONE morphing `NSPanel`: ambient **bar** (borderless, non-activating, top-center, 500×54) ⇄ **expanded** window (titled+hidden-titlebar, 880×620, floating level, Stage-Manager opt-out `.auxiliary`+`.canJoinAllApplications`, never activates the app — `orderFrontRegardless` + key-only-if-needed, webview subclass accepts first mouse) via `NSAnimationContext` frame animation + styleMask flip; auto-collapses to the bar on focus loss while recording; close-while-recording collapses instead |
+  | Meeting surface | `meeting_window.py::MeetingWindow` | `meeting_html.py::meeting_html()` | ONE morphing `NSPanel`: ambient **bar** (borderless, non-activating, top-center, 560×54 — grown from 500 for the paused-state pixel budget, `05-conventions.md` #57) ⇄ **expanded** window (titled+hidden-titlebar, 880×620, floating level, Stage-Manager opt-out `.auxiliary`+`.canJoinAllApplications`, never activates the app — `orderFrontRegardless` + key-only-if-needed, webview subclass accepts first mouse) via `NSAnimationContext` frame animation + styleMask flip; auto-collapses to the bar on focus loss while recording; close-while-recording collapses instead. **Live-meeting-only** since MER-46 — the post-meeting summary is a dashboard view and the panel collapses to a "Notes ready →" handoff pill |
 
+- **The macOS menubar is the one surface that is NOT a webview** (IDI-183). `menubar_menu.py` builds a real
+  `NSMenu` on top of rumps' items: `build(app)` returns the list `main.py` assigns to `self.menu` and
+  assigns back the item references the callbacks mutate (`record_btn`, `meeting_btn`, `mode_hold`/
+  `mode_toggle`, `model_items`, `autodetect_item`, `sync_item`, `signin_item`). Two pieces make it work:
+  - `MenuController` is the `NSMenuDelegate`. `menuNeedsUpdate:` **rebuilds on open** — titles that carry
+    state ("Recording Mode: Hold", "Whisper Model: base", "Canvas (3)"), the checkmarks, and the Recent /
+    Canvas submenus (built with raw `NSMenu`/`NSMenuItem` + `representedObject`, not rumps items, so
+    duplicate transcript titles can't collide on a dict key). Nothing pushes state INTO the menu, which is
+    why the six `popover._refresh()` call sites in `main.py` are gone.
+  - `_HeaderView` is the single custom-drawn row: mark, status, hotkey hint, mic waveform, meeting timer,
+    words-today. Everything else is a stock item, so appearance/accent/contrast/transparency behaviour is
+    inherited rather than reimplemented. Its animation timer is registered in **both**
+    `NSDefaultRunLoopMode` and `NSEventTrackingRunLoopMode` (see `05-conventions.md`).
 - **JS↔Python bridge** (defined once in `flume_web_dashboard.py`, reused by every surface):
-  - `_SHIM` (injected at document start) fakes `window.pywebview.api` as a Proxy — any
+  - `_SHIM` (injected at document start) fakes `window.pywebview.api` as a Proxy — and since IDI-167
+    dispatches a synthetic `pywebviewready` at `DOMContentLoaded`, so the dashboard bootstrap is
+    event-driven on both OSes (the 400ms timeout remains only as a backstop) — any
     `api('method', ...args)` posts `{id,method,args}` to the `webkit.messageHandlers.flume`
     handler and returns a Promise.
   - `_Bridge(NSObject)` receives the message, calls the controller's `_dispatch(mid, method, args)`
     (runs `getattr(api, method)(*args)` on a daemon thread), then `_resolve(mid, result)` settles
     the JS promise via `window.__flumeResolve`.
   - **Python→JS events:** `_emit(event, payload)` → `window.VerbalNative(event, payload)`
-    (`recordingState`, `result`, `state`, `selectTab`, `devices`, `canvasRemote`, `notesUpdated`).
+    (`recordingState`, `result`, `state`, `selectTab`, `devices`, `canvasRemote`, `notesUpdated`,
+    `meetingsUpdated`, `openMeeting`). Both dashboards **queue** these until the page's
+    `dashboard_page_ready` handshake and flush on it (MER-46) — an event pushed into a window that was
+    built a moment earlier used to evaporate.
     Overlay uses `window.VerbalOverlay(mode,data)`; the auto-learn widget uses
     `window.VerbalAutolearn(data)` / `VerbalAutolearnHide()`. The meeting window uses
-    `window.VerbalMeeting(event, payload)` (`mode`, `state`, `utterance`, `elapsed`, `moment`,
-    `speakers`, `meeting`, `permissions`, `testLevel`); the meeting HUD uses
-    `window.VerbalMeetingHud(event, payload)` (`state`, `elapsed`).
+    `window.VerbalMeeting(event, payload)` (`mode`, `layout`, `state`, `utterance`, `elapsed`, `moment`,
+    `speakers`, `handoff`, `permissions`, `testLevel`) — `meeting` is **retired** with the panel's summary
+    mode (MER-46). (The separate meeting HUD —
+    `meeting_hud*.py`, `VerbalMeetingHud` — was dead code and was DELETED in IDI-179.)
   - **Shared backend for the JS = `shared_dashboard.py::DashboardApi`** — one class serving both the
-    macOS WKWebView controllers and the Windows pywebview dashboard. Popover/overlay/widget
-    controllers **duck-type** the dashboard interface so `main.py`/`DashboardApi` treat them uniformly.
+    macOS WKWebView controllers and the Windows pywebview dashboard. Overlay/widget controllers (and the
+    Windows popover) **duck-type** the dashboard interface so `main.py`/`DashboardApi` treat them
+    uniformly. The macOS menubar menu does not participate — it reads app state directly on open.
   - **Shared *frontend* too (Windows parity):** `flume_dashboard_html.py::flume_html()` is **dual-target**
     — it waits for `pywebviewready` and calls `window.pywebview.api.*` (the shared `DashboardApi`) with
     native events via `window.VerbalNative(event,payload)`. On macOS a `_SHIM` (`flume_web_dashboard.py`)
     *fakes* `window.pywebview.api` inside WKWebView; on Windows real pywebview provides it natively. So
     `SharedDashboard.show()` now renders the **same** `flume_html()` the Mac uses (the old light-theme
     inline `_html()` is retired), giving Windows visual parity. Same pattern applies to the other Flume
-    surfaces (`overlay_html`, `flume_popover_html`, `meeting_html`, `meeting_hud_html`, `autolearn_widget`).
+    surfaces (`overlay_html`, `flume_popover_html`, `meeting_html`, `autolearn_widget`).
+- **Team layer (IDI-216):** `app/organizations.py` owns everything the desktop knows about the user's org
+  — membership, roster, invites, the SHARED dictionary, and the usage/ranking/app-mix aggregates. It caches
+  the whole thing in `config['org']` so `dictionary.effective()` (personal ∪ team) is a pure local read
+  and the dictation path still makes no network call. `DashboardApi`'s `get_team`/`invite_member`/… are
+  thin wrappers over it, so **Windows gets the Team screen for free** — both desktops render the same
+  `flume_html()` Team destination against the same backend class. The shared dictionary is *cached and
+  merged* here but *edited* on the Dictionary destination under a `Mine | <team>` scope — Team only links
+  to it. One extra write path leaves the client: `sync.py::push(..., app_name)` tags each dictation with
+  the **pre-injection** frontmost app (`transcriptions.app`), which is what `org_app_breakdown` aggregates
+  into the per-person app mix. iOS has no equivalent and writes nothing.
 - **Config:** `~/.verbal/config.json`, written by `config.py::save_config` — **atomic** (`tempfile.mkstemp`
-  unique name + `os.replace`) under a module-level `_config_lock`. This is the desktop source of truth
-  for user data/settings; cloud syncs on top.
+  unique name + `os.replace`, with a Windows lock-error retry/backoff and, if the rename still loses, an
+  in-place write guarded by a `config.json.prev` snapshot) under a module-level `_config_lock`
+  (RLock). `load_config` reads under that lock (same retry), only writes when the dict actually changed,
+  and **never overwrites a file it could not read** — an out-of-process lock serves the last in-memory
+  copy or read-only defaults, and only a JSON/UTF-8 error moves the file to `.bak` (2026-08-26; rules in
+  `05-conventions.md` #3). This is the desktop source of truth for user data/settings; cloud syncs on top.
 - **Fonts:** Geist + JetBrains Mono. AppKit views use CoreText-registered faces (`theme.py`); WKWebViews
   can't resolve those by name, so `fonts_css.py::web_font_css()` inlines the TTFs as base64 `@font-face`.
 
@@ -98,11 +132,21 @@ separate users purely by `user_id` (the Supabase auth id after sign-in). Details
 
 `meetings.py::MeetingManager/MeetingSession` — dual-source capture, entirely separate from the dictation
 `Recorder` (Rule #1): the mic gets its **own** `sounddevice.InputStream` (16 kHz mono) and the call's other
-side comes from `system_audio.py::SystemAudioCapture` — **ScreenCaptureKit audio-only** (2×2 video frames
+side comes from `system_audio.py::SystemAudioCapture` — **ScreenCaptureKit audio-only** on macOS (2×2 video frames
 dropped, `excludesCurrentProcessAudio`, gated by the Screen-Recording permission,
-`pyobjc-framework-ScreenCaptureKit`+`CoreMedia` wrappers). Each source is silence-chunked (8–22 s) and fed
+`pyobjc-framework-ScreenCaptureKit`+`CoreMedia` wrappers) and **WASAPI loopback** on Windows
+(`system_audio.py` re-exports `win_system_audio.py` when `sys.platform == "win32"`; no screen-recording
+TCC gate). **WASAPI note (2026-08-28):** the loopback recorder (`soundcard` 0.4.3, pinned) runs with a
+companion `_SilencePlayer` thread that writes zeros to the default speaker so the loopback stream keeps
+producing frames while nothing plays (otherwise `record()` can outlive `stop()` and the IAudioClient
+stays open until exit), and a supervisor loop that re-resolves the default device and reconnects on
+`AUDCLNT_E_DEVICE_INVALIDATED` / default-output switch (polled every 2 s) under a `RestartPolicy`
+(3 attempts, 1 s backoff, budget refunded after 10 s healthy). Giving up leaves `.running=False` +
+`.error`; `MeetingSession._sys_audio_state()` logs it once and puts `sysErr` in the 1 Hz `elapsed`
+payload. Pinned by `win_sysaudio_fixtures.py` (fake `soundcard`, runs on any OS) — Rule #76. Each source is silence-chunked (8–22 s) and fed
 through the normal `transcriber` chain into utterances `{speaker, t0, t1, text}` (speakers are
-source-based: mic=`self`, system=`s1..N` with a 90 s-gap heuristic; rename is retroactive). Stop → WAV mix →
+source-based, two speakers since 2026-08-28: mic=`self` labelled with the signed-in user's name, ALL system
+audio=`s1` "Them"; no diarization; rename is retroactive). Stop → WAV mix →
 `meeting-audio` bucket → structured summary LLM call (`groq_proxy.chat_via_proxy`, strict-JSON
 summary/decisions/action_items/hybrid_notes) → `meetings` row upsert. Local metadata mirrors history:
 bounded `config['meetings']` (`MEETINGS_CAP`). The HUD appears when the meeting window resigns key
@@ -110,24 +154,95 @@ bounded `config['meetings']` (`MEETINGS_CAP`). The HUD appears when the meeting 
 
 ## Windows stack (`whisperflow/app/win_*.py`)
 
-- **Runtime:** `win_main.py::VerbalWinApp` (893 lines) is the Windows equivalent of `main.py::VerbalApp` —
+- **Runtime:** `win_main.py::VerbalWinApp` (~2600 lines) is the Windows equivalent of `main.py::VerbalApp` —
   same role, different shell: **`pystray`** owns the tray icon + menu (recording mode, Whisper model,
-  Groq/Gemini key management, auth toggle, Open Verbal/Canvas/Notes/Settings) instead of `rumps`. No
-  Cocoa-style run loop to own; the pywebview window and pystray tray each run their own loop, wired
-  together rather than sharing one.
+  Groq/Gemini key management, auth toggle, Open Verbal/Canvas/Notes/Settings, "Check for updates...",
+  Quit) instead of `rumps`. No Cocoa-style run loop to own; the pywebview window and pystray tray each
+  run their own loop, wired together rather than sharing one.
+  - **Update state-machine parity (2026-08-26):** `VerbalWinApp` mirrors `VerbalApp`'s
+    `_update_available` / `_update_phase` (`idle|downloading|ready|installing|failed`) /
+    `_update_progress` / `_update_ready_path` and the same `_check_update(announce_current,
+    suppress_prompt, force)` / `_start_update_download` / `_install_ready_update` method surface, so the
+    shared `DashboardApi` update bridge is oblivious to the platform (`_pending_update` is a property
+    alias for the tray badge/menu code). Checks run on a daemon `_update_check_loop`: first after
+    `UPDATE_STARTUP_DELAY` (35 s — past `updater`'s 30 s post-launch gate), then every
+    `UPDATE_CHECK_INTERVAL` (4 h), the cadence main.py gets from its `rumps.Timer`. Silent auto-install
+    parks the installer as `ready` and waits for `_app_busy()` (recording/processing/meeting) to be
+    False for two consecutive 1 s polls before it `os._exit`s the app — see `03-features.md` §Updater.
+  - **Process model + quit:** the shipped build is PyInstaller **onedir** (`verbal-win.spec` `COLLECT`,
+    since 2026-08-28): ONE `Flume.exe` in Task Manager, `_internal\` beside it, no `%TEMP%` extraction.
+    Before that it was one-file — a bootloader parent plus the real app child — and "End task" on the
+    parent orphaned a mutex-holding child. `_watch_bootloader_parent` still exists for one-file layouts
+    but detects onedir and disarms itself. Every exit path (tray Quit, popover `quit_app`, elevated
+    relaunch, that watcher) goes through the single time-bounded `_hard_exit` → `os._exit(0)` —
+    `05-conventions.md` #59b. Exe metadata (Task Manager name, Explorer Details) is generated by the
+    spec from `config.APP_VERSION` + the `version_info.txt` template → `build/version_info.txt`.
+  - **Meeting bar chrome (Windows):** pywebview fixes `frameless`/`min_size`/`on_top` at create time, so
+    `WinMeetingWindow._apply_chrome(layout)` flips the WinForms form directly on the UI thread — bar =
+    `FormBorderStyle.None` + `TopMost` + `ShowInTaskbar=False` + `MinimumSize(0,0)`; expanded = `Sizable`
+    + `MinimumSize(MIN_W×scale, MIN_H×scale)`. Before this the 560×54 collapse was clamped by the 700×480
+    MinimumSize and kept its title bar/taskbar button ("collapsed bar shows as a big window", 2026-08-28).
+    `_position_and_size` does its own DPI-aware `SetWindowPos` (`app/win_geometry.py`) instead of
+    pywebview's `resize()/move()`, whose units disagree on the pinned pywebview 5.3 (see
+    `05-conventions.md` #71). The bar window **is the pill**: `_on_loaded` injects Windows-only CSS (no
+    `#barRoot` padding, 36 px pill / 22 px buttons / 7 px dot — slimmer than the Mac panel's 44 since there is
+    no shadow halo — no `.barOpt` CSS transition: the reveal is the HOST easing the window width
+    (`_animate_bar_width`, 180 ms ease-out cubic at 60 fps, both edges move so it stays centred) with a
+    220 ms leave-grace before collapsing, `overflow:hidden`, pill may overflow the viewport) plus a
+    ResizeObserver that reports `#barPill`'s width through `DashboardApi.meeting_bar_resize` →
+    `WinMeetingWindow.set_bar_content_size`; the host sizes the window to exactly pill-width × 44 and clips
+    it with `SetWindowRgn` (`win_geometry.set_window_pill_region`, inset 1 device px so the aliased region
+    edge sits inside the pill's anti-aliased CSS border) — at rest ~77 px (dot + timer), hovered ~350–500 px. WebView2 has no per-pixel alpha and
+    `TransparencyKey` neither keys its surface nor leaves `:hover` working (it adds `WS_EX_LAYERED`), so
+    hover is host-side like macOS: `_hover_loop` polls `GetCursorPos` against the window rect and calls
+    the page's `VerbalMeetingHover(x, y)` (CSS px; `-1,-1` = left), which toggles `.peek`. **Dialogs:**
+    WebView2 draws `confirm()` inside the (pill-sized) window, so on Windows `cancelMeeting` is overridden to
+    `DashboardApi.confirm_native` → `WinMeetingWindow.native_confirm` (WinForms `MessageBox` Yes/No, default
+    No, owned by the TopMost form); `window.confirm` is stubbed to `false` there. It is the only
+    confirm/alert/prompt in `meeting_html.py` — keep it that way or route new ones the same way.
+  - **Tray icon + left-click menu (2026-08-29).** The tray icon is the Flume bird mark (`assets/icon.png`,
+    the same silhouette rumps shows as a template image), tinted by `_create_icon_image` for the taskbar
+    theme (white on dark, near-black when `SystemUsesLightTheme=1`); recording = white mark in a terracotta
+    disc; the green update badge composites on top. Falls back to the old drawn glyph if the asset is
+    missing. Left-click opens `WinPopover`, whose HTML (`flume_popover_html.py`) is now a **port of the Mac
+    `menubar_menu.py` NSMenu**, not the old card panel: one custom header row (mark · state dot + status ·
+    hotkey hint or live waveform + timer · words TODAY) then stock-looking rows in the SAME order/titles as
+    `menubar_menu.build()` (Update available ↑ / Start Recording / Start Meeting / Recent ▸ / Canvas (n) ▸ /
+    Notes / Recording Mode ▸ / Offline Model ▸ / Sync ✓ / Open Flume / Settings… / Sign in|out / Check for
+    Updates… / About / Quit), with the same sign-in gating. Submenus disclose inline. The page measures
+    itself and the host fits the window (`popover_resize` → `set_content_height`, clamped to the work
+    area); state is read fresh on open via `_PopoverBridge.popover_state()` (mirrors `menuNeedsUpdate:`)
+    and the header animates via `popover_tick()` (~12 fps, only while recording). Esc / focus loss hide it.
+    Auto-detect Meetings has no Windows implementation, so that row is omitted.
+  - **Windows are built once and hide on close:** `WinMeetingWindow` and `WinPopover` intercept
+    pywebview's `closing` (hide — or collapse to the bar mid-meeting — and cancel the destroy, like the
+    Mac panel's `windowShouldClose_`) and `closed` (drop the handle so the next `show()` rebuilds);
+    only the user's own X / Alt+F4 is vetoed — a native `FormClosing` handler lets Windows
+    shutdown/log-off and Task Manager through. `SharedDashboard` (the dashboard window) still lets X
+    destroy and rebuilds on the next show (`_window_alive()` — `Window.show()` is a silent no-op on a
+    dead uid, same class of bug as Start meeting); on Windows it toasts once where Quit lives.
+    Menubar/tray/popover open a named tab via `dashboard.show_tab("canvas"|"settings"|"notes")` —
+    `DASHBOARD_TAB` is the one integer map for Mac and Windows (`05-conventions.md` #67, #70).
 - **Shares the SAME pipeline core as macOS:** `Recorder`, `transcriber` (`transcribe`/
   `transcribe_with_status`), `ai_cleanup.process_text`, `recordings`, `auth` — imported directly from
   `app.*`, not reimplemented. This is *why* Windows parity work is additive (new shell code) rather than
   a port of the whole app.
-- **`win_overlay.py::WinOverlay`** (378 lines) — the Windows floating recording pill, parallel to macOS
-  `overlay.py::OverlayBar`; renders the shared `overlay_html()` (see the JS↔Python bridge note above —
-  same dual-target `flume_html()`/`overlay_html()`/etc. pattern serves both OSes).
+- **`win_overlay.py::WinOverlay`** (~705 lines) — the Windows floating recording pill, parallel to macOS
+  `overlay.py::OverlayBar` and matching its public interface (`setup`/`show`/`update_status`/
+  `show_briefly`/`hide`/`.visible`). Unlike the dashboard it does **not** render `overlay_html()`: it
+  draws the pill with PIL into a tkinter window keyed by `-transparentcolor` (real per-pixel
+  transparency, which WebView2's DirectComposition surface doesn't survive). So the two pills share the
+  *data* (including `recorder.level` for the waveform) but not the markup.
 - **Dashboard:** `win_dashboard.py` + `shared_dashboard.py::DashboardApi` (the same backend class macOS
   uses) render the identical `flume_dashboard_html.py::flume_html()` via real pywebview (WebView2) instead
   of WKWebView + `_SHIM` — see "Also shared across the two desktops" below.
-- **Native-heavy features not yet ported:** meetings (ScreenCaptureKit → needs WASAPI loopback), auto-learn
-  and file-tagging (macOS Accessibility → need UI Automation) — specced in `whisperflow/WINDOWS_PARITY_PLAN.md`
-  and `whisperflow/windows_specs/*.md`, not yet implemented.
+- **Native-heavy features not yet ported:** auto-learn and file-tagging (macOS Accessibility → need UI Automation) — specced in `whisperflow/WINDOWS_PARITY_PLAN.md`
+  and `whisperflow/windows_specs/*.md`. **Meetings capture is ported** (`win_system_audio.py` WASAPI loopback with silence-player +
+  bounded reconnect, Rule #76; `win_meeting_window.py` / `win_meeting_hud.py` hosting the same
+  `meeting_html()`). **Minimizing during a live meeting collapses to the bar pill** instead of the
+  taskbar (`_on_native_resize` — macOS focus-loss parity, a live recording must never run invisibly;
+  idle minimize is a plain minimize — `05-conventions.md` #67h). Granola-style call
+  auto-detect (`meeting_detect.py`) is still macOS-only.
 
 ## Mobile stack (`verbal-mobile/`)
 
@@ -135,31 +250,64 @@ bounded `config['meetings']` (`MEETINGS_CAP`). The HUD appears when the meeting 
   `App.tsx` (loads fonts, `ErrorBoundary`, `SafeAreaProvider`) → `flume-ui/navigation/RootNavigator`.
 - **Navigation** (`flume-ui/navigation/`): a root native-stack gated in three states —
   `Onboarding` (until AsyncStorage `flume_onboarded==='1'`) → `Welcome` (until a Supabase session
-  exists) → `Main`. `Main` is bottom tabs **Home · Notes · [center mic] · Canvas · History**
-  (center mic is a floating button opening the `Recording` modal). The Home header **☰** opens the **Menu**
-  modal — the navigation hub for the secondary destinations (Settings, Snippets, Dictionary, Device pairing,
-  a Sync toggle, Sign out) that used to be buried in Settings. The tab bar is **hidden while a note or a
+  exists) → `Main`. **V2 "Daily Four" nav (2026-08-16):** `Main` is bottom tabs
+  **Home · Notes · [center mic] · History · Insights** (center mic is a floating button opening the
+  `Recording` modal). The Home header **☰** opens the **SidePanel**
+  (`flume-ui/components/SidePanel.tsx`) — a left slide-in hub mirroring the desktop sidebar: Workspace
+  (Canvas, Meetings), Tools (Dictionary, Snippets, Device pairing), live device presence + the Sync
+  toggle, and the account footer (gear → Settings). It's a core-`Animated` in-tree overlay rendered by
+  `MainWithPanel` over the tabs — deliberately NOT the reanimated drawer package, so the redesign
+  shipped as an OTA update with no new native modules. The old `MenuScreen` hub is **deleted**; the
+  `Menu` modal stack survives as the host for the secondary screens
+  (Canvas/Settings/Snippets/Dictionary/Devices→PairDevice/Models — Canvas gained an `onBack` prop for
+  this; Sign out lives in Settings). The tab bar is **hidden while a note or a
   meeting's full AI notes are open** (`NoteEditor`, `MeetingNotes`) so the screen owns the view.
-  Modals: `Recording`, `Confirmation`, `Menu`. Sub-stacks: Notes (→NoteEditor), History (→HistoryDetail),
-  Menu (→Settings/Snippets/Dictionary/Devices→PairDevice).
+- **Back affordances (audited 2026-08-19):** iOS has no hardware back button, so **every non-root route
+  carries its own top-left `chevron-back`** — the invariant to preserve when adding a screen. The
+  intentional exceptions: the tab roots (Home, NotesList, HistoryList, Insights), the auth/first-run roots
+  (Welcome, Onboarding — the latter has Skip), and the two modals that dismiss via an explicit action
+  instead (`Recording` = ✕ Cancel `IconButton`, `Confirmation` = pinned Done). `InsightsScreen` takes
+  `onBack?` optionally and renders the button only when passed, because it doubles as a tab root.
+  Inside the single-route `Menu` modal stack, a leaf's `goBack()` finds nothing to pop and **bubbles to the
+  root navigator**, dismissing the modal — that is the intended destination, not a bug.
+  Modals: `Recording`, `Confirmation`, `Menu` (stack only, no hub screen).
+  Sub-stacks: Notes (→NoteEditor, →MeetingList…), History (→HistoryDetail).
+- **Singleton data stores (flow-audit B4/B5, 2026-08):** history, canvas, meetings, notes and devices
+  each live in ONE module-level store (`flume-ui/hooks/historyStore.ts` is the pattern: module state +
+  `subscribe`/`getSnapshot` consumed via `useSyncExternalStore`, `reset()` called from `useAuth`'s
+  teardown, `catchUp()` driven by `flume-ui/hooks/syncLifecycle.ts` on AppState foreground, one realtime
+  channel with rejoin/backoff, own-echo suppression). The sync flag's single source is `lib/syncStore.ts`
+  (live toggle — see `05-conventions.md` #28). Cloud identity for writes is `storage.getCloudUserId()`
+  (paired override ?? session, never a minted guest id); device identity is the per-install
+  `verbal_device_uuid`.
+- **Team layer (IDI-216):** `lib/organizations.ts` mirrors `app/organizations.py` (edit one, edit the
+  other), cached in AsyncStorage `flume_org` with an in-memory mirror so the dictation path never awaits
+  storage. `flume-ui/hooks/useOrganization.ts` (+ its `.mock.ts` contract) backs
+  `flume-ui/screens/TeamScreen.tsx`, hosted in the `Menu` modal stack and reached from the SidePanel's
+  Tools group. `lib/pendingInvite.ts` parks a `verbal://team-invite?t=…` deep link until there is a
+  session to claim it with — the usual case, since the recipient taps the link before ever signing in.
 - **Layered architecture:** presentational **screens** (`flume-ui/screens/*.tsx`) receive callbacks as
   props → read data via **hooks** (`flume-ui/hooks/*.ts`) → hooks call **`lib/*.ts`** (Supabase, Groq,
   AsyncStorage). Theme tokens in `flume-ui/theme/` (colors/typography/spacing/shadow/motion).
 - **The `.mock.ts` contract:** every hook `useX.ts` has a sibling `useX.mock.ts` with the *exact same
   exported shape* backed by in-memory state. Mocks are the **design contract**; no runtime file imports
-  them — the real hook is a drop-in replacement. (Memory: "flume-ui is the source of truth; hooks must
-  match the .mock.ts contracts.")
+  them — the real hook is a drop-in replacement. All pairs (incl. the newer `useSyncEnabled`) were
+  verified mutually assignable in the IDI-179 closing pass — keep them in sync with every hook change.
 - **Client:** `lib/supabase.ts` — one `@supabase/supabase-js` client, `flowType:'pkce'`,
   `storage: AsyncStorage`, `detectSessionInUrl:false`.
 - **iOS native project** committed at `ios/` (`Verbal.xcworkspace`, CocoaPods) — a dev-client/prebuilt
   Expo app; **Android native project** committed at `android/` (Gradle, `gradlew`); EAS profiles for both
   in `eas.json`.
 - **Shared dictation pipeline contract:** `lib/dictationPipeline.ts` wraps transcribe → AI-cleanup →
-  dictionary-replacement → snippet-expansion as ONE function so every entry point (in-app recorder, the
-  iOS keyboard extension's main-app handoff, any future RN-hosted path) runs identical logic instead of
-  each reimplementing it. iOS's keyboard extension can't run JS at all, so it hands off to the main app,
-  which calls this. Android's IME (Kotlin, native) can't call this TS either — `FlumeInputMethodService.kt`
-  mirrors the same sequence natively, with this file as the reference contract that mirror must match.
+  dictionary-replacement → snippet-expansion as ONE function — and since IDI-179 it is actually WIRED:
+  exactly two app callers, `useRecorder.stop()` (first pass) and `historyStore.retryEntry()` (retry), both
+  with `cleanup: true`, so retrying the same audio produces the same text and in-app dictation really has
+  the AI-cleanup pass the feature matrix documents (the first pass used to skip it). Neither keyboard can
+  run this TS (extensions/IMEs are separate native sandboxes) — there is NO main-app handoff (the old
+  claim of one was never true, IDI-161): **both** native keyboards (`KeyboardViewController.swift`,
+  `FlumeInputMethodService.kt`) mirror the sequence natively — the `cleanup: false` shape of the contract
+  (vocab-bias prompt → transcribe via groq-proxy → replacements → snippets, no LLM pass). Change the
+  sequence here and both mirrors must change in the same commit.
 - **Custom keyboards are separate native targets, not RN screens:** the iOS keyboard extension
   (`targets/keyboard/KeyboardViewController.swift`) and Android IME (`plugins/keyboard/
   FlumeInputMethodService.kt`) are full from-scratch keyboards (QWERTY layers, suggestions, dictation,
@@ -176,10 +324,41 @@ bounded `config['meetings']` (`MEETINGS_CAP`). The HUD appears when the meeting 
   Supabase JWT (or anon key); the function logs usage per identity (`groq_usage`) and forwards to Groq —
   except **meeting notes**, which send `provider:"ollama"` and are forwarded to **Ollama Cloud
   `gpt-oss:120b`** (`OLLAMA_API_KEY` secret, OpenAI-compatible passthrough) with an automatic Groq
-  `llama-3.3-70b` fallback. See `04-data-model.md` and `05-conventions.md` Hard Rule #15.
+  `openai/gpt-oss-120b` fallback. See `04-data-model.md` and `05-conventions.md` Hard Rule #15.
+  `invite-member` (`supabase/functions/invite-member/index.ts`, IDI-216) mints a team invite and emails
+  the claim link via **Resend** (`RESEND_API_KEY` + `INVITE_FROM_EMAIL` secrets). `verify_jwt` on;
+  caller identity from the JWT, owner/admin re-checked against the DB; the row stores only the token's
+  sha256 and is DELETED again if the mail fails, so a "pending" invite always means one that was sent.
+  `download` (`supabase/functions/download/index.ts`, IDI-224) is the **ONE stable URL the website's
+  download button links to** — `verify_jwt` off (a public download link can't demand a JWT), it reads
+  `app_versions_latest`, HEAD-probes the target before redirecting (so a dead release reads as a
+  branded "gone missing" page/503 instead of raw storage XML), and 302s to it with a short
+  `Cache-Control`. `?json=1` returns `{ok,platform,version,url,reachable,size,sha256,changelog}` for a
+  website/CI to consume without redirecting. Shipping a release needs **no website change and no CI
+  change to this function** — see the release pipeline below.
   **Auth:** Google provider.
+
+- **Desktop release pipeline (IDI-224, 2026-08-20) — GitOps, GitHub-Releases-only, no human gate.**
+  `.github/workflows/auto-release-desktop.yml` watches pushes to `dev` **path-filtered to
+  `whisperflow/**`** (mobile changes never trigger it, and it never touches mobile), auto-bumps
+  `config.APP_VERSION`'s patch digit, commits, and pushes a `vX.Y.Z` tag. That tag push fires the
+  existing `.github/workflows/build-release.yml`, which builds mac+win **together** (one Python core,
+  one version — they never ship independently), publishes both installers as **GitHub Release**
+  assets under deterministic versioned filenames, registers both `app_versions` rows pointing at those
+  GitHub URLs, and self-verifies by curling the `download` function's `?json=1` endpoint for both
+  platforms before the job is allowed to succeed. Supabase Storage's `releases` bucket is no longer
+  used (its TUS-upload path never actually worked — see `04-data-model.md`). The mac build is
+  **code-signed (hardened runtime) and notarized** via a Developer ID Application cert + App Store
+  Connect API key; Windows is not yet signed. Full detail and the anti-loop guard are in
+  `05-conventions.md` #50.
 - **Access model:** both apps use the **anon key** for all REST/realtime; scoping is by `user_id` value
   (not JWT/RLS — that's a documented deferred hardening). Realtime over Phoenix WebSocket.
+  **The four `organization*` tables are the exception** (IDI-216): they are `TO authenticated` with real
+  `auth.uid()` policies from their first row, and cross-member reads (usage, leaderboard) go through
+  SECURITY DEFINER RPCs that check org membership themselves. That is deliberate — it is what let the
+  team layer ship WITHOUT applying `supabase_auth_uid_rls.sql` (IDI-29), whose pairing trade-off and
+  client-rollout window are still open. A paired-but-never-signed-in device sends the anon key, reads
+  zero org rows, and simply has no team: the correct fail-closed outcome, not a bug to route around.
 - Full schema, data shapes, auth flows, sync model, and the **schema-vs-code gaps** are in `04-data-model.md`.
 
 ## Cross-platform sharing
@@ -191,10 +370,16 @@ bounded `config['meetings']` (`MEETINGS_CAP`). The HUD appears when the meeting 
 - **Also shared across the two desktops:** the Flume HTML surfaces (`flume_dashboard_html.py` et al.)
   now render on both macOS (WKWebView + `_SHIM`) and Windows (pywebview/WebView2), plus the
   cross-platform pipeline modules (`recorder`, `transcriber`, `ai_cleanup`, `dictionary`, `recordings`,
-  `auth`, `sync`, `updater`, `meetings`).
+  `auth`, `sync`, `updater`, `meetings`, `paste_guard`). User-visible platform-isms in those shared
+  surfaces — key-chord labels, the local-device name — come from an injected seam
+  (`PL_KEYS`/`IS_WINDOWS`/`THIS_DEVICE` in the dashboard, `_MOD`/JS `MOD` in `meeting_html`), never
+  hardcoded ("This Mac" on a Windows box, 2026-08-28 — `05-conventions.md` #80).
 - **What's platform-specific:** the *host container* per surface (WKWebView `NSPanel`/`NSWindow` vs
   pywebview windows), the tray/menubar shell (`rumps` vs `pystray`), input/audio natives
-  (`injector`↔`win_injector`, `hotkey` NSEvent vs `pynput`, ScreenCaptureKit↔WASAPI loopback), and the
+  (`injector`↔`win_injector`, `hotkey` NSEvent vs `pynput`, ScreenCaptureKit↔WASAPI loopback — note
+  `paste_guard` is shared but its *blocker* is not: macOS gates paste on the Accessibility grant and can
+  pre-flight it, Windows gates on UIPI integrity level and can only detect it from `SendInput`'s count),
+  and the
   macOS AX features (file-tagging, auto-learn) whose Windows equivalents use UI Automation
   (`win_ax.py`/`win_editwatch.py`, planned — see `whisperflow/WINDOWS_PARITY_PLAN.md`); mobile's Expo
   screens/hooks and native audio (`expo-audio`); and, within mobile itself, the custom keyboard's native
@@ -203,3 +388,9 @@ bounded `config['meetings']` (`MEETINGS_CAP`). The HUD appears when the meeting 
 
 See `05-conventions.md` for the non-obvious rules that keep all this from breaking, and the list of
 dead/legacy modules to ignore.
+
+## Deep links (`flume://`)
+`app/deep_link.py` is the shared router (`parse_invite_token`, `handle(app, url)`). macOS delivers URLs via
+the `kAEGetURL` Apple Event (`main.py::_install_url_handler`, scheme declared in `whisperflow.spec`); Windows
+is pending (installer `[Registry]` + argv). The web side is `supabase/functions/invite` — see
+`03-features.md` §Team invite deep links.

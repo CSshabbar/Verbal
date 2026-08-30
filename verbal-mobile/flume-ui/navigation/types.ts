@@ -14,9 +14,18 @@ export type RootStackParamList = {
     durationSeconds: number;
     wordCount: number;
     transcribeMs: number;
+    /**
+     * Truthful outcome (IDI-159 — the screen previously claimed "Pasted to X"
+     * unconditionally, even for failures and with sync off):
+     *  - 'sent'   → pushed to the selected target device (sync on + target set)
+     *  - 'saved'  → saved to local history + clipboard only
+     *  - 'failed' → transcription failed; audio kept for retry
+     *  - 'empty'  → no speech detected
+     */
+    variant: 'sent' | 'saved' | 'failed' | 'empty';
   };
-  /** Settings — pushed from the Home header. */
-  Settings: undefined;
+  /** Menu — the navigation hub, opened from the Home header ☰. */
+  Menu: undefined;
 };
 
 /** Bottom tabs — mic is the center action (opens the Recording modal). */
@@ -24,14 +33,20 @@ export type TabsParamList = {
   HomeTab:     undefined;
   NotesTab:    undefined;
   RecordTab:   undefined;
-  CanvasTab:   undefined;
   HistoryTab:  undefined;
+  InsightsTab: undefined;
 };
 
 /** Stacks inside each tab. */
 export type NotesStackParamList = {
   NotesList: undefined;
   NoteEditor: { noteId: string | null };
+  /** Meetings live inside Notes — read-only views of desktop-captured meetings. */
+  MeetingList: undefined;
+  MeetingDetail: { meetingId: string };
+  MeetingPlayback: { meetingId: string };
+  MeetingNotes: { meetingId: string };
+  MeetingLive: { meetingId: string };
 };
 
 export type HistoryStackParamList = {
@@ -39,8 +54,15 @@ export type HistoryStackParamList = {
   HistoryDetail: { itemId: string };
 };
 
-export type SettingsStackParamList = {
+// The "Menu" ROOT screen is gone (V2 nav redesign, 2026-08-16): the SidePanel
+// is the hub now, and this modal stack hosts only the secondary destinations.
+export type MenuStackParamList = {
   Settings: undefined;
+  Dictionary: undefined;
   Devices: undefined;
   PairDevice: undefined;
+  Snippets: undefined;
+  Models: undefined;
+  Canvas: undefined;
+  Team: undefined;
 };

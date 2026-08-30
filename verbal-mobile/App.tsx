@@ -3,6 +3,11 @@ import React from 'react';
 import { View, Text, StyleSheet, ScrollView } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { useFonts } from 'expo-font';
+import { syncKeyboardConfig } from './lib/keyboardBridge';
+import { sweep as sweepRecordings } from './lib/recordings';
+import {
+  configureNotificationHandler, registerForMeetingPush,
+} from './lib/notifications';
 import {
   Geist_400Regular,
   Geist_500Medium,
@@ -14,7 +19,7 @@ import {
   JetBrainsMono_600SemiBold,
 } from '@expo-google-fonts/jetbrains-mono';
 
-import { RootNavigator, colors } from './flume-ui';
+import { RootNavigator, colors, startSyncLifecycle } from './flume-ui';
 
 class ErrorBoundary extends React.Component<
   { children: React.ReactNode },
@@ -62,6 +67,30 @@ export default function App() {
     JetBrainsMono_500Medium,
     JetBrainsMono_600SemiBold,
   });
+
+  // Write the native keyboard's config snapshot (Groq key + dictionary) on launch.
+  React.useEffect(() => { syncKeyboardConfig(); }, []);
+
+  // Register for meeting-start push notifications. Fully guarded (no-op if the
+  // native module isn't in this build) — never blocks launch.
+  React.useEffect(() => {
+    configureNotificationHandler();
+    registerForMeetingPush().catch(() => {});
+  }, []);
+
+  // Foreground catch-up for the realtime stores (IDI-171). Separate from the
+  // AppState listener in lib/supabase.ts, which only drives auth token refresh.
+  React.useEffect(() => startSyncLifecycle(), []);
+
+  // Bounded cleanup of the local recordings cache (IDI-180) — keep the newest
+  // 100 files and nothing older than 30 days, never touching audio still linked
+  // to a history entry or a note. Delayed so it can't compete with launch IO
+  // (and so the stores have loaded their caches first); fire-and-forget and
+  // fully fail-closed — it can never affect record → transcribe → inject.
+  React.useEffect(() => {
+    const t = setTimeout(() => { sweepRecordings().catch(() => {}); }, 5000);
+    return () => clearTimeout(t);
+  }, []);
 
   if (!fontsLoaded) return null;
 

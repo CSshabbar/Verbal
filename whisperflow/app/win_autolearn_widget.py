@@ -1,0 +1,432 @@
+"""Windows autolearn confirm-pill — tkinter + PIL sticker (same technique
+as `win_overlay.py`).
+
+WebView2 can't do per-pixel transparency reliably on Windows, so we drop
+pywebview here and hand-render the cream pill with PIL onto a tkinter
+window whose `-transparentcolor` chroma-key gives a real sticker look
+(no surrounding dark rectangle).
+
+Public interface matches the Mac `AutoLearnWidget`:
+    setup(), show(old, new), hide(), .visible
+
+Interaction is limited to two hit-boxes (Add / Dismiss) — clicks on the
+canvas dispatch back into the app the same way the Mac widget does
+(`app._autolearn_result(old, new, added)`)."""
+
+import logging
+import math
+import threading
+import time
+import tkinter as tk
+
+from PIL import Image, ImageDraw, ImageFont, ImageTk
+
+from app.tk_pending import PendingCalls
+
+logger = logging.getLogger("verbal.autolearn.widget.win")
+
+# ── Layout + DPI scaling ────────────────────────────────────────────────
+# 96-DPI design values. The process is DPI-aware (see win_dpi), so drawing
+# these raw makes the pill render at 1/scale of its intended physical size.
+SCALE = 1.0
+
+_DESIGN = {
+    "PILL_W": 620, "PILL_H": 72, "RADIUS": 16,
+    "PAD_LEFT": 16, "PAD_RIGHT": 10,
+    "F_TITLE": 13, "F_PAIR": 11, "F_BTN": 12,
+}
+
+
+def _s(v):
+    """Scale a 96-DPI design length to device pixels (float)."""
+    return v * SCALE
+
+
+def _i(v):
+    """Scale a 96-DPI offset / stroke width to whole device pixels."""
+    return max(1, int(round(v * SCALE)))
+
+
+def _apply_scale(scale):
+    """Restate every layout constant in device pixels for `scale`."""
+    global SCALE, PILL_W, PILL_H, RADIUS, PANEL_W, PANEL_H
+    global PAD_LEFT, PAD_RIGHT, F_TITLE, F_PAIR, F_BTN
+    SCALE = scale
+    d = _DESIGN
+    PILL_W = int(round(d["PILL_W"] * scale))
+    PILL_H = int(round(d["PILL_H"] * scale))
+    RADIUS = int(round(d["RADIUS"] * scale))
+    PANEL_W = PILL_W
+    PANEL_H = PILL_H
+    PAD_LEFT = int(round(d["PAD_LEFT"] * scale))
+    PAD_RIGHT = int(round(d["PAD_RIGHT"] * scale))
+    F_TITLE = max(1, int(round(d["F_TITLE"] * scale)))
+    F_PAIR = max(1, int(round(d["F_PAIR"] * scale)))
+    F_BTN = max(1, int(round(d["F_BTN"] * scale)))
+
+
+_apply_scale(1.0)          # sane defaults until the monitor is probed
+
+# ── Colors (mirror autolearn_widget_html CSS vars) ──────────────────────
+CREAM_RGB   = (234, 223, 206)    # --cream #EADFCE
+INK_RGB     = (42, 31, 24)       # --ink   #2A1F18
+INK_MUT_RGB = (110, 96, 82)      # muted ink
+DARK_RGB    = (26, 21, 18)       # --dark  #1A1512 (Add button bg)
+LINE_RGB    = (0, 0, 0, 36)      # subtle divider / stroke alpha
+
+# tkinter -transparentcolor chroma. Near-black so anti-aliased pill edges
+# blend to a soft dark halo instead of a bright fringe.
+CHROMA_TK = "#0a0a0a"
+
+
+class WinAutoLearnWidget:
+    """Same public interface as the Mac widget. Runs its own tk mainloop
+    on a daemon thread; every render happens via `.after(0, ...)`."""
+
+    def __init__(self, app=None):
+        self.app = app
+        self._root = None
+        self._canvas = None
+        self._photo = None
+        self._font_title = None
+        self._font_pair = None
+        self._font_btn = None
+
+        self._old = ""
+        self._new = ""
+        self._visible = False
+        self._alpha = 0.0
+        self._dismiss_token = 0
+
+        # Hit rects rebuilt per render: [(x1,y1,x2,y2,action), ...]
+        self._hits = []
+        self._fade_timer = None
+        # Calls that arrive before the tk root exists are queued and replayed
+        # on the tk thread once the mainloop runs — see app/tk_pending.py.
+        self._pending = PendingCalls(name="autolearn")
+
+    # ── setup ───────────────────────────────────────────────────────────
+    def setup(self):
+        t = threading.Thread(target=self._run_tk, name="autolearn-tk", daemon=True)
+        t.start()
+
+    def _run_tk(self):
+        try:
+            # BEFORE the window/canvas: both are sized from PANEL_W/PANEL_H.
+            try:
+                from app.win_dpi import widget_scale
+                _apply_scale(widget_scale())
+                logger.info("autolearn pill: scale=%.2f -> %dx%d", SCALE, PANEL_W, PANEL_H)
+            except Exception as e:
+                logger.debug("autolearn dpi scale skipped: %s", e)
+            self._root = tk.Tk()
+            self._root.overrideredirect(True)
+            self._root.attributes("-topmost", True)
+            self._root.attributes("-alpha", 0.0)
+            self._root.attributes("-transparentcolor", CHROMA_TK)
+            self._root.configure(bg=CHROMA_TK)
+            self._root.withdraw()
+
+            screen_w = self._root.winfo_screenwidth()
+            screen_h = self._root.winfo_screenheight()
+            x = (screen_w - PANEL_W) // 2
+            y = screen_h - PANEL_H - 100
+            self._root.geometry(f"{PANEL_W}x{PANEL_H}+{x}+{y}")
+
+            self._canvas = tk.Canvas(
+                self._root, width=PANEL_W, height=PANEL_H,
+                bg=CHROMA_TK, highlightthickness=0, borderwidth=0)
+            self._canvas.pack()
+            self._canvas.bind("<Button-1>", self._on_click)
+
+            self._load_fonts()
+            # Flip to ready + replay early calls from INSIDE the mainloop (a
+            # cross-thread `root.after` blocks until the loop runs).
+            self._root.after(0, self._replay_pending)
+            self._root.mainloop()
+        except Exception as e:
+            logger.error("autolearn tk thread crashed: %s", e, exc_info=True)
+        finally:
+            self._pending.close()      # setup failed / loop ended: drop the queue
+
+    def _replay_pending(self):
+        """tk thread, inside mainloop: mark ready and run queued calls in order."""
+        try:
+            self._pending.mark_ready(lambda fn: fn())
+        except Exception as e:
+            logger.debug("autolearn pending replay failed: %s", e)
+
+    def _tk_ready(self):
+        return self._root is not None and self._pending.ready
+
+    def cleanup(self):
+        """Close the queue first (a not-yet-run replay is dropped, never raced),
+        then ask the tk loop to quit."""
+        self._pending.close()
+        root = self._root
+        if root is None:
+            return
+        try:
+            root.after(0, root.quit)
+        except Exception as e:
+            logger.debug("autolearn cleanup failed: %s", e)
+
+    def _load_fonts(self):
+        for face in ("segoeui.ttf", "arial.ttf"):
+            try:
+                self._font_title = ImageFont.truetype(face, F_TITLE)
+                self._font_pair = ImageFont.truetype(face, F_PAIR)
+                self._font_btn = ImageFont.truetype(face, F_BTN)
+                return
+            except Exception:
+                continue
+        self._font_title = ImageFont.load_default()
+        self._font_pair = ImageFont.load_default()
+        self._font_btn = ImageFont.load_default()
+
+    # ── public API (parity with AutoLearnWidget) ────────────────────────
+    def show(self, old, new):
+        self._old = str(old or "")
+        self._new = str(new or "")
+        self._safe(self._show_internal)
+        # Auto-dismiss after 20s untouched, same as Mac.
+        self._dismiss_token += 1
+        token = self._dismiss_token
+
+        def _auto():
+            if self._dismiss_token != token or not self._visible:
+                return
+            self._action("autolearn_close")
+        t = threading.Timer(20.0, _auto)
+        t.daemon = True                 # never keeps the interpreter alive on exit
+        try:
+            old_t = getattr(self, "_dismiss_timer", None)
+            if old_t is not None:
+                old_t.cancel()
+        except Exception:
+            pass
+        self._dismiss_timer = t
+        t.start()
+
+    def hide(self):
+        self._dismiss_token += 1
+        self._safe(self._cancel_fade)
+        self._safe(self._fade_out)
+
+    @property
+    def visible(self):
+        return self._visible
+
+    # ── internals ───────────────────────────────────────────────────────
+    def _safe(self, fn):
+        """Run `fn` on the tk thread; queued (bounded, in order) until the
+        root + mainloop are ready, `root.after(0, fn)` afterwards."""
+        def _post(f):
+            self._root.after(0, f)
+        try:
+            self._pending.dispatch(fn, _post)
+        except Exception as e:
+            logger.debug("autolearn _safe failed: %s", e)
+
+    def _cancel_fade(self):
+        """Stop whichever fade is running — a fade-in and a fade-out driving
+        alpha in opposite directions every 16 ms left a half-transparent (or
+        withdrawn-but-'visible') pill (review 2026-08-28)."""
+        t = getattr(self, "_fade_timer", None)
+        if t is not None and self._tk_ready():
+            try:
+                self._root.after_cancel(t)
+            except Exception:
+                pass
+        self._fade_timer = None
+
+    def _show_internal(self):
+        if not self._tk_ready():
+            return
+        self._cancel_fade()
+        self._visible = True
+        self._alpha = 0.0
+        self._root.deiconify()
+        self._fade_in()
+
+    def _fade_in(self):
+        if not self._tk_ready():
+            return
+        self._alpha = min(0.98, self._alpha + 0.08)
+        self._root.attributes("-alpha", self._alpha)
+        self._render()
+        if self._alpha < 0.95:
+            self._fade_timer = self._root.after(16, self._fade_in)
+
+    def _fade_out(self):
+        if not self._tk_ready():
+            return
+        self._alpha = max(0.0, self._alpha - 0.10)
+        try:
+            self._root.attributes("-alpha", self._alpha)
+        except Exception:
+            pass
+        if self._alpha <= 0.0:
+            try:
+                self._root.withdraw()
+            except Exception:
+                pass
+            self._visible = False
+            return
+        self._fade_timer = self._root.after(16, self._fade_out)
+
+    # ── rendering ───────────────────────────────────────────────────────
+    def _render(self):
+        if self._canvas is None:
+            return
+        try:
+            img = Image.new("RGBA", (PANEL_W, PANEL_H),
+                            _hex_to_rgba(CHROMA_TK))
+            draw = ImageDraw.Draw(img)
+
+            # Cream pill background (rounded).
+            draw.rounded_rectangle(
+                (0, 0, PANEL_W - 1, PANEL_H - 1),
+                radius=RADIUS,
+                fill=CREAM_RGB + (255,))
+
+            self._hits = []
+            cy = PANEL_H // 2
+
+            # Right cluster: X (dismiss) at far right, then Add button.
+            # Draw right-to-left so the X hugs the edge.
+            x_r = PANEL_W - PAD_RIGHT
+            # X close button (28x28 with soft ink fill circle).
+            x_r_size = _i(26)
+            x_left = x_r - x_r_size
+            draw.ellipse(
+                (x_left, cy - x_r_size // 2,
+                 x_left + x_r_size, cy + x_r_size // 2),
+                fill=(0, 0, 0, 24))
+            k = _i(5)
+            cx = x_left + x_r_size // 2
+            draw.line((cx - k, cy - k, cx + k, cy + k),
+                      fill=INK_RGB + (220,), width=_i(2))
+            draw.line((cx - k, cy + k, cx + k, cy - k),
+                      fill=INK_RGB + (220,), width=_i(2))
+            self._hits.append((x_left, cy - x_r_size // 2,
+                               x_left + x_r_size, cy + x_r_size // 2,
+                               "autolearn_close"))
+            x_r = x_left - _i(8)
+
+            # Add button — dark rounded rect with cream label.
+            btn_label = "Add to dictionary"
+            btn_w = _text_width(draw, btn_label, self._font_btn) + _i(28)
+            btn_h = _i(34)
+            btn_left = x_r - btn_w
+            btn_top = cy - btn_h // 2
+            draw.rounded_rectangle(
+                (btn_left, btn_top, btn_left + btn_w, btn_top + btn_h),
+                radius=_i(11), fill=DARK_RGB + (255,))
+            tw = _text_width(draw, btn_label, self._font_btn)
+            draw.text(
+                (btn_left + (btn_w - tw) // 2, btn_top + _i(9)),
+                btn_label, fill=CREAM_RGB + (255,), font=self._font_btn)
+            self._hits.append((btn_left, btn_top,
+                               btn_left + btn_w, btn_top + btn_h,
+                               "autolearn_add"))
+            content_right = btn_left - _i(12)
+
+            # Left side: two-line text stack. Title + pair.
+            new_word_disp = f"“{self._new}”"
+            old_word_disp = f"“{self._old}”"
+
+            title_prefix = "Add "
+            title_suffix = " to your dictionary?"
+            # Line 1 pieces so the quoted word renders bold-ish (we fake
+            # emphasis via colored contrast).
+            _title_max_w = content_right - PAD_LEFT
+            title_y = cy - _i(18)
+            x_run = PAD_LEFT
+            draw.text((x_run, title_y), title_prefix,
+                      fill=INK_MUT_RGB + (255,), font=self._font_title)
+            x_run += _text_width(draw, title_prefix, self._font_title)
+            draw.text((x_run, title_y), new_word_disp,
+                      fill=INK_RGB + (255,), font=self._font_title)
+            x_run += _text_width(draw, new_word_disp, self._font_title)
+            # Suffix; ellipsize if it overflows.
+            _suffix = _fit_to_width(draw, title_suffix, self._font_title,
+                                    _title_max_w - (x_run - PAD_LEFT))
+            draw.text((x_run, title_y), _suffix,
+                      fill=INK_MUT_RGB + (255,), font=self._font_title)
+
+            # Line 2 — "Replaces <old> when misheard".
+            pair_y = cy + _i(3)
+            replaces = "Replaces "
+            when = " when misheard"
+            x_run = PAD_LEFT
+            draw.text((x_run, pair_y), replaces,
+                      fill=INK_MUT_RGB + (200,), font=self._font_pair)
+            x_run += _text_width(draw, replaces, self._font_pair)
+            _old_shown = _fit_to_width(draw, old_word_disp, self._font_pair,
+                                       _title_max_w - (x_run - PAD_LEFT) - _i(90))
+            draw.text((x_run, pair_y), _old_shown,
+                      fill=INK_RGB + (230,), font=self._font_pair)
+            x_run += _text_width(draw, _old_shown, self._font_pair)
+            draw.text((x_run, pair_y), when,
+                      fill=INK_MUT_RGB + (200,), font=self._font_pair)
+
+            # Blit to tk. `master=self._canvas` is critical — with multiple
+            # tk.Tk() roots in the app (overlay / autolearn / HUD / transform
+            # each own one), ImageTk defaults to the wrong root and Tcl loses
+            # track of the image handle ("pyimage### doesn't exist").
+            self._canvas.delete("all")
+            self._photo = ImageTk.PhotoImage(img, master=self._canvas)
+            self._canvas.create_image(0, 0, image=self._photo, anchor="nw")
+        except Exception as e:
+            logger.error("autolearn render error: %s", e, exc_info=True)
+
+    # ── clicks ──────────────────────────────────────────────────────────
+    def _on_click(self, event):
+        x, y = event.x, event.y
+        for (x1, y1, x2, y2, action) in self._hits:
+            if x1 <= x <= x2 and y1 <= y <= y2:
+                self._action(action)
+                return
+
+    def _action(self, name):
+        try:
+            old, new = self._old, self._new
+            self.hide()
+            if self.app is not None and hasattr(self.app, "_autolearn_result"):
+                added = (name == "autolearn_add")
+                self.app._on_main(
+                    lambda: self.app._autolearn_result(old, new, added))
+        except Exception as e:
+            logger.error("autolearn action %s failed: %s", name, e)
+
+
+def _hex_to_rgba(hexstr):
+    h = hexstr.lstrip("#")
+    r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    return (r, g, b, 255)
+
+
+def _text_width(draw, text, font):
+    try:
+        bbox = draw.textbbox((0, 0), text, font=font)
+        return bbox[2] - bbox[0]
+    except Exception:
+        return int(len(text) * 6.5)
+
+
+def _fit_to_width(draw, text, font, max_w):
+    if _text_width(draw, text, font) <= max_w:
+        return text
+    ell = "…"
+    lo, hi = 0, len(text)
+    best = ""
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        cand = text[:mid].rstrip() + ell
+        if _text_width(draw, cand, font) <= max_w:
+            best = cand
+            lo = mid + 1
+        else:
+            hi = mid - 1
+    return best or ell

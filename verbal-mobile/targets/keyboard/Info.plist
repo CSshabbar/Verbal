@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Flume uses the microphone to transcribe your speech into the current text field.</string>
+    <key>UIAppFonts</key>
+    <array>
+      <string>Geist-Regular.ttf</string>
+      <string>Geist-Medium.ttf</string>
+      <string>JetBrainsMono-Medium.ttf</string>
+    </array>
+    <key>NSExtension</key>
+    <dict>
+      <key>NSExtensionPointIdentifier</key>
+      <string>com.apple.keyboard-service</string>
+      <key>NSExtensionPrincipalClass</key>
+      <string>$(PRODUCT_MODULE_NAME).KeyboardViewController</string>
+      <key>NSExtensionAttributes</key>
+      <dict>
+        <!-- Full Access: required for network (Groq/Supabase) from the extension.
+             The user must still enable "Allow Full Access" in Settings. -->
+        <key>RequestsOpenAccess</key>
+        <true/>
+        <key>IsASCIICapable</key>
+        <false/>
+        <key>PrefersRightToLeft</key>
+        <false/>
+        <key>PrimaryLanguage</key>
+        <string>en-US</string>
+      </dict>
+    </dict>
+  </dict>
+</plist>

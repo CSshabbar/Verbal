@@ -1,6 +1,6 @@
 import React from 'react';
 import { Pressable, View, StyleSheet, ViewStyle } from 'react-native';
-import { colors, radius, space } from '../theme';
+import { colors, radius, space, PRESSED_OPACITY } from '../theme';
 
 export type CardProps = {
   children: React.ReactNode;
@@ -31,7 +31,7 @@ export const Card: React.FC<CardProps> = ({
         styles.base,
         emphasis === 'draft' ? styles.draft : styles.default,
         { padding: pad },
-        pressed && { opacity: 0.85 },
+        pressed && { opacity: PRESSED_OPACITY },
         style,
       ]}
     >

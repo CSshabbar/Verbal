@@ -1,36 +1,44 @@
 import React from 'react';
 import { View, StyleSheet, ScrollView, Pressable } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useNavigation } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { Text, LogoMark } from '../components';
-import { colors } from '../theme';
+import { colors, pressedStyle } from '../theme';
 import { useDevices } from '../hooks/useDevices';
 import { useHistory } from '../hooks/useHistory';
 import { useNotes } from '../hooks/useNotes';
 import { useAuth } from '../hooks/useAuth';
 import { DeviceTag } from './HistoryListScreen';
 
-type Props = { onOpenSettings: () => void };
+type Props = { onOpenMenu: () => void };
 
 // Muted pastel feature-card backgrounds (minimalist-dark, wireframe 7a).
 const CARD_CREAM = '#EADFCE';
 const CARD_CREAM_INK = '#2a1f18';
 const CARD_SAGE = '#DDE4D3';
 const CARD_SAGE_INK = '#1e2418';
+const CARD_PLUM = '#e6dae4';
+const CARD_PLUM_INK = '#221820';
 
 /**
  * Screen 7a — Home dashboard (minimalist dark): greeting, device pills,
  * two feature cards, recent list. Recording lives on the center tab-bar mic.
  */
-export const HomeScreen: React.FC<Props> = ({ onOpenSettings }) => {
+export const HomeScreen: React.FC<Props> = ({ onOpenMenu }) => {
   const insets = useSafeAreaInsets();
+  const nav = useNavigation<any>();
   const { user } = useAuth();
-  const { devices, target, setTarget } = useDevices();
+  const { devices, target, mode, setTarget, setSendMode } = useDevices();
   const { items } = useHistory();
   const { notes } = useNotes();
 
   const onlineNames = devices.map(d => d.name).join(' · ') || 'No devices';
   const recent = items.slice(0, 4);
+
+  const openDevices = () => nav.navigate('Menu', { screen: 'Devices' });
+  const openNotes = () => nav.navigate('NotesTab');
+  const openHistory = () => nav.navigate('HistoryTab');
 
   return (
     <View style={[styles.root, { paddingTop: insets.top + 8 }]}>
@@ -40,33 +48,49 @@ export const HomeScreen: React.FC<Props> = ({ onOpenSettings }) => {
           <LogoMark size={34} />
           <Text variant="subtitle" style={{ fontSize: 15 }}>Hi, {user?.firstName ?? 'there'}</Text>
         </View>
-        <View style={{ flexDirection: 'row', gap: 8 }}>
-          <View style={styles.iconCircle}><Ionicons name="notifications-outline" size={16} color={colors.textSecondary} /></View>
-          <Pressable onPress={onOpenSettings} style={styles.iconCircle}>
-            <Ionicons name="settings-outline" size={16} color={colors.textSecondary} />
-          </Pressable>
-        </View>
+        <Pressable onPress={onOpenMenu} style={({ pressed }) => [styles.iconCircle, pressed && pressedStyle]} accessibilityRole="button" accessibilityLabel="Open menu">
+          <Ionicons name="menu" size={18} color={colors.textSecondary} />
+        </Pressable>
       </View>
 
-      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: insets.bottom + 24 }}>
+      <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: insets.bottom + 24 }}>
         {/* Device target pills */}
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 7, paddingRight: 16 }} style={{ marginBottom: 20, flexGrow: 0 }}>
-          <Pill label="All" active={!target} onPress={() => setTarget(null)} />
+          <Pill label="This phone" active={mode === 'none'} onPress={() => setSendMode('none')} />
+          <Pill label="All" active={mode === 'all'} onPress={() => setTarget(null)} />
           {devices.map(d => (
-            <Pill key={d.id} label={d.name} active={target?.id === d.id} onPress={() => setTarget(d)} />
+            <Pill key={d.id} label={d.name} active={mode === 'device' && target?.id === d.id} onPress={() => setTarget(d)} />
           ))}
         </ScrollView>
 
         {/* Feature cards */}
         <View style={styles.featureRow}>
-          <FeatureCard bg={CARD_CREAM} ink={CARD_CREAM_INK} icon="mic-outline" big={`${devices.length} online`} title="Devices ready" sub={onlineNames} />
-          <FeatureCard bg={CARD_SAGE} ink={CARD_SAGE_INK} icon="document-text-outline" big={`${notes.length} notes`} title="Your notebook" sub={notes.length ? 'Tap to open' : 'No notes yet'} />
+          <FeatureCard bg={CARD_CREAM} ink={CARD_CREAM_INK} icon="mic-outline" big={`${devices.length} online`} title="Devices ready" sub={onlineNames} onPress={openDevices} />
+          <FeatureCard bg={CARD_SAGE} ink={CARD_SAGE_INK} icon="document-text-outline" big={`${notes.length} notes`} title="Your notebook" sub={notes.length ? 'Tap to open' : 'No notes yet'} onPress={openNotes} />
         </View>
+
+        {/* Insights strip */}
+        <Pressable
+          onPress={() => nav.navigate('InsightsTab')}
+          style={({ pressed }) => [styles.insightsRow, pressed && pressedStyle]}
+          accessibilityRole="button" accessibilityLabel="Open insights"
+        >
+          <View style={[styles.featureIcon, { backgroundColor: CARD_PLUM_INK, width: 28, height: 28, borderRadius: 14 }]}>
+            <Ionicons name="pulse-outline" size={14} color={CARD_PLUM} />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={{ fontSize: 13, fontFamily: 'Geist_600SemiBold', color: CARD_PLUM_INK }}>Insights</Text>
+            <Text style={{ fontSize: 11, fontFamily: 'Geist_400Regular', color: CARD_PLUM_INK, opacity: 0.6 }}>Your words, speed & streaks</Text>
+          </View>
+          <Ionicons name="chevron-forward" size={13} color={CARD_PLUM_INK} style={{ opacity: 0.5 }} />
+        </Pressable>
 
         {/* Recent */}
         <View style={styles.recentHead}>
           <Text variant="subtitle" style={{ fontSize: 16 }}>Recent</Text>
-          <Text variant="buttonSm" color={colors.textMuted}>See all</Text>
+          <Pressable onPress={openHistory} hitSlop={8} style={({ pressed }) => pressed && pressedStyle}>
+            <Text variant="buttonSm" color={colors.textMuted}>See all</Text>
+          </Pressable>
         </View>
 
         {recent.length === 0 ? (
@@ -95,15 +119,15 @@ export const HomeScreen: React.FC<Props> = ({ onOpenSettings }) => {
 };
 
 const Pill: React.FC<{ label: string; active: boolean; onPress: () => void }> = ({ label, active, onPress }) => (
-  <Pressable onPress={onPress} style={[styles.pill, active ? styles.pillActive : styles.pillIdle]}>
+  <Pressable onPress={onPress} style={({ pressed }) => [styles.pill, active ? styles.pillActive : styles.pillIdle, pressed && pressedStyle]}>
     <Text variant="buttonSm" color={active ? colors.primaryInk : colors.textSecondary}>{label}</Text>
   </Pressable>
 );
 
 const FeatureCard: React.FC<{
-  bg: string; ink: string; icon: keyof typeof Ionicons.glyphMap; big: string; title: string; sub: string;
-}> = ({ bg, ink, icon, big, title, sub }) => (
-  <View style={[styles.feature, { backgroundColor: bg }]}>
+  bg: string; ink: string; icon: keyof typeof Ionicons.glyphMap; big: string; title: string; sub: string; onPress?: () => void;
+}> = ({ bg, ink, icon, big, title, sub, onPress }) => (
+  <Pressable style={({ pressed }) => [styles.feature, { backgroundColor: bg }, pressed && pressedStyle]} onPress={onPress} accessibilityRole="button" accessibilityLabel={title}>
     <View style={styles.featureTop}>
       <View style={[styles.featureIcon, { backgroundColor: ink }]}>
         <Ionicons name={icon} size={15} color={bg} />
@@ -113,7 +137,7 @@ const FeatureCard: React.FC<{
     <Text style={{ fontSize: 22, fontFamily: 'Geist_600SemiBold', color: ink, letterSpacing: -0.4, marginBottom: 3 }}>{big}</Text>
     <Text style={{ fontSize: 13, fontFamily: 'Geist_600SemiBold', color: ink, marginBottom: 2 }}>{title}</Text>
     <Text style={{ fontSize: 11, fontFamily: 'Geist_400Regular', color: ink, opacity: 0.6 }} numberOfLines={1}>{sub}</Text>
-  </View>
+  </Pressable>
 );
 
 const styles = StyleSheet.create({
@@ -124,7 +148,8 @@ const styles = StyleSheet.create({
   pill: { paddingVertical: 9, paddingHorizontal: 16, borderRadius: 999 },
   pillActive: { backgroundColor: colors.inkLight },
   pillIdle: { backgroundColor: 'transparent', borderWidth: 1, borderColor: colors.borderStrong },
-  featureRow: { flexDirection: 'row', gap: 10, marginBottom: 24 },
+  featureRow: { flexDirection: 'row', gap: 10, marginBottom: 10 },
+  insightsRow: { flexDirection: 'row', alignItems: 'center', gap: 11, backgroundColor: CARD_PLUM, borderRadius: 16, paddingVertical: 11, paddingHorizontal: 13, marginBottom: 24 },
   feature: { flex: 1, borderRadius: 18, padding: 14, paddingBottom: 16 },
   featureTop: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 26 },
   featureIcon: { width: 32, height: 32, borderRadius: 16, alignItems: 'center', justifyContent: 'center' },

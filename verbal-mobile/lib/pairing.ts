@@ -8,9 +8,19 @@
  * Mirrors whisperflow/app/pairing.py + the `pairings` table.
  */
 import { supabase } from './supabase';
-import { setUserId, setSyncEnabled, getDeviceName } from './storage';
+import {
+  setUserId, setPairedUserId, setSyncEnabled,
+  getDeviceName, getStoredUserId, clearAccountData,
+} from './storage';
+import { registerThisDevice } from './deviceSync';
 
-export type PairResult = { userId: string; hostDevice: string };
+export type PairResult = {
+  userId: string;
+  hostDevice: string;
+  /** True when this device was ALREADY linked to that account — the scan
+   *  changed nothing (the single-use code is consumed either way). */
+  alreadyLinked: boolean;
+};
 
 /** Pull the token out of a `flume://pair?t=…` payload, or accept a raw code. */
 export function extractToken(payload: string): string | null {
@@ -26,38 +36,48 @@ export async function claimPairing(payload: string): Promise<PairResult> {
   const token = extractToken(payload);
   if (!token) throw new Error('That’s not a Flume pairing code.');
 
-  const nowIso = new Date().toISOString();
-
-  // 1) find a valid, unclaimed, unexpired row
-  const { data: rows, error } = await supabase
-    .from('pairings')
-    .select('id,user_id,host_device')
-    .eq('token', token)
-    .is('claimed_by', null)
-    .gt('expires_at', nowIso)
-    .limit(1);
+  // 1+2) atomic single-use claim via the `claim_pairing` RPC (IDI-157): the
+  // server validates expiry on ITS clock and stamps claimed_by in one guarded
+  // UPDATE — the table itself is no longer readable/writable over REST, so
+  // there is no select-then-patch race and no user_id enumeration surface.
+  const deviceName = await getDeviceName();
+  const { data, error } = await supabase.rpc('claim_pairing', {
+    p_token: token,
+    p_device_name: deviceName,
+  });
   if (error) throw new Error(error.message);
-  if (!rows || rows.length === 0) {
+  const rows = (Array.isArray(data) ? data : data ? [data] : []) as
+    { user_id: string; host_device: string | null }[];
+  if (rows.length === 0 || !rows[0]?.user_id) {
     throw new Error('This code is invalid, already used, or expired.');
   }
-  const row = rows[0] as { id: string; user_id: string; host_device: string | null };
+  const row = rows[0];
 
-  // 2) claim it (single-use: only rows still unclaimed match)
-  const deviceName = await getDeviceName();
-  const { data: upd, error: uErr } = await supabase
-    .from('pairings')
-    .update({ claimed_by: deviceName, claimed_at: nowIso })
-    .eq('id', row.id)
-    .is('claimed_by', null)
-    .select('id');
-  if (uErr) throw new Error(uErr.message);
-  if (!upd || upd.length === 0) {
-    throw new Error('This code was just used by another device.');
+  // 3) adopt the host account (IDI-156).
+  // Account-switch teardown FIRST — same rule as useAuth.afterSignIn: the
+  // previous account's cached history/notes/dictionary must never back-fill
+  // into the host's account. (The caller resets UI-layer stores — see the
+  // PairDevice onScan handler; lib/ must not import from flume-ui/.)
+  const prev = await getStoredUserId();
+  const alreadyLinked = !!prev && prev === row.user_id;
+  if (prev && prev !== row.user_id) {
+    try { await clearAccountData(); } catch { /* best effort */ }
+  }
+  // The paired override OUTRANKS the local Supabase session id in getUserId() —
+  // plain setUserId() alone is reverted by the session write-back within ms.
+  // Already linked to this very account: touch nothing — in particular do not
+  // flip sync back ON for a user who turned it off (the UI says "nothing changed").
+  if (!alreadyLinked) {
+    await setPairedUserId(row.user_id);
+    await setUserId(row.user_id);
+    await setSyncEnabled(true);
   }
 
-  // 3) adopt the host account + enable sync
-  await setUserId(row.user_id);
-  await setSyncEnabled(true);
+  // Register this device under the host account so it shows up in Devices
+  // lists on the host's other devices. Best-effort — pairing already succeeded.
+  // Goes through the one registration site (IDI-177) so device_type is
+  // Platform.OS, not the 'ios' literal this used to write on Android too.
+  await registerThisDevice(row.user_id);
 
-  return { userId: row.user_id, hostDevice: row.host_device || '' };
+  return { userId: row.user_id, hostDevice: row.host_device || '', alreadyLinked };
 }

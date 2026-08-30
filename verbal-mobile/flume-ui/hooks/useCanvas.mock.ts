@@ -1,103 +1,67 @@
 /**
- * useCanvas — staging board for items to push to the paired computer.
- * Add* helpers integrate with image picker / system paste / your input modal.
- * `save` sends the item to the device clipboard via your sync backend.
+ * useCanvas.mock — the design contract for useCanvas (never imported at
+ * runtime; kept mutually type-assignable with useCanvas.ts — IDI-179 rule).
+ *
+ * M1 redesign contract (2026-08-17): `live` slot + device-local `feed` +
+ * sendText/sendPhoto composer verbs + copy/clear hero actions.
  */
-import { useState, useCallback } from 'react';
+import { useCallback, useState } from 'react';
+import type { CanvasKind, FeedEntry, LiveSlot } from './useCanvas';
 
-type BaseItem = {
-  id: string;
-  state: 'draft' | 'sent';
-  sentAt?: string; // "9:24"
+export type { CanvasKind, FeedEntry, LiveSlot } from './useCanvas';
+
+const NOW = new Date().toISOString();
+
+const MOCK_LIVE: LiveSlot = {
+  kind: 'text',
+  text: 'Meeting follow-ups for the latency pass: the baseline was 1.02s ASR plus roughly 1.2 seconds of formatting…',
+  from: "Muhammad's Mac",
+  own: false,
+  at: NOW,
 };
 
-export type TextItem  = BaseItem & { kind: 'text';  text: string };
-export type LinkItem  = BaseItem & { kind: 'link';  url: string };
-export type ImageItem = BaseItem & {
-  kind: 'image';
-  uri: string;
-  filename: string;
-  sizeLabel?: string;
-  dimensions?: string;
-};
-
-export type CanvasItem = TextItem | LinkItem | ImageItem;
-
-const MOCK: CanvasItem[] = [
-  {
-    id: 'c1',
-    kind: 'text',
-    state: 'sent',
-    sentAt: '9:24',
-    text: "Let's meet at 3pm in Studio B — bring the latest mocks.",
-  },
-  {
-    id: 'c2',
-    kind: 'link',
-    state: 'sent',
-    sentAt: '9:18',
-    url: 'github.com/flume/voice-app',
-  },
-  {
-    id: 'c3',
-    kind: 'image',
-    state: 'sent',
-    sentAt: '8:51',
-    uri: 'https://placehold.co/120x120/0b0908/E0552C/png',
-    filename: 'screenshot-2026-06-30.png',
-    sizeLabel: '1.2 MB',
-    dimensions: '1920×1080',
-  },
-  {
-    id: 'c4',
-    kind: 'text',
-    state: 'draft',
-    text: 'Reschedule the design review to Thursday and pull marketing in.',
-  },
+const MOCK_FEED: FeedEntry[] = [
+  { id: 'f1', kind: 'text', text: 'Reminder: rotate the Groq key after the demo.', from: 'this phone', own: true, at: NOW },
+  { id: 'f2', kind: 'link', text: 'https://linear.app/idiaz/issue/IDI-184/overlay-dpi', from: "Muhammad's Mac", own: false, at: NOW },
+  { id: 'f3', kind: 'image', text: 'Image', imageUrl: 'https://example.com/x.jpg', from: 'this phone', own: true, at: NOW },
 ];
 
+export function reset() {}
+export async function catchUp() {}
+
 export function useCanvas() {
-  const [items, setItems] = useState<CanvasItem[]>(MOCK);
+  const [live, setLive] = useState<LiveSlot | null>(MOCK_LIVE);
+  const [feed, setFeed] = useState<FeedEntry[]>(MOCK_FEED);
+  const [toast, setToast] = useState<string | null>(null);
 
-  const save = useCallback(async (id: string) => {
-    // TODO: send the item's payload to the paired device clipboard.
-    // const item = items.find(i => i.id === id);
-    // await flumeSync.copyToClipboard(targetDeviceId, item);
-    const stamp = new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
-    setItems(prev => prev.map(i => i.id === id ? { ...i, state: 'sent', sentAt: stamp } : i));
+  const sendText = useCallback(async (text: string): Promise<boolean> => {
+    const t = text.trim();
+    if (!t) return false;
+    const kind: CanvasKind = /^https?:\/\/\S+$/i.test(t) ? 'link' : 'text';
+    const at = new Date().toISOString();
+    setLive({ kind, text: t, from: 'this phone', own: true, at });
+    setFeed(prev => [{ id: `f_${Date.now()}`, kind, text: t, from: 'this phone', own: true, at }, ...prev].slice(0, 20));
+    return true;
   }, []);
 
-  const discard = useCallback((id: string) => {
-    setItems(prev => prev.filter(i => i.id !== id));
+  const sendPhoto = useCallback(async (): Promise<boolean> => {
+    const at = new Date().toISOString();
+    setLive({ kind: 'image', imageUrl: 'https://example.com/mock.jpg', from: 'this phone', own: true, at });
+    return true;
   }, []);
 
-  const addText = useCallback(() => {
-    // TODO: open a text-input bottom sheet, then push the item as draft
-    const id = `c_${Date.now()}`;
-    setItems(prev => [{ id, kind: 'text', state: 'draft', text: 'New text…' }, ...prev]);
+  const copyLive = useCallback(async () => { setToast('Copied'); }, []);
+  const clearLive = useCallback(async () => {
+    setLive({ kind: 'empty', from: 'this phone', own: true, at: new Date().toISOString() });
   }, []);
+  const copyFeedEntry = useCallback(async (_id: string) => { setToast('Copied'); }, []);
+  const refresh = useCallback(async () => {}, []);
+  const dismissToast = useCallback(() => setToast(null), []);
 
-  const addLink = useCallback(async () => {
-    // TODO: read from clipboard:
-    //   import * as Clipboard from 'expo-clipboard';
-    //   const url = await Clipboard.getStringAsync();
-    const id = `c_${Date.now()}`;
-    setItems(prev => [{ id, kind: 'link', state: 'draft', url: 'https://…' }, ...prev]);
-  }, []);
-
-  const addPhoto = useCallback(async () => {
-    // TODO: launch image picker:
-    //   import * as ImagePicker from 'expo-image-picker';
-    //   const res = await ImagePicker.launchImageLibraryAsync({ ... });
-    const id = `c_${Date.now()}`;
-    setItems(prev => [{
-      id,
-      kind: 'image',
-      state: 'draft',
-      uri: 'https://placehold.co/120x120/0b0908/E0552C/png',
-      filename: 'photo.jpg',
-    }, ...prev]);
-  }, []);
-
-  return { items, save, discard, addText, addLink, addPhoto };
+  return {
+    live, feed,
+    sendText, sendPhoto,
+    copyLive, clearLive, copyFeedEntry,
+    refresh, toast, dismissToast,
+  };
 }

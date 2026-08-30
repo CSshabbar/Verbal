@@ -2,7 +2,7 @@ import React from 'react';
 import { Pressable, View, StyleSheet, ViewStyle } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { Text } from './Text';
-import { colors, radius } from '../theme';
+import { colors, radius, PRESSED_OPACITY } from '../theme';
 
 export type IconButtonProps = {
   icon: keyof typeof Ionicons.glyphMap;
@@ -53,7 +53,7 @@ export const IconButton: React.FC<IconButtonProps> = ({
             backgroundColor: bg,
             borderWidth: border === 'transparent' ? 0 : 1,
             borderColor: border,
-            opacity: pressed ? 0.85 : 1,
+            opacity: pressed ? PRESSED_OPACITY : 1,
           },
         ]}
       >
