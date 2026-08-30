@@ -572,9 +572,11 @@ class VerbalApp(rumps.App):
         broadcast (`target_device_id` null / "__all__") is history + clipboard
         only."""
         record = record or {}
-        import pyperclip
-        pyperclip.copy(text)
-        logger.info(f"Sync received from {device_name}: '{text[:40]}'")
+        backfill = bool(record.get("_backfill"))   # caught up on reconnect, not live
+        if not backfill:
+            import pyperclip
+            pyperclip.copy(text)
+        logger.info(f"Sync received from {device_name}: '{text[:40]}'" + (" (backfill → history only)" if backfill else ""))
 
         entry_id = ""
         try:
@@ -597,6 +599,8 @@ class VerbalApp(rumps.App):
         except Exception as e:
             logger.error(f"Sync receive: could not save to history: {e}")
 
+        if backfill:
+            return                          # never paste / toast stale catch-up rows
         target = record.get("target_device_id")
         targeted = bool(target) and target == self._this_device_id()
         brief = f"📱 {device_name} · {len(text.split())}w"

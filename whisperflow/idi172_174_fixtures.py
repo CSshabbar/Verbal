@@ -13,6 +13,15 @@ import tempfile
 import threading
 import time
 
+# Timestamps are RELATIVE to now: SyncClient._deliver drops rows older than 3
+# days as replay artifacts (2026-08-15), which silently broke these fixtures'
+# fixed 2026-08-06 dates (found 2026-08-30). Ordering is preserved.
+from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+_BASE = _dt.now(_tz.utc) - _td(minutes=30)      # frozen once: equal offsets → equal strings
+def _ts(sec):
+    return (_BASE + _td(seconds=sec)).isoformat()
+_TS = {i: _ts(i) for i in range(5)}
+
 # Isolate the config BEFORE app.config computes CONFIG_DIR from Path.home().
 _HOME = tempfile.mkdtemp(prefix="idi172-home-")
 os.environ["HOME"] = _HOME
@@ -65,11 +74,11 @@ def signed_in(uid="user-172"):
 # ══════════════════════════════════════════════════════════════════════════════
 print("\n1. tombstone contract: pure helpers")
 check("is_tombstone true only with deleted_at",
-      sync.is_tombstone({"id": "a", "deleted_at": "2026-08-06T00:00:00+00:00"}) is True
+      sync.is_tombstone({"id": "a", "deleted_at": _TS[0]}) is True
       and sync.is_tombstone({"id": "b"}) is False)
 live, dead = sync.drop_tombstones([
     {"id": "1", "text": "alive"},
-    {"id": "2", "text": "", "deleted_at": "2026-08-06T00:00:00+00:00"},
+    {"id": "2", "text": "", "deleted_at": _TS[0]},
     "not-a-dict",
 ])
 check("drop_tombstones splits live rows from dead ids",
@@ -93,40 +102,40 @@ c.on_receive = lambda t, d, r=None: delivered.append((t, d, r))
 c.on_tombstone = lambda r: tombstoned.append(r.get("id"))
 c.on_pushed = None
 c._stop = threading.Event()
-c._last_seen_at = "2026-08-06T00:00:00+00:00"
-c._last_tombstone_at = "2026-08-06T00:00:00+00:00"
+c._last_seen_at = _TS[0]
+c._last_tombstone_at = _TS[0]
 c._seen_ids, c._seen_order = set(), []
 
 live_row = {"id": "r1", "text": "hello from phone", "device_id": "iphone",
-            "device_name": "iPhone", "created_at": "2026-08-06T00:00:01+00:00"}
+            "device_name": "iPhone", "created_at": _TS[1]}
 c._deliver(live_row)
 check("live row delivered once", len(delivered) == 1 and delivered[0][0] == "hello from phone")
 check("record passed through to the handler", delivered[0][2] is live_row)
 
 # the SAME row, now tombstoned — must prune even though its id was already seen
 c._deliver({"id": "r1", "text": "", "device_id": "iphone", "device_name": "iPhone",
-            "deleted_at": "2026-08-06T00:01:00+00:00"})
+            "deleted_at": _ts(60)})
 check("tombstone of an ALREADY-SEEN id still prunes (dedup bypassed)",
       tombstoned == ["r1"], str(tombstoned))
 check("tombstone never delivered as content", len(delivered) == 1, str(delivered))
 check("tombstone watermark advanced",
-      c._last_tombstone_at == "2026-08-06T00:01:00+00:00", c._last_tombstone_at)
+      c._last_tombstone_at == _ts(60), c._last_tombstone_at)
 
 # a tombstone of OUR OWN row must still prune here (the row carries the
 # ORIGINATING device_id, so the own-device skip would be exactly backwards)
 tombstoned.clear()
 c._deliver({"id": "r9", "device_id": "this-mac", "device_name": "Test Mac",
-            "deleted_at": "2026-08-06T00:02:00+00:00"})
+            "deleted_at": _ts(120)})
 check("tombstone on OUR OWN row still prunes", tombstoned == ["r9"], str(tombstoned))
 
 
 print("\n3. backfill drops tombstoned rows and prunes them")
 rows = [
     {"id": "b1", "text": "kept", "device_id": "iphone", "device_name": "iPhone",
-     "created_at": "2026-08-06T01:00:01+00:00"},
+     "created_at": _ts(3601)},
     {"id": "b2", "text": "", "device_id": "iphone", "device_name": "iPhone",
-     "created_at": "2026-08-06T01:00:02+00:00",
-     "deleted_at": "2026-08-06T01:05:00+00:00"},
+     "created_at": _ts(3602),
+     "deleted_at": _ts(3900)},
 ]
 seen_params = []
 
@@ -141,7 +150,7 @@ def fake_get(url, headers=None, params=None, timeout=None):
 sync.httpx.get = fake_get
 delivered.clear()
 tombstoned.clear()
-c._last_seen_at = "2026-08-06T01:00:00+00:00"
+c._last_seen_at = _ts(3600)
 c._backfill()
 check("backfill delivers only the live row",
       [t for t, _d, _r in delivered] == ["kept"], str(delivered))
@@ -270,13 +279,13 @@ sys.modules.setdefault("pyperclip", mainmod.pyperclip)
 app = FakeMacApp()
 app.config["history"] = []
 VerbalApp._on_sync_receive(app, "broadcast text", "iPhone", {
-    "id": "cloud-1", "created_at": "2026-08-06T02:00:00+00:00",
+    "id": "cloud-1", "created_at": _ts(7200),
     "audio_url": "user-172/a.wav", "status": "done"})
 hist = app.config.get("history", [])
 check("broadcast appended to local history", len(hist) == 1 and hist[0]["text"] == "broadcast text",
       str(hist))
 check("history entry keeps the source device name", hist[0].get("device_name") == "iPhone")
-check("history entry keeps created_at", hist[0].get("created_at") == "2026-08-06T02:00:00+00:00")
+check("history entry keeps created_at", hist[0].get("created_at") == _ts(7200))
 check("history entry keeps audio_url", hist[0].get("audio_url") == "user-172/a.wav")
 check("history entry records the cloud row id", hist[0].get("sync_id") == "cloud-1")
 check("broadcast does NOT auto-paste", app.pasted == [], str(app.pasted))

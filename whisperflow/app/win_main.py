@@ -2033,13 +2033,15 @@ class VerbalWinApp:
         history + clipboard; auto-paste ONLY when this device was the explicit
         target. A broadcast must not type into whatever window has focus."""
         record = record or {}
+        backfill = bool(record.get("_backfill"))   # caught up on reconnect, not live
         logger.info(f"Sync received from {device_name}: '{text[:40]}'")
         # FALLBACK / intentional copy: the synced text is meant to STAY on the
         # clipboard (broadcasts are never auto-pasted), so this path must never
         # restore the previous clipboard — hence restore_clipboard=False below.
         try:
-            import pyperclip
-            pyperclip.copy(text)
+            if not backfill:
+                import pyperclip
+                pyperclip.copy(text)
         except Exception as e:
             logger.debug(f"clipboard copy failed: {e}")
 
@@ -2062,6 +2064,8 @@ class VerbalWinApp:
         except Exception as e:
             logger.error(f"Sync receive: could not save to history: {e}")
 
+        if backfill:
+            return                          # history only — never paste stale catch-up rows
         target = record.get("target_device_id")
         if target and target == self._this_device_id():
             try:

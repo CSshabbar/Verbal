@@ -307,18 +307,25 @@ class SyncClient:
 
     def _remember(self, record) -> bool:
         """Track the newest created_at + a bounded recent-id set. Returns False
-        when this row has already been handled (realtime/backfill overlap)."""
-        rid = record.get("id")
-        if rid:
-            if rid in self._seen_ids:
-                return False
-            self._mark_seen(rid)
-        created = record.get("created_at") or ""
-        if created and created > self._last_seen_at:
-            self._last_seen_at = created
-        return True
+        when this row has already been handled (realtime/backfill overlap).
+        Locked: the socket thread and the backfill thread can present the same
+        row at once, and an unlocked check-then-add let both through (double
+        paste) — review 2026-08-30."""
+        lock = getattr(self, "_seen_lock", None)
+        if lock is None:
+            lock = self._seen_lock = threading.Lock()
+        with lock:
+            rid = record.get("id")
+            if rid:
+                if rid in self._seen_ids:
+                    return False
+                self._mark_seen(rid)
+            created = record.get("created_at") or ""
+            if created and created > self._last_seen_at:
+                self._last_seen_at = created
+            return True
 
-    def _deliver(self, record):
+    def _deliver(self, record, live=True):
         """The single receive path — shared by realtime INSERTs/UPDATEs and
         backfill, so the tombstone / own-device / targeted-device filters can't
         drift apart."""
@@ -368,7 +375,14 @@ class SyncClient:
                 pass                     # unparseable timestamp → deliver as before
         text = record.get("text", "")
         if text and self.on_receive:
-            logger.info(f"Sync received from '{record.get('device_name','Unknown')}': '{text[:60]}'")
+            logger.info(f"Sync received from '{record.get('device_name','Unknown')}': '{text[:60]}'"
+                        + ("" if live else " (backfill)"))
+            # `_backfill` tells the receiver this was caught up on reconnect, not
+            # dictated just now: it goes to history only — never the clipboard,
+            # never pasted into whatever has focus (a Mac whose socket was dead
+            # for days would otherwise type every missed targeted dictation into
+            # the foreground app on the first good connection; review 2026-08-30).
+            record["_backfill"] = not live      # on the record itself: handlers/fixtures see the same object
             self.on_receive(text, record.get("device_name", "Unknown"), record)
 
     def _backfill(self):
@@ -399,7 +413,11 @@ class SyncClient:
                     # and audio_url/status so a received row is a full history
                     # entry rather than bare text.
                     "select":     TOMBSTONE_SELECT,
-                    "order":      "created_at.asc",
+                    # NEWEST first: with more missed rows than the limit, asc
+                    # spent the whole budget on the oldest (soon stale-dropped)
+                    # rows and never reached the fresh ones. Delivered in
+                    # chronological order below.
+                    "order":      "created_at.desc",
                     "limit":      str(self.BACKFILL_LIMIT),
                 },
                 timeout=8,
@@ -411,11 +429,11 @@ class SyncClient:
             live, dead = drop_tombstones(rows)
             if rows:
                 logger.info(f"Sync backfill: {len(live)} missed row(s), {len(dead)} deleted")
-            for r in rows:
+            for r in reversed(rows):
                 if self._stop.is_set():
                     return
                 if isinstance(r, dict):
-                    self._deliver(r)     # tombstones prune, live rows deliver
+                    self._deliver(r, live=False)   # tombstones prune, rows → history only
         except Exception as e:
             logger.debug(f"Sync backfill error: {e}")
 
@@ -520,16 +538,45 @@ class SyncClient:
                     }))
                     return
 
-                # Subscription confirmed
-                if event == "phx_reply" and payload.get("status") == "ok":
-                    logger.info("Sync subscription confirmed ✓")
+                # Subscription confirmed — or REJECTED. A join refused for an
+                # expired/invalid token used to be silently ignored: the socket
+                # stayed open with zero subscriptions and `_run` thought it was
+                # healthy, so nothing was received until the socket happened to
+                # drop (review 2026-08-30). Close → `_run` reconnects with a
+                # fresh token.
+                if event == "phx_reply":
+                    if payload.get("status") == "ok":
+                        logger.info("Sync subscription confirmed ✓")
+                    else:
+                        logger.warning(f"Sync subscription rejected: {str(payload)[:200]} — reconnecting")
+                        try:
+                            ws.close()
+                        except Exception:
+                            pass
+                    return
+                if event in ("phx_error",) or (event == "system" and payload.get("status") == "error"):
+                    logger.warning(f"Sync channel error: {str(payload)[:200]} — reconnecting")
+                    try:
+                        ws.close()
+                    except Exception:
+                        pass
                     return
 
-                # Postgres INSERT event — one shared receive path (own-device
+                # Postgres change events — one shared receive path (own-device
                 # skip, target filter, dedup) with the reconnect backfill.
+                # Only INSERTs are content. An UPDATE (retry rewriting text, an
+                # audio_url patch, a backend bulk touch) re-emits the whole row;
+                # delivering it as fresh dictation overwrote the clipboard,
+                # duplicated history and PASTED if targeted here (the 200-id
+                # dedupe is empty after every restart). UPDATEs only matter as
+                # tombstones, which _deliver handles before any content logic.
                 if event == "postgres_changes":
                     data   = payload.get("data", {})
-                    self._deliver(data.get("record", {}) or {})
+                    record = data.get("record", {}) or {}
+                    etype  = str(data.get("type") or "INSERT").upper()
+                    if etype != "INSERT" and not record.get("deleted_at"):
+                        return
+                    self._deliver(record, live=True)
 
             except Exception as e:
                 logger.error(f"Sync message error: {e} — raw: {raw[:200]}")

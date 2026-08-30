@@ -65,9 +65,13 @@ export async function claimPairing(payload: string): Promise<PairResult> {
   }
   // The paired override OUTRANKS the local Supabase session id in getUserId() —
   // plain setUserId() alone is reverted by the session write-back within ms.
-  await setPairedUserId(row.user_id);
-  await setUserId(row.user_id);
-  await setSyncEnabled(true);
+  // Already linked to this very account: touch nothing — in particular do not
+  // flip sync back ON for a user who turned it off (the UI says "nothing changed").
+  if (!alreadyLinked) {
+    await setPairedUserId(row.user_id);
+    await setUserId(row.user_id);
+    await setSyncEnabled(true);
+  }
 
   // Register this device under the host account so it shows up in Devices
   // lists on the host's other devices. Best-effort — pairing already succeeded.

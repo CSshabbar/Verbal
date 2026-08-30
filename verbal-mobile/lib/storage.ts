@@ -175,7 +175,20 @@ export async function clearAccountData(): Promise<void> {
 }
 
 export async function getDeviceName(): Promise<string> {
-  return (await AsyncStorage.getItem(KEYS.DEVICE_NAME)) ?? 'iPhone';
+  const stored = await AsyncStorage.getItem(KEYS.DEVICE_NAME);
+  if (stored) return stored;
+  // No rename yet: use the hardware name/model instead of a hard-coded
+  // 'iPhone' — Android phones showed up as "iPhone" on the Mac's device list
+  // and in claim_pairing's claimed_by (review 2026-08-30). expo-device is
+  // optional at runtime (same guarded require as lib/notifications.ts).
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const Device = require('expo-device');
+    const hw = (Device?.deviceName || Device?.modelName || '').toString().trim();
+    if (hw) return hw;
+  } catch { /* fall through */ }
+  const { Platform } = require('react-native');
+  return Platform.OS === 'android' ? 'Android phone' : 'iPhone';
 }
 export async function setDeviceName(name: string) {
   await AsyncStorage.setItem(KEYS.DEVICE_NAME, name);

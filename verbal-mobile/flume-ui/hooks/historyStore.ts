@@ -131,7 +131,14 @@ async function fetchRemoteAndMerge(): Promise<HistoryEntry[]> {
   // NOTE: tombstoned rows are deliberately NOT filtered out server-side — they
   // are what tells this device to prune its local copy (IDI-172). rowToEntry
   // carries `deleted_at` through and mergeRemoteEntries does the drop + prune.
-  return mergeRemoteEntries(data.map(rowToEntry));
+  // Same targeting rule as the realtime INSERT handler (2026-08-30): a live
+  // row addressed to ANOTHER device is not ours — the fetch used to merge it
+  // anyway on load/foreground, so "sent to Mac B" showed up in this phone's
+  // History. Own rows and tombstones always pass.
+  const me = await getDeviceId();
+  const mine = data.filter((r: any) =>
+    r.deleted_at || r.device_id === me || !r.target_device_id || r.target_device_id === me);
+  return mergeRemoteEntries(mine.map(rowToEntry));
 }
 
 /** One shared cloud-row → HistoryEntry mapping for the fetch and the realtime

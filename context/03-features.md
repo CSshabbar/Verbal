@@ -895,6 +895,20 @@ Each feature: **what it does · desktop impl · mobile impl · backend · status
   history/notes/canvas/dictionary; ON triggers an immediate catch-up + channel join, OFF closes channels
   without touching local data; mobile runs a foreground (AppState) catch-up and every store rejoins
   dropped channels with backoff. Meetings edits + recording uploads gate on being signed in only.
+- **Receive-path rules (review 2026-08-30):** only `postgres_changes` **INSERT**s are content — UPDATEs
+  (retry rewriting text, `audio_url` patches, backend bulk touches) matter only as tombstones, because
+  the 200-id dedupe is empty after every restart and an UPDATE replayed as fresh dictation overwrote the
+  clipboard / pasted. **Backfilled rows are history-only**: `_deliver(record, live=False)` stamps
+  `record["_backfill"]=True` and both `_on_sync_receive`s skip clipboard, paste and toast for them (a Mac
+  whose socket was dead for days used to type every missed targeted dictation into the foreground app on
+  reconnect). Backfill fetches newest-first (`created_at.desc`, delivered reversed) so a long gap never
+  spends the 50-row budget on soon-stale rows. A rejected channel join (`phx_reply` status≠ok,
+  `phx_error`, `system` error) closes the socket so `_run` reconnects with a fresh token instead of
+  sitting open with zero subscriptions. `_remember` is locked (socket thread vs backfill thread).
+  `SharedDashboard` restores `sync_target_device_id` from config, treats an empty device fetch as
+  "unknown" (never flips an explicit target to broadcast on a timeout), and excludes this install by
+  real device id. Fixtures `idi170_171` / `idi172_174` now use relative timestamps (the 3-day stale filter
+  had silently broken their fixed Aug-6 dates).
 - **Desktop:** `sync.py::SyncClient` — Phoenix WebSocket to Supabase Realtime, subscribes to
   `transcriptions` `*` events filtered by `user_id`, skips own inserts, honors `target_device_id`; ONE
   reconnect loop with a bounded backfill on (re)connect (content since last-seen + separate tombstone

@@ -256,7 +256,13 @@ class SharedDashboard:
         # show() a window and push into it immediately.
         self._page_ready = False
         self._pending = []
-        self._target_device_id = "__all__"
+        # Restore the saved target (set_target_device persists it; Windows
+        # never read it back, so a specific target reverted to broadcast on
+        # every restart — review 2026-08-30).
+        try:
+            self._target_device_id = (app.config.get("sync_target_device_id") or "__all__")
+        except Exception:
+            self._target_device_id = "__all__"
         self._known_devices = []
         self._last_canvas_loaded = False
         self._canvas_listener_started = False
@@ -565,14 +571,20 @@ class SharedDashboard:
         if not user_id or not _cloud_allowed(cfg):
             self._known_devices = []
             return
-        import platform
         from app.sync import fetch_account_devices
+        from app.config import get_device_id
 
-        my_id = self.app._sync.device_id if getattr(self.app, "_sync", None) else platform.node()
+        # Own-device exclusion by the real device id, not platform.node() —
+        # with sync off the hostname never matched and this install was
+        # selectable as its own target (every receiver drops those pushes).
+        my_id = self.app._sync.device_id if getattr(self.app, "_sync", None) else get_device_id(cfg)
         devices = fetch_account_devices(user_id, my_id)
         self._known_devices = devices
-        # Ensure our target_device_id is still valid if it was a specific device
-        if self._target_device_id not in ("__all__", "__none__") and self._target_device_id is not None:
+        # Ensure our target_device_id is still valid if it was a specific device.
+        # fetch_account_devices fails closed to [] — a single 5 s timeout in the
+        # 30 s loop must not flip an explicit target back to broadcast, so an
+        # EMPTY list is treated as "unknown", not "gone".
+        if devices and self._target_device_id not in ("__all__", "__none__") and self._target_device_id is not None:
             if not any(d["device_id"] == self._target_device_id for d in devices):
                 self._target_device_id = "__all__"
         self._emit("devices", {"devices": devices, "target_device_id": self._target_device_id})

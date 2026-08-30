@@ -12,6 +12,15 @@ import tempfile
 import threading
 import time
 
+# Timestamps are RELATIVE to now: SyncClient._deliver drops rows older than 3
+# days as replay artifacts (2026-08-15), which silently broke these fixtures'
+# fixed 2026-08-06 dates (found 2026-08-30). Ordering is preserved.
+from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+_BASE = _dt.now(_tz.utc) - _td(minutes=30)      # frozen once: equal offsets → equal strings
+def _ts(sec):
+    return (_BASE + _td(seconds=sec)).isoformat()
+_TS = {i: _ts(i) for i in range(5)}
+
 # Isolate the config BEFORE app.config computes CONFIG_DIR from Path.home().
 _HOME = tempfile.mkdtemp(prefix="idi170-home-")
 os.environ["HOME"] = _HOME
@@ -261,26 +270,30 @@ c.device_name = "Mac"
 c.on_receive = lambda t, d, r=None: got.append((t, d))
 c.on_tombstone = None
 c._stop = threading.Event()
-c._last_seen_at = "2026-08-06T00:00:00+00:00"
-c._last_tombstone_at = "2026-08-06T00:00:00+00:00"
+c._last_seen_at = _TS[0]
+c._last_tombstone_at = _TS[0]
 c._seen_ids, c._seen_order = set(), []
 
 rows = [
     {"id": "1", "text": "from phone", "device_id": "iphone", "device_name": "iPhone",
-     "created_at": "2026-08-06T00:00:01+00:00"},
+     "created_at": _TS[1]},
     {"id": "2", "text": "my own echo", "device_id": "this-mac", "device_name": "Mac",
-     "created_at": "2026-08-06T00:00:02+00:00"},
+     "created_at": _TS[2]},
     {"id": "3", "text": "for someone else", "device_id": "iphone", "device_name": "iPhone",
-     "target_device_id": "other-mac", "created_at": "2026-08-06T00:00:03+00:00"},
+     "target_device_id": "other-mac", "created_at": _TS[3]},
     {"id": "4", "text": "targeted at me", "device_id": "iphone", "device_name": "iPhone",
-     "target_device_id": "this-mac", "created_at": "2026-08-06T00:00:04+00:00"},
+     "target_device_id": "this-mac", "created_at": _TS[4]},
 ]
 seen_params = {}
 
 
 def fake_get(url, headers=None, params=None, timeout=None):
     seen_params.update(params or {})
-    return FakeResp(200, rows)
+    # Honour the `order` param like PostgREST would: the client now asks for
+    # created_at.desc (newest first) and delivers in reverse (2026-08-30).
+    out = sorted(rows, key=lambda r: r["created_at"],
+                 reverse=(params or {}).get("order", "").endswith(".desc"))
+    return FakeResp(200, out)
 
 
 sync.httpx.get = fake_get
@@ -291,8 +304,8 @@ check("broadcast + targeted-at-me delivered",
       [t for t, _ in got] == ["from phone", "targeted at me"], str(got))
 check("bounded to 50", seen_params.get("limit") == "50", str(seen_params.get("limit")))
 check("user-scoped", seen_params.get("user_id") == "eq.user-FFF")
-check("only rows newer than last-seen", seen_params.get("created_at") == "gt.2026-08-06T00:00:00+00:00")
-check("last_seen_at advanced", c._last_seen_at == "2026-08-06T00:00:04+00:00", c._last_seen_at)
+check("only rows newer than last-seen", seen_params.get("created_at") == "gt." + _TS[0])
+check("last_seen_at advanced", c._last_seen_at == _TS[4], c._last_seen_at)
 
 got.clear()
 c._backfill()   # same rows again → dedup by id
@@ -301,7 +314,7 @@ check("re-delivery deduped", got == [], str(got))
 print("\n5b. first connect must not replay history (last_seen seeded to now)")
 c2 = sync.SyncClient.__new__(sync.SyncClient)
 c2._last_seen_at = sync._utc_now_iso()
-check("seeded in the future of every stored row", c2._last_seen_at > "2026-08-06T00:00:04+00:00")
+check("seeded in the future of every stored row", c2._last_seen_at > _TS[4])
 
 
 # ── 6. uniform gating ─────────────────────────────────────────────────────────

@@ -154,9 +154,15 @@ async function loadDevices() {
     // 'device' mode (an explicit All / This-phone-only choice is never undone).
     let next: Device | null = null;
     if (sendMode === 'device') {
+      // The chosen device is kept even while OFFLINE: re-routing to "the most
+      // recent other device" overwrote the in-memory target, so when the
+      // chosen Mac came back the user stayed pointed at the wrong machine
+      // until they re-picked (review 2026-08-30). Only fall back to another
+      // device when NO target was ever chosen; RecordingScreen already treats
+      // a null/offline target as "This phone only".
       const stillThere = list.find(d => d.id === targetId) ?? null;
-      next = stillThere ?? list[0] ?? null;
-      targetId = next?.id ?? null;
+      next = stillThere ?? (targetId ? null : (list[0] ?? null));
+      if (!targetId) targetId = next?.id ?? null;
     }
     publish(list.map(d => ({ ...d, isDefault: d.id === targetId })), next);
   } catch (err) {

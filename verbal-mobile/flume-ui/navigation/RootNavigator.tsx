@@ -190,7 +190,9 @@ const HistoryDetail: React.FC<{ itemId: string; onBack: () => void }> = ({ itemI
       onResend={() => {
         // Re-send: copy locally + push to the current target device.
         Clipboard.setStringAsync(item.text);
-        addTranscription(item.text, (mode === 'device' && target?.name) || item.deviceTag, 0, mode === 'device' ? target?.id ?? null : null);
+        // pushToCloud = mode !== 'none': "This phone only" must stay local on a
+        // re-send too — the default (true) broadcast the row to every device.
+        addTranscription(item.text, (mode === 'device' && target?.name) || item.deviceTag, 0, mode === 'device' ? target?.id ?? null : null, undefined, 'done', mode !== 'none');
         onBack();
       }}
     />
@@ -265,14 +267,23 @@ function MenuNavigator() {
                   navigation.goBack();
                   return;
                 }
-                // user_id + sync just changed — tear down the store (items +
-                // realtime channel are keyed by the OLD account) and reload
-                // under the host account so this device RECEIVES from it too.
+                // user_id + sync just changed — tear down EVERY per-account
+                // store (items + realtime channels are keyed by the OLD
+                // account) and reload under the host account so this device
+                // RECEIVES from it too. Same reset set as useAuth.afterSignIn:
+                // resetting history alone left the previous account's notes /
+                // canvas / meetings / device target live in memory and still
+                // syncing under the old uid (review 2026-08-30).
                 try {
                   const hist = await import('../hooks/historyStore');
                   await hist.reset();
                   await hist.refresh();
                 } catch {}
+                try { (await import('../hooks/useCanvas')).reset(); } catch {}
+                try { await (await import('../hooks/meetingsStore')).reset(); } catch {}
+                try { await (await import('../hooks/notesStore')).reset(); } catch {}
+                try { (await import('../hooks/useDevices')).reset(); } catch {}
+                try { await (await import('../../lib/recordings')).removeAll(); } catch {}
                 Alert.alert('Paired', `This device now syncs with ${info.hostDevice || 'your account'}.`);
                 navigation.goBack();
               } catch (e: any) {
@@ -576,7 +587,7 @@ export const RootNavigator: React.FC = () => {
                   onResendToAnother={() => {
                     Clipboard.setStringAsync(route.params.transcript ?? '');
                     if (route.params.transcript) {
-                      addTranscription(route.params.transcript, (mode === 'device' && target?.name) || 'Local', route.params.durationSeconds * 1000, mode === 'device' ? target?.id ?? null : null);
+                      addTranscription(route.params.transcript, (mode === 'device' && target?.name) || 'Local', route.params.durationSeconds * 1000, mode === 'device' ? target?.id ?? null : null, undefined, 'done', mode !== 'none');
                     }
                     navigation.popToTop();
                   }}
