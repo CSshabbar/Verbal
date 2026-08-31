@@ -244,6 +244,68 @@ async function transcribeAssembly(
   return { ok: false, error: "aai timed out waiting for completion" };
 }
 
+// Google Gemini 3.5 Transcribe (2026-08-27 trial) via the Interactions API, one
+// synchronous POST with the audio inline as base64 (no Files API round trip). `mode`
+// is "verbatim" (raw words — Flume formats afterwards, comparable to every other
+// row) or "smart" (Gemini removes fillers, applies self-corrections and punctuates
+// itself). Key lives here as GEMINI_API_KEY (Hard Rule #15). Same `{ok,text}` /
+// non-200 contract as the other alternate providers so a missing key or an
+// upstream error falls straight back to Groq and never costs a dictation.
+const GEMINI_INTERACTIONS = "https://generativelanguage.googleapis.com/v1beta/interactions";
+const GEMINI_TRANSCRIBE_MODEL = "gemini-3.5-transcribe";
+
+function b64(bytes: ArrayBuffer): string {
+  const u8 = new Uint8Array(bytes);
+  let s = "";
+  const CH = 0x8000;
+  for (let i = 0; i < u8.length; i += CH) {
+    s += String.fromCharCode.apply(null, Array.from(u8.subarray(i, i + CH)));
+  }
+  return btoa(s);
+}
+
+async function transcribeGemini(
+  file: File, language: string, mode: string,
+): Promise<Record<string, unknown>> {
+  const key = Deno.env.get("GEMINI_API_KEY");
+  if (!key) return { ok: false, error: "GEMINI_API_KEY secret not set on the function" };
+  const smart = mode === "smart";
+  // Container from the multipart filename/mime, as Groq does (clients send 16 kHz FLAC).
+  const mime = file.type && file.type !== "application/octet-stream"
+    ? file.type
+    : (/\.flac$/i.test(file.name) ? "audio/flac" : "audio/wav");
+  const body = {
+    model: GEMINI_TRANSCRIBE_MODEL,
+    input: [{ type: "audio", data: b64(await file.arrayBuffer()), mime_type: mime }],
+    generation_config: {
+      transcription_config: {
+        // BCP-47; the app speaks ISO-639-1 and Gemini accepts the bare code. [] = auto.
+        language_codes: language ? [language] : [],
+        mode: smart ? { type: "smart" } : { type: "verbatim" },
+      },
+    },
+  };
+  const r = await fetch(GEMINI_INTERACTIONS, {
+    method: "POST",
+    headers: { "x-goog-api-key": key, "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) return { ok: false, error: `gemini ${r.status}: ${(await r.text()).slice(0, 200)}` };
+  const j = await r.json();
+  let text = String(j?.output_text ?? "").trim();
+  if (!text) {
+    // Defensive: walk steps[].content[] for text parts if output_text is absent.
+    try {
+      const parts: string[] = [];
+      for (const st of (j?.steps ?? [])) {
+        for (const c of (st?.content ?? [])) if (typeof c?.text === "string") parts.push(c.text);
+      }
+      text = parts.join(" ").trim();
+    } catch { /* leave empty → caller treats as provider failure */ }
+  }
+  return { ok: true, text };
+}
+
 // Mirror of dictionary.apply_replacements() (whisperflow/app/dictionary.py): the
 // user's find->replace rules, word-boundary and case-insensitive.
 //
@@ -382,7 +444,7 @@ Deno.serve(async (req) => {
         form.delete(k);
       }
 
-      if (asrProvider === "eleven" || asrProvider === "assembly") {
+      if (asrProvider === "eleven" || asrProvider === "assembly" || asrProvider === "gemini") {
         kind = `transcription-${asrProvider}`;
         const file = form.get("file");
         if (!(file instanceof File)) {
@@ -394,6 +456,8 @@ Deno.serve(async (req) => {
         try {
           res = asrProvider === "eleven"
             ? await transcribeEleven(file, language)
+            : asrProvider === "gemini"
+            ? await transcribeGemini(file, language, asrAltModel)
             : await transcribeAssembly(file, language, asrAltModel);
         } catch (e) {
           res = { ok: false, error: `${asrProvider}: ${String(e).slice(0, 180)}` };

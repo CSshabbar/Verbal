@@ -70,7 +70,7 @@ export const PIPELINES: { id: PipelineId; label: string; desc: string; wait: str
  *  transcription instead of biasing it. */
 export const ASR_MODELS: {
   id: string; name: string; vendor: string; desc: string; wait: string;
-  provider?: 'eleven' | 'assembly'; altModel?: string; bias: boolean;
+  provider?: 'eleven' | 'assembly' | 'gemini'; altModel?: string; bias: boolean;
 }[] = [
   { id: 'auto', name: 'Automatic', vendor: 'Groq', bias: true,
     desc: 'Fast and good at everything.', wait: '1.0s' },
@@ -87,6 +87,14 @@ export const ASR_MODELS: {
   { id: 'aai-universal-3-5-pro', name: 'Universal-3.5', vendor: 'AssemblyAI', bias: false,
     provider: 'assembly', altModel: 'universal-3-5-pro',
     desc: 'Strong English. Struggles with Urdu.', wait: '5s' },
+  // Google Gemini 3.5 Transcribe (2026-08-27 trial). altModel is the transcription MODE
+  // (verbatim | smart); the proxy always calls `gemini-3.5-transcribe`.
+  { id: 'gemini-3-5-transcribe', name: 'Gemini 3.5 Transcribe', vendor: 'Google', bias: false,
+    provider: 'gemini', altModel: 'verbatim',
+    desc: 'Verbatim words, then Flume formats. Top benchmark accuracy.', wait: '?' },
+  { id: 'gemini-3-5-transcribe-smart', name: 'Gemini 3.5 Smart', vendor: 'Google', bias: false,
+    provider: 'gemini', altModel: 'smart',
+    desc: 'Gemini removes fillers and punctuates itself before Flume formats.', wait: '?' },
 ];
 
 export async function getPipeline(): Promise<PipelineId> {
