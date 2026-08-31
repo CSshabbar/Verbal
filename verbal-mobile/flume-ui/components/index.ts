@@ -24,3 +24,4 @@ export { AudioSegmentPlayer } from './AudioSegmentPlayer';
 export type { AudioSegmentPlayerProps } from './AudioSegmentPlayer';
 export { ImportNotesModal } from './ImportNotesModal';
 export { SidePanel } from './SidePanel';
+export { MenuButton, MenuContext, useOpenMenu } from './MenuButton';

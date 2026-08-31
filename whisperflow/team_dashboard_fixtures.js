@@ -280,8 +280,11 @@ src += `
   chk('privacy group is in the rail', /setSettingsGroup\\('privacy'\\)/.test(set));
   chk('privacy group is the current one', /sritem on[^>]*onclick="setSettingsGroup\\('privacy'\\)/.test(set)
       || /setSettingsGroup\\('privacy'\\)[^>]*aria-current="page"/.test(set));
-  chk('consent toggle rendered', /setTeamConsent\\(false, true\\)/.test(set));
-  chk('ranking opt-in toggle rendered', /setTeamConsent\\(true, false\\)/.test(set));
+  // Admin-controlled leaderboard (2026-08-27 migration): ONE combined consent
+  // toggle - both args move together; the per-member ranking opt-in is gone
+  // (the org owner's leaderboard_enabled is the only ranking gate now).
+  chk('consent toggle rendered', /setTeamConsent\\(false, false/.test(set));
+  chk('no separate ranking opt-in toggle', !/setTeamConsent\\(true, false/.test(set));
   chk('privacy pane discloses app names', /names of the apps you dictate into/.test(set));
   chk('privacy pane keeps the Insights caveat', /will always read higher/.test(set));
   chk('rail badge reflects the consent state', /sharing<[/]em>/.test(set));

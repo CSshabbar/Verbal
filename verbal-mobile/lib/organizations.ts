@@ -617,7 +617,7 @@ export async function usageSummary(days = 30): Promise<{ rows: UsageRow[]; membe
 }
 
 /** The team-visible ranking (Phase 5b). Readable by every active member once the
- *  owner has enabled it org-wide; lists only members who opted in themselves. */
+ *  owner has enabled it org-wide; lists every active member who shares counts. */
 export async function leaderboard(days = 7): Promise<{ enabled: boolean; rows: BoardRow[] }> {
   const org = await getCachedOrg();
   if (!org.org_id || !org.leaderboard_enabled) return { enabled: false, rows: [] };

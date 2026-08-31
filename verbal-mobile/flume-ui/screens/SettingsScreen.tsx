@@ -290,20 +290,7 @@ export const SettingsScreen: React.FC<Props> = ({ onBack, onOpenDevices, onOpenS
               trailing={
                 <Switch
                   value={team.org.usage_consent}
-                  onValueChange={(v) => { void team.saveConsent(v, team.org.leaderboard_opt_in); }}
-                  trackColor={{ false: colors.surface3, true: colors.primary }}
-                  thumbColor="#fff"
-                />
-              }
-            />
-            <ListRow
-              icon="trophy-outline"
-              title="Show me on the ranking"
-              subtitle="Separate from the above, and off until you opt in"
-              trailing={
-                <Switch
-                  value={team.org.leaderboard_opt_in}
-                  onValueChange={(v) => { void team.saveConsent(true, v); }}
+                  onValueChange={(v) => { void team.saveConsent(v, v); }}
                   trackColor={{ false: colors.surface3, true: colors.primary }}
                   thumbColor="#fff"
                 />
@@ -313,8 +300,9 @@ export const SettingsScreen: React.FC<Props> = ({ onBack, onOpenDevices, onOpenS
               <Text variant="bodyXs" color={colors.textMuted}>
                 What you dictate — the text, the audio, your notes — is never shared with your team,
                 whatever these are set to. Admins see counts, durations and the names of the apps you
-                dictate into — never what you said in them. Turning the first off hides all of it and
-                turns the second off too, and nobody else can turn either back on for you.
+                dictate into — never what you said in them. Turning this off hides all of it, including
+                you on the team ranking, and nobody else can turn it back on for you. Whether the ranking
+                is shown at all is the team owner's call.
               </Text>
               {/* An owner genuinely cannot leave — org_remove_member returns
                   cannot_remove_owner — so don't offer a button that always fails. */}

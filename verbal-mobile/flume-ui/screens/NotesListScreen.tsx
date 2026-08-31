@@ -4,7 +4,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
-import { Text, ImportNotesModal } from '../components';
+import { Text, ImportNotesModal, MenuButton } from '../components';
 import { confirm } from '../components/ConfirmDialog';
 import { colors, radius, pressedStyle } from '../theme';
 import { useNotes, Note } from '../hooks/useNotes';
@@ -203,6 +203,7 @@ export const NotesListScreen: React.FC<Props> = ({ onOpen, onCreate, onOpenMeeti
             <Pressable onPress={onCreate} style={({ pressed }) => [styles.iconCircle, { backgroundColor: colors.primarySoft }, pressed && pressedStyle]} accessibilityRole="button" accessibilityLabel="New note">
               <Ionicons name="add" size={18} color={colors.primary} />
             </Pressable>
+            <MenuButton />
           </View>
         </View>
       )}

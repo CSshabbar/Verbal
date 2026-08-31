@@ -100,7 +100,15 @@ export const HomeScreen: React.FC<Props> = ({ onOpenMenu }) => {
         ) : (
           <View style={{ gap: 10 }}>
             {recent.map(item => (
-              <View key={item.id} style={styles.recentCard}>
+              <Pressable
+                key={item.id}
+                // `initial: false` seeds HistoryList underneath, so Back from the
+                // detail goes to the History list, not Home (rule #46).
+                onPress={() => nav.navigate('HistoryTab', { screen: 'HistoryDetail', params: { itemId: item.id }, initial: false })}
+                style={({ pressed }) => [styles.recentCard, pressed && pressedStyle]}
+                accessibilityRole="button"
+                accessibilityLabel={`Open transcription: ${item.text.slice(0, 60)}`}
+              >
                 <View style={styles.recentCardHead}>
                   <Text variant="caption" color={colors.textSubtle}>{item.dayLabel} · {item.timeOfDay}</Text>
                   <View style={styles.recentIcon}>
@@ -109,7 +117,7 @@ export const HomeScreen: React.FC<Props> = ({ onOpenMenu }) => {
                 </View>
                 <Text variant="bodySm" numberOfLines={2} style={{ marginBottom: 10 }}>{item.text}</Text>
                 <DeviceTag tag={item.deviceTag} />
-              </View>
+              </Pressable>
             ))}
           </View>
         )}

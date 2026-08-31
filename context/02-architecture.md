@@ -252,8 +252,12 @@ bounded `config['meetings']` (`MEETINGS_CAP`). The HUD appears when the meeting 
   `Onboarding` (until AsyncStorage `flume_onboarded==='1'`) → `Welcome` (until a Supabase session
   exists) → `Main`. **V2 "Daily Four" nav (2026-08-16):** `Main` is bottom tabs
   **Home · Notes · [center mic] · History · Insights** (center mic is a floating button opening the
-  `Recording` modal). The Home header **☰** opens the **SidePanel**
-  (`flume-ui/components/SidePanel.tsx`) — a left slide-in hub mirroring the desktop sidebar: Workspace
+  `Recording` modal; Notes tab icon is `document-text-outline`, matching Home's "Your notebook" card).
+  Every tab root's header (Home, Notes, History, Insights) carries a **☰** — always the **rightmost** control — that opens the **SidePanel**
+  (since 2026-08-30 — it was Home-only before). The ☰ is `components/MenuButton.tsx`, fed by
+  `MenuContext` which `MainWithPanel` provides around the tabs, so nested tab stacks need no prop
+  plumbing; outside the provider it renders nothing. The SidePanel
+  (`flume-ui/components/SidePanel.tsx`) is a left slide-in hub mirroring the desktop sidebar: Workspace
   (Canvas, Meetings), Tools (Dictionary, Snippets, Device pairing), live device presence + the Sync
   toggle, and the account footer (gear → Settings). It's a core-`Animated` in-tree overlay rendered by
   `MainWithPanel` over the tabs — deliberately NOT the reanimated drawer package, so the redesign

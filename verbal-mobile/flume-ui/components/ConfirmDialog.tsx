@@ -9,7 +9,7 @@
  * Mount <ConfirmHost /> once near the app root.
  */
 import React, { useEffect, useState } from 'react';
-import { Modal, View, Pressable, StyleSheet } from 'react-native';
+import { Alert, Modal, Platform, View, Pressable, StyleSheet } from 'react-native';
 import { Text } from './Text';
 import { colors, pressedStyle } from '../theme';
 
@@ -24,6 +24,26 @@ type Opts = {
 let _enqueue: ((o: Opts) => Promise<boolean>) | null = null;
 
 export function confirm(opts: Opts): Promise<boolean> {
+  // iOS: native Alert, always. The JS <Modal> below is mounted at the root, and
+  // over a native-stack `presentation:'modal'` screen (Settings, Devices,
+  // Snippets, Team) it never shows — every confirm on those screens was a dead
+  // tap (conventions Hard Rule #14; re-confirmed on the simulator 2026-08-27:
+  // Settings → "Replay onboarding" did nothing). Routing here fixes all callers
+  // at once instead of each screen remembering to import Alert.
+  if (Platform.OS === 'ios') {
+    return new Promise<boolean>((resolve) => {
+      const buttons = [];
+      if (opts.cancelLabel !== null) {
+        buttons.push({ text: opts.cancelLabel ?? 'Cancel', style: 'cancel' as const, onPress: () => resolve(false) });
+      }
+      buttons.push({
+        text: opts.confirmLabel ?? 'OK',
+        style: opts.destructive ? ('destructive' as const) : ('default' as const),
+        onPress: () => resolve(true),
+      });
+      Alert.alert(opts.title, opts.message, buttons, { cancelable: true, onDismiss: () => resolve(false) });
+    });
+  }
   return _enqueue ? _enqueue(opts) : Promise.resolve(false);
 }
 export function notify(title: string, message?: string): Promise<boolean> {

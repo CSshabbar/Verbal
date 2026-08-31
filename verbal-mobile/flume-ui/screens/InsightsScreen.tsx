@@ -1,12 +1,14 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { View, StyleSheet, ScrollView, Pressable, Share, useWindowDimensions } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import Svg, { Path, Circle } from 'react-native-svg';
-import { Text } from '../components';
+import { Text, MenuButton } from '../components';
 import { colors, pressedStyle } from '../theme';
 import { useInsights, Insights } from '../hooks/useInsights';
 import { useSyncEnabled } from '../hooks/useSyncEnabled';
+import { useOrganization } from '../hooks/useOrganization';
+import { TeamInsights } from '../components/TeamInsights';
 
 // onBack is optional since the V2 nav redesign (2026-08-16): as a bottom TAB
 // the screen has no back destination — the slot keeps the title centered.
@@ -43,6 +45,13 @@ export const InsightsScreen: React.FC<Props> = ({ onBack }) => {
   const insets = useSafeAreaInsets();
   const { data, loading } = useInsights();
   const sync = useSyncEnabled();
+  // Team scope (user request, 2026-08-27): the same `Mine | <team>` segment the
+  // Dictionary screen uses. Only drawn when the account is on a team, and it
+  // snaps back to personal if the team goes away underneath it.
+  const t = useOrganization();
+  const [scope, setScope] = useState<'personal' | 'team'>('personal');
+  const teamScope = scope === 'team' && t.hasTeam;
+  useEffect(() => { if (scope === 'team' && !t.hasTeam) setScope('personal'); }, [scope, t.hasTeam]);
 
   const shareRecap = async () => {
     if (!data) return;
@@ -63,23 +72,48 @@ export const InsightsScreen: React.FC<Props> = ({ onBack }) => {
           <Pressable onPress={onBack} style={({ pressed }) => [styles.iconCircle, pressed && pressedStyle]} accessibilityRole="button" accessibilityLabel="Back" hitSlop={8}>
             <Ionicons name="chevron-back" size={18} color={colors.textSecondary} />
           </Pressable>
-        ) : (
+        ) : teamScope ? (
           // Invisible spacer (same footprint) — a styled-but-empty circle would
           // read as a blank button, the exact bug class of rule #44.
           <View style={{ width: 34, height: 34 }} />
+        ) : (
+          // Share sits left when there's no Back, so the ☰ can keep the
+          // rightmost slot like every other tab root.
+          <Pressable onPress={shareRecap} style={({ pressed }) => [styles.iconCircle, pressed && pressedStyle]} accessibilityRole="button" accessibilityLabel="Share recap" hitSlop={8}>
+            <Ionicons name="share-outline" size={17} color={colors.textSecondary} />
+          </Pressable>
         )}
         <Text variant="titleSm">Insights</Text>
-        <Pressable onPress={shareRecap} style={({ pressed }) => [styles.iconCircle, pressed && pressedStyle]} accessibilityRole="button" accessibilityLabel="Share recap" hitSlop={8}>
-          <Ionicons name="share-outline" size={17} color={colors.textSecondary} />
-        </Pressable>
+        {/* Rightmost slot: the ☰ (opens the SidePanel). Renders nothing outside
+            the MenuContext provider, so the sized wrapper keeps the title centred. */}
+        <View style={{ width: 34, height: 34 }}><MenuButton /></View>
       </View>
+      {t.hasTeam ? (
+        <View style={styles.seg}>
+          {([['personal', 'Mine'], ['team', t.org.name || 'Team']] as const).map(([k, label]) => (
+            <Pressable
+              key={k}
+              onPress={() => setScope(k)}
+              accessibilityRole="button"
+              accessibilityState={{ selected: scope === k }}
+              style={({ pressed }) => [styles.segBtn, scope === k && styles.segBtnOn, pressed && pressedStyle]}
+            >
+              <Text variant="caption" color={scope === k ? colors.textPrimary : colors.textMuted} numberOfLines={1}>
+                {label}
+              </Text>
+            </Pressable>
+          ))}
+        </View>
+      ) : null}
 
       <ScrollView
         style={{ flex: 1 }}
         showsVerticalScrollIndicator={false}
         contentContainerStyle={{ paddingTop: 14, paddingBottom: insets.bottom + 28 }}
       >
-        {!data || data.empty ? (
+        {teamScope ? (
+          <TeamInsights t={t} />
+        ) : !data || data.empty ? (
           <EmptyState loading={loading} />
         ) : (
           <>
@@ -343,13 +377,23 @@ const Card: React.FC<{ label: string; trailing?: string; children: React.ReactNo
 );
 
 const styles = StyleSheet.create({
+  seg: {
+    flexDirection: 'row', gap: 4, padding: 3, alignSelf: 'center', marginTop: 12,
+    backgroundColor: colors.surface2, borderRadius: 10,
+  },
+  segBtn: { paddingVertical: 6, paddingHorizontal: 14, borderRadius: 8, maxWidth: 160 },
+  segBtnOn: { backgroundColor: colors.surface3 },
   root: { flex: 1, backgroundColor: colors.bgScreen, paddingHorizontal: 18 },
   topBar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   iconCircle: { width: 34, height: 34, borderRadius: 17, backgroundColor: colors.surface2, alignItems: 'center', justifyContent: 'center' },
   empty: { alignItems: 'center', paddingTop: 90, paddingHorizontal: 20 },
   emptyMic: { width: 64, height: 64, borderRadius: 32, backgroundColor: colors.primarySoft, borderWidth: 1, borderColor: colors.primaryBorder, alignItems: 'center', justifyContent: 'center', marginBottom: 18 },
   hero: { backgroundColor: colors.surface1, borderWidth: 1, borderColor: colors.borderSubtle, borderRadius: 20, paddingVertical: 22, paddingHorizontal: 16, alignItems: 'center', marginBottom: 12 },
-  heroNum: { fontFamily: 'Geist_600SemiBold', fontSize: 52, letterSpacing: -2, color: colors.textPrimary, marginTop: -66 },
+  // lineHeight MUST be set: the shared <Text> defaults to the `body` variant
+  // (lineHeight 25), and iOS clips glyphs to the line box — a 52px number in
+  // a 25px box lost its top half (reported 2026-08-26). Box bottom lands
+  // ~15px above the SVG's bottom edge, mirroring desktop's -78px/62px.
+  heroNum: { fontFamily: 'Geist_600SemiBold', fontSize: 52, lineHeight: 56, letterSpacing: -2, color: colors.textPrimary, marginTop: -70 },
   badge: { marginTop: 12, backgroundColor: colors.inkLight, borderRadius: 999, paddingVertical: 7, paddingHorizontal: 15 },
   badgeTx: { fontFamily: 'Geist_600SemiBold', fontSize: 12, color: colors.primaryInk },
   syncHint: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: colors.surface2, borderRadius: 12, paddingVertical: 9, paddingHorizontal: 12, marginBottom: 12 },

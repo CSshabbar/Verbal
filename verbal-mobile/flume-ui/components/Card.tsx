@@ -22,21 +22,24 @@ export const Card: React.FC<CardProps> = ({
   emphasis = 'default',
 }) => {
   const pad = typeof padding === 'number' ? padding : space[padding];
-  const Wrap: any = onPress ? Pressable : View;
 
+  const base = [styles.base, emphasis === 'draft' ? styles.draft : styles.default, { padding: pad }, style];
+
+  // A plain View silently IGNORES a function-valued `style` — only Pressable
+  // resolves it. Passing the callback form unconditionally meant every Card
+  // without onPress rendered unstyled: no surface, no padding, and no `flex: 1`,
+  // which is how History detail's transcript card collapsed to zero height
+  // (found on the simulator, 2026-08-27).
+  if (!onPress) {
+    return <View style={base}>{children}</View>;
+  }
   return (
-    <Wrap
+    <Pressable
       onPress={onPress}
-      style={({ pressed }: { pressed?: boolean }) => [
-        styles.base,
-        emphasis === 'draft' ? styles.draft : styles.default,
-        { padding: pad },
-        pressed && { opacity: PRESSED_OPACITY },
-        style,
-      ]}
+      style={({ pressed }) => [...base, pressed && { opacity: PRESSED_OPACITY }]}
     >
       {children}
-    </Wrap>
+    </Pressable>
   );
 };
 

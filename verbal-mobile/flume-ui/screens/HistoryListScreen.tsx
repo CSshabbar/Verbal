@@ -2,7 +2,7 @@ import React, { useMemo, useState } from 'react';
 import { View, StyleSheet, FlatList, Pressable, TextInput } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { Text, Chip, Card } from '../components';
+import { Text, Chip, Card, MenuButton } from '../components';
 import { colors, radius, pressedStyle } from '../theme';
 import { useHistory, HistoryItem } from '../hooks/useHistory';
 
@@ -54,14 +54,17 @@ export const HistoryListScreen: React.FC<Props> = ({ onOpen }) => {
           </Text>
           <Text variant="titleSm">History</Text>
         </View>
-        <Pressable
-          style={({ pressed }) => [styles.iconBtn, pressed && pressedStyle]}
-          onPress={() => { setSearching(s => !s); if (searching) setQuery(''); }}
-          accessibilityRole="button"
-          accessibilityLabel={searching ? 'Close search' : 'Search history'}
-        >
-          <Ionicons name={searching ? 'close' : 'search-outline'} size={17} color={colors.textSecondary} />
-        </Pressable>
+        <View style={{ flexDirection: 'row', gap: 8 }}>
+          <Pressable
+            style={({ pressed }) => [styles.iconBtn, pressed && pressedStyle]}
+            onPress={() => { setSearching(s => !s); if (searching) setQuery(''); }}
+            accessibilityRole="button"
+            accessibilityLabel={searching ? 'Close search' : 'Search history'}
+          >
+            <Ionicons name={searching ? 'close' : 'search-outline'} size={17} color={colors.textSecondary} />
+          </Pressable>
+          <MenuButton />
+        </View>
       </View>
 
       {searching && (
