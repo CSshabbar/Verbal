@@ -1074,6 +1074,12 @@ class MeetingSession:
                     if not self._sys_cap.start():
                         logger.warning("system audio unavailable: %s", self._sys_cap.error)
                         self._sys_cap = None
+                else:
+                    # A frozen build missing the ScreenCaptureKit pyobjc wrapper
+                    # lands here (v1.0.44 shipped that way) — the meeting still
+                    # runs mic-only, but it must never be silent about it.
+                    logger.warning("system audio unsupported (ScreenCaptureKit "
+                                   "unavailable) — recording mic-only")
             except Exception as e:
                 logger.warning("system audio skipped: %s", e)
                 self._sys_cap = None

@@ -814,6 +814,16 @@
     transcription, guarded at `transcriber.py:358` — but note `verbal-win.spec` lists it in
     `hiddenimports`, so the BUILD env does need it), `win10toast` (undeclared *second* fallback in
     `_notify_native`; `winotify` is primary and installed), and the pyobjc/AppKit family (macOS-only).
+    **A spec `hiddenimports` entry does NOT guarantee the module ships** — PyInstaller silently skips
+    hiddenimports that aren't installed in the build env. Fourth confirmed instance of this bug class
+    (2026-08-31): `ScreenCaptureKit` was in `whisperflow.spec` hiddenimports but
+    `pyobjc-framework-ScreenCaptureKit` was only in `requirements.lock.txt`, and CI's mac jobs
+    (`build-release.yml` / `build-mac-app.yml`) install `requirements.txt` — so released 1.0.44
+    shipped without it, `system_audio.is_supported()` returned False, and every meeting captured
+    **mic-only** ("self" chunks only, no "Them") with no warning; dev-venv runs worked fine. Now
+    declared in `requirements.txt` behind the darwin marker, and `meetings.py` logs a WARNING
+    ("system audio unsupported … recording mic-only") on the previously-silent `is_supported()`-False
+    skip.
 
 31. **Windows: declare DPI awareness at import, and scale every tkinter/PIL surface by it.** The app
     runs **DPI-aware** — pywebview flips the process to per-monitor awareness when WebView2 builds its

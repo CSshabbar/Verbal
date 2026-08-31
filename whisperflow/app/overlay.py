@@ -19,6 +19,7 @@ import re
 import time
 
 from AppKit import (
+    NSApplication, NSEvent,
     NSPanel, NSColor,
     NSWindowStyleMaskBorderless,
     NSScreen, NSBackingStoreBuffered, NSScreenSaverWindowLevel,
@@ -76,6 +77,10 @@ class OverlayBar:
         self._visible = False
         self._ready = False
         self._t0 = 0.0  # record start (for elapsed seconds)
+        # True while we've temporarily dropped the app to Accessory policy so
+        # the pill can show over another app's full-screen Space (see
+        # _borrow_accessory_policy). Restored to Regular in hide().
+        self._policy_borrowed = False
         # Emits made before the page's JS installs window.VerbalOverlay are
         # BUFFERED and flushed on the `overlay_ready` handshake — otherwise a
         # record-at-launch shows no pill at all (the eval silently no-ops).
@@ -211,9 +216,71 @@ class OverlayBar:
                 self.overlay_ready()
         threading.Timer(3.0, _unblock).start()
 
+    # ── activation-policy borrow (full-screen Spaces) ────────────────────────
+    @staticmethod
+    def _cursor_screen_is_fullscreen_space():
+        """Heuristic: the Space under the mouse has NO menu bar → a full-screen
+        app is showing there (NSScreen.visibleFrame excludes the menu bar only
+        while it's on screen). Auto-hidden menu bars trip this too; that's fine
+        — the only cost of a false positive is the Dock icon blinking during the
+        pill. Returns True on any error so we err toward showing the pill."""
+        try:
+            pt = NSEvent.mouseLocation()
+            for sc in NSScreen.screens():
+                f = sc.frame()
+                if (f.origin.x <= pt.x <= f.origin.x + f.size.width
+                        and f.origin.y <= pt.y <= f.origin.y + f.size.height):
+                    vf = sc.visibleFrame()
+                    top_gap = (f.origin.y + f.size.height) - (vf.origin.y + vf.size.height)
+                    return top_gap < 1.0
+        except Exception:
+            pass
+        return True
+
+    def _borrow_accessory_policy(self):
+        """A Regular-policy app's non-activating panels don't reliably appear
+        over ANOTHER app's full-screen Space (conventions #56). The dashboard
+        flips the app to Regular while it's open and reverts it on close /
+        miniaturize / Cmd+H — but simply LEAVING the dashboard open on some
+        other Space while dictating into a full-screen app fires none of those,
+        so the pill silently vanished. Rather than hunt for a fourth event,
+        borrow Accessory right here, at the moment the pill is ordered front,
+        whenever our app isn't active and the target Space looks full-screen;
+        hide() hands Regular back so Cmd+Tab/Dock keep working for the open
+        dashboard. Fail-closed: any error leaves the policy untouched."""
+        try:
+            nsapp = NSApplication.sharedApplication()
+            if nsapp.activationPolicy() != 0 or nsapp.isActive():
+                return
+            if not self._cursor_screen_is_fullscreen_space():
+                return
+            nsapp.setActivationPolicy_(1)  # Accessory
+            self._policy_borrowed = True
+            logger.debug("overlay: borrowed Accessory policy for full-screen Space")
+        except Exception as e:
+            logger.debug("overlay: policy borrow failed: %s", e)
+
+    def _return_accessory_policy(self):
+        if not self._policy_borrowed:
+            return
+        self._policy_borrowed = False
+        try:
+            nsapp = NSApplication.sharedApplication()
+            dash = getattr(self.app, "dashboard", None) if self.app else None
+            win = getattr(dash, "_window", None) if dash else None
+            # Only give Regular back if the dashboard is still a live, on-screen
+            # window — otherwise we'd re-introduce the exact leak #56 describes.
+            if (win is not None and win.isVisible() and not win.isMiniaturized()
+                    and not nsapp.isHidden()):
+                nsapp.setActivationPolicy_(0)  # Regular
+                logger.debug("overlay: returned Regular policy to open dashboard")
+        except Exception as e:
+            logger.debug("overlay: policy return failed: %s", e)
+
     def _order_front(self):
         if not self._window:
             self.setup()
+        self._borrow_accessory_policy()
         self._window.orderFrontRegardless()
         self._visible = True
         # Every state that appears on screen needs hover, not just recording:
@@ -501,6 +568,7 @@ class OverlayBar:
         if self._window:
             self._window.orderOut_(None)
         self._visible = False
+        self._return_accessory_policy()
 
     @property
     def visible(self):

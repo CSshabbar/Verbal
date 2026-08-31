@@ -59,3 +59,11 @@ pyobjc-framework-WebKit; sys_platform == 'darwin'
 # AVCaptureDevice, AVMediaTypeAudio` raised ModuleNotFoundError before this;
 # works immediately once this line is installed.
 pyobjc-framework-AVFoundation; sys_platform == 'darwin'
+# Meetings' system-audio capture (app/system_audio.py). Same "works locally,
+# missing from the frozen build" bug class as scipy/qrcode/AVFoundation above:
+# it sat in requirements.lock.txt (dev venv) but not here, CI installs only
+# this file, and PyInstaller silently drops hiddenimports that aren't
+# installed — so the released 1.0.44 bundle shipped without ScreenCaptureKit,
+# is_supported() returned False, and every meeting captured mic-only ("self"
+# chunks only, no "Them") with no warning. Confirmed 2026-08-31.
+pyobjc-framework-ScreenCaptureKit; sys_platform == 'darwin'
