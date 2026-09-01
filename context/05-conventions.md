@@ -2056,3 +2056,13 @@ Mobile: `npx tsc --noEmit` in `verbal-mobile/`.
     ever received (phone dictations never reached the Mac, 2026-08-25 → 08-30, 50k log lines before anyone
     looked). Four sites: `sync.py`, `dashboard.py`, `flume_web_dashboard.py`, `shared_dashboard.py`. When
     "sync doesn't work", grep `app.log` for `CERTIFICATE_VERIFY_FAILED` first.
+
+81. **CI supply chain (IDI-266): every third-party GitHub Action is pinned to a full 40-char commit SHA**
+    (tag kept as a trailing comment, e.g. `uses: actions/checkout@11d5960a… # v4`) across all four
+    workflows — floating tags are mutable and a compromised tag would run in jobs holding release-signing
+    and Supabase service-role secrets. To bump: re-resolve with
+    `git ls-remote https://github.com/<owner>/<repo> refs/tags/<tag>` and update SHA + comment together.
+    And **untrusted workflow inputs never get `${{ }}`-interpolated into `run:` scripts or JSON bodies** —
+    build-release.yml gates everything behind a `validate-version` job (dispatch `version` must match
+    `^[0-9]+\.[0-9]+\.[0-9]+$`, re-checked in the release job's Determine-version step for both trigger
+    paths) and passes the value to shells via `env:` only. Keep new steps on that pattern.
