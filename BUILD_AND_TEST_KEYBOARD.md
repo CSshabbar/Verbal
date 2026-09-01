@@ -5,6 +5,42 @@ what's done, what needs a first-build fix pass, and what genuinely isn't finishe
 
 ## How to build & test
 
+### Prebuild-only smoke check (no JDK, no Android SDK, no device)
+
+The cheapest guard that the config plugin still injects the IME. Node is the only
+requirement, so it runs on any machine and belongs in CI (IDI-274).
+
+```
+cd verbal-mobile
+npx expo prebuild -p android --clean --no-install
+```
+
+Then assert all five:
+
+| # | Assertion | Where |
+| -- | -- | -- |
+| 1 | `<service android:name=".keyboard.FlumeInputMethodService" …>` | `android/app/src/main/AndroidManifest.xml` |
+| 2 | that service carries `android:permission="android.permission.BIND_INPUT_METHOD"` | same |
+| 3 | `method.xml` exists | `android/app/src/main/res/xml/method.xml` |
+| 4 | `FlumeInputMethodService.kt` exists (~128 KB) | `android/app/src/main/java/com/verbal/app/keyboard/` |
+| 5 | **11** asset files copied | `android/app/src/main/assets/` |
+
+The 11 assets are the list in `plugins/withFlumeKeyboard.js` — four TTFs (`ionicons`,
+`geist_regular`, `geist_medium`, `jetbrains_mono`), three WAV cues (`flume_start`,
+`flume_stop`, `flume_done`) and four tables (`flume_words`, `flume_bigrams`,
+`flume_emoji`, `flume_emoji_kw`). IDI-270 says "12 assets" — that miscounts; `method.xml`
+goes to `res/xml`, not `assets`.
+
+**Verified 2026-08-31** on Windows 11, Node 24.19.0, Expo SDK 55.0.31 — all five pass.
+This proves generation only. It does **not** prove the Kotlin compiles, links, or runs;
+that still needs the Gradle build and the on-device matrix in IDI-270.
+
+Two warnings prebuild emits today, both known and neither fatal here:
+- `ios.appleTeamId` missing from the Expo config — iOS signing only (IDI-247).
+- `userInterfaceStyle: Install expo-system-ui …` — `app.json` sets `"dark"` but the
+  package that applies it on Android is not installed, so the setting is inert. Decide
+  under IDI-270 whether to install it or drop the key.
+
 ### Android (no account needed — VERIFIED: full APK builds locally)
 ```
 cd verbal-mobile

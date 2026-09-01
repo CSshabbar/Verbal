@@ -2088,3 +2088,15 @@ Mobile: `npx tsc --noEmit` in `verbal-mobile/`.
     reuses the stale tree, so a changed `FlumeInputMethodService.kt` does not ship until you `--clean`
     (`BUILD_AND_TEST_KEYBOARD.md`). Corollary for Play review: every `android.permissions` entry in
     `app.json` must name an in-app use — do not declare ahead of implementation (IDI-273).
+
+82. **A plugin that fails to LOAD breaks every platform's prebuild — including the one it
+    isn't for.** (IDI-254, 2026-08-31.) `@bacons/apple-targets@4.0.7` imports
+    `@expo/prebuild-config/build/plugins/icons/AssetContents` without declaring
+    `@expo/prebuild-config` as a dependency. It worked only while something else hoisted that
+    package to the top of `node_modules`; SDK 55.0.31 stopped doing so, the import threw, and
+    `npx expo prebuild` died — **for `-p android` as well as `-p ios`**, because `app.json`
+    `plugins` entries are resolved when the app config loads, before any platform branch. v5.0.0
+    fixes it by declaring the dependency (the import path is unchanged, so the version bump is
+    the whole fix). Keep `@bacons/apple-targets` at `^5.0.0` on SDK 55+, and treat *any*
+    unloadable plugin as a cross-platform outage rather than an iOS- or Android-only one.
+    The prebuild-only smoke check in `BUILD_AND_TEST_KEYBOARD.md` catches this class in seconds.
