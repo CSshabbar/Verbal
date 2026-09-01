@@ -144,7 +144,7 @@ stays open until exit), and a supervisor loop that re-resolves the default devic
 (3 attempts, 1 s backoff, budget refunded after 10 s healthy). Giving up leaves `.running=False` +
 `.error`; `MeetingSession._sys_audio_state()` logs it once and puts `sysErr` in the 1 Hz `elapsed`
 payload. Pinned by `win_sysaudio_fixtures.py` (fake `soundcard`, runs on any OS) — Rule #76. Each source is silence-chunked (8–22 s) and fed
-through the normal `transcriber` chain into utterances `{speaker, t0, t1, text}` (speakers are
+through the normal `transcriber` chain (`filetags=False` — meetings must never IDE-bias Whisper) into utterances `{speaker, t0, t1, text}` (speakers are
 source-based, two speakers since 2026-08-28: mic=`self` labelled with the signed-in user's name, ALL system
 audio=`s1` "Them"; no diarization; rename is retroactive). Stop → WAV mix →
 `meeting-audio` bucket → structured summary LLM call (`groq_proxy.chat_via_proxy`, strict-JSON

@@ -465,10 +465,15 @@
   guessed. Python decides (`meetings._summary_output_language`: per-meeting pin > global pin >
   script-count detection > English) and the user message states it explicitly ("OUTPUT LANGUAGE:
   English. Every field must be written in English.").
-- Meeting chunks that transcribe to a bare Whisper silence hallucination ("Thank you.", "you",
-  "Bye.", …) are DROPPED before they enter the transcript (`_MEETING_HALLUCINATIONS`) — they pollute
-  summaries and once helped trigger the wrong-language bug. Dictation is untouched (someone may
-  really dictate "Thank you.").
+- Meeting chunks that look like ASR garbage are DROPPED before they enter the transcript
+  (`meetings.is_meeting_hallucination`): exact silence phrases ("Thank you.", "you", "Bye.",
+  …), token/phrase repetition loops, dense `name.ext` filename soup, and `sql`/`supabase`
+  spam. They pollute summaries and once helped trigger the wrong-language bug. Dictation is
+  untouched (someone may really dictate "Thank you.").
+- **Meetings never file-tag.** `transcribe_with_status(..., filetags=False)` skips IDE harvest,
+  the Whisper `Files:` bias fragment, and `@name.ext` rewrite. The meeting panel is
+  non-activating so Cursor/VS Code often stays focused; enabling filetags there turned quiet
+  chunks into filename loops. Dictionary glossary bias still applies on English meetings.
 - LLM prompts that consume transcripts must state their output language (summary: transcript's
   dominant language; dictation formatter/notes: same language, never translate).
 

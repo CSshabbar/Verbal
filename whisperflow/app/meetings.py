@@ -9,8 +9,9 @@ A meeting records TWO sources in parallel:
   - system audio (the call)   → system_audio.SystemAudioCapture (ScreenCaptureKit)
 
 Each source is chunked on silence boundaries (~8–22 s), transcribed through the
-existing transcriber pipeline (Groq→Gemini→local, dictionary bias, 850-char
-prompt cap), and appended to the transcript as an utterance:
+existing transcriber pipeline (Groq→Gemini→local, dictionary bias only — never
+file tagging; 850-char prompt cap), and appended to the transcript as an
+utterance:
 
     {"speaker": "self"|"s<N>", "t0": secs, "t1": secs, "text": "..."}
 
@@ -152,8 +153,60 @@ _LANG_NAMES = {
 # dictate "Thank you." — but a bare one inside a meeting chunk is hallucination).
 _MEETING_HALLUCINATIONS = {
     "thank you.", "thank you", "thanks.", "thanks", "you", "you.", "bye.", "bye",
-    "thanks for watching.", "thank you for watching.", ".", "...",
+    "thanks for watching.", "thank you for watching.",
+    "please subscribe.", "please subscribe",
+    "thanks for listening.", "thank you for listening.",
+    "[music]", "(music)", "[applause]", "(applause)",
+    ".", "...",
 }
+
+# Filename soup / bias-echo leftovers that still leak after filetags are disabled
+# on the meeting path (cached prompt, fallback ASR, or the model inventing
+# `name.ext` from training). Three+ such tokens in one chunk = not speech.
+_MEETING_FILE_EXT_RE = re.compile(
+    r"\b[\w.-]+\.(?:sql|md|py|js|ts|tsx|jsx|json|html|css|txt|wav|mp3|pdf|"
+    r"yml|yaml|toml|sh|rb|go|rs|java|kt|swift|xml|csv)\b",
+    re.IGNORECASE,
+)
+
+
+def is_meeting_hallucination(text: str) -> bool:
+    """True when a meeting chunk is ASR garbage and must not enter the transcript.
+
+    Covers: exact silence phrases, token/phrase repetition loops (Whisper's
+    classic failure on quiet audio), and dense `name.ext` filename soup that
+    used to arrive via the IDE Files: bias prompt. Dictation is untouched —
+    this gate is meetings-only.
+    """
+    if not text or not str(text).strip():
+        return True
+    raw = str(text).strip()
+    low = raw.lower()
+    if low in _MEETING_HALLUCINATIONS:
+        return True
+    words = re.findall(r"[A-Za-z0-9']+", low)
+    if words:
+        from collections import Counter
+        top, n = Counter(words).most_common(1)[0]
+        # Same token ≥5× and majority of the chunk → loop, not speech.
+        if n >= 5 and n / len(words) >= 0.5:
+            return True
+        # Comma/semicolon list of near-identical short chunks ("sql, supabase.sql," ×N).
+        parts = [p.strip() for p in re.split(r"[,;]+", low) if p.strip()]
+        if len(parts) >= 5:
+            norm = [re.sub(r"[^a-z0-9]+", "", p) for p in parts]
+            norm = [p for p in norm if p]
+            if norm:
+                _, pn = Counter(norm).most_common(1)[0]
+                if pn >= 4 and pn / len(norm) >= 0.5:
+                    return True
+        # "sql" / "supabase" spam without a real sentence.
+        sql_n = sum(1 for w in words if w in ("sql", "supabase") or w.endswith("sql"))
+        if sql_n >= 4 and sql_n / len(words) >= 0.25:
+            return True
+    if len(_MEETING_FILE_EXT_RE.findall(raw)) >= 3:
+        return True
+    return False
 
 
 def _summary_output_language(config, transcript, session_language=""):
@@ -1369,11 +1422,15 @@ class MeetingSession:
                 # diarization split a chunk at real speaker turns. Best-effort:
                 # only the Groq-proxy path returns them; empty otherwise.
                 side = {}
+                # filetags=False: meeting panel is non-activating, so the IDE
+                # stays focused — a Files: bias prompt turns quiet chunks into
+                # filename loops. No @-rewrite either; meetings are not an IDE.
                 text, status = transcribe_with_status(
                     audio, self.app.config, sample_rate=SR,
                     language=self.language or None,
-                    sidecar=side, words=(source != "self"))
-                if text and text.strip().lower() in _MEETING_HALLUCINATIONS:
+                    sidecar=side, words=(source != "self"),
+                    filetags=False)
+                if text and is_meeting_hallucination(text):
                     logger.debug("meeting: dropped hallucination chunk %r", text)
                     text, status = "", "silent"
                 if status != "ok" or not (text or "").strip():

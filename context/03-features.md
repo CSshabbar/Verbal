@@ -595,7 +595,12 @@ Each feature: **what it does · desktop impl · mobile impl · backend · status
   bare-multi-token-with-trigger), handling spoken separators ("dot"/"underscore") + extension homophones.
   Real `@`-chip insertion happens in `injector.py::_inject_with_mentions` (types `@`+name, Enter-selects
   the IDE picker).
-- **Gated by** `config['filetag_enabled']`. **Not on mobile** (no IDEs).
+- **Gated by** `config['filetag_enabled']`. **Not on mobile** (no IDEs). **Not during
+  meetings** (2026-09): `MeetingSession._transcribe_loop` calls
+  `transcribe_with_status(..., filetags=False)`. The meeting panel is non-activating, so
+  the IDE stays focused; a `Files:` Whisper bias on quiet 8–22 s chunks used to loop open
+  filenames (`supabase.sql, supabase.sql…`) into the live transcript and poison summaries.
+  Dictation keeps file tagging unchanged.
 
 ## Text injection & target-app tracking (desktop)
 
@@ -1253,7 +1258,10 @@ deletes real files under `~/.verbal/` and this development machine has a real, i
   `meeting_html.py` (ONE morphing WKWebView panel: an ambient glassy **bar** top-center — that fluidly grows
   into the full window via native frame animation; content modes `permissions` 31h / `premeeting` 31b /
   `live` 31c; while recording, losing focus or closing collapses back to the bar; the separate
-  `meeting_hud.py` was dead code, DELETED in IDI-179). **Short by default:** at rest the bar carries only
+  `meeting_hud.py` was dead code, DELETED in IDI-179). **Chunk ASR never file-tags** (2026-09):
+  `_transcribe_loop` calls `transcribe_with_status(..., filetags=False)` and drops chunks that fail
+  `is_meeting_hallucination` (silence phrases, repetition loops, `name.ext` soup) before they enter the
+  transcript — see File tagging § above and `05-conventions.md`. **Short by default:** at rest the bar carries only
   the live dot + elapsed timer, same Capsule recipe as the recording overlay (IDI-184) — title, waveform and
   cancel/star/pause/stop live in `.barOpt`, revealed on hover only — pausing does NOT force it open (it
   used to; dropped per `05-conventions.md` Rule #58, since a paused meeting can sit paused indefinitely

@@ -60,7 +60,7 @@ def resolve_language(config: dict, override: str | None = None) -> str | None:
 def transcribe_with_status(audio: np.ndarray, config: dict, sample_rate: int = 48000,
                            language: str | None = None,
                            chain: dict | None = None, sidecar: dict | None = None,
-                           words: bool = False):
+                           words: bool = False, filetags: bool = True):
     """Like transcribe() but returns (text, status) where status is:
       'ok'      — got a transcription
       'silent'  — audio was empty/near-silent (no speech; not an error)
@@ -76,6 +76,12 @@ def transcribe_with_status(audio: np.ndarray, config: dict, sample_rate: int = 4
     is known. The formatted text comes back in `sidecar["formatted"]`, already put
     through finalize() so it gets the same prompt-echo scrub, dictionary
     replacements and file tagging as the unchained path.
+
+    `filetags`: when False, skip IDE open-file harvest, Whisper `Files:` bias, and
+    `@name.ext` rewrite. Meetings MUST pass False — the meeting panel is
+    non-activating so the IDE stays focused, and a Files: prompt on quiet chunks
+    makes Whisper loop filenames (`supabase.sql, supabase.sql…`) into the live
+    transcript. Dictation keeps the default True.
 
     Only the Groq-proxy branch chains. Every fallback (local Groq key, Gemini,
     local Whisper) leaves the sidecar empty, so the caller formats locally exactly
@@ -110,54 +116,56 @@ def transcribe_with_status(audio: np.ndarray, config: dict, sample_rate: int = 4
     except Exception:
         prompt, _apply_dict = None, (lambda t: t)
 
-    # File tagging (desktop, flag-gated, best-effort). This whole block is wrapped
-    # so ANY failure leaves transcription completely untouched (never raises). When
+    # File tagging (desktop, flag-gated, best-effort). Dictation only — meetings
+    # pass filetags=False (see docstring). This whole block is wrapped so ANY
+    # failure leaves transcription completely untouched (never raises). When
     # focused in a supported IDE with the toggle on:
     #   1. bias the Whisper prompt toward the currently open file names, and
     #   2. (Cursor/Windsurf only) rewrite spoken file references into @name.ext
     #      after the dictionary pass — but never when a dictionary replacement was
     #      applied to this transcript, and never when focus is the IDE terminal.
     _filetags = None
-    try:
-        from app import filetags as _filetags_mod
-        from app.config import save_config as _save_config
-        # W5/W8: injector is platform-native. `app.injector` imports Quartz/
-        # AppKit at module load, so on Windows we must import the win_injector
-        # variant. Same public names on both sides — see win_injector docstring.
-        import sys as _sys
-        if _sys.platform == "win32":
-            from app.win_injector import (get_focused_app_pid, get_focused_app_name,
-                                          get_focused_app_bundle)
-        else:
-            from app.injector import (get_focused_app_pid, get_focused_app_name,
-                                       get_focused_app_bundle)
-        # Classify the SAVED dictation-target app (captured at record start), not
-        # the live frontmost app — by transcription time focus may be the overlay.
-        _tgt_pid = get_focused_app_pid()
-        _ide = _filetags_mod.supported_ide(get_focused_app_bundle(), get_focused_app_name())
-        _is_terminal = _filetags_mod.focus_is_terminal() if _ide else False
-        _known = []
-        _enabled = config.get("filetag_enabled", False)
-        if _enabled and _ide and not _is_terminal:
-            # Fast synchronous read = the active file (fresh). The deep list comes
-            # from the background harvest started at record-start; merge both via
-            # the session/persisted cache so the whole open-file set is known.
-            _live = _filetags_mod.read_open_files(_tgt_pid)
-            _filetags_mod.remember_files(config, _live, _save_config)
-            _known = _filetags_mod.get_seen_files(config)
-            _frag = _filetags_mod.prompt_fragment(_known)
-            if _frag:
-                prompt = (prompt + " " + _frag) if prompt else _frag
-        if _enabled:
-            logger.debug("[filetag] enabled ide=%s terminal=%s target=%s pid=%s known=%d files=%s",
-                         _ide, _is_terminal, get_focused_app_name(), _tgt_pid, len(_known), _known)
-        # Tag rewriting for every recognized IDE (all are VS Code/Electron forks
-        # with an @-file mention picker).
-        if _enabled and _ide in _filetags_mod.TAGGING_IDES:
-            _filetags = (_filetags_mod, _known, _is_terminal)
-    except Exception as e:
-        logger.debug("[filetag] setup skipped: %s", e)
-        _filetags = None
+    if filetags:
+        try:
+            from app import filetags as _filetags_mod
+            from app.config import save_config as _save_config
+            # W5/W8: injector is platform-native. `app.injector` imports Quartz/
+            # AppKit at module load, so on Windows we must import the win_injector
+            # variant. Same public names on both sides — see win_injector docstring.
+            import sys as _sys
+            if _sys.platform == "win32":
+                from app.win_injector import (get_focused_app_pid, get_focused_app_name,
+                                              get_focused_app_bundle)
+            else:
+                from app.injector import (get_focused_app_pid, get_focused_app_name,
+                                           get_focused_app_bundle)
+            # Classify the SAVED dictation-target app (captured at record start), not
+            # the live frontmost app — by transcription time focus may be the overlay.
+            _tgt_pid = get_focused_app_pid()
+            _ide = _filetags_mod.supported_ide(get_focused_app_bundle(), get_focused_app_name())
+            _is_terminal = _filetags_mod.focus_is_terminal() if _ide else False
+            _known = []
+            _enabled = config.get("filetag_enabled", False)
+            if _enabled and _ide and not _is_terminal:
+                # Fast synchronous read = the active file (fresh). The deep list comes
+                # from the background harvest started at record-start; merge both via
+                # the session/persisted cache so the whole open-file set is known.
+                _live = _filetags_mod.read_open_files(_tgt_pid)
+                _filetags_mod.remember_files(config, _live, _save_config)
+                _known = _filetags_mod.get_seen_files(config)
+                _frag = _filetags_mod.prompt_fragment(_known)
+                if _frag:
+                    prompt = (prompt + " " + _frag) if prompt else _frag
+            if _enabled:
+                logger.debug("[filetag] enabled ide=%s terminal=%s target=%s pid=%s known=%d files=%s",
+                             _ide, _is_terminal, get_focused_app_name(), _tgt_pid, len(_known), _known)
+            # Tag rewriting for every recognized IDE (all are VS Code/Electron forks
+            # with an @-file mention picker).
+            if _enabled and _ide in _filetags_mod.TAGGING_IDES:
+                _filetags = (_filetags_mod, _known, _is_terminal)
+        except Exception as e:
+            logger.debug("[filetag] setup skipped: %s", e)
+            _filetags = None
 
     # Cap the combined bias prompt under Groq's 896-char limit. Glossary comes
     # first (user vocab preserved); excess file names are trimmed at a comma
