@@ -86,6 +86,58 @@ function userIdFromJwt(authHeader: string): string | null {
 // Deliberately not a full grammar — the real validation is whether the mail lands.
 const EMAIL_RE = /^[^\s@,;]+@[^\s@,;]+\.[^\s@,;]{2,}$/;
 
+// ── Rate limiting (IDI-267) ──────────────────────────────────────────────────
+// Nothing used to throttle invite sends, so any owner/admin (or a compromised
+// session) could pump unlimited outbound mail through our Resend domain. Same
+// design as groq-proxy's limiter (fixed epoch-aligned windows, one DB round trip
+// per check, fails OPEN on limiter errors — a broken limiter must not block a
+// legitimate invite) but through its OWN RPC/table (`invite_check_rate_limit`,
+// see ./invite_rate_limits.sql): groq_rate_limits' opportunistic cleanup deletes
+// rows older than 10 minutes, which would silently reset the hour/day windows
+// this needs. Limits are env-tunable without a redeploy.
+const INVITE_LIMIT_USER_PER_HOUR = Number(Deno.env.get("INVITE_LIMIT_USER_PER_HOUR") ?? "15");
+const INVITE_LIMIT_ORG_PER_DAY = Number(Deno.env.get("INVITE_LIMIT_ORG_PER_DAY") ?? "50");
+const INVITE_RECIPIENT_COOLDOWN_S = Number(Deno.env.get("INVITE_RECIPIENT_COOLDOWN_SECONDS") ?? "300");
+
+// Latched off after a 404 so a not-yet-applied RPC costs one wasted round trip
+// per isolate, not one per request (same pattern as groq-proxy's ORG_RPC_AVAILABLE).
+let INVITE_RPC_AVAILABLE = true;
+
+// Returns null when allowed, or the seconds to wait before retrying.
+async function checkInviteLimits(
+  limits: Array<{ id: string; windowSeconds: number; max: number }>,
+): Promise<number | null> {
+  if (!INVITE_RPC_AVAILABLE) return null;
+  try {
+    for (const l of limits) {
+      const r = await fetch(`${SUPABASE_URL}/rest/v1/rpc/invite_check_rate_limit`, {
+        method: "POST",
+        headers: svcHeaders(true),
+        body: JSON.stringify({
+          p_identity: l.id,
+          p_window_seconds: l.windowSeconds,
+          p_max_requests: l.max,
+        }),
+      });
+      if (!r.ok) {
+        if (r.status === 404) {
+          INVITE_RPC_AVAILABLE = false;
+          console.warn("invite-member: invite_check_rate_limit RPC missing — limiter off until invite_rate_limits.sql is applied");
+          return null;
+        }
+        console.warn("invite-member: limiter RPC error (failing open):", r.status, await r.text());
+        return null;
+      }
+      const retry = await r.json();
+      if (typeof retry === "number") return retry;
+    }
+    return null;
+  } catch (e) {
+    console.warn("invite-member: limiter error (failing open):", e);
+    return null;
+  }
+}
+
 function randomToken(): string {
   const bytes = new Uint8Array(32);
   crypto.getRandomValues(bytes);
@@ -108,6 +160,15 @@ function esc(s: string): string {
   return s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]!));
 }
 
+// IDI-267: `display_name` and `organizations.name` are USER-CONTROLLED and both
+// reach the Subject header (and the preheader/plain-text body). A CR/LF smuggled
+// through them is RFC-5322 header injection at the mail layer, so strip every
+// control character (C0 + DEL), collapse the leftover whitespace, and cap the
+// length before any use. esc() still handles HTML contexts separately.
+function cleanHeaderText(s: string, max = 80): string {
+  return s.replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s{2,}/g, " ").trim().slice(0, max);
+}
+
 // Shared font stacks — inlined into every styled element below (email clients
 // don't resolve external/registered fonts), but centralised here so the brand's
 // two-typeface system (Geist for UI, JetBrains Mono for numerics/meta —
@@ -122,6 +183,10 @@ function inviteEmail(
   link: string,
   resend: boolean,
 ): { subject: string; html: string; text: string } {
+  // IDI-267: sanitize BEFORE any use — subject, preheader, and the plain-text
+  // body all interpolate these raw.
+  orgName = cleanHeaderText(orgName);
+  inviterName = cleanHeaderText(inviterName);
   const org = esc(orgName);
   const who = esc(inviterName || "A teammate");
   const subject = resend
@@ -412,6 +477,25 @@ Deno.serve(async (req) => {
     return json({ ok: false, error: "forbidden" }, 403);
   }
 
+  // IDI-267: throttle BEFORE anything is minted or sent. Per-inviter and per-org
+  // fixed windows plus a short per-recipient cooldown (the recipient identity is
+  // hashed — the limiter table never stores an email address). Runs after the
+  // owner/admin check so an unauthorized caller can't consume an org's budget.
+  const retryAfter = await checkInviteLimits([
+    { id: `invite:user:${inviterId}`, windowSeconds: 3600, max: INVITE_LIMIT_USER_PER_HOUR },
+    { id: `invite:org:${orgId}`, windowSeconds: 86400, max: INVITE_LIMIT_ORG_PER_DAY },
+    { id: `invite:rcpt:${orgId}:${await sha256Hex(email)}`, windowSeconds: INVITE_RECIPIENT_COOLDOWN_S, max: 1 },
+  ]);
+  if (retryAfter !== null) {
+    return new Response(
+      JSON.stringify({ ok: false, error: "rate_limited", retry_after: retryAfter }),
+      {
+        status: 429,
+        headers: { ...CORS, "Content-Type": "application/json", "Retry-After": String(retryAfter) },
+      },
+    );
+  }
+
   const orgRes = await rest(`organizations?select=name,purchased_seats&id=eq.${encodeURIComponent(orgId)}`);
   if (!orgRes.ok) return json({ ok: false, error: "lookup_failed" }, 500);
   const org = (await orgRes.json())[0];
@@ -473,7 +557,10 @@ Deno.serve(async (req) => {
       body: JSON.stringify({ token_hash: tokenHash, role, expires_at: expiresAt, invited_by: inviterId }),
     });
     if (!patchRes.ok) {
-      return json({ ok: false, error: "insert_failed", detail: (await patchRes.text()).slice(0, 300) }, 500);
+      // IDI-267: log the DB detail server-side, return an opaque error — raw
+      // PostgREST/Postgres messages are internals a caller has no business seeing.
+      console.error(`invite-member: invite update failed ${patchRes.status} — ${(await patchRes.text()).slice(0, 300)}`);
+      return json({ ok: false, error: "insert_failed" }, 500);
     }
     invite = (await patchRes.json())[0];
   } else {
@@ -486,7 +573,9 @@ Deno.serve(async (req) => {
       }),
     });
     if (!insertRes.ok) {
-      return json({ ok: false, error: "insert_failed", detail: (await insertRes.text()).slice(0, 300) }, 500);
+      // IDI-267: same opaque-error rule as the PATCH branch above.
+      console.error(`invite-member: invite insert failed ${insertRes.status} — ${(await insertRes.text()).slice(0, 300)}`);
+      return json({ ok: false, error: "insert_failed" }, 500);
     }
     invite = (await insertRes.json())[0];
   }
@@ -505,7 +594,9 @@ Deno.serve(async (req) => {
     if (!reissued) {
       await rest(`organization_invites?id=eq.${encodeURIComponent(invite!.id)}`, { method: "DELETE" });
     }
-    return json({ ok: false, error: "email_failed", detail: sent.detail, reissued }, 502);
+    // IDI-267: Resend's failure detail (provider status lines, config hints) is
+    // already logged server-side in sendEmail — the caller gets an opaque error.
+    return json({ ok: false, error: "email_failed", reissued }, 502);
   }
 
   return json({
