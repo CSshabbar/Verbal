@@ -472,8 +472,11 @@ lockdown MER-30's security-advisor pass established, for the same reason.
 ### Desktop — Google PKCE loopback (`app/auth.py`)
 1. `_pkce()` verifier + S256 challenge.
 2. Browser → `{URL}/auth/v1/authorize?provider=google&redirect_to=http://localhost:8765/callback&code_challenge=…`.
-3. `_DualStackServer` on **port 8765** (binds IPv6 `::` with `IPV6_V6ONLY=0` to catch `::1`/`127.0.0.1`,
-   IPv4 fallback); `_CallbackHandler` captures `?code=`, serves a styled "Login successful" page, 180 s timeout.
+3. Loopback-only listeners on **port 8765** (IDI-265: `_make_servers()` binds BOTH `::1` and `127.0.0.1` —
+   a loopback socket can't be dual-stack, and `localhost` resolves to either family); `_CallbackHandler`
+   captures `?code=` (first code wins, `/callback` path only), serves a styled "Login successful" page,
+   180 s timeout. No `state` param — GoTrue can't round-trip one (see `05-conventions.md` #82); PKCE binds
+   the code.
 4. Exchange `POST {AUTH}/token?grant_type=pkce` `{auth_code, code_verifier}`.
 5. `_store_session` → `config['auth'] = {user_id,email,name,avatar_url,access_token,refresh_token}` and
    `config['sync_user_id']=user.id` (+ default `sync_device_name=platform.node()`).
