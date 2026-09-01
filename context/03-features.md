@@ -348,7 +348,12 @@ Each feature: **what it does · desktop impl · mobile impl · backend · status
   no seats, and finally the **email guard**: the signed-in account's address must match the address the
   invite was sent to, or a forwarded link would grant membership to whoever opened it first. Seats are
   counted as active members + pending invites so an admin can't over-invite and discover it at claim
-  time. **No partial invite** — if the mail fails to send, the row is deleted again.
+  time. **No partial invite** — if the mail fails to send, the row is deleted again. Since IDI-267
+  (2026-09): sends are **rate-limited** (per-inviter/hour, per-org/day, per-recipient cooldown → 429 +
+  `Retry-After`, via the `invite_check_rate_limit` RPC — fails open until its SQL is applied, see
+  `04-data-model.md` §Schema gaps), the Subject's `display_name`/org name are control-char-stripped and
+  length-capped (header-injection guard), and Resend/DB failure detail is logged server-side but returned
+  opaque.
 - **Shared dictionary (the merge rule).** Dictation applies **personal ∪ team**. Nothing is dropped from
   either set; only a genuine same-key collision needs a tiebreak — identical vocabulary word
   (case-insensitive), identical replacement `from`, identical snippet `trigger` — and there **personal
@@ -1338,7 +1343,8 @@ deletes real files under `~/.verbal/` and this development machine has a real, i
   meeting text NEVER goes to analytics; `meetings_max_minutes` (capture-length cap) is still stored but not
   enforced — a separate, not-yet-built concern from the reaper below.
 - **Meeting-audio retention reaper (MER-31, 2026-07):** audio-only deletion, **off by default**. A daily
-  `pg_cron` job (`reap-meeting-audio-daily`, 03:00 UTC) POSTs to the `reap-meeting-audio` Edge Function,
+  `pg_cron` job (`reap-meeting-audio-daily`, 03:00 UTC) POSTs to the `reap-meeting-audio` Edge Function
+  (since IDI-258 gated on the `x-cron-secret` header / `REAP_CRON_SECRET` secret — see `04-data-model.md`),
   which deletes the `meeting-audio/<user_id>/<meeting_id>.wav` object for meetings where `pinned = false`,
   `audio_expired = false`, `retention_days > 0`, and `now() - started_at > retention_days` — **never**
   touching `transcript`/`summary`/`decisions`/`action_items`/`hybrid_notes`/`notes_md`; the readable record
@@ -1627,7 +1633,13 @@ user_id-scoped** — a desktop regeneration mid-edit freezes the field and offer
 overwritten; `generateMeetingNotes` has a 30s abort; playback URL resolution has an error state + retry.
 
 **Meeting-start push:** desktop `_notify_start` fires the `notify-meeting-start` edge
-function on meeting start → reads `push_tokens` (new table) → Expo Push API. Mobile
+function on meeting start → reads `push_tokens` (new table) → Expo Push API. Since IDI-258
+(2026-09) the function requires an **authenticated** JWT and only ever targets the JWT
+subject (a body `user_id` that isn't the subject is refused) — the anon key used to be
+enough to push-spam any user id. KNOWN DEGRADE: desktop `_notify_start` still sends the
+anon key (`groq_proxy`-style `SUPABASE_KEY` headers), so the push is currently rejected
+with 401 (fail-soft, meeting capture unaffected) until the desktop sends the signed-in
+session's access token — client follow-up tracked in the IDI-258 report. Mobile
 `lib/notifications.ts` registers an Expo push token on launch and is DEFENSIVE — every
 expo-notifications call is a lazy `require` in try/catch, so a dev client built before the
 native module was added never crashes (remote push lights up on the next native build; the

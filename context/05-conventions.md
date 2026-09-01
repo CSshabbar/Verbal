@@ -2056,3 +2056,29 @@ Mobile: `npx tsc --noEmit` in `verbal-mobile/`.
     ever received (phone dictations never reached the Mac, 2026-08-25 → 08-30, 50k log lines before anyone
     looked). Four sites: `sync.py`, `dashboard.py`, `flume_web_dashboard.py`, `shared_dashboard.py`. When
     "sync doesn't work", grep `app.log` for `CERTIFICATE_VERIFY_FAILED` first.
+
+81. **The anon key passes the Edge Function gateway's `verify_jwt` — it is NOT a caller control**
+    (security batch 2026-09, IDI-258/259/267). The project anon key ships in every client binary, so
+    "has a valid JWT" proves nothing about who is calling. Rules for every Edge Function:
+    (a) anything that touches per-user data with the service role must decode the JWT locally
+    (`userIdFromJwt`: role `authenticated` + `sub`, the groq-proxy/invite-member/delete-account pattern),
+    reject anon-role callers, and derive the target user from `sub` — never from the request body
+    (`notify-meeting-start` now does this; a legacy body `user_id` may only CONFIRM the subject).
+    (b) A path/id shape regex is not an ownership check — bind the resource to the caller
+    (groq-proxy `diarize`: submit requires the `meeting-audio` path prefix to equal `sub`; poll re-derives
+    the submitter statelessly from AssemblyAI's stored `audio_url` — edge isolates keep no memory between
+    invocations, so an in-memory submit→poll map can never work; bind via durable storage or something
+    re-derivable). (c) A machine-only function (the `reap-meeting-audio` cron reaper) is gated on a
+    dedicated secret header (`x-cron-secret` vs `REAP_CRON_SECRET`, constant-time compare via SHA-256 +
+    XOR accumulate, deployed `--no-verify-jwt`; the pg_cron job reads the secret from Vault
+    (`reap_cron_secret`) — never commit a JWT/secret into SQL). (d) Upstream provider parameters a client
+    can choose are allowlisted (`asr_alt_model` → `AAI_ALLOWED_MODELS`); rejects use a non-200 so the
+    dictation client falls back to Groq (Hard Rule #1: reject the peripheral, never the pipeline).
+    (e) User-controlled strings that reach an email header (`display_name`, `organizations.name` → the
+    invite Subject) are stripped of ALL control chars and length-capped (`cleanHeaderText`) — CR/LF there
+    is RFC-5322 header injection; still pending: write-time rejection DB-side. (f) Provider/DB failure
+    detail (Resend bodies, PostgREST errors, per-table purge failures) is logged server-side and returned
+    as an OPAQUE error only (`invite-member` insert/email paths, `delete-account`). (g) invite-member
+    sending is rate-limited via its own `invite_check_rate_limit` RPC (see `04-data-model.md` §Schema
+    gaps) — do NOT reuse `groq_check_rate_limit` for windows over ~5 minutes: its cleanup deletes rows
+    older than 10 minutes and silently resets longer windows.
