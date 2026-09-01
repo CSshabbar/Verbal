@@ -109,9 +109,11 @@ DEFAULT_CONFIG = {
     "transform_hotkey": 17,               # keycode for T — fires on Cmd+Shift+T
     "transform_hotkey_label": "T",
     # Spoken language for transcription (dictation + meetings). ISO-639-1 code
-    # or "auto". Default "en" preserves the original pinned-English behavior;
-    # non-English pins route Groq to full whisper-large-v3.
-    "spoken_language": "en",
+    # or "auto". Default auto lets Whisper detect; non-English pins route Groq
+    # to full whisper-large-v3.
+    "spoken_language": "auto",
+    # One-time: configs that still hold the old implicit default "en" → "auto".
+    "spoken_language_default_auto_v1": False,
     "hotkey_label": "Right ⌘",            # display label for the dictation key
     # Context grounding (MER-44 Phase 0). Feeds the user's dictionary terms +
     # active-app hint into the cleanup LLM so it grounds identifiers/names instead
@@ -445,6 +447,13 @@ def load_config() -> dict:
                     config["hybrid_mode"] = True
                     logger.info("pipeline: moved to the default 'Hybrid' (speed + chained + hybrid)")
                 config["pipeline_default_v3"] = True
+                changed = True
+            # One-time move to auto-detect as the spoken-language default (2026-09).
+            if not config.get("spoken_language_default_auto_v1"):
+                if config.get("spoken_language") == "en":
+                    config["spoken_language"] = "auto"
+                    logger.info("spoken_language: moved implicit default en → auto-detect")
+                config["spoken_language_default_auto_v1"] = True
                 changed = True
 
         env_key = os.getenv("GEMINI_API_KEY", "").strip()

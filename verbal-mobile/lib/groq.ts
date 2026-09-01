@@ -35,14 +35,23 @@ async function proxyHeaders(json: boolean): Promise<Record<string, string>> {
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const SPOKEN_LANGUAGE_KEY = 'flume_spoken_language';
+const SPOKEN_LANGUAGE_MIGRATION_KEY = 'flume_spoken_language_default_auto_v1';
 
-/** Spoken language for transcription — ISO-639-1 or 'auto'. Defaults to 'en'
- *  (the historical behavior). Written ONLY by setSpokenLanguage() below. */
+/** Spoken language for transcription — ISO-639-1 or 'auto'. Defaults to 'auto'.
+ *  Written ONLY by setSpokenLanguage() below. */
 export async function getSpokenLanguage(): Promise<string> {
   try {
-    return (await AsyncStorage.getItem(SPOKEN_LANGUAGE_KEY)) || 'en';
+    const migrated = await AsyncStorage.getItem(SPOKEN_LANGUAGE_MIGRATION_KEY);
+    if (!migrated) {
+      const cur = await AsyncStorage.getItem(SPOKEN_LANGUAGE_KEY);
+      if (!cur || cur === 'en') {
+        await AsyncStorage.setItem(SPOKEN_LANGUAGE_KEY, 'auto');
+      }
+      await AsyncStorage.setItem(SPOKEN_LANGUAGE_MIGRATION_KEY, '1');
+    }
+    return (await AsyncStorage.getItem(SPOKEN_LANGUAGE_KEY)) || 'auto';
   } catch {
-    return 'en';
+    return 'auto';
   }
 }
 
@@ -146,7 +155,7 @@ export const SPOKEN_LANGUAGES: { code: string; label: string }[] = [
  * close a cycle. Fail-closed — a failed resync never breaks the setting.
  */
 export async function setSpokenLanguage(code: string): Promise<void> {
-  const lang = (code || 'en').trim() || 'en';
+  const lang = (code || 'auto').trim() || 'auto';
   await AsyncStorage.setItem(SPOKEN_LANGUAGE_KEY, lang);
   import('./keyboardBridge').then((m) => m.syncKeyboardConfig()).catch(() => { /* best effort */ });
 }

@@ -5182,7 +5182,7 @@ function setMeetSetting(key, val){
   api('set_meeting_setting', key, val);
 }
 let TSET=null;
-let LANGS={value:'en', options:[["auto","Auto-detect"],["en","English"]]};
+let LANGS={value:'auto', options:[["auto","Auto-detect"],["en","English"]]};
 // Fetch language options only once per session — they don't change between
 // calls. Preventing the re-fetch is what fixes the Settings-page flicker
 // (was: language resolve → renderSettings() → language resolve …).

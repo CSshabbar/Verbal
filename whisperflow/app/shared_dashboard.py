@@ -1152,7 +1152,7 @@ class DashboardApi:
     def get_spoken_language(self):
         """Global spoken-language setting + the picker's option list."""
         try:
-            return _ok(value=str(self.app.config.get("spoken_language", "en")),
+            return _ok(value=str(self.app.config.get("spoken_language", "auto")),
                        options=SPOKEN_LANGUAGES)
         except Exception as e:
             return {"ok": False, "error": str(e)}
@@ -1167,7 +1167,7 @@ class DashboardApi:
 
     def set_spoken_language(self, value):
         try:
-            value = str(value or "en").strip().lower()
+            value = str(value or "auto").strip().lower()
             if value not in {c for c, _ in SPOKEN_LANGUAGES}:
                 return {"ok": False, "error": "unknown language"}
             self.app.config["spoken_language"] = value

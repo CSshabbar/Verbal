@@ -323,15 +323,19 @@ def cloud_allowed(cfg: dict | None = None) -> bool:
     `sync_user_id` without an `auth` dict no longer exists — desktop only ever
     HOSTS a pairing, and hosting requires being signed in (Hard Rule #26).
 
-    NOT gated on `session_dead`: a dead refresh token keeps the identity and
-    falls back to the anon key by design (Hard Rule #24 / IDI-166). Denying
-    cloud access there would re-break "can't open meeting notes", which is the
-    exact bug that rule exists to prevent. When RLS tightens to `auth.uid()`,
-    this is where the extra `and not session_dead(cfg)` belongs.
+    Gated on `session_dead` (IDI-268 / IDI-29): once shared-table RLS is
+    `TO authenticated` on `auth.uid()`, a dead refresh token can no longer limp
+    along on the anon-key fallback — those requests read ZERO rows silently, so
+    the app would look healthy while showing nothing. A dead session must deny
+    cloud access here and let the re-sign-in banner (IDI-166) surface instead.
+    This deliberately reverses the pre-RLS Hard Rule #24 fallback; the desktop
+    build carrying this gate MUST ship (and propagate to installs) before
+    `supabase_auth_uid_rls.sql` is applied, or dead-session clients silently go
+    blank the moment the policies tighten.
     """
     try:
         cfg = cfg if cfg is not None else load_config()
-        return bool((cfg.get("auth") or {}).get("user_id"))
+        return bool((cfg.get("auth") or {}).get("user_id")) and not session_dead(cfg)
     except Exception:
         return False
 

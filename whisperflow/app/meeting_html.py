@@ -875,7 +875,7 @@ function loadPreLangs(){
   api('get_spoken_language').then(function(r){
     if(!(r && r.ok)) return;
     PRE_LANGS_LOADED=true;
-    PRE.lang = r.value || 'en';
+    PRE.lang = r.value || 'auto';
     PRE_LANG_OPTS = r.options || [];
     const lbl=document.getElementById('preLangLbl');
     if(lbl) lbl.textContent=preLangLabel();

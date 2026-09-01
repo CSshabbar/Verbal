@@ -218,7 +218,7 @@ def _summary_output_language(config, transcript, session_language=""):
     notes_pref = (config.get("meetings_notes_language") or "en").strip().lower()
     if notes_pref != "auto":
         return _LANG_NAMES.get(notes_pref, "English")
-    lang = (session_language or config.get("spoken_language") or "en").strip().lower()
+    lang = (session_language or config.get("spoken_language") or "auto").strip().lower()
     if lang and lang != "auto":
         return _LANG_NAMES.get(lang, "English")
     text = " ".join((u.get("text") or "") for u in (transcript or []))[:4000]

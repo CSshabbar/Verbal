@@ -691,10 +691,12 @@
     `config['auth']['session_dead']` (local config only, no Supabase column) so the state survives restart:
     `auth.session_dead(cfg)` is the accessor, `get_state` exposes it, and the dashboard renders a
     "Session expired — sign in again" banner (sidebar + Settings); `delete_account` returns that actionable
-    message instead of "Not signed in". A fresh `_store_session` resets it. This is safe only because RLS
-    is still permissive — when RLS tightens to `auth.uid()`, a dead session must instead force
-    re-authentication. NOTE the asymmetry (IDI-170): a DEAD SESSION keeps `sync_user_id` (anon fallback
-    keeps working, per this rule), but an explicit SIGN-OUT clears `sync_user_id`/`sync_enabled` and
+    message instead of "Not signed in". A fresh `_store_session` resets it. **As of IDI-268 (2026-09) `cloud_allowed()` now
+    ALSO fails closed on `session_dead`** — a dead session no longer limps along on the anon key,
+    because once RLS is `TO authenticated` on `auth.uid()` that fallback reads zero rows silently. The
+    desktop build carrying this gate MUST ship and propagate before `supabase_auth_uid_rls.sql` is
+    applied (see rule #85). Before that gate, a DEAD SESSION kept `sync_user_id` and the anon fallback
+    kept working; an explicit SIGN-OUT (IDI-170) still additionally clears `sync_user_id`/`sync_enabled` and
     deletes this device's `devices` row — post-sign-out, `auth.cloud_allowed()` gates every cloud path,
     and desktop now also has the mobile-style uid-change cache wipe (`auth._clear_account_caches`, which
     covers `voice_prints` + `meetings_opened` too).
@@ -2150,3 +2152,14 @@ Repo-checked-in agent definitions and skills for parallel/reviewed work:
     Only `reap-meeting-audio` (cron-secret gated, trusts no claim) may be `--no-verify-jwt`. Do NOT
     "fix" the known meeting-start push 401 by flipping verify_jwt off; the fix is client-side (send the
     signed-in session's access token, not the anon key).
+
+85. **`cloud_allowed()` fails closed on `session_dead`, and the build carrying it MUST ship before RLS
+    tightens (IDI-268 / IDI-29, 2026-09).** `auth.cloud_allowed()` now returns
+    `bool(auth.user_id) and not session_dead(cfg)`. Rationale: `supabase_auth_uid_rls.sql` replaces the six
+    shared tables' permissive `USING(true)` policies with `TO authenticated … auth.uid()`. After that, a
+    dead refresh token's anon-key fallback reads ZERO rows silently — the app looks healthy but shows
+    nothing. The gate makes a dead session deny cloud access and surface the IDI-166 re-sign-in banner
+    instead. SEQUENCING IS LOAD-BEARING: this desktop build must ship and auto-update out to the installed
+    base BEFORE the SQL is applied to prod; applying the SQL first would blank every not-yet-updated
+    dead-session install. The RLS migration is deliberately still NOT auto-applied — apply it manually only
+    after the gated build has propagated (see the IDI-268 close-out).

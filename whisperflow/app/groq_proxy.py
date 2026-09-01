@@ -39,7 +39,7 @@ _MIME = {".flac": "audio/flac", ".wav": "audio/wav", ".ogg": "audio/ogg",
 
 
 def transcribe_via_proxy(wav_path: str, config: dict, prompt: str | None = None,
-                         timeout: float = 30.0, language: str | None = "en",
+                         timeout: float = 30.0, language: str | None = None,
                          model: str | None = None,
                          chain: dict | None = None,
                          sidecar: dict | None = None,
