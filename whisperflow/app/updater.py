@@ -103,11 +103,22 @@ def check_for_update(force: bool = False) -> dict | None:
 
 def download_update(version_info: dict, on_progress=None) -> str | None:
     """Download the installer to a temp file. Returns local path or None."""
+    # FAIL CLOSED on a missing hash (IDI-260): an `app_versions` row with a
+    # null/empty file_hash must REFUSE the update, never install it. The old
+    # `if expected_hash:` below silently skipped verification for such rows
+    # and returned the unverified binary as trusted (then executed, silently
+    # by default on Windows). Normalized to lowercase so a CI-stamped
+    # uppercase hex digest doesn't falsely refuse (_sha256 emits lowercase).
+    expected_hash = (version_info.get("file_hash") or "").strip().lower()
+    if not expected_hash:
+        logger.error(
+            "Update refused: version %s has no file_hash — cannot verify the "
+            "download, not installing", version_info.get("version"))
+        return None
     max_retries = 3
     for attempt in range(max_retries):
         try:
             url = version_info["file_url"]
-            expected_hash = version_info.get("file_hash")
             total_size = version_info.get("file_size", 0)
 
             suffix = ".exe" if PLATFORM == "win" else ".dmg"
@@ -124,16 +135,16 @@ def download_update(version_info: dict, on_progress=None) -> str | None:
                         if total_size and on_progress:
                             on_progress(downloaded / total_size)
 
-            if expected_hash:
-                actual = _sha256(tmp_path)
-                if actual != expected_hash:
-                    logger.error(f"Hash mismatch: expected {expected_hash}, got {actual}")
-                    os.unlink(tmp_path)
-                    if attempt < max_retries - 1:
-                        logger.info(f"Retrying download (attempt {attempt + 2}/{max_retries})")
-                        continue
-                    return None
-                logger.info(f"Hash verified: {actual[:16]}...")
+            # Unconditional — a hashless row was already refused above.
+            actual = _sha256(tmp_path)
+            if actual != expected_hash:
+                logger.error(f"Hash mismatch: expected {expected_hash}, got {actual}")
+                os.unlink(tmp_path)
+                if attempt < max_retries - 1:
+                    logger.info(f"Retrying download (attempt {attempt + 2}/{max_retries})")
+                    continue
+                return None
+            logger.info(f"Hash verified: {actual[:16]}...")
 
             return tmp_path
         except Exception as e:
