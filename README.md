@@ -14,7 +14,7 @@ Verbal solves the problem of slow typing by converting speech to text in real-ti
 - **Instant Dictation**: Hold a key to record, release to transcribe and paste
 - **Privacy First**: Local transcription with optional cloud enhancement
 - **AI-Powered Formatting**: Automatically format your speech with natural language commands
-- **Cross-Platform**: Native apps for macOS and Windows
+- **Cross-Platform**: Desktop apps for macOS and Windows, plus one Expo app for iOS and Android with native voice keyboards
 - **Offline Capability**: Works without internet using local Whisper models
 - **Seamless Integration**: Pastes text directly into any application
 
@@ -72,6 +72,13 @@ Verbal is designed to work seamlessly across different operating systems with na
 - **Permissions**: Requests microphone access via Windows security
 - **Installation**: EXE installer with automatic updates
 - **Requirements**: Windows 10+ with Python 3.11
+
+### iOS + Android (`verbal-mobile/`)
+- **One codebase**: Expo SDK 55 / React Native for both mobile OSes — the platform matrix lives in `context/01-product.md`
+- **Voice keyboard**: a real iOS keyboard extension (Swift, `targets/keyboard/`) and a real Android IME (Kotlin, `plugins/keyboard/`), both dictating through the same Supabase `groq-proxy`
+- **Sync**: history, notes, canvas, dictionary and snippets sync with the desktop apps through Supabase
+- **Status**: built with EAS; not yet on the App Store or Google Play (readiness tracked in Linear IDI-247 / IDI-269)
+- **Dev**: `cd verbal-mobile && npm install && npx expo start`; native builds via `npx expo prebuild -p <ios|android> --clean` then `npx expo run:<platform>` (`ios/` and `android/` are generated, not committed)
 
 ### Linux (Planned)
 - **System Integration**: System tray app with GTK/Qt interface
@@ -215,9 +222,18 @@ Verbal/
 │   │   └── config.py      # Settings management
 │   ├── assets/            # Icons and UI resources
 │   ├── requirements.txt   # Python dependencies
-│   └── *.spec             # PyInstaller configurations
-├── .github/workflows/     # CI/CD build processes
-└── build_exe.sh           # Release automation
+│   ├── *.spec             # PyInstaller configurations
+│   └── supabase_*.sql, supabase_migrations/  # Supabase schema + migration SQL
+├── verbal-mobile/         # iOS + Android app (Expo / React Native, one codebase)
+│   ├── flume-ui/          # Screens, hooks, navigation, theme
+│   ├── lib/               # Supabase, Groq, storage, keyboard config bridge
+│   ├── plugins/           # Android config plugin + Kotlin IME (withFlumeKeyboard.js, keyboard/)
+│   ├── targets/keyboard/  # iOS keyboard extension (Swift, via @bacons/apple-targets)
+│   └── modules/           # Local Expo modules (flume-shared-store — iOS App Group)
+├── supabase/functions/    # Edge Functions (groq-proxy, download, invite, …)
+├── context/               # Curated knowledge base — read this first (see CLAUDE.md)
+├── site/flume/            # Static pages published to idiaz.io/flume
+└── .github/workflows/     # CI/CD build processes (desktop; mobile builds via EAS)
 ```
 
 ### Building from Source

@@ -41,7 +41,7 @@ separate users purely by `user_id` (the Supabase auth id after sign-in). Details
                                               │ pairings · Storage(recordings, canvas-images) · Auth  │
                                               └───────────────────────────────────────────────────────┘
                                                                      ▲
-                                                          same account (user_id) ── iOS app
+                                                          same account (user_id) ── mobile app (iOS + Android)
 ```
 
 ## Desktop stack (`whisperflow/app/`)
@@ -295,9 +295,24 @@ bounded `config['meetings']` (`MEETINGS_CAP`). The HUD appears when the meeting 
   verified mutually assignable in the IDI-179 closing pass — keep them in sync with every hook change.
 - **Client:** `lib/supabase.ts` — one `@supabase/supabase-js` client, `flowType:'pkce'`,
   `storage: AsyncStorage`, `detectSessionInUrl:false`.
-- **iOS native project** committed at `ios/` (`Verbal.xcworkspace`, CocoaPods) — a dev-client/prebuilt
-  Expo app; **Android native project** committed at `android/` (Gradle, `gradlew`); EAS profiles for both
-  in `eas.json`.
+- **Native projects are GENERATED, not committed (Continuous Native Generation).** `ios/` and `android/`
+  are gitignored (`verbal-mobile/.gitignore` "generated native folders") and produced on demand by
+  `npx expo prebuild -p <ios|android>` from three inputs: (1) `app.json` — bundle/package id `com.verbal.app`,
+  the hand-curated `android.permissions` list, `ios.infoPlist` usage strings, the App Group entitlement
+  `group.com.verbal.app`, and the plugin list; (2) the Android config plugin `plugins/withFlumeKeyboard.js` —
+  `withAndroidManifest` registers `.keyboard.FlumeInputMethodService` (`BIND_INPUT_METHOD`, `@xml/method`)
+  and `withDangerousMod('android')` copies `plugins/keyboard/FlumeInputMethodService.kt`, `method.xml`, the
+  Geist/JetBrains Mono/Ionicons TTFs, the three `.wav` cues and the word/bigram/emoji tables into the
+  generated tree; (3) `@bacons/apple-targets` reading `targets/keyboard/expo-target.config.js` for the iOS
+  keyboard extension (Swift + `Info.plist` + `generated.entitlements`). `modules/flume-shared-store` is an
+  `apple`-only local Expo module (App Group writes; a documented no-op on Android where
+  `documentDirectory` already *is* the IME-readable `filesDir`). **Consequence:** every Info.plist key,
+  entitlement, manifest entry, Gradle setting or bundled resource must be expressed as one of those inputs —
+  a hand edit inside `ios/` or `android/` is silently lost on the next prebuild. `npx expo prebuild --clean`
+  is the reset; a plain `expo run:android` reuses the existing tree and does NOT re-copy the IME (the
+  stale-keyboard trap recorded in `BUILD_AND_TEST_KEYBOARD.md`). EAS build profiles for both platforms live
+  in `eas.json` (`preview` emits an Android APK for sideloading; `production` is store-shaped). Android/Play
+  launch readiness is tracked under IDI-269, iOS/App Store under IDI-247. (IDI-256)
 - **Shared dictation pipeline contract:** `lib/dictationPipeline.ts` wraps transcribe → AI-cleanup →
   dictionary-replacement → snippet-expansion as ONE function — and since IDI-179 it is actually WIRED:
   exactly two app callers, `useRecorder.stop()` (first pass) and `historyStore.retryEntry()` (retry), both
@@ -335,7 +350,12 @@ bounded `config['meetings']` (`MEETINGS_CAP`). The HUD appears when the meeting 
   branded "gone missing" page/503 instead of raw storage XML), and 302s to it with a short
   `Cache-Control`. `?json=1` returns `{ok,platform,version,url,reachable,size,sha256,changelog}` for a
   website/CI to consume without redirecting. Shipping a release needs **no website change and no CI
-  change to this function** — see the release pipeline below.
+  change to this function** — see the release pipeline below. **Phones** (`?platform=ios|android`, or a
+  mobile UA) are routed to the stores, not `app_versions`: once the `APP_STORE_URL` / `PLAY_STORE_URL`
+  function secrets are set the endpoint 302s there (`?json=1` → `{ok:true,platform,url,store}`); until then
+  it renders the branded "on its way" page / `{ok:false,error:"not_distributed"}` 404. Both mobile JSON
+  shapes carry `Access-Control-Allow-Origin: *` so `site/flume/invite.html` can ask cross-origin where a
+  phone should go. Going live on a store is one `supabase secrets set` — no code or site change (IDI-276).
   **Auth:** Google provider.
 
 - **Desktop release pipeline (IDI-224, 2026-08-20) — GitOps, GitHub-Releases-only, no human gate.**

@@ -1,7 +1,8 @@
 # Verbal — Claude Code project instructions
 
 Verbal is a Wispr-Flow-style voice-dictation product: a **macOS/Windows desktop app** (`whisperflow/`,
-Python) and an **iOS app** (`verbal-mobile/`, Expo/React Native), sharing one **Supabase** backend.
+Python) and an **iOS + Android app** (`verbal-mobile/`, Expo/React Native — ONE codebase for both mobile OSes,
+with native voice keyboards in Swift and Kotlin), sharing one **Supabase** backend.
 
 ## Read `context/` first
 
@@ -32,6 +33,10 @@ On request **"refresh context"**, re-derive all five docs from the current codeb
   strings — see `context/05-conventions.md` for the single-vs-double backslash rule). Run
   `autolearn_fixtures.py` / `qa_filetags_fixtures.py` if those areas are touched.
 - Mobile: `cd verbal-mobile && npx tsc --noEmit`.
+  Native config is **generated, never hand-edited**: `ios/` and `android/` are gitignored and produced by
+  `expo prebuild` from `app.json` + `plugins/withFlumeKeyboard.js` (Android IME) + `targets/keyboard/`
+  (iOS extension). If you touch any of those inputs, run `npx expo prebuild -p android --clean --no-install`
+  (and `-p ios` on a Mac) and confirm the plugin output landed — see `context/02-architecture.md` §Mobile stack.
 - Peripheral features must **fail closed** and never break the recording→transcribe→inject path.
 
 ## Conventions

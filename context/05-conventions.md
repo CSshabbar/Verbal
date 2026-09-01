@@ -2077,3 +2077,14 @@ Mobile: `npx tsc --noEmit` in `verbal-mobile/`.
     `win_meeting_prompt.py` (tkinter sticker + `WS_EX_NOACTIVATE`), not the AppKit `meeting_prompt.py`.
     Heuristics stay conservative; `meeting_detect_fixtures.py` pins Windows exe owners. Fail closed —
     a scan error must never reach capture or dictation.
+
+81. **`verbal-mobile/ios/` and `verbal-mobile/android/` are GENERATED — never edit or commit them.**
+    (IDI-256, 2026-08-29.) Native config is `app.json` + `plugins/withFlumeKeyboard.js` (Android IME:
+    manifest service entry + file copies) + `targets/keyboard/expo-target.config.js` via
+    `@bacons/apple-targets` (iOS keyboard extension) + `modules/flume-shared-store` (apple-only). Express
+    every Info.plist key, entitlement, manifest entry, Gradle setting or bundled asset as one of those
+    inputs and regenerate with `npx expo prebuild -p <ios|android> --clean`. Two traps: a hand edit under
+    the generated folders is silently lost on the next prebuild, and a *non*-clean `expo run:android`
+    reuses the stale tree, so a changed `FlumeInputMethodService.kt` does not ship until you `--clean`
+    (`BUILD_AND_TEST_KEYBOARD.md`). Corollary for Play review: every `android.permissions` entry in
+    `app.json` must name an in-app use — do not declare ahead of implementation (IDI-273).

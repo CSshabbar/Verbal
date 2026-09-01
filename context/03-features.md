@@ -1907,14 +1907,18 @@ Fully fail-closed — both down → `None` → "Couldn't transform, try again" (
 ### Team invite deep links (2026-08-29)
 - The invite e-mail (`supabase/functions/invite-member`) links to the **`invite` Edge Function**
   (`/functions/v1/invite?t=<token>`, public, `verify_jwt=false`) — a stable address that only
-  **redirects**: to the static landing page `INVITE_LANDING_URL` (desktop) when that env is set, else to
-  `idiaz.io/flume/download.html?t=<token>`. **The `*.supabase.co` functions gateway serves every response
+  **redirects**: to the static landing page `INVITE_LANDING_URL` for any recognised desktop *or phone*
+  browser when that env is set (since IDI-276 — phones used to be bounced straight to the download page);
+  unknown user agents (link scanners, curl) and token-less hits go to `idiaz.io/flume/download.html?t=<token>`. **The `*.supabase.co` functions gateway serves every response
   as `text/plain` + `nosniff` (verified 2026-08-29 with text/html AND application/xhtml+xml), so the
   landing page cannot be an Edge Function** — it is the static file `site/flume/invite.html` (source of
   truth in this repo; a copy sits in `/Users/mshabbar/IDIAZ/flume-site/` for upload to
   `https://idiaz.io/flume/invite.html`). That page tries **`flume://invite?t=<token>`**; if the document
-  is still visible ~1.6 s later it redirects to the download page, token preserved; phones go straight
-  there. **Live since 2026-08-29**: the function's default `INVITE_LANDING_URL` is that page. Publishing the
+  is still visible ~1.6 s later it redirects to the download page, token preserved. **Phones** first ask the
+  `download` function (`?json=1&platform=ios|android`, 2.5 s budget) for a live store link and go there when
+  one is configured (`APP_STORE_URL` / `PLAY_STORE_URL` secrets, IDI-276); otherwise — or on any fetch
+  failure — they fall back to the download page with the token, exactly as before. **Live since
+  2026-08-29**: the function's default `INVITE_LANDING_URL` is that page. Publishing the
   Flume site = `~/.agents/skills/here-now/scripts/publish.sh /Users/mshabbar/IDIAZ/flume-site --slug
   hollow-tulip-8v5s` (idiaz.io/flume is that here.now publish; the `idiaz-io/websites` repo pipeline
   covers only the root site).
