@@ -17,6 +17,7 @@ optional RLS-hardening step).
 """
 import base64
 import hashlib
+import hmac
 import http.server
 import logging
 import secrets
@@ -69,6 +70,14 @@ def _pkce():
 class _CallbackHandler(http.server.BaseHTTPRequestHandler):
     code = None
     error = None
+    # CSRF binding (IDI-265): when set (non-None), a callback is honored ONLY
+    # if it carries a matching `state` — absent or mismatched state is
+    # rejected without touching `code`/`error`. Currently always None: see
+    # the state note in sign_in_with_google() for why Supabase GoTrue cannot
+    # round-trip a client state today. PKCE meanwhile binds the code to this
+    # flow — a code minted for any other code_challenge fails our token
+    # exchange, so an injected foreign code cannot complete a sign-in.
+    expected_state = None
 
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
@@ -76,10 +85,22 @@ class _CallbackHandler(http.server.BaseHTTPRequestHandler):
             self.send_response(204)
             self.end_headers()
             return
+        if parsed.path != "/callback":
+            self.send_response(404)
+            self.end_headers()
+            return
         params = urllib.parse.parse_qs(parsed.query)
-        if "code" in params:
+        state_ok = True
+        if _CallbackHandler.expected_state is not None:
+            got = (params.get("state") or [""])[0]
+            state_ok = hmac.compare_digest(got, _CallbackHandler.expected_state)
+            if not state_ok:
+                logger.warning("Sign-in callback rejected: missing/mismatched state")
+        if state_ok and "code" in params and _CallbackHandler.code is None:
+            # First code wins — a later request must not replace a code the
+            # real redirect already delivered.
             _CallbackHandler.code = params["code"][0]
-        if "error_description" in params or "error" in params:
+        if state_ok and ("error_description" in params or "error" in params):
             _CallbackHandler.error = (params.get("error_description") or params.get("error"))[0]
         ok = _CallbackHandler.code is not None
         body = (_DONE_PAGE % (("✓", "Login successful") if ok
@@ -99,26 +120,35 @@ class _CallbackHandler(http.server.BaseHTTPRequestHandler):
         pass
 
 
-class _DualStackServer(http.server.ThreadingHTTPServer):
+class _LoopbackV6Server(http.server.ThreadingHTTPServer):
+    """IPv6 loopback (`::1`) listener for the sign-in callback."""
     daemon_threads = True
-    """Bind IPv6 + IPv4 so it catches localhost however the browser resolves it
-    (localhost → ::1 on many macs, → 127.0.0.1 on others)."""
     address_family = socket.AF_INET6
 
-    def server_bind(self):
-        try:
-            self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
-        except Exception:
-            pass
-        http.server.HTTPServer.server_bind(self)
 
+def _make_servers():
+    """Loopback-ONLY listeners (IDI-265). The old server bound `::` — every
+    interface, dual-stack — exposing the OAuth callback to the whole LAN; the
+    redirect URI is http://localhost:8765/callback, so loopback suffices.
 
-def _make_server():
+    `localhost` resolves to ::1 on some machines and 127.0.0.1 on others, and
+    a loopback socket cannot be dual-stack (IPV6_V6ONLY=0 only maps IPv4 into
+    a wildcard `::` bind, never into `::1`) — so bind BOTH loopback addresses
+    and let the browser connect on whichever family it picked. One family may
+    be unavailable (e.g. IPv6 disabled): that alone is fine; only both binds
+    failing is an error. Returns a non-empty list of servers."""
+    servers = []
     try:
-        return _DualStackServer(("::", REDIRECT_PORT), _CallbackHandler)
+        servers.append(_LoopbackV6Server(("::1", REDIRECT_PORT), _CallbackHandler))
     except Exception as e:
-        logger.warning("dual-stack bind failed (%s); falling back to IPv4", e)
-        return http.server.HTTPServer(("127.0.0.1", REDIRECT_PORT), _CallbackHandler)
+        logger.warning("IPv6 loopback bind failed (%s); trying IPv4 only", e)
+    try:
+        servers.append(http.server.ThreadingHTTPServer(("127.0.0.1", REDIRECT_PORT), _CallbackHandler))
+    except Exception as e:
+        logger.warning("IPv4 loopback bind failed (%s)", e)
+        if not servers:
+            raise
+    return servers
 
 
 class SignInCancelled(RuntimeError):
@@ -135,6 +165,21 @@ def sign_in_with_google(timeout=180):
     """Blocking. Opens the browser and returns the stored auth dict, or raises."""
     _signin_cancel.clear()
     verifier, challenge = _pkce()
+    # STATE (IDI-265): deliberately NOT sent. Supabase GoTrue cannot
+    # round-trip a client `state` through the provider PKCE flow — verified
+    # live (2026-09-01) against our project: `&state=X` on /authorize
+    # REPLACES GoTrue's own flow-state id in the Google round-trip (breaking
+    # the flow at Google→Supabase), and GoTrue matches `redirect_to` against
+    # the redirect allowlist INCLUDING its query string, so smuggling state
+    # as `/callback?state=X` silently falls back to SITE_URL unless the
+    # dashboard allowlist carries a `http://localhost:8765/callback*` glob.
+    # To activate enforcement once that glob is configured: append the state
+    # to REDIRECT_URI's query here and set _CallbackHandler.expected_state =
+    # secrets.token_urlsafe(32); the handler then rejects absent/mismatched
+    # state. Until then PKCE is the binding: an injected foreign code fails
+    # the token exchange below (wrong code_challenge), so it cannot sign the
+    # user into another account.
+    _CallbackHandler.expected_state = None
     authorize_url = (
         f"{AUTH_BASE}/authorize?provider=google"
         f"&redirect_to={urllib.parse.quote(REDIRECT_URI, safe='')}"
@@ -143,10 +188,10 @@ def sign_in_with_google(timeout=180):
     _CallbackHandler.code = None
     _CallbackHandler.error = None
 
-    server = _make_server()
+    servers = _make_servers()
     logger.info("Opening browser for Google sign-in")
-    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
-    server_thread.start()
+    for s in servers:
+        threading.Thread(target=s.serve_forever, daemon=True).start()
     webbrowser.open(authorize_url)
 
     try:
@@ -162,11 +207,16 @@ def sign_in_with_google(timeout=180):
         # (skip the wait when cancelled — the point is to free the port fast)
         if not _signin_cancel.is_set():
             time.sleep(1.2)
-        try:
-            server.shutdown()
-        except Exception:
-            pass
-        server.server_close()
+        _CallbackHandler.expected_state = None   # clear after use
+        for s in servers:
+            try:
+                s.shutdown()
+            except Exception:
+                pass
+            try:
+                s.server_close()
+            except Exception:
+                pass
 
     if _CallbackHandler.error:
         raise RuntimeError(_CallbackHandler.error)
