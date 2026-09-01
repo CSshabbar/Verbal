@@ -15,14 +15,39 @@ on:
         default: '1.0.0'
 
 jobs:
+  # ── Input validation (IDI-266) ─────────────────────────────────
+  # The workflow_dispatch `version` input is attacker-influenced free text
+  # that used to be `${{ }}`-interpolated straight into run: scripts and
+  # curl JSON bodies. Gate the WHOLE pipeline on it matching a strict
+  # X.Y.Z shape, and only ever hand it to shells via env: (never inline
+  # `${{ }}` in run:), so a hostile value can't inject shell or JSON.
+  validate-version:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Reject malformed workflow_dispatch version input
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          VERSION_INPUT: ${{ github.event.inputs.version }}
+        run: |
+          if [ "$EVENT_NAME" != "workflow_dispatch" ]; then
+            echo "Tag-push run — no dispatch input to validate."
+            exit 0
+          fi
+          if ! printf '%s' "$VERSION_INPUT" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::Invalid version input — must match X.Y.Z (digits only)."
+            exit 1
+          fi
+          echo "version input OK"
+
   # ── Windows Build ──────────────────────────────────────────────
   build-windows:
+    needs: validate-version
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Set up Python 3.11
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.11'
 
@@ -110,19 +135,20 @@ jobs:
       # Publish the Inno installer as the Windows release artifact. (Flume.exe is
       # bundled inside it; we no longer ship the bare exe as the update payload.)
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: Flume-Windows
           path: whisperflow/dist/FlumeSetup.exe
 
   # ── Mac Build ──────────────────────────────────────────────────
   build-mac:
+    needs: validate-version
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Set up Python 3.11
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.11'
 
@@ -323,7 +349,7 @@ jobs:
           rm -f "$KEY_PATH"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: Flume-Mac
           path: whisperflow/dist/Flume.dmg
@@ -341,15 +367,25 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Determine version
         id: version
+        env:
+          # env:, not inline ${{ }} in run: — the dispatch input is free text
+          # and must never be interpolated into a shell script (IDI-266).
+          VERSION_INPUT: ${{ github.event.inputs.version }}
         run: |
-          if [[ "${{ github.event_name }}" == "push" ]]; then
+          if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
             VERSION="${GITHUB_REF#refs/tags/v}"
           else
-            VERSION="${{ github.event.inputs.version }}"
+            VERSION="$VERSION_INPUT"
+          fi
+          # Defense in depth on BOTH paths (validate-version already gated the
+          # dispatch input): everything downstream may treat this as inert.
+          if ! printf '%s' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::Version '$VERSION' must match X.Y.Z (digits only)."
+            exit 1
           fi
           echo "version=$VERSION" >> $GITHUB_OUTPUT
 
@@ -360,6 +396,8 @@ jobs:
       # as release-process discipline the spec file cannot enforce — so enforce it
       # here, where it is cheap and impossible to forget.
       - name: Tag must match config.APP_VERSION
+        env:
+          TAG: ${{ steps.version.outputs.version }}
         run: |
           # grep/sed, not a python -c one-liner: nesting quotes inside a YAML
           # block scalar inside a shell $( ) is how you get a syntax error that
@@ -369,7 +407,6 @@ jobs:
             echo "::error::Could not read APP_VERSION from whisperflow/app/config.py"
             exit 1
           fi
-          TAG="${{ steps.version.outputs.version }}"
           echo "tag=$TAG  config.APP_VERSION=$CFG"
           if [ "$CFG" != "$TAG" ]; then
             echo "::error::Tag v$TAG does not match config.APP_VERSION ($CFG)."
@@ -378,13 +415,13 @@ jobs:
           fi
 
       - name: Download Windows artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: Flume-Windows
           path: dist/
 
       - name: Download Mac artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: Flume-Mac
           path: dist/
@@ -398,8 +435,9 @@ jobs:
       # of bug.
       - name: Rename artifacts to their versioned names
         id: files
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          VERSION="${{ steps.version.outputs.version }}"
           MAC_FILE="Flume-${VERSION}-mac.dmg"
           WIN_FILE="Flume-${VERSION}-win-setup.exe"
           mv dist/Flume.dmg "dist/${MAC_FILE}"
@@ -409,11 +447,14 @@ jobs:
 
       - name: Compute hashes
         id: hashes
+        env:
+          WIN_FILE: ${{ steps.files.outputs.win_file }}
+          MAC_FILE: ${{ steps.files.outputs.mac_file }}
         run: |
-          WIN_HASH=$(sha256sum "dist/${{ steps.files.outputs.win_file }}" | cut -d' ' -f1)
-          WIN_SIZE=$(stat -c%s "dist/${{ steps.files.outputs.win_file }}")
-          MAC_HASH=$(sha256sum "dist/${{ steps.files.outputs.mac_file }}" | cut -d' ' -f1)
-          MAC_SIZE=$(stat -c%s "dist/${{ steps.files.outputs.mac_file }}")
+          WIN_HASH=$(sha256sum "dist/${WIN_FILE}" | cut -d' ' -f1)
+          WIN_SIZE=$(stat -c%s "dist/${WIN_FILE}")
+          MAC_HASH=$(sha256sum "dist/${MAC_FILE}" | cut -d' ' -f1)
+          MAC_SIZE=$(stat -c%s "dist/${MAC_FILE}")
           echo "win_hash=$WIN_HASH" >> $GITHUB_OUTPUT
           echo "win_size=$WIN_SIZE" >> $GITHUB_OUTPUT
           echo "mac_hash=$MAC_HASH" >> $GITHUB_OUTPUT
@@ -423,7 +464,7 @@ jobs:
       # a row that outraces its own asset is exactly the "row with no file"
       # failure mode this whole ticket is about.
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           tag_name: v${{ steps.version.outputs.version }}
           files: |
@@ -446,6 +487,11 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          VERSION: ${{ steps.version.outputs.version }}
+          WIN_FILE: ${{ steps.files.outputs.win_file }}
+          WIN_HASH: ${{ steps.hashes.outputs.win_hash }}
+          WIN_SIZE: ${{ steps.hashes.outputs.win_size }}
+          REPO: ${{ github.repository }}
         run: |
           curl -sf -X POST \
             "${SUPABASE_URL}/rest/v1/app_versions?on_conflict=platform,version" \
@@ -455,17 +501,22 @@ jobs:
             -H "Prefer: return=minimal,resolution=merge-duplicates" \
             -d "{
               \"platform\": \"win\",
-              \"version\": \"${{ steps.version.outputs.version }}\",
-              \"changelog\": \"Release ${{ steps.version.outputs.version }}\",
-              \"file_url\": \"https://github.com/${{ github.repository }}/releases/download/v${{ steps.version.outputs.version }}/${{ steps.files.outputs.win_file }}\",
-              \"file_hash\": \"${{ steps.hashes.outputs.win_hash }}\",
-              \"file_size\": ${{ steps.hashes.outputs.win_size }}
+              \"version\": \"${VERSION}\",
+              \"changelog\": \"Release ${VERSION}\",
+              \"file_url\": \"https://github.com/${REPO}/releases/download/v${VERSION}/${WIN_FILE}\",
+              \"file_hash\": \"${WIN_HASH}\",
+              \"file_size\": ${WIN_SIZE}
             }"
 
       - name: Register Mac version
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          VERSION: ${{ steps.version.outputs.version }}
+          MAC_FILE: ${{ steps.files.outputs.mac_file }}
+          MAC_HASH: ${{ steps.hashes.outputs.mac_hash }}
+          MAC_SIZE: ${{ steps.hashes.outputs.mac_size }}
+          REPO: ${{ github.repository }}
         run: |
           curl -sf -X POST \
             "${SUPABASE_URL}/rest/v1/app_versions?on_conflict=platform,version" \
@@ -475,11 +526,11 @@ jobs:
             -H "Prefer: return=minimal,resolution=merge-duplicates" \
             -d "{
               \"platform\": \"mac\",
-              \"version\": \"${{ steps.version.outputs.version }}\",
-              \"changelog\": \"Release ${{ steps.version.outputs.version }}\",
-              \"file_url\": \"https://github.com/${{ github.repository }}/releases/download/v${{ steps.version.outputs.version }}/${{ steps.files.outputs.mac_file }}\",
-              \"file_hash\": \"${{ steps.hashes.outputs.mac_hash }}\",
-              \"file_size\": ${{ steps.hashes.outputs.mac_size }}
+              \"version\": \"${VERSION}\",
+              \"changelog\": \"Release ${VERSION}\",
+              \"file_url\": \"https://github.com/${REPO}/releases/download/v${VERSION}/${MAC_FILE}\",
+              \"file_hash\": \"${MAC_HASH}\",
+              \"file_size\": ${MAC_SIZE}
             }"
 
       # The whole point of IDI-224: a broken pipeline must be LOUD, not
@@ -489,8 +540,8 @@ jobs:
       - name: Smoke test — verify the public download endpoint sees this release
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          VERSION="${{ steps.version.outputs.version }}"
           fail=0
           for platform in mac win; do
             # Cache-bust: the endpoint sets a 60s Cache-Control, and this must see THIS release, not a response cached moments before it existed.
