@@ -2056,3 +2056,27 @@ Mobile: `npx tsc --noEmit` in `verbal-mobile/`.
     ever received (phone dictations never reached the Mac, 2026-08-25 → 08-30, 50k log lines before anyone
     looked). Four sites: `sync.py`, `dashboard.py`, `flume_web_dashboard.py`, `shared_dashboard.py`. When
     "sync doesn't work", grep `app.log` for `CERTIFICATE_VERIFY_FAILED` first.
+
+81. **The updater's sha256 check FAILS CLOSED (IDI-260, 2026-09).** `updater.download_update` refuses the
+    update outright (log + `return None`, before any download) when the `app_versions` row's `file_hash`
+    is null/empty — it used to skip verification entirely (`if expected_hash:`) and return the unverified
+    binary as trusted, which Windows then executed silently. The hash is normalized `.strip().lower()`
+    (`_sha256` emits lowercase hex), so **every published `app_versions` row MUST carry a sha256
+    `file_hash` or clients will refuse it**. Signature verification (Authenticode/codesign), a
+    download-host allowlist (naive allowlists break GitHub's redirect to `objects.githubusercontent.com`),
+    and the `/VERYSILENT` policy remain open behind the code-signing decision (see IDI-260).
+
+82. **OAuth loopback listener binds loopback ONLY — and Supabase GoTrue cannot round-trip a client
+    `state` (IDI-265, 2026-09).** `auth._make_servers()` binds `::1` AND `127.0.0.1` on port 8765 (two
+    listeners: a loopback socket cannot be dual-stack — `IPV6_V6ONLY=0` only maps IPv4 into a wildcard
+    `::` bind — and `localhost` resolves to either family depending on the machine); the old single
+    `("::", 8765)` dual-stack server exposed the callback to the whole LAN. `_CallbackHandler` now also:
+    404s non-`/callback` paths, keeps the FIRST code (a later request can't replace it), and — when
+    `expected_state` is armed — rejects absent/mismatched `state` via `hmac.compare_digest`. It is NOT
+    armed today: verified live against our project, `&state=X` on `/auth/v1/authorize` REPLACES GoTrue's
+    own flow-state id in the Google round-trip (breaking sign-in at the provider callback), and GoTrue
+    matches `redirect_to` against the redirect allowlist INCLUDING its query string, so
+    `/callback?state=X` silently falls back to SITE_URL without an allowlist glob. Don't "fix" this by
+    adding `&state=` back. PKCE is the actual code-injection binding (a foreign code fails the token
+    exchange). To arm: add `http://localhost:8765/callback*` to Supabase Redirect URLs, then follow the
+    activation note in `sign_in_with_google`.

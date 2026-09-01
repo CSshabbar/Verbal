@@ -1022,8 +1022,8 @@ Each feature: **what it does · desktop impl · mobile impl · backend · status
   (revoked/expired refresh token) is persisted (`config['auth']['session_dead']`), surfaced as a
   "Session expired — sign in again" banner, and makes `delete_account` return actionable guidance.
 - **Desktop:** `auth.py` — Supabase Auth **PKCE loopback**: browser → `/auth/v1/authorize?provider=google
-  &redirect_to=http://localhost:8765/callback`; a dual-stack (IPv6+IPv4) loopback server on **port 8765**
-  captures the code, exchange at `/token?grant_type=pkce`. Stores `config['auth']`
+  &redirect_to=http://localhost:8765/callback`; loopback-only listeners on **port 8765** (`::1` +
+  `127.0.0.1`, IDI-265 — see `05-conventions.md` #82) capture the code, exchange at `/token?grant_type=pkce`. Stores `config['auth']`
   (`user_id,email,name,avatar_url,access_token,refresh_token`) + sets `sync_user_id=user.id`. No Google
   secret in-app (Supabase holds it).
 - **Mobile:** `lib/supabase.ts` + `flume-ui/hooks/useAuth.ts` — `signInWithOAuth({provider:'google',
@@ -1504,8 +1504,9 @@ delta, fail-closed paths). Both spec files declare `app.insights` in `hiddenimpo
 - **Onboarding:** dashboard JS flow; `DashboardApi.complete_onboarding` sets `config['onboarded']`. Mobile:
   `OnboardingScreen` (3 slides) + AsyncStorage `flume_onboarded`.
 - **Updater** (`updater.py`): polls Supabase `app_versions_latest` per platform, downloads to temp with
-  sha256 verify, installs (`.dmg`/silent `.exe`) then exits. Binaries are GitHub Release assets, not
-  Supabase Storage (IDI-224, 2026-08 — see `05-conventions.md` #50).
+  sha256 verify — **fail closed**: a row without a `file_hash` is refused, never installed (IDI-260,
+  see `05-conventions.md` #81) — installs (`.dmg`/silent `.exe`) then exits. Binaries are GitHub Release
+  assets, not Supabase Storage (IDI-224, 2026-08 — see `05-conventions.md` #50).
   **Persistent "update available" UI (2026-08-23):** a one-shot alert used to be the only signal, so
   dismissing it lost the update until the next periodic check happened to re-alert. Now a small
   terracotta badge dot composites onto the menu-bar icon (mac, `main.py::_badged_icon_path` — rendered
