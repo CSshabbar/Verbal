@@ -164,14 +164,19 @@ Deno.serve(async (req) => {
     // Data/storage purge incomplete — do NOT delete the auth user. Leaves a
     // recoverable state: the client can retry, and every step above is safe
     // to repeat (DELETE-by-user_id, list+delete-by-path).
-    return json({ ok: false, error: "Partial failure — auth user NOT deleted, safe to retry", details: failures }, 500);
+    // IDI-267 batch: log the per-step details server-side, return an opaque error
+    // — table/bucket names and raw PostgREST messages are internals (clients only
+    // ever read `error`, verified against auth.py::delete_account_remote).
+    console.error(`delete-account: partial failure — ${failures.join("; ")}`);
+    return json({ ok: false, error: "Partial failure — auth user NOT deleted, safe to retry" }, 500);
   }
 
   await revokeAppleToken(userId);
 
   const authResult = await deleteAuthUser(userId);
   if (!authResult.ok) {
-    return json({ ok: false, error: "Data purged, but auth user deletion failed — safe to retry", details: [authResult.detail] }, 500);
+    console.error(`delete-account: auth user deletion failed — ${authResult.detail}`);
+    return json({ ok: false, error: "Data purged, but auth user deletion failed — safe to retry" }, 500);
   }
 
   return json({ ok: true });

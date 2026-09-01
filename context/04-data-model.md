@@ -135,10 +135,14 @@ owner's team is orphaned. Add `organization_members` to the purge (and decide ow
 before Teams goes live.
 
 `reap-meeting-audio` (`supabase/functions/reap-meeting-audio/index.ts`, MER-31, 2026-07) — invoked by the
-daily `reap-meeting-audio-daily` `pg_cron` job (`supabase_meetings.sql`, via `pg_net.http_post` with the
-anon key — only needs to pass the gateway's `verify_jwt`, the function's own privileged work uses its
-internal service-role key like every other function here). See `03-features.md`'s retention-reaper entry
-and the `meetings.audio_expired`/`retention_days` columns above for the full design.
+daily `reap-meeting-audio-daily` `pg_cron` job (`supabase_meetings.sql`, via `pg_net.http_post`). Since the
+IDI-258 hardening (2026-09) the call is gated on a dedicated `x-cron-secret` header, read by the cron job
+from Vault (`reap_cron_secret`) and compared in constant time against the `REAP_CRON_SECRET` function
+secret — the committed anon JWT that used to ride the call was a public client key, not a control (any
+anon-key holder could trigger the cross-tenant service-role delete pass). Secret unset → every caller is
+rejected (fail closed); the function must be deployed with `--no-verify-jwt` since no JWT is sent. The
+function's own privileged work uses its internal service-role key like every other function here. See
+`03-features.md`'s retention-reaper entry and the `meetings.audio_expired`/`retention_days` columns above.
 
 **`meetings`** — `supabase_meetings.sql` (applied live 2026-07 + follow-up `hybrid_notes` column). One row
 per captured meeting.
@@ -445,12 +449,20 @@ lockdown MER-30's security-advisor pass established, for the same reason.
   open relay spending the account's ASR credit. That relaxation is quarantined in this function precisely so
   `groq-proxy` can keep verify_jwt on. Wire protocol: client sends binary PCM16 @16 kHz and
   `{"type":"done"}`; server sends `{"type":"ready"|"partial"|"final"|"error"}`. Needs `ASSEMBLYAI_API_KEY`.
-- **`diarize` JSON action on `groq-proxy`** (2026-08-16): `{"diarize":{"object":"<user>/<id>.wav"}}`
-  → signs a 1h URL for the private `meeting-audio` object (service role; path regex-locked to
-  `<user>/<meeting>.wav` so it cannot sign arbitrary bucket paths) and submits to AssemblyAI with
-  `speaker_labels: true`; returns `{id}`. `{"diarize":{"poll":"<id>"}}` → `{status}` or
-  `{status:"completed", utterances:[{speaker,start,end}]}` in SECONDS. Usage logged as kind `diarize`.
-  Needs `ASSEMBLYAI_API_KEY`; 503 without it and the desktop keeps gap labels (fail-closed, verified live).
+- **`diarize` JSON action on `groq-proxy`** (2026-08-16; hardened IDI-259, 2026-09):
+  `{"diarize":{"object":"<user>/<id>.wav"}}` → signs a 1h URL for the private `meeting-audio` object
+  (service role) and submits to AssemblyAI with `speaker_labels: true`; returns `{id}`.
+  `{"diarize":{"poll":"<id>"}}` → `{status}` or `{status:"completed", utterances:[{speaker,start,end}]}`
+  in SECONDS. Usage logged as kind `diarize`. Needs `ASSEMBLYAI_API_KEY`; 503 without it and the desktop
+  keeps gap labels (fail-closed, verified live). **Ownership is enforced since IDI-259**: diarize rejects
+  anon-role callers (401 — the shape regex alone never proved ownership), submit requires the object's
+  first path segment to equal the JWT `sub` (403 otherwise), and poll re-derives the binding statelessly
+  from AssemblyAI's own stored `audio_url` (must start with the signed-URL prefix for the caller's user
+  folder) — no durable submit→poll store needed. NOTE: desktop `groq_proxy._headers` still sends the anon
+  key, so the (already-retired, `meetings_diarize_enabled` default OFF) desktop diarize path now 401s and
+  fails soft to gap labels; a client that re-enables it must send the user's session JWT. The `asr_provider:
+  "assembly"` transcription path also allowlists `asr_alt_model` (`universal-2`, `universal-3-5-pro`) —
+  an unknown id gets 400 and the client falls back to Groq.
 - **`groq-proxy` function secrets:** `GROQ_API_KEY`, `OLLAMA_API_KEY`, plus (2026-08-15)
   `ELEVENLABS_API_KEY` and `ASSEMBLYAI_API_KEY`. Set with `supabase secrets set` — there is **no MCP tool
   for secrets**. Without them the provider branch 502s naming the missing secret and dictation falls back
@@ -673,3 +685,15 @@ Pragmatic, matches code + `GOOGLE_AUTH_SETUP.md`:
     (appears orphaned/unused — flag for cleanup, don't treat as a feature).
   - Undocumented columns that do exist and are actively used: `meetings.notes_md`, `meetings.live`,
     `devices.id`, `devices.sync_enabled`, `canvas.id`.
+- **Security batch 2026-09 (IDI-258/267) — code committed, LIVE APPLY PENDING:**
+  - `invite_rate_limits` table + `invite_check_rate_limit` SECURITY DEFINER RPC
+    (`supabase/functions/invite-member/invite_rate_limits.sql`) back invite-member's new rate limiter
+    (per-inviter/hour, per-org/day, per-recipient cooldown; identities only, recipient emails sha256-hashed).
+    Until the SQL is applied the function fails OPEN (limiter off, latched per-isolate on RPC 404). EXECUTE
+    must stay revoked from `anon`/`authenticated` (same rule as `groq_check_rate_limit`).
+  - `reap-meeting-audio` now needs the `REAP_CRON_SECRET` function secret AND a matching Vault secret
+    `reap_cron_secret` (read by the pg_cron job in `whisperflow/supabase_meetings.sql`), plus a redeploy
+    with `--no-verify-jwt`. Until all three are done the daily reap rejects everything (fail closed — audio
+    retention simply pauses; nothing user-facing breaks).
+  - New optional function secrets on `invite-member`: `INVITE_LIMIT_USER_PER_HOUR` (15),
+    `INVITE_LIMIT_ORG_PER_DAY` (50), `INVITE_RECIPIENT_COOLDOWN_SECONDS` (300).

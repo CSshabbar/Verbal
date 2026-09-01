@@ -40,6 +40,11 @@ const OLLAMA_CHAT = "https://ollama.com/v1/chat/completions";
 const DEFAULT_TRANSCRIBE_MODEL = "whisper-large-v3-turbo";
 const ELEVEN_STT = "https://api.elevenlabs.io/v1/speech-to-text";
 const AAI_BASE = "https://api.assemblyai.com/v2";
+// IDI-259: only model ids this codebase actually offers may reach AssemblyAI
+// (transcriber.ASR_CHOICES / lib/groq.ts ASR_MODELS). An unknown id is rejected
+// with a non-200, which every client already treats as "retry on Groq" — so the
+// dictation path survives, and no attacker-chosen string is forwarded upstream.
+const AAI_ALLOWED_MODELS = new Set(["universal-2", "universal-3-5-pro"]);
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -446,6 +451,11 @@ Deno.serve(async (req) => {
 
       if (asrProvider === "eleven" || asrProvider === "assembly" || asrProvider === "gemini") {
         kind = `transcription-${asrProvider}`;
+        if (asrProvider === "assembly" && !AAI_ALLOWED_MODELS.has(asrAltModel)) {
+          // Non-200 → the client falls back to Groq (documented contract above),
+          // so a stale/unknown model id degrades, never blocks, a dictation.
+          return json({ error: { message: "unsupported asr model" } }, 400);
+        }
         const file = form.get("file");
         if (!(file instanceof File)) {
           return json({ error: { message: "no audio file in request" } }, 400);
@@ -542,12 +552,31 @@ Deno.serve(async (req) => {
           return json({ error: { message: "ASSEMBLYAI_API_KEY secret not set on the function" } }, 503);
         }
         kind = "diarize";
+        // IDI-259: diarize signs PRIVATE meeting-audio objects with the service
+        // role, so the anon key is not enough — a real signed-in user is required,
+        // and both submit and poll below are bound to that JWT subject. Diarize is
+        // NOT on the dictation path (it fails soft client-side to the gap-heuristic
+        // labels), so rejecting here can never break record→transcribe→inject.
+        if (!userId) {
+          return json({ error: { message: "diarize requires a signed-in user" } }, 401);
+        }
         if (typeof d.poll === "string" && /^[\w-]{8,64}$/.test(d.poll)) {
           const g = await fetch(`${AAI_BASE}/transcript/${d.poll}`, {
             headers: { Authorization: aaiKey },
           });
           if (!g.ok) return json({ error: { message: `poll ${g.status}` } }, 502);
           const j = await g.json();
+          // Bind the poll to the submitter WITHOUT any durable store (edge
+          // isolates keep no memory between invocations): submit below only ever
+          // signs `<jwt sub>/<meeting>.wav`, so AssemblyAI's own record of the
+          // submitted audio_url carries the submitter's user id — re-derive the
+          // expected prefix and compare. A transcript id minted by anyone else
+          // (or through any other path) fails this check.
+          const supaUrl = Deno.env.get("SUPABASE_URL") ?? "";
+          const expectedPrefix = `${supaUrl}/storage/v1/object/sign/meeting-audio/${userId}/`;
+          if (!supaUrl || !String(j?.audio_url ?? "").startsWith(expectedPrefix)) {
+            return json({ error: { message: "not your transcript" } }, 403);
+          }
           logUsage(identity, userId, kind).catch(() => {});
           if (j?.status === "completed") {
             // ms → seconds here, once, so the client never worries about units.
@@ -563,11 +592,17 @@ Deno.serve(async (req) => {
           }
           return json({ status: String(j?.status ?? "processing") });
         }
-        // Submit: object path is constrained to the caller-shaped layout
-        // (<user>/<meeting>.wav) so this cannot be used to sign arbitrary bucket paths.
+        // Submit: the regex constrains only the SHAPE (<segment>/<segment>.wav);
+        // ownership is the prefix check after it — the first path segment must be
+        // the caller's own user id (the bucket layout is `<user_id>/<meeting>.wav`,
+        // see meetings.py). Shape alone let any caller have the service role sign
+        // another user's private recording (IDI-259 IDOR).
         const obj = String(d.object ?? "");
         if (!/^[\w-]{1,64}\/[\w-]{1,64}\.wav$/.test(obj)) {
           return json({ error: { message: "bad object path" } }, 400);
+        }
+        if (!obj.startsWith(`${userId}/`)) {
+          return json({ error: { message: "object is not yours" } }, 403);
         }
         const svcUrl = Deno.env.get("SUPABASE_URL"), svc = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
         if (!svcUrl || !svc) return json({ error: { message: "service role unavailable" } }, 503);

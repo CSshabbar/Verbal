@@ -133,10 +133,24 @@ create extension if not exists pg_net;
 
 -- Calls the `reap-meeting-audio` Edge Function daily at 03:00 UTC (a low-traffic
 -- window). The function does the actual work with the service-role key
--- internally (Deno.env, same pattern as every other Edge Function in this
--- repo) — the anon key here only needs to satisfy the gateway's `verify_jwt`
--- check, which any valid project JWT does; it's not itself privileged, so no
--- secret-in-SQL handling (e.g. Vault) is needed for this call.
+-- internally (Deno.env, same pattern as every other Edge Function in this repo).
+--
+-- IDI-258: the call is authenticated by a DEDICATED cron secret, not a JWT. The
+-- anon key that used to ride this call is a public client key and never gated
+-- anything — anyone holding it could trigger (or probe) a cross-tenant
+-- service-role delete pass. Setup, once, before (re)running this schedule:
+--
+--   1. Generate a long random value (e.g. `openssl rand -hex 32`).
+--   2. Store it in Vault so the job below can read it without committing it:
+--        select vault.create_secret('<that value>', 'reap_cron_secret');
+--   3. Mirror the SAME value into the function's secrets:
+--        supabase secrets set REAP_CRON_SECRET=<that value>
+--   4. Deploy the function with the gateway JWT check OFF, so the secret header
+--      is the sole (real) gate:
+--        supabase functions deploy reap-meeting-audio --no-verify-jwt
+--
+-- The function rejects every caller whose x-cron-secret doesn't match (compared
+-- in constant time), and rejects ALL callers while REAP_CRON_SECRET is unset.
 select cron.schedule(
   'reap-meeting-audio-daily',
   '0 3 * * *',
@@ -145,8 +159,8 @@ select cron.schedule(
     url := 'https://ovpcthjingugwvpxlsna.supabase.co/functions/v1/reap-meeting-audio',
     headers := jsonb_build_object(
       'Content-Type', 'application/json',
-      'Authorization', 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im92cGN0aGppbmd1Z3d2cHhsc25hIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzgyNjQzMDYsImV4cCI6MjA5Mzg0MDMwNn0.XwTBo8L-aEUmmSl6dJXNqA2QXzGFOpIVB5W9eDI8j28',
-      'apikey', 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im92cGN0aGppbmd1Z3d2cHhsc25hIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzgyNjQzMDYsImV4cCI6MjA5Mzg0MDMwNn0.XwTBo8L-aEUmmSl6dJXNqA2QXzGFOpIVB5W9eDI8j28'
+      'x-cron-secret', (select decrypted_secret from vault.decrypted_secrets
+                        where name = 'reap_cron_secret')
     ),
     body := '{}'::jsonb,
     timeout_milliseconds := 30000

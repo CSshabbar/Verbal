@@ -12,14 +12,38 @@
 // `pinned = true` rows or rows still `status = 'processing'` (a live capture
 // could still be writing its audio — the exact zombie-row race called out).
 
+// IDI-258: this is a cross-tenant service-role delete pass, so it must never be
+// callable by anything a client binary holds. The gateway's `verify_jwt` accepts
+// the project anon key, so it is NOT a control — instead the pg_cron job sends a
+// dedicated `x-cron-secret` header (see supabase_meetings.sql, which reads it
+// from Vault) and this function compares it in constant time against the
+// REAP_CRON_SECRET function secret. Secret unset → every caller is rejected
+// (fail closed: the reaper is a peripheral cleanup job, not the pipeline).
+
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+const REAP_CRON_SECRET = Deno.env.get("REAP_CRON_SECRET") ?? "";
+
+// Constant-time compare: hash both sides first (fixed-length digests), then a
+// full XOR accumulate — no early exit, and no length oracle either.
+async function cronSecretMatches(given: string): Promise<boolean> {
+  if (!REAP_CRON_SECRET) return false;
+  const enc = new TextEncoder();
+  const [a, b] = await Promise.all([
+    crypto.subtle.digest("SHA-256", enc.encode(given)),
+    crypto.subtle.digest("SHA-256", enc.encode(REAP_CRON_SECRET)),
+  ]);
+  const av = new Uint8Array(a), bv = new Uint8Array(b);
+  let diff = 0;
+  for (let i = 0; i < av.length; i++) diff |= av[i] ^ bv[i];
+  return diff === 0;
+}
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-cron-secret",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
@@ -37,6 +61,10 @@ type Candidate = { id: string; user_id: string; started_at: string; retention_da
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
+
+  if (!(await cronSecretMatches(req.headers.get("x-cron-secret") ?? ""))) {
+    return json({ ok: false, error: "unauthorized" }, 401);
+  }
 
   try {
     // Candidates: not pinned, not already expired, retention explicitly
