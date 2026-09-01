@@ -453,6 +453,9 @@ def load_config() -> dict:
                 if config.get("spoken_language") == "en":
                     config["spoken_language"] = "auto"
                     logger.info("spoken_language: moved implicit default en → auto-detect")
+                elif config.get("spoken_language") == "ur":
+                    config["spoken_language"] = "hi"
+                    logger.info("spoken_language: moved ur → hi (Hindi only; ASR often mislabels)")
                 config["spoken_language_default_auto_v1"] = True
                 changed = True
 

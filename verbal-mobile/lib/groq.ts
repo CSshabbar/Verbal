@@ -46,6 +46,8 @@ export async function getSpokenLanguage(): Promise<string> {
       const cur = await AsyncStorage.getItem(SPOKEN_LANGUAGE_KEY);
       if (!cur || cur === 'en') {
         await AsyncStorage.setItem(SPOKEN_LANGUAGE_KEY, 'auto');
+      } else if (cur === 'ur') {
+        await AsyncStorage.setItem(SPOKEN_LANGUAGE_KEY, 'hi');
       }
       await AsyncStorage.setItem(SPOKEN_LANGUAGE_MIGRATION_KEY, '1');
     }
@@ -140,7 +142,6 @@ export const SPOKEN_LANGUAGES: { code: string; label: string }[] = [
   { code: 'de', label: 'German' },
   { code: 'pt', label: 'Portuguese' },
   { code: 'hi', label: 'Hindi' },
-  { code: 'ur', label: 'Urdu' },
   { code: 'ar', label: 'Arabic' },
   { code: 'zh', label: 'Chinese' },
 ];
@@ -425,7 +426,8 @@ export async function transcribeAudio(
   }
   // Spoken language: 'auto' → omit (Whisper detects); else pin the ISO code.
   // Mirrors desktop config['spoken_language']; stored via flume_spoken_language.
-  const lang = await getSpokenLanguage();
+  let lang = await getSpokenLanguage();
+  if (lang === 'ur') lang = 'hi';
   if (lang && lang !== 'auto') formData.append('language', lang);
   formData.append('temperature', '0');
 
@@ -692,7 +694,7 @@ QUALITY BAR
   closing remarks. Output the notes only.`;
 
 const LANG_NAMES: Record<string, string> = {
-  en: 'English', ur: 'Urdu', hi: 'Hindi', ar: 'Arabic', es: 'Spanish', fr: 'French',
+  en: 'English', hi: 'Hindi', ar: 'Arabic', es: 'Spanish', fr: 'French',
   de: 'German', pt: 'Portuguese', tr: 'Turkish', id: 'Indonesian', ru: 'Russian',
   zh: 'Chinese', ja: 'Japanese',
 };
@@ -714,7 +716,8 @@ export async function generateMeetingNotes(meeting: {
   const timer = setTimeout(() => controller.abort(), MEETING_NOTES_TIMEOUT_MS);
   try {
     if (!meeting.transcript.length) return null;
-    const langCode = await getSpokenLanguage();
+    let langCode = await getSpokenLanguage();
+    if (langCode === 'ur') langCode = 'hi';
     // 'auto' became reachable when the picker landed (IDI-180) — mapping it to
     // English would force English notes on a non-English meeting, so it defers
     // to the transcript instead. A named language still pins the output.

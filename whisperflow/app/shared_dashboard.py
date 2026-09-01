@@ -740,7 +740,7 @@ class SharedDashboard:
 # Whisper detect per request; anything else is pinned (more stable for chunked
 # meeting audio). Non-English pins route to full whisper-large-v3.
 SPOKEN_LANGUAGES = [
-    ("auto", "Auto-detect"), ("en", "English"), ("ur", "Urdu"), ("hi", "Hindi"),
+    ("auto", "Auto-detect"), ("en", "English"), ("hi", "Hindi"),
     ("ar", "Arabic"), ("es", "Spanish"), ("fr", "French"), ("de", "German"),
     ("pt", "Portuguese"), ("tr", "Turkish"), ("id", "Indonesian"), ("ru", "Russian"),
     ("zh", "Chinese"), ("ja", "Japanese"),
@@ -1168,6 +1168,8 @@ class DashboardApi:
     def set_spoken_language(self, value):
         try:
             value = str(value or "auto").strip().lower()
+            if value == "ur":
+                value = "hi"
             if value not in {c for c, _ in SPOKEN_LANGUAGES}:
                 return {"ok": False, "error": "unknown language"}
             self.app.config["spoken_language"] = value

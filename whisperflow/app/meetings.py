@@ -143,7 +143,7 @@ Rules:
 # judge the language itself (it once produced a Russian summary for an English
 # meeting) — we detect/pin it and state it explicitly.
 _LANG_NAMES = {
-    "en": "English", "ur": "Urdu", "hi": "Hindi", "ar": "Arabic", "es": "Spanish",
+    "en": "English", "hi": "Hindi", "ar": "Arabic", "es": "Spanish",
     "fr": "French", "de": "German", "pt": "Portuguese", "tr": "Turkish",
     "id": "Indonesian", "ru": "Russian", "zh": "Chinese", "ja": "Japanese",
 }
@@ -212,13 +212,15 @@ def is_meeting_hallucination(text: str) -> bool:
 def _summary_output_language(config, transcript, session_language=""):
     """Deterministic output language for the summary/notes prose. Independent of
     the meeting's *spoken* (transcription) language — `meetings_notes_language`
-    defaults to "en" so e.g. an Urdu meeting still gets English notes; set it to
+    defaults to "en" so e.g. a Hindi meeting still gets English notes; set it to
     "auto" to fall back to: per-meeting pin > global spoken-language pin > script
     detection over the transcript text > English."""
     notes_pref = (config.get("meetings_notes_language") or "en").strip().lower()
     if notes_pref != "auto":
-        return _LANG_NAMES.get(notes_pref, "English")
+        return _LANG_NAMES.get("hi" if notes_pref == "ur" else notes_pref, "English")
     lang = (session_language or config.get("spoken_language") or "auto").strip().lower()
+    if lang == "ur":
+        lang = "hi"
     if lang and lang != "auto":
         return _LANG_NAMES.get(lang, "English")
     text = " ".join((u.get("text") or "") for u in (transcript or []))[:4000]
@@ -226,7 +228,7 @@ def _summary_output_language(config, transcript, session_language=""):
     for ch in text:
         o = ord(ch)
         if 0x0600 <= o <= 0x06FF:
-            counts["ar"] += 1        # Arabic script (Arabic/Urdu)
+            counts["ar"] += 1        # Perso-Arabic script — treat as Hindi for notes
         elif 0x0900 <= o <= 0x097F:
             counts["hi"] += 1
         elif 0x0400 <= o <= 0x04FF:
@@ -240,7 +242,7 @@ def _summary_output_language(config, transcript, session_language=""):
     best = max(counts, key=counts.get)
     if best == "latin" or counts[best] == 0:
         return "English"             # Latin-script detail beyond scope of v1
-    return _LANG_NAMES.get("ur" if best == "ar" else best, "English")
+    return _LANG_NAMES.get("hi" if best == "ar" else best, "English")
 
 
 def _now_iso():

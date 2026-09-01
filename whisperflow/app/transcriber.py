@@ -52,8 +52,13 @@ def transcribe(audio: np.ndarray, config: dict, sample_rate: int = 48000) -> str
 
 def resolve_language(config: dict, override: str | None = None) -> str | None:
     """Resolve the spoken language: explicit override > config['spoken_language'].
-    Returns an ISO-639-1 code, or None for auto-detect."""
+    Returns an ISO-639-1 code, or None for auto-detect.
+
+    Whisper/Gemini often label Hindi speech as ``ur``; we only expose Hindi in
+    the picker, so ``ur`` is normalized to ``hi`` before any ASR call."""
     lang = (override or config.get("spoken_language") or "auto").strip().lower()
+    if lang == "ur":
+        lang = "hi"
     return None if lang in ("auto", "") else lang
 
 

@@ -1769,7 +1769,8 @@ modal overrides it (`start_meeting(..., language)` → `MeetingSession.language`
 Resolution + routing live in `transcriber.resolve_language` / `transcribe_with_status(language=…)`:
 `auto` → omit the param (Whisper detects); non-English pins route Groq to full **whisper-large-v3**
 (turbo is weaker on low-resource languages); the English dictionary-glossary bias prompt is attached
-ONLY when the language is English (a Whisper prompt also hints the language). The dictation formatter
+ONLY when the language is English (a Whisper prompt also hints the language). **Hindi only** — `ur` is
+not offered; Whisper often labels Hindi as Urdu and `resolve_language` normalizes `ur` → `hi`. The dictation formatter
 carries a "same language, never translate" rule. Options list: `shared_dashboard.SPOKEN_LANGUAGES`.
 Mobile: `lib/groq.ts` honors `flume_spoken_language` (default `auto`). Known limit:
 code-switched meetings resolve per 8–22s chunk in auto mode.
