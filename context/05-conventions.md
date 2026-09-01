@@ -2071,3 +2071,18 @@ Mobile: `npx tsc --noEmit` in `verbal-mobile/`.
     ever received (phone dictations never reached the Mac, 2026-08-25 → 08-30, 50k log lines before anyone
     looked). Four sites: `sync.py`, `dashboard.py`, `flume_web_dashboard.py`, `shared_dashboard.py`. When
     "sync doesn't work", grep `app.log` for `CERTIFICATE_VERIFY_FAILED` first.
+
+## Claude Code agent team (`.claude/`, 2026-09-01)
+
+Repo-checked-in agent definitions and skills for parallel/reviewed work:
+
+- `.claude/agents/security-fixer.md` — implements a group of security tickets in an isolated worktree;
+  one fixer per non-overlapping file area, must run the verification checklist above.
+- `.claude/agents/security-reviewer.md` — adversarial read-only review of a fixer's diff (re-runs
+  verification itself); verdict PASS/FAIL per ticket, MERGE / FIX FIRST overall.
+- `.claude/agents/platform-parity.md` — quality gate: checks a feature exists and behaves the same on
+  Mac / Windows / iOS / Android (app AND keyboard/IME separately) against the matrix in `01-product.md`.
+- `.claude/skills/security-batch/SKILL.md` (`/security-batch`) — orchestrates the parallel security-fix
+  run for the 2026-08-29 audit tickets: 4 file-disjoint groups (Edge Functions / desktop Python /
+  mobile TS / CI), fix → adversarial review → sequential merge → Linear close-out. Live Linear state
+  overrides the grouping written in the skill.
