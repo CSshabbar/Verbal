@@ -105,13 +105,13 @@ Verbal is designed to work seamlessly across different operating systems with na
 ## 📦 Installation
 
 ### macOS
-1. Download the latest `Verbal.dmg` from [Releases](https://github.com/CSshabbar/Verbal/releases)
+1. Download the latest `Verbal.dmg` from [Releases](https://github.com/idiaz-io/Verbal/releases)
 2. Open the DMG and drag Verbal to your Applications folder
 3. Launch Verbal from Applications
 4. Grant microphone and accessibility permissions when prompted
 
 ### Windows
-1. Download the latest `Verbal-Setup.exe` from [Releases](https://github.com/CSshabbar/Verbal/releases)
+1. Download the latest `Verbal-Setup.exe` from [Releases](https://github.com/idiaz-io/Verbal/releases)
 2. Run the installer and follow the setup wizard
 3. Launch Verbal from the Start menu
 4. Grant microphone permissions when prompted
@@ -119,7 +119,7 @@ Verbal is designed to work seamlessly across different operating systems with na
 ### From Source
 ```bash
 # Clone the repository
-git clone https://github.com/CSshabbar/Verbal.git
+git clone https://github.com/idiaz-io/Verbal.git
 cd Verbal
 
 # Set up Python environment
@@ -272,6 +272,6 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ## 📞 Support
 
 For issues, feature requests, or questions:
-- Open an issue on [GitHub](https://github.com/CSshabbar/Verbal/issues)
-- Check the [Wiki](https://github.com/CSshabbar/Verbal/wiki) for documentation
+- Open an issue on [GitHub](https://github.com/idiaz-io/Verbal/issues)
+- Check the [Wiki](https://github.com/idiaz-io/Verbal/wiki) for documentation
 - Join our community on [Discord](#) (coming soon)
