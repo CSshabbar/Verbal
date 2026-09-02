@@ -279,9 +279,8 @@ The **first tables in this project with real `auth.uid()` RLS.** Everything else
 `USING (true)` policy (see §Security posture); these four are `TO authenticated` and keyed on
 `auth.uid()::text` from their first row. That is deliberate and is what let the team layer ship without
 applying `supabase_auth_uid_rls.sql` (IDI-29): nothing in the team feature reads another user's row in a
-legacy table, so the pairing trade-off that blocks that migration is not in the way here. Consequence to
-know: a paired-but-never-signed-in device sends the anon key, reads **zero** org rows, and simply has no
-team — the correct fail-closed outcome.
+legacy table, so the pairing trade-off that used to block that migration was not in the way here. These
+four tables are the working precedent for the model IDI-29 now extends to the remaining six.
 
 **`organizations`** — `id` uuid PK · `name` text · `company_name` text `''` · `owner_user_id` text ·
 `plan` text `'team'` · `seats` int `5` · `leaderboard_enabled` bool `false` (the OWNER's org-wide switch
@@ -559,8 +558,9 @@ separate tombstone sweep).
 - **Recordings:** audio → `recordings` bucket under `<user_id>/`; `audio_url` on the row/entry. Failed
   transcriptions `status:'failed'`, retryable from saved audio.
 - **Pairing:** host inserts `pairings` row (`token_urlsafe(6)`, +120 s), QR `flume://pair?t=<token>`; new
-  device calls the `claim_pairing` RPC (atomic guarded claim, server-side expiry — IDI-157) → adopts
-  `user_id` via the paired override (IDI-156) → enables sync. Host polls `pairing_status`, cancel revokes
+  device calls the `claim_pairing` RPC (atomic guarded claim, server-side expiry — IDI-157) → **verifies its
+  own session already belongs to the host's account** (IDI-29; the old `user_id` adoption via the paired
+  override is retired) → enables sync and registers the device. Host polls `pairing_status`, cancel revokes
   via `cancel_pairing`.
 
 ### Team dictionary in the sync model (IDI-216)
@@ -614,7 +614,7 @@ Pragmatic, matches code + `GOOGLE_AUTH_SETUP.md`:
     `whisperflow/app/supabase_config.py` is a new zero-dependency module holding
     `SUPABASE_URL`/`SUPABASE_KEY`/`REST_URL` (split out of `sync.py`, which now re-exports them) so
     `auth.py` doesn't have to import `sync.py` and every call site can import `app.auth` without a cycle.
-  - **The `auth.uid()` migration is written and live-verified, but intentionally NOT applied**:
+  - **The `auth.uid()` migration is written, live-verified, and now apply-ready (not yet applied)**:
     `whisperflow/supabase_auth_uid_rls.sql` (drops each table's permissive policy, replaces with
     `FOR ALL TO authenticated USING (user_id = auth.uid()::text) WITH CHECK (...)` for
     `notes`/`transcriptions`/`devices`/`canvas`/`dictionary`/`meetings`). Verified correct live (inside a
@@ -622,21 +622,27 @@ Pragmatic, matches code + `GOOGLE_AUTH_SETUP.md`:
     prod's actual policies were never changed) — confirmed: each user sees only their own rows, cross-user
     writes affect 0 rows, and a plain anon-role request (no JWT — i.e. every *currently installed* app
     build) sees **zero** rows once the policy is `TO authenticated`.
-  - **Why it's being held back — two real blockers, not just caution:**
-    1. **Device pairing structurally can't satisfy `auth.uid()`.** `pairing.ts::claimPairing` /
-       `app/pairing.py` let a second device adopt the host's `user_id` **without ever creating a Supabase
-       Auth session** — it has no JWT at all, ever, by design (that's the point of pairing without a second
-       Google sign-in). The moment any of the six tables above requires `TO authenticated`, every
-       paired-but-never-signed-in device loses ALL cloud access instantly and permanently, not just until an
-       app update — there's no client fix that restores it under the current pairing design. This needs a
-       **product decision**: accept that trade-off (paired devices become local-only unless they also sign
-       in with Google), or redesign pairing to mint the joining device a real session for the host's account
-       (not implemented anywhere today) — before this migration can ever be applied.
-    2. **Client rollout coordination.** Even once (1) is resolved, applying this migration instantly 401s
-       every *currently-running* desktop/mobile build that hasn't yet received the JWT-forwarding code above
-       (old builds only ever send the anon key) — a real outage, not a soft degrade, until users update.
-       This must be sequenced behind an actual release + adoption window, which is outside what a single
-       backend change can control.
+  - **IDI-29 (2026-08) — both blockers cleared; the migration is now apply-ready.**
+    1. **Pairing no longer adopts a `user_id`.** The paired-account override is **retired**. A claim now
+       *confirms* an account instead of granting one: `pairing.ts::claimPairing` requires the scanning
+       device to already hold a Supabase session whose `user.id` equals the host's `user_id`, and refuses
+       the claim with an actionable message otherwise ("Sign in with the same account as the host device").
+       `getCloudUserId()` returns the session id and nothing else; `getUserId()` lost its override step; the
+       Settings **"Account ID" free-text field is now a read-only display** — as an editable field it was a
+       plain IDOR primitive (type any user's id, read their data), which is exactly what these policies
+       exist to stop. Desktop was never affected: it only ever HOSTS a pairing, and hosting already requires
+       being signed in (Hard Rule #26). The accepted trade-off is the one chosen deliberately: **a device
+       that hasn't signed in stays local-only.**
+    2. **Rollout is no longer an outage risk.** The original warning was written the day JWT forwarding
+       landed (2026-07-24), when no shipped build carried it. That commit first shipped in **v1.0.11**; the
+       current release is **v1.0.42** and desktop auto-updates on a 4-hour check, so no build old enough to
+       lack JWT forwarding is still within the update horizon. Mobile has not shipped to the App Store at
+       all, so it has no installed base to migrate — applying before launch is strictly cheaper than after.
+    3. **One deliberate behaviour change ships with it.** A desktop whose refresh token died used to keep
+       syncing on the anon key (Hard Rule #24 / IDI-166); under `auth.uid()` that same path silently reads
+       **zero rows** while looking healthy. `auth.py::cloud_allowed()` now **fails closed on `session_dead`**
+       so the state surfaces the existing re-sign-in banner instead. This client change MUST ship and
+       propagate **before** the SQL is applied — see the cutover order in the migration header.
   - `pairings` keeps its random/short-lived/single-use token model (the claiming device isn't signed in
     as the host yet, so `auth.uid()` can't apply to its own rows) — but is no longer wide-open: since
     IDI-157 the table is INSERT-only over REST and everything else is token-gated RPC (see the `pairings`

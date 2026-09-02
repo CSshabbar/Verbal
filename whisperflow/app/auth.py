@@ -580,9 +580,19 @@ def get_access_token(cfg: dict | None = None) -> str | None:
 
 def auth_header(cfg: dict | None = None, json: bool = False) -> dict:
     """REST headers for any Supabase call: the signed-in user's JWT when
-    available and valid, else the shared anon key (signed-out desktop, or a
-    paired device that adopted a user_id without ever signing in itself —
-    see the `pairings` note in context/04-data-model.md §Security posture).
+    available and valid, else the shared anon key.
+
+    Since IDI-29 the anon fallback NO LONGER grants access to per-user tables —
+    `auth.uid()` policies are `TO authenticated`, so an anon request reads zero
+    rows. The fallback therefore only remains meaningful for endpoints that are
+    legitimately anonymous (edge functions, storage, the public `app_versions`
+    manifest). Every per-user call site must additionally gate on
+    `cloud_allowed()`, which now fails closed on a dead session, so we never
+    issue a table request that would silently return nothing.
+
+    Historically the fallback also served a paired device that adopted a
+    user_id without ever signing in itself; that mechanism was retired in
+    IDI-29 (see context/04-data-model.md §Security posture).
     `apikey` is always the project's anon key regardless — that's the
     project identifier, not the caller's identity; `Authorization` is what
     Supabase's RLS actually evaluates."""

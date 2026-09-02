@@ -1,5 +1,11 @@
 # W6 — Meetings: `win_system_audio.py` (WASAPI loopback) + full wiring
 
+**Status (2026-08-29):** Capture, window, HUD, and permissions are **shipped**. The leftovers that
+did *not* come for free from shared `MeetingManager` — Granola-style auto-detect (`EnumWindows` in
+`meeting_detect.py`, `win_meeting_prompt.py`, tray **Auto-detect Meetings**) and dictation-during-
+meeting mic-tap (`add_mic_tap` / `start_external` in `win_main.py`) — are also wired. Keep this spec
+as the interface contract for `win_system_audio.py`; do not re-port capture.
+
 **Goal:** bring Meetings to Windows. Create `app/win_system_audio.py` that mirrors the **public
 interface** of `app/system_audio.py` but captures system audio via **WASAPI loopback** instead of
 ScreenCaptureKit. Wire `MeetingManager` into `VerbalWinApp`, host the meeting window + HUD as pywebview

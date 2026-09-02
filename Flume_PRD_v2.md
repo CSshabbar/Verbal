@@ -295,12 +295,27 @@ The following features exist today and are **maintained and hardened** in v2. An
 ### F-16 · Android App
 - **Priority:** P0 (parity target: 90 days post-v2 GA)
 - **Platforms:** Android 12+
+- **Status (2026-08-29):** 🚧 **built, not shipped.** Android is *not* a separate app — it is the same
+  `verbal-mobile/` Expo codebase as iOS, with native divergence only at the keyboard: a from-scratch Kotlin
+  IME (`plugins/keyboard/FlumeInputMethodService.kt`) injected at prebuild by the config plugin
+  `plugins/withFlumeKeyboard.js`. The iOS keyboard extension was ported *from* it. Remaining launch work is
+  tracked under Linear **IDI-269** (on-device validation, FCM, in-app keyboard-enable flow, Play listing, CI);
+  the live platform matrix is `context/01-product.md`.
 - **User story:** As an Android user, I have full parity with the iPhone app.
 - **Acceptance criteria:**
-  - Voice keyboard installable as IME.
-  - Full app: dictation, notes, canvas, dictionary, snippets, cross-device sync, QR pairing.
-  - Kotlin + Jetpack Compose implementation.
-  - Ships to Google Play Store + FDroid.
+  - Voice keyboard installable as IME. ✅ built — in-app enable/switch flow pending (IDI-272)
+  - Full app: dictation, notes, canvas, dictionary, snippets, cross-device sync, QR pairing. ✅ shared RN code
+  - Push notifications delivered on Android (FCM V1). ⏳ IDI-271
+  - Ships to Google Play Store. ⏳ IDI-274 (build/submit) + IDI-275 (listing/policy)
+- **Technical notes:**
+  - *Superseded 2026-07-10:* the original plan called for a native **Kotlin + Jetpack Compose** app. It was
+    replaced by the shared Expo codebase + Kotlin IME so every non-keyboard feature ships to both mobile OSes
+    from one change; only the keyboard is native per platform (`context/05-conventions.md` Hard Rule #16
+    covers the app→keyboard config bridge).
+  - *F-Droid dropped:* F-Droid would carry the app only with the `NonFreeNet` anti-feature (hard dependence on
+    hosted Supabase/Groq via `groq-proxy` and Google sign-in) and requires a FOSS licence plus a reproducible
+    from-source build — none of which the project has or plans. Revisit only if a self-hosted / BYO-backend
+    mode ships.
 
 ### F-17 · Compliance & Trust Foundations
 - **Priority:** P0 (audit-work — not shippable code alone, but blocks Enterprise deals)
@@ -569,6 +584,10 @@ Publish `flume.app/security` and `flume.app/trust` at v2.0 GA covering:
 ## 10. Technical Architecture Sketch
 
 ### 10.1 Stack (recommended defaults; teams may vary)
+
+> *Note (2026-08-29): the shipped tree differs from these defaults — desktop is Python (`whisperflow/`), mobile is
+> one Expo/React Native app for iOS + Android with Swift/Kotlin native keyboards (see `context/02-architecture.md`).
+> This table remains the long-term recommendation, not a description of the current codebase.*
 
 | Layer | Mac | Windows | iOS | Android | Cloud |
 |---|---|---|---|---|---|

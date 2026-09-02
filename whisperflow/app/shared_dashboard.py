@@ -1296,9 +1296,6 @@ class DashboardApi:
         is the classic) and bind it as BOTH hold and toggle key."""
         try:
             if not hasattr(self.app, "capture_next_key"):
-                # Windows: platform doesn't expose the hotkey-picker path yet.
-                # Better to return a clean unsupported message than let the
-                # user see a raw AttributeError from Settings.
                 return {"ok": False,
                         "error": "Changing the dictation hotkey isn't supported yet on this platform."}
             got = self.app.capture_next_key(allow_modifiers=True)
@@ -1321,11 +1318,6 @@ class DashboardApi:
     def set_transform_hotkey(self):
         """Hotkey picker for Transform: ⌘⇧ + the captured (non-modifier) key."""
         try:
-            # MER-41 stopgap: on Windows, `capture_next_key` and the
-            # `hotkey_listener.set_transform(...)` seat don't exist yet.
-            # Return a clean unsupported result instead of an AttributeError
-            # bubbling up from a Settings toggle. The real port replaces both
-            # branches once WinHotkeyListener lands.
             if not hasattr(self.app, "capture_next_key"):
                 return {"ok": False,
                         "error": "Setting the Transform hotkey isn't supported yet on this platform."}

@@ -88,6 +88,18 @@ check("Zoom native in-call window", detects("zoom.us", "Zoom Meeting"))
 check("Webex in-call window", detects("Cisco Webex Meetings", "Webex Meeting"))
 check("Teams in-call window", detects("Microsoft Teams", "Meeting with Sam | Microsoft Teams"))
 
+print("\n== Windows exe owners canonicalize onto the same matchers ==")
+check("chrome.exe Meet prefix", detects("chrome.exe", "Meet - abc-defg-hij"))
+check("msedge.exe named Meet", detects("msedge.exe", "Weekly standup - Google Meet"))
+check("Zoom.exe in-call", detects("Zoom.exe", "Zoom Meeting"))
+check("CptHost.exe Zoom meeting host", detects("CptHost.exe", "Zoom Meeting"))
+check("ms-teams.exe in-call", detects("ms-teams.exe", "Meeting with Sam | Microsoft Teams"))
+check("Zoom.exe idle is still not a call", not detects("Zoom.exe", "Zoom"))
+check("canonical owner string is Mac-shaped",
+      md._canonical_owner("chrome.exe") == "Google Chrome")
+check("own WebView2 host is skipped as a conferencing exe",
+      "msedgewebview2.exe" in md._SKIP_EXES)
+
 print("\n== key shape (drives the ask-once-per-call dedupe in main._md_apply) ==")
 check("a code becomes the key so a different room re-prompts",
       md._match("Google Chrome", "Meet - abc-defg-hij")["key"] == "gmeet:abc-defg-hij")

@@ -301,7 +301,11 @@ class WinPopover:
         # popover's state pushes come from DashboardApi.get_state which reads
         # sync device info through these fields.
         self._known_devices = []
-        self._target_device_id = "__all__"
+        try:
+            self._target_device_id = (
+                app.config.get("sync_target_device_id", "__all__") or "__all__")
+        except Exception:
+            self._target_device_id = "__all__"
 
         self._window = None
         self._bridge = None

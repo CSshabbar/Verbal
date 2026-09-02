@@ -193,7 +193,22 @@ class VerbalWinApp:
         self.dashboard = SharedDashboard(self)
         self.popover = WinPopover(self)
         self.autolearn_widget = WinAutoLearnWidget(self)
+        self.meeting_prompt = None
+        try:
+            from app.win_meeting_prompt import WinMeetingPrompt
+            self.meeting_prompt = WinMeetingPrompt(self)
+        except Exception as e:
+            logger.error("meeting prompt init failed: %s", e)
         self._edit_watcher = None
+        # Granola-style auto-detect state (mirrors main.py). Dismissal is
+        # session-durable; empty-poll reset does NOT clear `_md_dismissed`.
+        self._md_active_key = None
+        self._md_handled = set()
+        self._md_dismissed = set()
+        self._md_empty = 0
+        self._md_source = ""
+        self._md_scanning = False
+        self._meeting_mic_tap = None
 
         # MER-41: Transform Mode B (selection). Lazy — the pill is only
         # built when the Ctrl+Shift+T hotkey fires the first time.
@@ -332,6 +347,18 @@ class VerbalWinApp:
             pystray.MenuItem("Open Dashboard", self._tray_open_dashboard),
             pystray.MenuItem("Open Canvas", self._tray_open_canvas, enabled=gated),
             pystray.MenuItem("Open Notes", self._tray_open_notes, enabled=gated),
+            pystray.MenuItem(
+                lambda item: (
+                    "Return to Meeting"
+                    if (self.meetings and self.meetings.active)
+                    else "Start Meeting"
+                ),
+                self._tray_toggle_meeting, enabled=gated),
+            pystray.MenuItem(
+                "Auto-detect Meetings",
+                self._toggle_meeting_autodetect,
+                checked=lambda item: self.config.get("meeting_autodetect", True),
+                enabled=gated),
             pystray.MenuItem("Settings...", self._tray_open_settings, enabled=gated),
             pystray.MenuItem("Recording Mode", mode_menu, enabled=gated),
             pystray.MenuItem("Offline Model", model_menu, enabled=gated),
@@ -403,6 +430,14 @@ class VerbalWinApp:
             self.autolearn_widget.setup()
         except Exception as e:
             logger.debug(f"autolearn_widget.setup failed: {e}")
+        try:
+            if self.meeting_prompt is not None:
+                self.meeting_prompt.setup()
+        except Exception as e:
+            logger.debug(f"meeting_prompt.setup failed: {e}")
+        threading.Thread(
+            target=self._meeting_detect_loop, name="meeting-detect",
+            daemon=True).start()
 
         # Hidden pywebview anchor so webview.start() has at least one
         # window (its hard requirement) and the loop keeps running for
@@ -599,6 +634,11 @@ class VerbalWinApp:
         if not self._require_signin():
             return
         self.dashboard.show_tab("notes")
+
+    def _tray_toggle_meeting(self, icon=None, item=None):
+        if not self._require_signin():
+            return
+        self._toggle_meeting()
 
     def _tray_open_settings(self, icon=None, item=None):
         if not self._require_signin():
@@ -1352,6 +1392,8 @@ class VerbalWinApp:
     def _on_record_start(self):
         if self._processing:
             return
+        if self._is_recording:
+            return
         # The single choke point every start path reaches — tray row, toggle key
         # and hold key (see the HotkeyListener wiring: on_start/on_toggle both
         # land here). Checked before anything is saved or harvested.
@@ -1380,6 +1422,11 @@ class VerbalWinApp:
         except Exception as e:
             logger.debug(f"filetag harvest kickoff skipped: {e}")
         self._cancel_flag.clear()
+        # Latch BEFORE the mic opens (Mac parity). Overlay Cancel on the
+        # Starting pill goes through `_on_esc_pressed` → `_cancel_recording`;
+        # if `_is_recording` is still False that path is a no-op and the
+        # dictation starts anyway after the warm-up wait.
+        self._is_recording = True
         # Acknowledge the keypress BEFORE opening the mic. recorder.start() waits for
         # the first audio buffer (~275ms of device warm-up, measured), and showing the
         # pill after that made the warm-up read as app lag. The label stays "Starting"
@@ -1390,9 +1437,24 @@ class VerbalWinApp:
         except Exception:
             pass
         try:
-            self.recorder.start()
+            # During a meeting, dictation SHARES the meeting's mic stream via
+            # a tap — a second InputStream on the same device makes WASAPI /
+            # PortAudio drop one of them (Hard Rule #18, same as Mac).
+            mt = self.meetings.active if self.meetings else None
+            if mt is not None and mt.mic_running:
+                self._meeting_mic_tap = self.recorder.feed_external
+                mt.add_mic_tap(self._meeting_mic_tap)
+                self.recorder.start_external(16000)
+            else:
+                self._meeting_mic_tap = None
+                self.recorder.start()
         except Exception as e:
             logger.error(f"Failed to start recording: {e}", exc_info=True)
+            self._is_recording = False
+            try:
+                self._detach_meeting_tap()
+            except Exception:
+                pass
             try:
                 self.overlay.hide()      # never leave "Starting..." stranded
             except Exception:
@@ -1430,7 +1492,6 @@ class VerbalWinApp:
         except Exception as e:
             logger.warning("[hybrid] setup skipped: %s", e)
             self._stream = None
-        self._is_recording = True
         _play_sound("start")
         self._update_tray_icon(True)
         self._update_tray_menu()
@@ -1442,6 +1503,7 @@ class VerbalWinApp:
             return
         self._is_recording = False
         audio = self.recorder.stop()
+        self._detach_meeting_tap()
         _play_sound("stop")
         self._update_tray_icon(False)
         self._update_tray_menu()
@@ -1463,6 +1525,7 @@ class VerbalWinApp:
     def _cancel_recording(self):
         self._is_recording = False
         self.recorder.stop()
+        self._detach_meeting_tap()
         _play_sound("stop")
         self._reset_to_ready()
 
@@ -1801,10 +1864,6 @@ class VerbalWinApp:
             # Upload the audio to the cloud + attach its URL (async, fail-closed).
             self._upload_recording_async(rec_id, audio_path)
 
-            # TODO (Windows parity, later workstreams): AX file-tagging, autolearn
-            # edit-watch, and meeting mic-tap sharing are intentionally not wired
-            # here yet (macOS-only for now).
-
             brief = f"Pasted | {word_count}w" if success else f"Copied | {word_count}w"
             self.overlay.show_briefly(brief, duration=2.0)
             self.dashboard.show_result(result)
@@ -1876,6 +1935,142 @@ class VerbalWinApp:
         except Exception as e:
             logger.error("start meeting failed: %s", e)
 
+    def _detach_meeting_tap(self):
+        try:
+            tap = getattr(self, "_meeting_mic_tap", None)
+            if tap and self.meetings and self.meetings.session:
+                self.meetings.session.remove_mic_tap(tap)
+            self._meeting_mic_tap = None
+        except Exception:
+            pass
+
+    def _meeting_detect_loop(self):
+        """5 s poll — Mac uses rumps.Timer; we don't have rumps. Fail-closed."""
+        while not getattr(self, "_exiting", False):
+            try:
+                self._detect_meeting_tick()
+            except Exception:
+                pass
+            for _ in range(50):
+                if getattr(self, "_exiting", False):
+                    return
+                time.sleep(0.1)
+
+    def _detect_meeting_tick(self):
+        """Cheap guards, then run the window scan off-thread (EnumWindows is
+        cheap but `_md_apply` must not run nested in the poll loop)."""
+        try:
+            if not self.meetings:
+                return
+            if not self.config.get("meeting_autodetect", True):
+                if self.meeting_prompt and self.meeting_prompt.visible:
+                    self.meeting_prompt.hide()
+                return
+            if self.meetings.active:
+                if self.meeting_prompt and self.meeting_prompt.visible:
+                    self.meeting_prompt.hide()
+                return
+            if getattr(self, "_md_scanning", False):
+                return
+
+            self._md_scanning = True
+            launched = False
+            try:
+                def work():
+                    info = None
+                    try:
+                        from app import meeting_detect
+                        info = meeting_detect.detect()
+                    except Exception as e:
+                        logger.debug("meeting detect scan failed: %s", e)
+                    try:
+                        self._on_main(lambda i=info: self._md_apply(i))
+                    except Exception:
+                        self._md_scanning = False
+                threading.Thread(target=work, daemon=True).start()
+                launched = True
+            finally:
+                if not launched:
+                    self._md_scanning = False
+        except Exception as e:
+            logger.debug("meeting detect tick failed: %s", e)
+
+    def _md_apply(self, info):
+        """Fold a scan result into the prompt state machine (Mac `_md_apply`)."""
+        self._md_scanning = False
+        try:
+            if self.meetings and self.meetings.active:
+                return
+            if not self.config.get("meeting_autodetect", True):
+                return
+            if not info:
+                self._md_empty += 1
+                if self._md_empty >= 2:
+                    self._md_active_key = None
+                    self._md_handled.clear()
+                    if self.meeting_prompt and self.meeting_prompt.visible:
+                        self.meeting_prompt.hide()
+                return
+            self._md_empty = 0
+            key = info.get("key") or ""
+            if key in self._md_handled or key in self._md_dismissed:
+                return
+            self._md_active_key = key
+            self._md_source = info.get("source") or ""
+            self._md_handled.add(key)
+            logger.info("meeting detected (auto): source=%s key=%s",
+                        self._md_source, key)
+            self._show_meeting_prompt(self._md_source)
+        except Exception as e:
+            logger.debug("meeting detect apply failed: %s", e)
+
+    def _show_meeting_prompt(self, source):
+        try:
+            if self.meeting_prompt is None:
+                from app.win_meeting_prompt import WinMeetingPrompt
+                self.meeting_prompt = WinMeetingPrompt(self)
+                self.meeting_prompt.setup()
+            self.meeting_prompt.show(source)
+        except Exception as e:
+            logger.debug("meeting prompt show failed: %s", e)
+
+    def _meeting_detect_result(self, take: bool):
+        """Pill button result: True = start capturing this call now."""
+        if not take:
+            if self._md_active_key:
+                self._md_dismissed.add(self._md_active_key)
+                logger.info("meeting prompt dismissed for key=%s",
+                            self._md_active_key)
+            return
+        try:
+            source = self._md_source or ""
+            lang = self.config.get("spoken_language", "") or ""
+            res = self.meetings.start(title="", use_mic=True, use_system=True,
+                                      language=lang) if self.meetings else None
+            if res and res.get("ok"):
+                logger.info("meeting auto-started from detection (%s)", source)
+                self._update_tray_menu()
+                win = self._meeting_win()
+                if win:
+                    self._on_main(lambda: win.show("live"))
+            else:
+                logger.info("auto-start not ready (%s) — opening launcher",
+                            res.get("error") if res else "no manager")
+                self._toggle_meeting()
+        except Exception as e:
+            logger.error("meeting auto-start failed: %s", e)
+
+    def _toggle_meeting_autodetect(self, icon=None, item=None):
+        try:
+            on = not self.config.get("meeting_autodetect", True)
+            self.config["meeting_autodetect"] = on
+            save_config(self.config)
+            if not on and self.meeting_prompt and self.meeting_prompt.visible:
+                self.meeting_prompt.hide()
+            logger.info("meeting auto-detect %s", "on" if on else "off")
+        except Exception as e:
+            logger.warning("toggle auto-detect failed: %s", e)
+
     # ── Autolearn (W7) ────────────────────────────────────────────────────
     def _on_autolearn_decision(self, decision):
         """Callback from EditWatcher — decision has already passed classify()
@@ -1941,6 +2136,10 @@ class VerbalWinApp:
             self.recorder.cleanup()
         except Exception as e:
             logger.error(f"Error cleaning up recorder: {e}")
+        try:
+            self._detach_meeting_tap()
+        except Exception:
+            pass
         self.overlay.hide()
         self._update_tray_icon(False)
         self._update_tray_menu()

@@ -167,6 +167,10 @@ a = Analysis(
         'app.win_system_audio',
         'app.win_editwatch',
         'app.win_ax',
+        # Granola-style auto-detect (function-level imports in win_main).
+        'app.meeting_detect',
+        'app.win_meeting_prompt',
+        'app.win_dpi',
         # Third-party deps used by the Windows-native modules above.
         'uiautomation',
         'comtypes',

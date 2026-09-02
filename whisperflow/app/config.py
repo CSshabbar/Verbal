@@ -98,6 +98,7 @@ DEFAULT_CONFIG = {
     "meetings_notes_language": "en",      # summary/notes output language: "en" (always
                                            # English) | "auto" (match the meeting's spoken
                                            # language) — independent of transcription language
+    "meeting_autodetect": True,           # Granola-style "Meeting detected" pill (both desktops)
     "meetings": [],                       # [{id,title,started_at,duration_seconds,status,...}]
     # Transform (TRANSFORM_SWARM.md) — voice/prompt-driven text reshaping.
     # Master default OFF (like autolearn); Mode A = trailing "…so Flume, …"
