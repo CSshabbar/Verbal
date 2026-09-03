@@ -1,5 +1,11 @@
 # W3 — Recording overlay (pywebview, frameless, topmost, non-activating)
 
+**Status (2026-08-29):** **Do not implement as written.** WebView2's DirectComposition surface cannot
+do per-pixel transparency, so a pywebview host would draw a dark rectangle around the pill. Shipping
+`win_overlay.py` is tkinter + PIL with `-transparentcolor` (DPI-scaled, hover pause/cancel/stop,
+error state). Cancel-while-transcribing goes through `_on_esc_pressed` (IDI-165). Keep this spec as
+historical; pixel parity is the sticker look, not the HTML host.
+
 **Goal:** replace the tkinter-drawn pill in `app/win_overlay.py` with a **pywebview** frameless,
 always-on-top, **non-focus-stealing** window that renders `app/overlay_html.py::overlay_html()` — the
 exact HTML the Mac overlay uses — and is driven by `window.VerbalOverlay(mode, data)`. This gives the

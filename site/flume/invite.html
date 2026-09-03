@@ -8,8 +8,12 @@
 <!--
   Team-invite landing page. Hosted at https://idiaz.io/flume/invite.html and reached
   from the invite e-mail via the `invite` Supabase function (?t=<token>).
-  Tries the desktop deep link flume://invite?t=<token>; if this document is still
+  Desktop: tries the deep link flume://invite?t=<token>; if this document is still
   the visible page ~1.6 s later nothing answered → download page, token kept.
+  Phones: asks the `download` Edge Function (?json=1&platform=ios|android) for a live
+  store link and goes there; if none is configured yet (or the request fails) →
+  download page, token kept. Going live on a store is a function secret, not an
+  edit here — but any edit here must be re-published to idiaz.io (here.now).
   Static on purpose: the *.supabase.co functions gateway serves every response as
   text/plain, so it cannot host HTML. Source of truth: Verbal repo, site/flume/invite.html.
 -->
@@ -52,6 +56,7 @@
   var token = (q.get('t') || q.get('token') || '').trim();
   var GRACE = 1600;
   var dlBase = 'https://idiaz.io/flume/download.html';
+  var dlApi  = 'https://ovpcthjingugwvpxlsna.supabase.co/functions/v1/download';
   if(!token){
     document.getElementById('opening').style.display='none';
     document.getElementById('notoken').style.display='block';
@@ -63,7 +68,22 @@
   document.getElementById('open').href = deep;
   var ua = navigator.userAgent.toLowerCase();
   var desktop = !/iphone|ipad|ipod|android/.test(ua);
-  if(!desktop){ location.replace(dl); return; }   // phones can't run Flume yet
+  if(!desktop){
+    // Phones can't install from download.html. Ask the download endpoint whether a
+    // store listing is live for this OS; fall back to the download page (token
+    // preserved, exactly the old behaviour) if not, or if anything goes wrong.
+    var mobile = /android/.test(ua) ? 'android' : 'ios';
+    var done = false;
+    function go(url){ if(done) return; done = true; location.replace(url); }
+    setTimeout(function(){ go(dl); }, 2500);
+    try {
+      fetch(dlApi + '?json=1&platform=' + mobile, {cache:'no-store'})
+        .then(function(r){ return r.json(); })
+        .then(function(j){ go(j && j.ok && typeof j.url === 'string' && j.url.indexOf('https://') === 0 ? j.url : dl); })
+        .catch(function(){ go(dl); });
+    } catch(e){ go(dl); }
+    return;
+  }
   var answered = false;
   // If the OS switched to Flume, this document loses visibility/focus — that is
   // the only signal a page gets that the scheme was handled.

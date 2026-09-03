@@ -3,13 +3,18 @@ Meeting auto-detection (Granola-style) — desktop only.
 
 Every few seconds we scan the ON-SCREEN window list for the tell-tale window of a
 call actually IN PROGRESS (not merely a conferencing app sitting idle), and return
-the human name of the app it's happening in (e.g. "Chrome", "Zoom"). main.py polls
-`detect()` on a timer and pops the "Meeting detected · <source> — Take notes" pill.
+the human name of the app it's happening in (e.g. "Chrome", "Zoom"). main.py /
+win_main.py poll `detect()` on a timer and pop the "Meeting detected · <source> —
+Take notes" pill.
 
-Why window titles: `CGWindowListCopyWindowInfo` gives us each window's owner app and
-title with no extra permission beyond Screen Recording, which Flume already holds for
-ScreenCaptureKit meeting capture. If that permission is absent, titles come back empty
-and we simply detect nothing (fail closed — detection must never break capture).
+Why window titles:
+  • macOS: ScreenCaptureKit (`SCShareableContent`) is the reliable title source —
+    Flume already holds Screen Recording for capture. `CGWindowListCopyWindowInfo`
+    is a fallback (recent macOS leaves `kCGWindowName` empty except the frontmost
+    window). Missing permission → empty titles → detect nothing (fail closed).
+  • Windows: `EnumWindows` + `GetWindowTextW` (no extra permission). Process exe
+    names are mapped to the same owner strings the Mac matchers already use
+    (`chrome.exe` → `Google Chrome`) so `_match` stays one table.
 
 Signals are deliberately conservative (an in-call window, not just an open app) so the
 prompt doesn't cry wolf:
@@ -22,11 +27,51 @@ prompt doesn't cry wolf:
 The table is easy to extend — add a row to `_PROVIDERS`.
 """
 import logging
+import os
 import re
+import sys
 
 logger = logging.getLogger("verbal.meeting_detect")
 
 # owner-app name (as macOS reports it) → friendly source label shown in the pill
+# Windows EnumWindows reports the process *exe*, not a friendly app name.
+# Map onto the macOS owner strings `_BROWSERS` / `_native_app` already know so
+# the matchers stay one table (and so meeting_detect_fixtures.py can pin both).
+_WIN_EXE = {
+    "chrome.exe": "Google Chrome",
+    "msedge.exe": "Microsoft Edge",
+    "firefox.exe": "Firefox",
+    "brave.exe": "Brave Browser",
+    "vivaldi.exe": "Vivaldi",
+    "arc.exe": "Arc",
+    "chromium.exe": "Chromium",
+    "zoom.exe": "Zoom",
+    "cpthost.exe": "Zoom",          # Zoom's in-call host process
+    "ms-teams.exe": "Microsoft Teams",
+    "teams.exe": "Microsoft Teams",
+    "msteams.exe": "Microsoft Teams",
+}
+
+# Our own windows must never count as a call. WebView2 is a *different* PID
+# from flume.exe (dashboard / meeting / popover) — skip it so a Flume page
+# titled with "Meeting" is not mistaken for a live call.
+_SKIP_TITLES = {
+    "flume", "flume meeting", "flume popover", "verbalanchor",
+}
+_SKIP_EXES = {"flume.exe", "verbal.exe", "msedgewebview2.exe"}
+
+# Bound once — mutating windll.user32.argtypes on every 5s scan races other ctypes callers.
+_WIN_ENUM = None  # (ctypes, wintypes, user32, kernel32) or False if unavailable
+
+
+def _canonical_owner(owner: str) -> str:
+    """Windows exe basename → macOS-style owner; otherwise leave unchanged."""
+    if not owner:
+        return owner
+    mapped = _WIN_EXE.get(owner.lower())
+    return mapped if mapped else owner
+
+
 _BROWSERS = {
     "Google Chrome": "Chrome",
     "Google Chrome Canary": "Chrome",
@@ -122,6 +167,7 @@ def _native_app(owner: str, title: str):
 def _match(owner: str, title: str):
     if not owner:
         return None
+    owner = _canonical_owner(owner)
     hit = _native_app(owner, title) or _meet_in_browser(owner, title)
     if not hit:
         return None
@@ -204,15 +250,120 @@ def _scan_via_cgwindow():
     return out
 
 
+def _win_enum_api():
+    """ctypes + bound user32/kernel32, prepared once. None if unavailable."""
+    global _WIN_ENUM
+    if _WIN_ENUM is False:
+        return None
+    if _WIN_ENUM is not None:
+        return _WIN_ENUM
+    try:
+        import ctypes
+        from ctypes import wintypes
+        user32 = ctypes.windll.user32
+        kernel32 = ctypes.windll.kernel32
+        user32.IsWindowVisible.argtypes = [wintypes.HWND]
+        user32.IsWindowVisible.restype = wintypes.BOOL
+        user32.GetWindowTextLengthW.argtypes = [wintypes.HWND]
+        user32.GetWindowTextLengthW.restype = ctypes.c_int
+        user32.GetWindowTextW.argtypes = [
+            wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+        user32.GetWindowTextW.restype = ctypes.c_int
+        user32.GetWindowThreadProcessId.argtypes = [
+            wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+        user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+        kernel32.OpenProcess.argtypes = [
+            wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.QueryFullProcessImageNameW.argtypes = [
+            wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR,
+            ctypes.POINTER(wintypes.DWORD)]
+        kernel32.QueryFullProcessImageNameW.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        _WIN_ENUM = (ctypes, wintypes, user32, kernel32)
+        return _WIN_ENUM
+    except Exception:
+        _WIN_ENUM = False
+        return None
+
+
+def _scan_via_enumwindows():
+    """Top-level visible windows as (owner, title) via EnumWindows.
+
+    Windows has no ScreenCaptureKit. Titles of visible top-level windows need
+    no extra permission. Cloaked / empty-title windows are skipped (fail
+    closed). Never raises.
+    """
+    api = _win_enum_api()
+    if api is None:
+        return []
+    ctypes, wintypes, user32, kernel32 = api
+    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+
+    our_pid = os.getpid()
+    out = []
+
+    def _exe_for_pid(pid):
+        h = kernel32.OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not h:
+            return ""
+        try:
+            n = wintypes.DWORD(32768)
+            buf = ctypes.create_unicode_buffer(n.value)
+            if kernel32.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(n)):
+                return os.path.basename(buf.value or "")
+        finally:
+            kernel32.CloseHandle(h)
+        return ""
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def _cb(hwnd, lparam):
+        try:
+            if not user32.IsWindowVisible(hwnd):
+                return True
+            n = user32.GetWindowTextLengthW(hwnd)
+            if n <= 0:
+                return True
+            buf = ctypes.create_unicode_buffer(n + 1)
+            user32.GetWindowTextW(hwnd, buf, n + 1)
+            title = (buf.value or "").strip()
+            if not title or title.lower() in _SKIP_TITLES:
+                return True
+            pid = wintypes.DWORD(0)
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+            if pid.value == our_pid:
+                return True
+            exe = _exe_for_pid(pid.value)
+            if (exe or "").lower() in _SKIP_EXES:
+                return True
+            if exe and title:
+                out.append((exe, title))
+        except Exception:
+            pass
+        return True
+
+    try:
+        user32.EnumWindows(_cb, 0)
+    except Exception as e:
+        logger.debug("meeting detect: EnumWindows failed: %s", e)
+    return out
+
+
 def detect():
     """Return {"source","key","app"} for a call in progress, or None. Never raises.
     Call OFF the main thread — the SCK path waits on a completion handler."""
     try:
-        windows = _scan_via_sck()
-        via = "sck"
-        if windows is None:
-            windows = _scan_via_cgwindow()
-            via = "cgwindow"
+        if sys.platform == "win32":
+            windows = _scan_via_enumwindows()
+            via = "enumwindows"
+        else:
+            windows = _scan_via_sck()
+            via = "sck"
+            if windows is None:
+                windows = _scan_via_cgwindow()
+                via = "cgwindow"
         logger.debug("meeting detect: scanned %d windows (%s)", len(windows), via)
         for owner, title in windows:
             hit = _match(owner, title)

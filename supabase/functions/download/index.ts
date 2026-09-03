@@ -4,6 +4,8 @@
 //     https://<project>.supabase.co/functions/v1/download            (sniffs the OS)
 //     https://<project>.supabase.co/functions/v1/download?platform=mac
 //     https://<project>.supabase.co/functions/v1/download?platform=win
+//     https://<project>.supabase.co/functions/v1/download?platform=ios      (→ App Store once APP_STORE_URL is set)
+//     https://<project>.supabase.co/functions/v1/download?platform=android  (→ Google Play once PLAY_STORE_URL is set)
 //     https://<project>.supabase.co/functions/v1/download?json=1     (metadata, no redirect)
 //
 // It 302-redirects to whatever `app_versions_latest` currently says is newest for
@@ -29,6 +31,21 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
+
+// Store listings, once they exist. Mobile is not distributed through app_versions —
+// the stores are the release channel — so the only thing this endpoint needs to know
+// is WHERE the listing is. Set with `supabase secrets set APP_STORE_URL=… PLAY_STORE_URL=…`.
+// Only https URLs are honoured; anything else fails CLOSED to the "on its way" page
+// rather than redirecting a phone somewhere surprising.
+function storeUrlFor(platform: "ios" | "android"): string | null {
+  const raw = (Deno.env.get(platform === "ios" ? "APP_STORE_URL" : "PLAY_STORE_URL") ?? "").trim();
+  if (!raw) return null;
+  if (!/^https:\/\//i.test(raw)) {
+    console.error(`download: ignoring non-https ${platform} store URL: ${raw}`);
+    return null;
+  }
+  return raw;
+}
 
 // Short, not zero. Long enough that a burst of downloads doesn't hammer the DB,
 // short enough that a fresh release is live within a minute rather than whenever a
@@ -117,13 +134,37 @@ Deno.serve(async (req) => {
     );
   }
 
-  // Mobile isn't distributed through this endpoint — say so plainly rather than
-  // 404ing, since a phone visiting the marketing page is a normal thing to happen.
+  // Mobile ships through the stores, not through app_versions. Until a listing is
+  // live, say so plainly rather than 404ing — a phone visiting the marketing page
+  // is a normal thing to happen. Flipping a platform live is ONE function secret
+  // (APP_STORE_URL / PLAY_STORE_URL, see storeUrlFor) — no code change here and no
+  // website change: site/flume/invite.html asks this endpoint (`?json=1&platform=…`)
+  // where a phone should go, so it flips at the same moment.
   if (platform === "ios" || platform === "android") {
     const store = platform === "ios" ? "the App Store" : "Google Play";
+    const storeUrl = storeUrlFor(platform);
+    if (storeUrl) {
+      if (wantJson) {
+        return new Response(JSON.stringify({ ok: true, platform, url: storeUrl, store, version: null }), {
+          status: 200,
+          headers: {
+            "Content-Type": "application/json",
+            "Cache-Control": `public, max-age=${CACHE_SECONDS}`,
+            "Access-Control-Allow-Origin": "*",
+          },
+        });
+      }
+      return new Response(null, {
+        status: 302,
+        headers: { Location: storeUrl, "Cache-Control": `public, max-age=${CACHE_SECONDS}` },
+      });
+    }
     if (wantJson) {
-      return new Response(JSON.stringify({ ok: false, error: "not_distributed", platform }), {
-        status: 404, headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+      // CORS on purpose: invite.html reads this cross-origin and must be able to tell
+      // "not on the store yet" (404 body) from "request failed" (network error).
+      return new Response(JSON.stringify({ ok: false, error: "not_distributed", platform, store }), {
+        status: 404,
+        headers: { "Content-Type": "application/json", "Cache-Control": "no-store", "Access-Control-Allow-Origin": "*" },
       });
     }
     return page(

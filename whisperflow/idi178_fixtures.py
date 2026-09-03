@@ -16,7 +16,7 @@ import sys
 import threading
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-ROOT = "/Users/muhammadshabbar/Work/Verbal/whisperflow"
+ROOT = HERE
 
 fails = 0
 
@@ -109,7 +109,7 @@ check("next recording start clears the stale flag", not app._cancel_flag.is_set(
 
 # ── source assertions against the real files ──
 for name in ("main.py", "win_main.py"):
-    src = open(os.path.join(ROOT, "app", name)).read()
+    src = open(os.path.join(ROOT, "app", name), encoding="utf-8").read()
     body = src[src.index("def _reset_to_ready"):]
     body = body[:body.index("\n    def ", 1)] if "\n    def " in body[1:] else body
     code = "\n".join(l for l in body.splitlines() if not l.strip().startswith("#"))
@@ -119,6 +119,15 @@ for name in ("main.py", "win_main.py"):
     start = start[:start.index("\n    def ", 1)]
     check(f"{name}: _on_record_start clears _cancel_flag",
           "_cancel_flag.clear()" in start)
+
+# IDI-165 Windows leftover: overlay Cancel must be the ESC path, not `_cancel_recording`.
+overlay_src = open(os.path.join(ROOT, "app", "win_overlay.py"), encoding="utf-8").read()
+cancel_idx = overlay_src.find('elif name == "overlay_cancel":')
+check("win_overlay.py has overlay_cancel branch", cancel_idx != -1)
+if cancel_idx != -1:
+    cancel_body = overlay_src[cancel_idx:cancel_idx + 900]
+    check("win_overlay overlay_cancel calls _on_esc_pressed",
+          "_on_esc_pressed" in cancel_body)
 
 print(f"\nfailed={fails} ALL_GREEN={fails == 0}")
 sys.exit(1 if fails else 0)

@@ -571,16 +571,17 @@
 - **Borderless NSPanels refuse key-window status by default** — any panel with a TEXT INPUT needs a
   subclass overriding `canBecomeKeyWindow → YES` (transform pill: `_panel_class()`), or the field shows
   no caret and typing goes nowhere. Buttons alone don't need it (autolearn pill, `meeting_prompt.py`).
-- The **meeting-detected pill** (`meeting_prompt.py`, Granola-style auto-detect) is the newest member of
-  the non-activating-panel family — buttons only, so no key-window subclass. It must never steal focus
-  from the Zoom/Meet window. Detection (`meeting_detect.py`) reads on-screen **window titles** via
-  **`SCShareableContent`** (ScreenCaptureKit), NOT `CGWindowListCopyWindowInfo`: on macOS 14/15
-  `kCGWindowName` is empty for every window except the frontmost even WITH Screen-Recording permission, so
-  CGWindowList missed background meetings entirely ("not detecting" bug). SCShareableContent returns all
-  window titles with the SR permission Flume already holds; CGWindowList stays only as a fallback. The
-  scan can block ~1 s → run it OFF the main thread (main.py `_detect_meeting_tick` → bg thread →
-  `_md_apply` on main). Keep heuristics conservative (in-call window, not just an open app) and fail
-  closed — a detection error must never reach the capture path.
+- The **meeting-detected pill** (`meeting_prompt.py` on macOS, `win_meeting_prompt.py` on Windows) is
+  a member of the non-activating-panel family — buttons only, so no key-window subclass. It must never
+  steal focus from the Zoom/Meet window. Detection (`meeting_detect.py`) reads on-screen **window
+  titles**: on macOS via **`SCShareableContent`** (ScreenCaptureKit), NOT `CGWindowListCopyWindowInfo`
+  (on macOS 14/15 `kCGWindowName` is empty for every window except the frontmost even WITH
+  Screen-Recording permission). On Windows via **`EnumWindows` + `GetWindowTextW`** (no extra
+  permission; exe names are canonicalized onto the Mac owner strings). The scan can block → run it
+  OFF the main thread (`_detect_meeting_tick` → bg thread → `_md_apply`). Keep heuristics conservative
+  (in-call window, not just an open app) and fail closed — a detection error must never reach the
+  capture path. Dictation during a live meeting must share the meeting mic (`add_mic_tap` +
+  `recorder.start_external`) rather than opening a second InputStream.
 - The transform pill uses the same **ready-handshake** as the meeting window (`api('tf_ready')` +
   buffered emit) — without it the first open showed a BLANK pill, read as "mic/typing not working".
 - `transcribe_with_status` success status is **'ok'** (not 'done'/'success') — compare against the
@@ -677,7 +678,8 @@
     on the first paint, (b) alone still loops. (The Mac and Windows sessions each hit this and fixed it
     independently; the merge kept the fetch-once form of (a).)
 
-24. **A dead refresh token must fall back to the anon key, never send an expired JWT (`auth.py`).** When
+24. **A dead refresh token must drop the tokens and stop cloud access, never send an expired JWT
+    (`auth.py`).** When
     `_refresh_access_token` gets a 400/401/403 from the token endpoint (invalid_grant /
     `refresh_token_not_found` — the session is unrecoverable), it MUST return `None` (so `auth_header`
     uses the anon key, which works under the current `USING (true)` RLS) and drop the dead tokens, NOT
@@ -768,8 +770,12 @@
     `_reset_to_ready` no longer clears it** — the clear lives at RECORDING START (both platforms), so the
     flag reliably means "this dictation was canceled" for the whole cycle and the old race (reset draining
     before the worker's `is_set()` check → cancel lost) is closed; proven by `idi178_fixtures.py`.
-    `overlay.overlay_cancel` delegates to `_on_esc_pressed` (safe off the main thread — it hops itself).
-    Rule: ESC and the Cancel button must stay literally the same code path. The same ticket established three more overlay rules:
+    `overlay.overlay_cancel` and `win_overlay._action("overlay_cancel")` both delegate to
+    `_on_esc_pressed`. On Windows that call is **synchronous** — `VerbalWinApp._on_main` is a daemon
+    thread, so hopping would race the transcription worker's `_cancel_flag` check. `_is_recording`
+    is latched **before** `recorder.start()` (same as Mac) so Cancel on the Starting pill is not a
+    no-op. Rule: ESC and the
+    Cancel button must stay literally the same code path. The same ticket established three more overlay rules:
     - **Failures get their own pill.** `overlay.update_status(status, error=True)` renders `mode:'error'`
       — danger red `#E05049`, a `!` disc, **no ✓ and no "Copy again"** (that CTA re-copied the *previous*
       dictation's text). `main.py` passes the flag explicitly at the `silent` / `failed` call sites; the
@@ -1890,6 +1896,13 @@ Single source: desktop `app/theme.py` + `app/fonts_css.py`; mobile `flume-ui/the
 - **Deleted outright (2026-08, flow-audit batch):** mobile `lib/remoteConfig.ts` + `getGroqKey`/`setGroqKey`
   (IDI-160 — see Hard Rule #15) and desktop `pairing.py::claim_pairing` (IDI-156 — desktop only ever HOSTS
   pairing; the claiming side is mobile `lib/pairing.ts::claimPairing`). Older docs may still reference them.
+- **Retired by IDI-29 (2026-08) — the paired-account override.** `storage.ts::getPairedUserId` /
+  `setPairedUserId` are **deleted**, and `getUserId()`/`getCloudUserId()` no longer consult
+  `verbal_paired_user_id` (the key survives only in the `clearAccountData()` sweep, to purge pre-cutover
+  values). Under `auth.uid()` RLS an adopted `user_id` reads zero rows, so the override could only ever
+  produce silent no-ops. `claimPairing` now verifies the device's existing session instead of adopting an
+  id, and the Settings "Account ID" input is a read-only display — as an editable field it let anyone type
+  another user's id and read their data. Do not reintroduce a client-supplied identity override.
 - **Deleted in the IDI-179 closing pass (2026-08)** — each verified to zero live references first. Older
   docs may still name them; they are gone, do not revive them:
   - mobile `lib/useSync.ts` (superseded by `flume-ui/hooks/historyStore.ts`), `lib/useDeviceSelector.ts` +
@@ -2046,7 +2059,8 @@ Mobile: `npx tsc --noEmit` in `verbal-mobile/`.
     `_show_internal` / `_fade_in` / `_fade_out` / `_schedule_hide` / `_start_animation_loop` gate on
     `_tk_ready()` (root exists AND ready). Tests: `tk_pending_fixtures.py` (pure Python, no tkinter).
     Still true: tkinter objects are touched ONLY from the owning tk thread — the caller thread never
-    calls tk methods, ready or not.
+    calls tk methods, ready or not. `WinMeetingPrompt` (Granola auto-detect pill) uses the same queue.
+
 78. **Windows clipboard restore: only after the paste was consumed, never on the fallback path.**
     `win_injector.inject_text` snapshots clipboard TEXT before copying the transcript and restores it on a
     daemon thread ≥ `CLIPBOARD_RESTORE_DELAY_S` (0.4 s) after Ctrl+V — restoring synchronously makes the
@@ -2163,3 +2177,37 @@ Repo-checked-in agent definitions and skills for parallel/reviewed work:
     the RLS migration was then applied and verified (anon → 0 rows; a signed-in user reads only their own).
     The migration is not wired into any auto-apply path — any future RLS tightening follows the same
     ship-gate-first ordering.
+
+86. **Windows meeting auto-detect is `EnumWindows`, not ScreenCaptureKit.** (`meeting_detect.py`,
+    2026-08-29.) There is no SCK on Windows. `detect()` branches on `sys.platform`: Mac keeps SCK →
+    CGWindowList fallback; Windows walks visible top-level windows (`EnumWindows` + `GetWindowTextW` +
+    `QueryFullProcessImageNameW`) and maps exe basenames onto the existing Mac owner strings
+    (`chrome.exe` → `Google Chrome`, `CptHost.exe` → `Zoom`) so `_match` / `_BROWSERS` / `_native_app`
+    stay one table. Skip our own PID, `Flume.exe`, and titles `Flume` / `Flume Meeting` / `Flume
+    Popover` / `VerbalAnchor` (WebView2 is a *different* PID than the Python process). The prompt is
+    `win_meeting_prompt.py` (tkinter sticker + `WS_EX_NOACTIVATE`), not the AppKit `meeting_prompt.py`.
+    Heuristics stay conservative; `meeting_detect_fixtures.py` pins Windows exe owners. Fail closed —
+    a scan error must never reach capture or dictation.
+
+87. **`verbal-mobile/ios/` and `verbal-mobile/android/` are GENERATED — never edit or commit them.**
+    (IDI-256, 2026-08-29.) Native config is `app.json` + `plugins/withFlumeKeyboard.js` (Android IME:
+    manifest service entry + file copies) + `targets/keyboard/expo-target.config.js` via
+    `@bacons/apple-targets` (iOS keyboard extension) + `modules/flume-shared-store` (apple-only). Express
+    every Info.plist key, entitlement, manifest entry, Gradle setting or bundled asset as one of those
+    inputs and regenerate with `npx expo prebuild -p <ios|android> --clean`. Two traps: a hand edit under
+    the generated folders is silently lost on the next prebuild, and a *non*-clean `expo run:android`
+    reuses the stale tree, so a changed `FlumeInputMethodService.kt` does not ship until you `--clean`
+    (`BUILD_AND_TEST_KEYBOARD.md`). Corollary for Play review: every `android.permissions` entry in
+    `app.json` must name an in-app use — do not declare ahead of implementation (IDI-273).
+
+88. **A plugin that fails to LOAD breaks every platform's prebuild — including the one it
+    isn't for.** (IDI-254, 2026-08-31.) `@bacons/apple-targets@4.0.7` imports
+    `@expo/prebuild-config/build/plugins/icons/AssetContents` without declaring
+    `@expo/prebuild-config` as a dependency. It worked only while something else hoisted that
+    package to the top of `node_modules`; SDK 55.0.31 stopped doing so, the import threw, and
+    `npx expo prebuild` died — **for `-p android` as well as `-p ios`**, because `app.json`
+    `plugins` entries are resolved when the app config loads, before any platform branch. v5.0.0
+    fixes it by declaring the dependency (the import path is unchanged, so the version bump is
+    the whole fix). Keep `@bacons/apple-targets` at `^5.0.0` on SDK 55+, and treat *any*
+    unloadable plugin as a cross-platform outage rather than an iOS- or Android-only one.
+    The prebuild-only smoke check in `BUILD_AND_TEST_KEYBOARD.md` catches this class in seconds.
