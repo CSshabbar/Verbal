@@ -69,17 +69,34 @@
       "@bacons/apple-targets"
     ],
     "scheme": "verbal",
-    "extra": {
-      "eas": {
-        "projectId": "2dcb3386-32d8-46ae-860f-21cac7826038"
-      }
-    },
-    "owner": "shabbar26",
+    "owner": "idiazio",
     "runtimeVersion": {
       "policy": "appVersion"
     },
+    "extra": {
+      "eas": {
+        "build": {
+          "experimental": {
+            "ios": {
+              "appExtensions": [
+                {
+                  "bundleIdentifier": "com.verbal.app.keyboard",
+                  "targetName": "FlumeKeyboard",
+                  "entitlements": {
+                    "com.apple.security.application-groups": [
+                      "group.com.verbal.app"
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        },
+        "projectId": "6a1d56b9-5ebb-4842-8ccf-21c0fcaa07ca"
+      }
+    },
     "updates": {
-      "url": "https://u.expo.dev/2dcb3386-32d8-46ae-860f-21cac7826038"
+      "url": "https://u.expo.dev/6a1d56b9-5ebb-4842-8ccf-21c0fcaa07ca"
     }
   }
 }

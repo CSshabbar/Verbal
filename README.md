@@ -78,7 +78,8 @@ Verbal is designed to work seamlessly across different operating systems with na
 - **Voice keyboard**: a real iOS keyboard extension (Swift, `targets/keyboard/`) and a real Android IME (Kotlin, `plugins/keyboard/`), both dictating through the same Supabase `groq-proxy`
 - **Sync**: history, notes, canvas, dictionary and snippets sync with the desktop apps through Supabase
 - **Status**: built with EAS; not yet on the App Store or Google Play (readiness tracked in Linear IDI-247 / IDI-269)
-- **Dev**: `cd verbal-mobile && npm install && npx expo start`; native builds via `npx expo prebuild -p <ios|android> --clean` then `npx expo run:<platform>` (`ios/` and `android/` are generated, not committed)
+- **Dev**: **Expo Go is not supported** — the app has custom native code (both keyboards, `modules/flume-shared-store`, the `verbal://` sign-in scheme), so it runs only in its own development build. Once per machine: `cd verbal-mobile && npm ci && npx expo prebuild -p <ios|android> --clean && npx expo run:<platform>` (installs the Flume dev shell on the emulator/device; `ios/` and `android/` are generated, not committed). Every session after that: `npx expo start`, then open the installed **Flume** app (not Expo Go) — its launcher screen with a URL field just means Metro isn't running yet
+- **Share a build**: for someone without a toolchain, build the JS in — `cd verbal-mobile/android && gradlew assembleRelease` → `app/build/outputs/apk/release/app-release.apk` (debug-keystore signed, sideload only) — or `eas build -p android --profile preview`. On Windows, map a deep checkout to a short drive before running Gradle to avoid Ninja's 260-character path limit (see `context/05-conventions.md` #90). Never hand out the debug APK: it is a dev shell and shows the URL screen without Metro
 
 ### Linux (Planned)
 - **System Integration**: System tray app with GTK/Qt interface

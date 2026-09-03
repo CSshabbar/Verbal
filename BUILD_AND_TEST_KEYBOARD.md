@@ -55,6 +55,16 @@ npx expo run:android                   # builds + installs on a running emulator
 Then: Settings → System → Languages & input → On-screen keyboard → Manage keyboards →
 enable **Flume** → switch to it with the keyboard-switch button. Test in any app.
 
+### Release APK for testers (no Metro, no laptop)
+The debug APK is a dev shell: without Metro it shows the dev-client URL screen, so never hand it to a
+tester (nor tell them to use Expo Go — the custom keyboard rules that out). Build the JS in instead:
+```
+cd verbal-mobile/android && ./gradlew assembleRelease   # → app/build/outputs/apk/release/app-release.apk
+```
+Signed with the debug keystore (sideload only; real signing is IDI-269). The easiest repeatable path is
+`eas build -p android --profile preview`. On Windows, a deep OneDrive checkout can hit Ninja's 260-character
+path limit; map the repository root to a short drive before running Gradle (`context/05-conventions.md` #90).
+
 ### iOS (Simulator — no paid account needed; device/App Store needs the account)
 ```
 cd verbal-mobile
