@@ -317,6 +317,19 @@ bounded `config['meetings']` (`MEETINGS_CAP`). The HUD appears when the meeting 
   stale-keyboard trap recorded in `BUILD_AND_TEST_KEYBOARD.md`). EAS build profiles for both platforms live
   in `eas.json` (`preview` emits an Android APK for sideloading; `production` is store-shaped). Android/Play
   launch readiness is tracked under IDI-269, iOS/App Store under IDI-247. (IDI-256)
+- **Expo Go cannot run this app — use a development build.** Expo Go is Expo's generic shell and
+  contains only the standard SDK modules; Flume's Android IME, iOS keyboard extension, the apple-only
+  `modules/flume-shared-store` and the `verbal://` OAuth scheme all live outside it. The equivalent is
+  the project's own dev shell: `npx expo run:<platform>` (or EAS profile `development`) installs it once,
+  then `npx expo start` serves the JS to it with live reload exactly as Expo Go would. The dev shell's
+  launcher screen (a URL/IP field, "Enter URL manually") is not an error — it means Metro isn't running
+  or the device can't reach it (`npx expo start --android` launches the app and sets up `adb reverse`;
+  `--tunnel` when the phone is on another network). For a laptop-free install build the JS in:
+  `android/gradlew assembleRelease` → `android/app/build/outputs/apk/release/app-release.apk` (signed
+  with the debug keystore — sideload only, IDI-269 owns real signing), or EAS profile `preview`. Run
+  that Gradle build through EAS or from a short filesystem path. On Windows, map the repository root to
+  a short drive first; the deep OneDrive path trips Ninja's 260-character limit (`05-conventions.md` #90).
+  (2026-09-03)
 - **Shared dictation pipeline contract:** `lib/dictationPipeline.ts` wraps transcribe → AI-cleanup →
   dictionary-replacement → snippet-expansion as ONE function — and since IDI-179 it is actually WIRED:
   exactly two app callers, `useRecorder.stop()` (first pass) and `historyStore.retryEntry()` (retry), both

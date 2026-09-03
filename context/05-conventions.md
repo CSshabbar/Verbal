@@ -2211,3 +2211,30 @@ Repo-checked-in agent definitions and skills for parallel/reviewed work:
     the whole fix). Keep `@bacons/apple-targets` at `^5.0.0` on SDK 55+, and treat *any*
     unloadable plugin as a cross-platform outage rather than an iOS- or Android-only one.
     The prebuild-only smoke check in `BUILD_AND_TEST_KEYBOARD.md` catches this class in seconds.
+
+89. **Expo Go is not a target, and the dev shell's URL screen is not a bug.** (2026-09-03.) A
+    teammate asked for "an Expo Go build" and read a freshly installed dev client's launcher (an
+    IP/URL field instead of the app) as a broken build. Neither is a defect: Expo Go cannot host the
+    custom native code (Kotlin IME, Swift keyboard extension, `flume-shared-store`, `verbal://`
+    scheme), and a development build carries no JS — it waits for `npx expo start`. Run Metro, then
+    open the installed **Flume** app (never Expo Go). Hand non-developers a standalone build instead
+    (`gradlew assembleRelease` APK or EAS `preview`) — never the debug/dev-client APK, which shows
+    them the same URL screen. Details in `02-architecture.md` §Mobile stack; the README's Dev line
+    says the same so nobody reaches for Expo Go from the front page.
+
+90. **A deep Windows checkout can break `assembleRelease` at the 260-character path limit — use a
+    short path or EAS.** (2026-09-03.) Under the OneDrive checkout
+    (`C:\Users\<u>\OneDrive\Documents\Verbal\verbal-mobile`) the Debug variant builds because CMake
+    hashes the out-of-tree codegen object paths to fit its 250-char cap
+    (`.cxx/Debug/<hash>/<abi>/…/react_codegen_safeareacontext.dir/<md5>/RNCSafeAreaViewShadowNode.cpp.o`
+    is 239 chars). The release variant configures as `RelWithDebInfo` — nine characters longer — so the
+    hashed form no longer fits, CMake falls back to the full mirrored source path, and ninja fails with
+    `Filename longer than 260 characters` — *after* compiling everything else for all four ABIs (4 h 23 m
+    wasted). `expo run:android` sidesteps it only because it builds the Debug variant for one ABI. Fixes,
+    in order: use `eas build -p android --profile preview`; map the repository root (not `verbal-mobile`
+    itself) to an unused short drive with `subst V: <repo-root>`, then build from
+    `V:\verbal-mobile\android` with `NODE_ENV=production` (verified 2026-09-03: all four ABIs, 8m58s);
+    or build on Linux/macOS (also verified 2026-09-03 on Debian). Mapping `verbal-mobile` directly to the
+    drive root fails because Expo autolinking does not inspect `V:\package.json`. Do not disable the New
+    Architecture: React Native 0.83 no longer supports that escape hatch.
+    Never hand-edit `android/app/build.gradle` for this — it is generated (#87).
