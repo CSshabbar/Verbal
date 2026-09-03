@@ -614,15 +614,13 @@
     get_access_token(cfg) or SUPABASE_KEY` (Realtime evaluates `postgres_changes` RLS off that field, not
     just the WS handshake header). **Exception: Storage object calls** (`recordings`/`meeting-audio`/
     `canvas-images` uploads, signed URLs) stay on the anon key — those bucket policies are `TO public` and
-    don't discriminate by caller identity (MER-27). This exists because RLS on `notes`/`transcriptions`/
-    `devices`/`canvas`/`dictionary`/`meetings` is *currently* still permissive (`USING (true)`) — seeded
-    ahead of a real `auth.uid()` cutover so that flipping those policies later is a pure backend/SQL change,
-    not also a client rollout. See `context/04-data-model.md` §Security posture's MER-29 note for exactly
-    why that cutover (`whisperflow/supabase_auth_uid_rls.sql`, written + live-verified via a rolled-back
-    transaction) hasn't been applied yet: device pairing (`app/pairing.py`/`pairing.ts::claimPairing`) lets
-    a second device adopt a `user_id` **without ever getting a Supabase session**, so it structurally cannot
-    satisfy `auth.uid()` under the current pairing design — this needs a product decision, not just an
-    engineering rollout, before the migration can go live.
+    don't discriminate by caller identity (MER-27). The JWT-forwarding plumbing was built while RLS on
+    `notes`/`transcriptions`/`devices`/`canvas`/`dictionary`/`meetings` was still permissive (`USING (true)`),
+    so the cutover could be a pure backend/SQL change — and it was **applied to prod 2026-09-03** (IDI-268):
+    those six tables are now `FOR ALL TO authenticated USING (user_id = auth.uid()::text)`. An anon-key
+    caller now reads **zero** rows from them, so the JWT forwarding above is load-bearing, not just
+    forward-looking. (The pairing blocker was cleared by making paired devices local-only until sign-in;
+    `push_tokens`/`device_presence` were out of scope and remain `USING (true)`.)
 
 21. **Self-correction resolution (`ai_cleanup.SYSTEM_PROMPT` rule 18 / `groq.ts`'s SELF-CORRECTIONS
     block, MER-42/MER-43): a repair cue is never filler, and "and" only vetoes as list grammar.** Rule 18
@@ -2161,5 +2159,7 @@ Repo-checked-in agent definitions and skills for parallel/reviewed work:
     nothing. The gate makes a dead session deny cloud access and surface the IDI-166 re-sign-in banner
     instead. SEQUENCING IS LOAD-BEARING: this desktop build must ship and auto-update out to the installed
     base BEFORE the SQL is applied to prod; applying the SQL first would blank every not-yet-updated
-    dead-session install. The RLS migration is deliberately still NOT auto-applied — apply it manually only
-    after the gated build has propagated (see the IDI-268 close-out).
+    dead-session install. **DONE 2026-09-03:** the gated build shipped (v1.0.47+, propagated at 1.0.50) and
+    the RLS migration was then applied and verified (anon → 0 rows; a signed-in user reads only their own).
+    The migration is not wired into any auto-apply path — any future RLS tightening follows the same
+    ship-gate-first ordering.

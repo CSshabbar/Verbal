@@ -27,8 +27,9 @@
 | `snippets` | jsonb | default `'[]'` — `[{id,trigger,expansion,label,used,created_at,updated_at}]` (spoken trigger → text expansion; caps 40/500) |
 | `updated_at` | timestamptz | default `now()` |
 
-RLS on; policy `dictionary rw`: `FOR ALL TO public USING(true) WITH CHECK(true)`
-(`supabase_dictionary_rls_fix.sql`). **Must be `TO public`, not `TO anon`** — a
+RLS on; policy `dictionary owner`: `FOR ALL TO authenticated USING (user_id = auth.uid()::text)
+WITH CHECK (…)` (tightened from the old permissive `dictionary rw` by `supabase_auth_uid_rls.sql`,
+applied 2026-09-03 / IDI-268). **A shared table's policy must include `authenticated`, not be `TO anon`** — a
 signed-in client (mobile SDK) sends an authenticated JWT (role `authenticated`), and a
 `TO anon` policy would filter its rows out, silently breaking dictionary/snippet sync
 to signed-in devices.
@@ -173,8 +174,8 @@ INSERT+UPDATE on `verbal_meetings_<uid>` — the live-transcript stream). **`REP
 (migration `meetings_replica_identity_full_for_realtime_updates`) — required so Realtime can match the
 `user_id=eq` filter on UPDATE events; with the default (PK-only) identity INSERTs delivered but live
 UPDATE chunks were silently dropped, so `MeetingLiveScreen` also polls every 3s while live as a fallback.
-RLS on, policy "meetings rw" `FOR ALL TO public USING(true)`
-(Hard Rule #10 — same deferred-hardening posture as the rest). Desktop also keeps a bounded metadata list
+RLS on, policy `meetings owner` `FOR ALL TO authenticated USING (user_id = auth.uid()::text)`
+(tightened from `meetings rw` by `supabase_auth_uid_rls.sql`, applied 2026-09-03 / IDI-268). Desktop also keeps a bounded metadata list
 in `config['meetings']` (`MEETINGS_CAP=30`) and the mixed WAV at `~/.verbal/meetings/<id>.wav`.
 
 **`app_versions_latest`** (view, 2026-08-20) — **the single definition of "newest build"**, read by
@@ -275,12 +276,12 @@ columns it isn't changing (text edits never null the image); a clear is an expli
 
 ### Organization layer (IDI-216, Aug 2026) — `whisperflow/supabase_organizations.sql`
 
-The **first tables in this project with real `auth.uid()` RLS.** Everything else is `TO public` with a
-`USING (true)` policy (see §Security posture); these four are `TO authenticated` and keyed on
-`auth.uid()::text` from their first row. That is deliberate and is what let the team layer ship without
-applying `supabase_auth_uid_rls.sql` (IDI-29): nothing in the team feature reads another user's row in a
-legacy table, so the pairing trade-off that blocks that migration is not in the way here. Consequence to
-know: a paired-but-never-signed-in device sends the anon key, reads **zero** org rows, and simply has no
+The **first tables in this project with real `auth.uid()` RLS** (the six legacy shared tables followed on
+2026-09-03 when `supabase_auth_uid_rls.sql` was applied — IDI-268; before that they were `TO public
+USING (true)`). These four are `TO authenticated` and keyed on `auth.uid()::text` from their first row.
+That is what let the team layer ship ahead of that migration (IDI-29): nothing in the team feature reads
+another user's row in a legacy table, so the pairing trade-off that gated that migration was not in the
+way here. Consequence to know: a paired-but-never-signed-in device sends the anon key, reads **zero** org rows, and simply has no
 team — the correct fail-closed outcome.
 
 **`organizations`** — `id` uuid PK · `name` text · `company_name` text `''` · `owner_user_id` text ·
@@ -590,7 +591,7 @@ Pragmatic, matches code + `GOOGLE_AUTH_SETUP.md`:
   `authenticated`). This bit `dictionary` (fixed via `supabase_dictionary_rls_fix.sql`) and `pairings`
   (fixed via MER-28, 2026-07 — `supabase_pairings.sql` updated in place) — no table is known to still have
   this trap.
-- **MER-29 (2026-07) — JWT forwarding shipped, `auth.uid()` enforcement written but NOT applied.**
+- **MER-29 (2026-07) — JWT forwarding shipped; `auth.uid()` enforcement APPLIED to prod 2026-09-03 (IDI-268).**
   - **Mobile** already sent the real session JWT for every table call (`@supabase/supabase-js` auto-attaches
     it once signed in) — no mobile code change was needed for `transcriptions`/`notes`/`dictionary`/`canvas`/
     `devices`/`meetings`. The two mobile call sites that use the raw anon key
@@ -614,16 +615,18 @@ Pragmatic, matches code + `GOOGLE_AUTH_SETUP.md`:
     `whisperflow/app/supabase_config.py` is a new zero-dependency module holding
     `SUPABASE_URL`/`SUPABASE_KEY`/`REST_URL` (split out of `sync.py`, which now re-exports them) so
     `auth.py` doesn't have to import `sync.py` and every call site can import `app.auth` without a cycle.
-  - **The `auth.uid()` migration is written and live-verified, but intentionally NOT applied**:
+  - **The `auth.uid()` migration is APPLIED to prod (2026-09-03, IDI-268)**:
     `whisperflow/supabase_auth_uid_rls.sql` (drops each table's permissive policy, replaces with
     `FOR ALL TO authenticated USING (user_id = auth.uid()::text) WITH CHECK (...)` for
-    `notes`/`transcriptions`/`devices`/`canvas`/`dictionary`/`meetings`). Verified correct live (inside a
-    transaction that applied it, tested with simulated JWT claims for two fake users, then `ROLLBACK` —
-    prod's actual policies were never changed) — confirmed: each user sees only their own rows, cross-user
-    writes affect 0 rows, and a plain anon-role request (no JWT — i.e. every *currently installed* app
-    build) sees **zero** rows once the policy is `TO authenticated`.
-  - **Why it's being held back — two real blockers, not just caution:**
-    1. **Device pairing structurally can't satisfy `auth.uid()`.** `pairing.ts::claimPairing` /
+    `notes`/`transcriptions`/`devices`/`canvas`/`dictionary`/`meetings`). Re-verified live AFTER the apply
+    (via role simulation, not a rolled-back transaction): an `anon`-role caller now sees **0** notes /
+    meetings / transcriptions (was 26 / 54), and authenticated user `67962d98…` sees only their own 13
+    notes / 10 meetings with **0** cross-user rows. Rollback if ever needed = re-create the prior
+    permissive policies (the `DROP` lines in that file). `push_tokens` / `device_presence` were out of
+    scope and still carry `USING(true)` — the documented next step.
+  - **Why it was held back until 2026-09-03 — both blockers resolved first:**
+    1. **Device pairing structurally can't satisfy `auth.uid()`** — RESOLVED by retiring the pairing
+       override (IDI-268: paired devices are local-only until they sign in). `pairing.ts::claimPairing` /
        `app/pairing.py` let a second device adopt the host's `user_id` **without ever creating a Supabase
        Auth session** — it has no JWT at all, ever, by design (that's the point of pairing without a second
        Google sign-in). The moment any of the six tables above requires `TO authenticated`, every
@@ -632,11 +635,10 @@ Pragmatic, matches code + `GOOGLE_AUTH_SETUP.md`:
        **product decision**: accept that trade-off (paired devices become local-only unless they also sign
        in with Google), or redesign pairing to mint the joining device a real session for the host's account
        (not implemented anywhere today) — before this migration can ever be applied.
-    2. **Client rollout coordination.** Even once (1) is resolved, applying this migration instantly 401s
-       every *currently-running* desktop/mobile build that hasn't yet received the JWT-forwarding code above
-       (old builds only ever send the anon key) — a real outage, not a soft degrade, until users update.
-       This must be sequenced behind an actual release + adoption window, which is outside what a single
-       backend change can control.
+    2. **Client rollout coordination** — RESOLVED. JWT forwarding shipped in v1.0.11+ and the
+       `cloud_allowed()` `session_dead` gate (commit `dd01562`) in v1.0.47+; both had propagated (release
+       1.0.50) before the 2026-09-03 apply, so dead-session clients surface the re-sign-in banner instead
+       of silently reading zero rows. The apply was sequenced behind that adoption window.
   - `pairings` keeps its random/short-lived/single-use token model (the claiming device isn't signed in
     as the host yet, so `auth.uid()` can't apply to its own rows) — but is no longer wide-open: since
     IDI-157 the table is INSERT-only over REST and everything else is token-gated RPC (see the `pairings`
