@@ -1762,13 +1762,62 @@ class DashboardApi:
             self.app._on_main(self.app._sign_out)
         return _ok()
 
+    def pick_issue_screenshot(self):
+        """Native file picker for a Support-pane screenshot attachment
+        (WKWebView can't open a JS <input type=file> — same reason as
+        canvas_add_image_file). The BYTES stay on this side of the bridge,
+        stashed on self, so a multi-MB image never rides the JS message
+        handler; report_issue() picks the stash up and clears it."""
+        try:
+            dash = self.dashboard
+            if hasattr(dash, "pick_image_native"):
+                box = dash.pick_image_native()
+                if box.get("error"):
+                    return _err(box["error"])
+                if box.get("cancelled") or not box.get("path"):
+                    return _ok(cancelled=True)
+                path = box["path"]
+            else:
+                import webview
+
+                if not dash._window:
+                    return _err("Dashboard window is not ready")
+                paths = dash._window.create_file_dialog(
+                    webview.OPEN_DIALOG,
+                    allow_multiple=False,
+                    file_types=("Images (*.png;*.jpg;*.jpeg;*.webp;*.gif)",
+                                "All files (*.*)"),
+                )
+                if not paths:
+                    return _ok(cancelled=True)
+                path = paths[0]
+            ext = path.rsplit(".", 1)[-1].lower() if "." in path else ""
+            if ext not in ("png", "jpg", "jpeg", "webp", "gif"):
+                return _err("Pick a PNG, JPEG, WebP or GIF image")
+            with open(path, "rb") as f:
+                data = f.read()
+            if len(data) > 5 * 1024 * 1024:
+                return _err("Image is too large — 5 MB max")
+            self._issue_shot = {"data": data, "ext": ext,
+                                "name": os.path.basename(path)}
+            return _ok(name=os.path.basename(path), size=len(data))
+        except Exception as e:
+            logger.debug(f"pick_issue_screenshot failed: {e}")
+            return _err("Couldn't read that file")
+
+    def clear_issue_screenshot(self):
+        self._issue_shot = None
+        return _ok()
+
     def report_issue(self, message=""):
         """Send an in-app issue report to the `report-issue` Edge Function
         (beta launch, 2026-09). The function saves the row (`issue_reports`)
         and best-effort emails the founder; email failure is invisible here —
         a saved report is a successful report. Works signed-in AND signed out:
         `auth_header` falls back to the anon key, which the function accepts
-        and records as an anonymous report."""
+        and records as an anonymous report. A screenshot stashed by
+        pick_issue_screenshot() rides along as base64 and is cleared only on
+        success, so a failed send keeps the attachment for the retry."""
         msg = str(message or "").strip()
         if not msg:
             return _err("Describe the issue first")
@@ -1780,21 +1829,29 @@ class DashboardApi:
             from app.auth import auth_header
             from app.config import APP_VERSION, PLATFORM
             from app.supabase_config import SUPABASE_URL
+            payload = {
+                "message": msg[:4000],
+                "platform": PLATFORM,
+                "app_version": APP_VERSION,
+                "device_name": str(self.app.config.get("sync_device_name")
+                                   or _plat.node() or ""),
+                "os_version": f"{_plat.system()} {_plat.release()}",
+            }
+            shot = getattr(self, "_issue_shot", None)
+            if shot and shot.get("data"):
+                payload["image_b64"] = base64.b64encode(shot["data"]).decode()
+                payload["image_type"] = shot.get("ext", "png")
             resp = httpx.post(
                 f"{SUPABASE_URL}/functions/v1/report-issue",
-                json={
-                    "message": msg[:4000],
-                    "platform": PLATFORM,
-                    "app_version": APP_VERSION,
-                    "device_name": str(self.app.config.get("sync_device_name")
-                                       or _plat.node() or ""),
-                    "os_version": f"{_plat.system()} {_plat.release()}",
-                },
+                json=payload,
                 headers=auth_header(self.app.config, json=True),
-                timeout=20,
+                # A 5 MB screenshot on a slow uplink needs more than the
+                # text-only 20 s.
+                timeout=60 if shot else 20,
             )
             data = resp.json() if resp.content else {}
             if resp.status_code < 400 and data.get("ok"):
+                self._issue_shot = None
                 return _ok()
             logger.warning(f"report_issue failed: {resp.status_code} {data.get('error')}")
             return _err("Couldn't send the report — please try again")

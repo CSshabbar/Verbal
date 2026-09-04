@@ -23,3 +23,12 @@ create index if not exists issue_reports_created_at_idx
 
 alter table public.issue_reports enable row level security;
 -- No policies: service-role-only access, fail closed for every client role.
+
+-- issue-screenshots — PRIVATE bucket for report attachments (applied live as
+-- migration create_issue_screenshots_bucket). Written only by the report-issue
+-- Edge Function (service role); NO storage.objects policies for this bucket on
+-- purpose, so no client role can read or write it directly. The object path is
+-- `<report_id>.<ext>`, recorded on the row as meta.screenshot.
+insert into storage.buckets (id, name, public)
+values ('issue-screenshots', 'issue-screenshots', false)
+on conflict (id) do update set public = false;

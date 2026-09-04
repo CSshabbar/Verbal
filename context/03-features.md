@@ -1135,9 +1135,9 @@ and having an email channel to them.
 
 ## Report an issue (all platforms, 2026-09 — beta launch)
 
-In-app feedback: a message box whose submission is saved to the `issue_reports` table and best-effort
-emailed to the founder. Deliberately minimal — no screenshots, no ticket system, no in-app status;
-triage is manual (the founder reads the table / the email).
+In-app feedback: a message box (plus an optional screenshot since 2026-09-04) whose submission is
+saved to the `issue_reports` table and best-effort emailed to the founder. Deliberately minimal — no
+ticket system, no in-app status; triage is manual (the founder reads the table / the email).
 
 **Server-side:** `supabase/functions/report-issue/index.ts` (`verify_jwt` on — a session JWT **or the
 anon key** both pass, so signed-out testers can report; an anon-role caller is stored as an anonymous
@@ -1148,23 +1148,44 @@ inversion of `invite-member`'s posture: there the email is the product, here the
 outage / missing `RESEND_API_KEY` / unverified domain never loses a report and is invisible to the
 tester (logged server-side only). Secrets: reuses `RESEND_API_KEY` + `INVITE_FROM_EMAIL`; recipient is
 `ISSUE_REPORT_EMAIL` (optional, defaults to the founder's address in code). Response
-`{ok, id, emailed}`. The table is RLS-on with **no policies** (service-role-only, the
+`{ok, id, emailed, screenshot}`. The table is RLS-on with **no policies** (service-role-only, the
 `groq_rate_limits` pattern) — verified live: anon SELECT returns `[]`, anon INSERT is rejected 401.
 
-**Clients** (both send `{message, platform, app_version, device_name, os_version}` and treat any
-`ok:false` as one friendly retry line — mirrors, change one, check the other):
+**Screenshot (optional, 2026-09-04):** clients may add `image_b64` (raw base64, no `data:` prefix) +
+`image_type` (`png|jpg|jpeg|webp|gif`, ≤5 MB decoded). The function mints the report id itself
+(`crypto.randomUUID()`), uploads the image to the **private `issue-screenshots` bucket** as
+`<report_id>.<ext>` (15 s timeout), records the path in `meta.screenshot`, and **attaches the image to
+the notification email** (Resend attachment with explicit `content_type` — the invite-member
+octet-stream lesson), so the founder sees it without opening Supabase. Every image step fails SOFT: a
+bad/oversized/unuploadable image degrades to a text-only report, never a lost one. The bucket has NO
+storage policies — service-role-only, same posture as the table.
+
+**Clients** (both send `{message, platform, app_version, device_name, os_version}` + the optional
+image fields, and treat any `ok:false` as one friendly retry line — mirrors, change one, check the
+other):
 - **Desktop (both OSes):** Settings → **Support** group in the shared `flume_html()` rail
   (`flume_dashboard_html.py`, `sendIssueReport()`) → `DashboardApi.report_issue(message)`
   (`shared_dashboard.py`) → httpx POST with `auth_header()` (falls back to the anon key when signed
-  out). Platform/version from `config.PLATFORM`/`APP_VERSION`.
+  out). Platform/version from `config.PLATFORM`/`APP_VERSION`. **Attach screenshot** =
+  `DashboardApi.pick_issue_screenshot()` — a NATIVE picker (`pick_image_native()` NSOpenPanel on Mac,
+  pywebview `create_file_dialog` on Windows; WKWebView can't open a JS `<input type=file>`, the
+  canvas_add_image_file lesson) that stashes the BYTES on the API object so a multi-MB image never
+  rides the JS bridge; `report_issue` picks the stash up, clears it only on success.
+  The pane's draft text + attachment display state live at JS module scope (`ISSUE_DRAFT`/`ISSUE_SHOT`)
+  because the ~30 s state heartbeat rebuilds the Settings pane's innerHTML — a bare textarea would be
+  wiped mid-typing.
 - **Mobile (iOS + Android):** Settings → About → **Report an issue** row → `ReportIssueScreen`
   (Menu modal stack, chevron-back per the back-affordance invariant) → `lib/reportIssue.ts` (raw fetch
   with the session token or the anon key, the `useAuth.deleteAccount` pattern). Version via guarded
   `require('expo-constants')`, OS via guarded `require('expo-device')`, platform `Platform.OS` —
   all fail-soft. Success = haptic + native `Alert` (Hard Rule #14 — this stack is a native modal).
+  **Attach screenshot** = `expo-image-picker` (already a dependency — the Canvas sendPhoto flow) with
+  `base64: true`; thumbnail preview + remove ✕; size/type validated on attach AND again in
+  `lib/reportIssue.ts` before send. Still OTA-shippable — no new native module.
 
-Live-verified end-to-end (2026-09-03): anon-key POST → row landed in `issue_reports` with correct
-meta → `emailed:true` (Resend accepted); test row deleted after verification.
+Live-verified end-to-end (2026-09-03, re-verified with screenshot 2026-09-04): anon-key POST → row in
+`issue_reports` with correct meta (incl. `meta.screenshot`) → object in `issue-screenshots` → 
+`emailed:true, screenshot:true`; test artifacts deleted after verification.
 
 ## Meetings — capture, live transcript, hybrid summary
 

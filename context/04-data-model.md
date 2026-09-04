@@ -110,7 +110,8 @@ dictation/retry/note-cleanup — while `lib/groq.ts` ignored the key parameter a
 `create_issue_reports`). In-app "Report an issue" feedback, one row per report from any platform.
 `id` uuid PK · `user_id` text `''` (auth uid; `''` = anonymous/signed-out) · `email` text `''` ·
 `platform` text `''` (`mac|win|ios|android`) · `app_version` text `''` · `message` text ·
-`meta` jsonb `'{}'` (`{device_name?, os_version?}`) · `status` text `'new'` (`new|seen|resolved`,
+`meta` jsonb `'{}'` (`{device_name?, os_version?, screenshot?}` — `screenshot` is the object path in
+the `issue-screenshots` bucket, 2026-09-04) · `status` text `'new'` (`new|seen|resolved`,
 manual triage) · `created_at`. Index `(created_at desc)`. **RLS on with NO policies on purpose**
 (the `groq_rate_limits` pattern): written ONLY by the `report-issue` Edge Function with the service
 role, read by the founder via dashboard/SQL — verified live that the anon key can neither SELECT nor
@@ -120,7 +121,17 @@ INSERT. See `03-features.md` §Report an issue.
 session JWT **or the anon key** (anonymous reports allowed by design). Saves the row FIRST with the
 service role, then best-effort emails the founder via Resend (reuses `RESEND_API_KEY` +
 `INVITE_FROM_EMAIL`; recipient = optional `ISSUE_REPORT_EMAIL` secret, code-defaulted) — an email
-failure never fails the request or reaches the client. Returns `{ok, id, emailed}`.
+failure never fails the request or reaches the client. Optional screenshot (2026-09-04): `image_b64`
+(raw base64) + `image_type` (`png|jpg|jpeg|webp|gif`, ≤5 MB decoded) → uploaded as `<report_id>.<ext>`
+to `issue-screenshots`, recorded in `meta.screenshot`, attached to the email; every image step fails
+soft (worst case: text-only report). The function mints the row id itself so the object name and the
+single row insert agree. Returns `{ok, id, emailed, screenshot}`.
+
+- **`issue-screenshots`** (bucket, in `supabase_issue_reports.sql`; applied live 2026-09-04, migration
+  `create_issue_screenshots_bucket`) — **private**, report attachments at `<report_id>.<ext>`. NO
+  `storage.objects` policies for this bucket on purpose: only the `report-issue` function (service
+  role) writes, the founder reads via the dashboard. Not in the `delete-account` purge (reports are
+  operational feedback, keyed by report id, not a user-content namespace).
 
 **`beta_signups`** — `whisperflow/supabase_beta_signups.sql` (applied live 2026-09-03, migration
 `beta_signups_table`). One row per person who filled the public beta form (`idiaz.io/flume/beta.html`).

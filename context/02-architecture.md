@@ -351,7 +351,8 @@ bounded `config['meetings']` (`MEETINGS_CAP`). The HUD appears when the meeting 
 - **Tables:** `transcriptions` (history / shared clipboard), `dictionary`, `notes`, `canvas`, `devices`,
   `pairings`, `app_versions`, `groq_usage` (proxy rate-limit/usage ledger), `issue_reports`
   (in-app issue reports, service-role-only). **Storage buckets:**
-  `recordings`, `canvas-images`, `releases` (all public).
+  `recordings`, `canvas-images`, `releases` (all public), `issue-screenshots` (private,
+  service-role-only — report attachments).
 - **Edge Functions:** `groq-proxy` (`supabase/functions/groq-proxy/index.ts`) brokers AI access —
   provider keys are server-side function secrets, never in any client. Clients POST audio/chat with their
   Supabase JWT (or anon key); the function logs usage per identity (`groq_usage`) and forwards to Groq —
@@ -364,7 +365,9 @@ bounded `config['meetings']` (`MEETINGS_CAP`). The HUD appears when the meeting 
   sha256 and is DELETED again if the mail fails, so a "pending" invite always means one that was sent.
   `report-issue` (`supabase/functions/report-issue/index.ts`, 2026-09) saves an in-app issue report to
   `issue_reports` (service role; the table has RLS with no policies) then best-effort emails the founder
-  via Resend — accepts session JWT or anon key, row-first/email-optional. See `04-data-model.md`.
+  via Resend — accepts session JWT or anon key, row-first/email-optional. An optional screenshot
+  (≤5 MB) is stored in the private `issue-screenshots` bucket and attached to the email; image steps
+  fail soft. See `04-data-model.md`.
   `beta-signup` (`supabase/functions/beta-signup/index.ts`, 2026-09) receives the public beta form on
   `idiaz.io/flume/beta.html` (name+email) — `verify_jwt` OFF (public marketing form, the
   `download`/`invite` posture); abuse bounded by a honeypot field, a per-IP-hash hourly rate limit, and

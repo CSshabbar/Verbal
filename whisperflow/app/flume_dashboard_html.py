@@ -4725,6 +4725,12 @@ const SETTINGS_GROUPS=[
   {id:'support',    label:'Support',     lede:'Something broken or confusing? Tell us — reports go straight to the team.'},
 ];
 let SETTINGS_GROUP='account';
+// Support-pane draft state at module scope: the ~30s state heartbeat rebuilds
+// the pane's innerHTML, which would wipe an in-progress report typed into a
+// bare textarea. The attachment's BYTES live Python-side (DashboardApi stash);
+// this holds only the name/size for display.
+let ISSUE_DRAFT='';
+let ISSUE_SHOT=null;
 
 // ── Pipeline / model choices ────────────────────────────────────────────────
 // The pipeline is NOT stored as its own key. It is derived from the two flags the
@@ -5094,7 +5100,14 @@ function settingsPane(id){
       <div class="scard">
         <div class="field"><label>WHAT HAPPENED</label>
           <textarea id="issueText" maxlength="4000" style="min-height:140px;resize:vertical"
-            placeholder="What were you doing, and what did Flume do instead?"></textarea></div>
+            placeholder="What were you doing, and what did Flume do instead?"
+            oninput="ISSUE_DRAFT=this.value">${esc(ISSUE_DRAFT)}</textarea></div>
+        <div class="saverow" style="margin:8px 0 2px">
+          ${ISSUE_SHOT
+            ? `<span class="ssub" style="margin:0">${esc(ISSUE_SHOT.name)} · ${Math.max(1,Math.round((ISSUE_SHOT.size||0)/1024))} KB</span>
+               <button class="btn ghost slim" onclick="removeIssueShot()">Remove</button>`
+            : `<button class="btn ghost slim" id="issueShotBtn" onclick="pickIssueShot()">Attach screenshot</button>`}
+        </div>
         <div class="ssub" style="margin:6px 0 10px">${u?'Sent with your account email so we can follow up.':'You are signed out, so the report is anonymous — include an email in the text if you want a reply.'}</div>
         <button id="issueSendBtn" class="btn primary" style="flex:none;width:150px" onclick="sendIssueReport()">Send report</button>
       </div></div>`;
@@ -5102,15 +5115,34 @@ function settingsPane(id){
   return '';
 }
 
+function pickIssueShot(){
+  // The picker + file read run Python-side (WKWebView can't open a JS file
+  // input); only the name/size come back — the bytes stay off the bridge.
+  const btn=document.getElementById('issueShotBtn');
+  busyGuard(btn||'pick_issue_screenshot', ()=>api('pick_issue_screenshot')).then(r=>{
+    if(!r||r.busy||r.cancelled) return;
+    if(r.ok===false){ toast(r.error||'Could not read that file.', true); return; }
+    ISSUE_SHOT={name:r.name||'screenshot', size:r.size||0};
+    renderSettings();
+  });
+}
+
+function removeIssueShot(){
+  ISSUE_SHOT=null;
+  api('clear_issue_screenshot');
+  renderSettings();
+}
+
 function sendIssueReport(){
-  const ta=document.getElementById('issueText');
-  const text=ta?ta.value.trim():'';
+  const text=ISSUE_DRAFT.trim();
   if(!text){ toast('Describe the issue first.', true); return; }
   const btn=document.getElementById('issueSendBtn');
   busyGuard(btn||'report_issue', ()=>api('report_issue', text)).then(r=>{
     if(r&&r.busy) return;
     if(!r||r.ok===false){ toast((r&&r.error)||'Could not send the report.', true); return; }
-    if(ta) ta.value='';
+    ISSUE_DRAFT='';
+    ISSUE_SHOT=null;
+    renderSettings();
     toast('Report sent — thank you.');
   });
 }

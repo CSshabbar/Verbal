@@ -14,6 +14,12 @@
 // must never lose a report or surface an error to the tester. This inverts
 // invite-member's posture (there the email IS the product; here the row is).
 //
+// SCREENSHOT (optional): `image_b64` (raw base64, no data: prefix) +
+// `image_type` (png/jpg/jpeg/webp/gif, ≤5 MB decoded). Uploaded to the PRIVATE
+// `issue-screenshots` bucket as `<report_id>.<ext>` (recorded in
+// meta.screenshot) and attached to the notification email. Every image step
+// fails SOFT — a bad/oversized/unuploadable image never blocks the text report.
+//
 // SECRETS (all optional, all shared with invite-member where they exist):
 //   RESEND_API_KEY      — without it the email step is skipped, reports still save
 //   INVITE_FROM_EMAIL   — the verified From address (bare or RFC-5322 wrapped)
@@ -30,6 +36,13 @@ const REPORT_TO = Deno.env.get("ISSUE_REPORT_EMAIL") ?? "sraza@idiaz.io";
 
 const MESSAGE_MAX = 4000;
 const PLATFORMS = new Set(["mac", "win", "ios", "android"]);
+const IMAGE_MAX_BYTES = 5 * 1024 * 1024;
+// b64 is 4/3 the decoded size; +4 tolerates padding.
+const IMAGE_MAX_B64 = Math.ceil(IMAGE_MAX_BYTES * 4 / 3) + 4;
+const IMAGE_TYPES: Record<string, string> = {
+  png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg",
+  webp: "image/webp", gif: "image/gif",
+};
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -65,9 +78,56 @@ function escapeHtml(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
+/** Decode + validate the optional screenshot. Returns null for anything off —
+ * wrong type, oversized, or non-base64 — because an image must never sink the
+ * text report it rides on. */
+function parseImage(body: Record<string, unknown>):
+  { b64: string; ext: string; contentType: string; bytes: Uint8Array } | null {
+  const b64 = typeof body.image_b64 === "string" ? body.image_b64.trim() : "";
+  if (!b64) return null;
+  const ext = clip(body.image_type, 8).toLowerCase();
+  const contentType = IMAGE_TYPES[ext];
+  if (!contentType) return null;
+  if (b64.length > IMAGE_MAX_B64) return null;
+  try {
+    const bin = atob(b64);
+    if (bin.length > IMAGE_MAX_BYTES) return null;
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return { b64, ext: ext === "jpeg" ? "jpg" : ext, contentType, bytes };
+  } catch {
+    return null;
+  }
+}
+
+async function uploadScreenshot(
+  path: string,
+  img: { contentType: string; bytes: Uint8Array },
+): Promise<boolean> {
+  try {
+    const r = await fetch(`${SUPABASE_URL}/storage/v1/object/issue-screenshots/${path}`, {
+      method: "POST",
+      headers: {
+        apikey: SERVICE_KEY,
+        Authorization: `Bearer ${SERVICE_KEY}`,
+        "Content-Type": img.contentType,
+        "x-upsert": "true",
+      },
+      body: img.bytes,
+      signal: AbortSignal.timeout(15000),
+    });
+    if (r.ok) return true;
+    console.error(`report-issue: screenshot upload failed ${r.status} — ${(await r.text()).slice(0, 200)}`);
+  } catch (e) {
+    console.error(`report-issue: screenshot upload threw — ${String(e)}`);
+  }
+  return false;
+}
+
 async function sendEmail(report: {
   id: string; userId: string; email: string; platform: string;
   appVersion: string; message: string; deviceName: string; osVersion: string;
+  image?: { b64: string; ext: string; contentType: string } | null;
 }): Promise<boolean> {
   if (!RESEND_API_KEY) return false;
   const who = report.email || report.userId || "anonymous";
@@ -77,6 +137,7 @@ async function sendEmail(report: {
     `Platform: ${report.platform || "unknown"}  ·  App version: ${report.appVersion || "unknown"}`,
     report.deviceName ? `Device: ${report.deviceName}` : "",
     report.osVersion ? `OS: ${report.osVersion}` : "",
+    report.image ? "Screenshot: attached" : "",
     `Report id: ${report.id}`,
     "",
     report.message,
@@ -84,10 +145,21 @@ async function sendEmail(report: {
   const text = lines.join("\n");
   const html = `<div style="font-family:ui-monospace,Menlo,monospace;font-size:13px;line-height:1.6;white-space:pre-wrap">${escapeHtml(text)}</div>`;
   try {
+    const payload: Record<string, unknown> = { from: FROM_EMAIL, to: [REPORT_TO], subject, html, text };
+    if (report.image) {
+      // content_type is required in practice — Resend's raw HTTP API tags an
+      // attachment without one as application/octet-stream (the invite-member
+      // inline-icon lesson, 2026-08-21), which many clients refuse to preview.
+      payload.attachments = [{
+        filename: `screenshot.${report.image.ext}`,
+        content: report.image.b64,
+        content_type: report.image.contentType,
+      }];
+    }
     const r = await fetch("https://api.resend.com/emails", {
       method: "POST",
       headers: { Authorization: `Bearer ${RESEND_API_KEY}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ from: FROM_EMAIL, to: [REPORT_TO], subject, html, text }),
+      body: JSON.stringify(payload),
     });
     if (r.ok) return true;
     // Log the real reason server-side (unverified domain, sandbox recipient,
@@ -125,7 +197,20 @@ Deno.serve(async (req) => {
 
   const { userId, email } = callerFromJwt(req.headers.get("Authorization") ?? "");
 
-  let id = "";
+  // The id is minted HERE (not by the DB default) so the screenshot can be
+  // uploaded under its final `<id>.<ext>` name and referenced in meta within
+  // the single row insert. Upload-before-insert is deliberate: the upload is
+  // time-bounded (15 s) and fails soft, so the worst case is a text-only
+  // report — never a lost one. (An insert failing after a successful upload
+  // orphans one object; logged, rare, harmless.)
+  const id = crypto.randomUUID();
+  const image = parseImage(body);
+  let screenshotPath = "";
+  if (image) {
+    const path = `${id}.${image.ext}`;
+    if (await uploadScreenshot(path, image)) screenshotPath = path;
+  }
+
   try {
     const r = await fetch(`${SUPABASE_URL}/rest/v1/issue_reports`, {
       method: "POST",
@@ -133,23 +218,27 @@ Deno.serve(async (req) => {
         apikey: SERVICE_KEY,
         Authorization: `Bearer ${SERVICE_KEY}`,
         "Content-Type": "application/json",
-        Prefer: "return=representation",
+        Prefer: "return=minimal",
       },
       body: JSON.stringify({
+        id,
         user_id: userId,
         email,
         platform,
         app_version: appVersion,
         message,
-        meta: { device_name: deviceName, os_version: osVersion },
+        meta: {
+          device_name: deviceName,
+          os_version: osVersion,
+          ...(screenshotPath ? { screenshot: screenshotPath } : {}),
+        },
       }),
     });
     if (!r.ok) {
       console.error(`report-issue: insert failed ${r.status} — ${(await r.text()).slice(0, 400)}`);
+      if (screenshotPath) console.error(`report-issue: orphaned screenshot ${screenshotPath}`);
       return json({ ok: false, error: "save_failed" }, 500);
     }
-    const rows = await r.json();
-    id = Array.isArray(rows) && rows[0]?.id ? String(rows[0].id) : "";
   } catch (e) {
     console.error(`report-issue: insert threw — ${String(e)}`);
     return json({ ok: false, error: "save_failed" }, 500);
@@ -157,7 +246,8 @@ Deno.serve(async (req) => {
 
   const emailed = await sendEmail({
     id, userId, email, platform, appVersion, message, deviceName, osVersion,
+    image: screenshotPath ? image : null,
   });
 
-  return json({ ok: true, id, emailed });
+  return json({ ok: true, id, emailed, screenshot: Boolean(screenshotPath) });
 });
