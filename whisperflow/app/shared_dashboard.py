@@ -1762,6 +1762,46 @@ class DashboardApi:
             self.app._on_main(self.app._sign_out)
         return _ok()
 
+    def report_issue(self, message=""):
+        """Send an in-app issue report to the `report-issue` Edge Function
+        (beta launch, 2026-09). The function saves the row (`issue_reports`)
+        and best-effort emails the founder; email failure is invisible here —
+        a saved report is a successful report. Works signed-in AND signed out:
+        `auth_header` falls back to the anon key, which the function accepts
+        and records as an anonymous report."""
+        msg = str(message or "").strip()
+        if not msg:
+            return _err("Describe the issue first")
+        try:
+            import platform as _plat
+
+            import httpx
+
+            from app.auth import auth_header
+            from app.config import APP_VERSION, PLATFORM
+            from app.supabase_config import SUPABASE_URL
+            resp = httpx.post(
+                f"{SUPABASE_URL}/functions/v1/report-issue",
+                json={
+                    "message": msg[:4000],
+                    "platform": PLATFORM,
+                    "app_version": APP_VERSION,
+                    "device_name": str(self.app.config.get("sync_device_name")
+                                       or _plat.node() or ""),
+                    "os_version": f"{_plat.system()} {_plat.release()}",
+                },
+                headers=auth_header(self.app.config, json=True),
+                timeout=20,
+            )
+            data = resp.json() if resp.content else {}
+            if resp.status_code < 400 and data.get("ok"):
+                return _ok()
+            logger.warning(f"report_issue failed: {resp.status_code} {data.get('error')}")
+            return _err("Couldn't send the report — please try again")
+        except Exception as e:
+            logger.debug(f"report_issue failed: {e}")
+            return _err("Couldn't send the report — check your connection")
+
     def start_recording(self):
         self.app._on_record_start()
         return _ok()

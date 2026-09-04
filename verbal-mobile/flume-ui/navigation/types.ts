@@ -65,4 +65,5 @@ export type MenuStackParamList = {
   Models: undefined;
   Canvas: undefined;
   Team: undefined;
+  ReportIssue: undefined;
 };

@@ -25,13 +25,14 @@ import {
 } from '../../lib/storage';
 
 type Props = { onBack: () => void; onOpenDevices: () => void;
-               onOpenSnippets: () => void; onOpenModels: () => void };
+               onOpenSnippets: () => void; onOpenModels: () => void;
+               onOpenReportIssue: () => void };
 
 /**
  * Settings — keys & preferences, in the Flume visual language.
  * Reads/writes the local settings store directly (lib/storage).
  */
-export const SettingsScreen: React.FC<Props> = ({ onBack, onOpenDevices, onOpenSnippets, onOpenModels }) => {
+export const SettingsScreen: React.FC<Props> = ({ onBack, onOpenDevices, onOpenSnippets, onOpenModels, onOpenReportIssue }) => {
   const insets = useSafeAreaInsets();
   const team = useOrganization();
 
@@ -524,6 +525,8 @@ export const SettingsScreen: React.FC<Props> = ({ onBack, onOpenDevices, onOpenS
 
         {/* Account actions + about */}
         <Section label="ABOUT">
+          <ListRow icon="chatbubble-ellipses-outline" title="Report an issue" subtitle="Tell us what went wrong" onPress={onOpenReportIssue} />
+          <View style={{ height: 8 }} />
           <ListRow icon="information-circle-outline" title="Flume" subtitle="v1.0 · Voice dictation" trailing={null} />
           <View style={{ height: 12 }} />
           <Button label="Sign out" variant="ghost" onPress={confirmSignOut} />

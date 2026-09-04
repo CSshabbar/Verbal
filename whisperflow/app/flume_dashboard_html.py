@@ -4722,6 +4722,7 @@ const SETTINGS_GROUPS=[
   {id:'meetings',   label:'Meetings',    lede:''},
   {id:'shortcuts',  label:'Shortcuts',   lede:'Start dictating, or reshape a selection, from anywhere.'},
   {id:'data',       label:'Data & sync', lede:'Where your dictations live, and how to clear them.'},
+  {id:'support',    label:'Support',     lede:'Something broken or confusing? Tell us — reports go straight to the team.'},
 ];
 let SETTINGS_GROUP='account';
 
@@ -5088,7 +5089,30 @@ function settingsPane(id){
         <button id="clearHistBtn" class="btn ghost sdanger" onclick="clearHistory(this)">Clear history</button>
       </div></div>`;
 
+  if(id==='support') return `
+    <div class="ssection"><h3>Report an issue</h3>
+      <div class="scard">
+        <div class="field"><label>WHAT HAPPENED</label>
+          <textarea id="issueText" maxlength="4000" style="min-height:140px;resize:vertical"
+            placeholder="What were you doing, and what did Flume do instead?"></textarea></div>
+        <div class="ssub" style="margin:6px 0 10px">${u?'Sent with your account email so we can follow up.':'You are signed out, so the report is anonymous — include an email in the text if you want a reply.'}</div>
+        <button id="issueSendBtn" class="btn primary" style="flex:none;width:150px" onclick="sendIssueReport()">Send report</button>
+      </div></div>`;
+
   return '';
+}
+
+function sendIssueReport(){
+  const ta=document.getElementById('issueText');
+  const text=ta?ta.value.trim():'';
+  if(!text){ toast('Describe the issue first.', true); return; }
+  const btn=document.getElementById('issueSendBtn');
+  busyGuard(btn||'report_issue', ()=>api('report_issue', text)).then(r=>{
+    if(r&&r.busy) return;
+    if(!r||r.ok===false){ toast((r&&r.error)||'Could not send the report.', true); return; }
+    if(ta) ta.value='';
+    toast('Report sent — thank you.');
+  });
 }
 
 // ── 31g — MeetingsSettingsPane ────────────────────────────────────────────────

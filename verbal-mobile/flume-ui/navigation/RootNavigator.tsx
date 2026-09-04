@@ -22,6 +22,7 @@ import {
   TeamScreen,
   InsightsScreen,
   ModelsScreen,
+  ReportIssueScreen,
   NotesListScreen,
   NoteEditorScreen,
   MeetingListScreen,
@@ -218,7 +219,13 @@ function MenuNavigator() {
             onOpenDevices={() => navigation.navigate('Devices')}
             onOpenSnippets={() => navigation.navigate('Snippets')}
             onOpenModels={() => navigation.navigate('Models')}
+            onOpenReportIssue={() => navigation.navigate('ReportIssue')}
           />
+        )}
+      </MenuStack.Screen>
+      <MenuStack.Screen name="ReportIssue">
+        {({ navigation }) => (
+          <ReportIssueScreen onBack={() => navigation.goBack()} />
         )}
       </MenuStack.Screen>
       <MenuStack.Screen name="Dictionary">
