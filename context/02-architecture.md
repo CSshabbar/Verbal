@@ -349,7 +349,8 @@ bounded `config['meetings']` (`MEETINGS_CAP`). The HUD appears when the meeting 
 ## Backend (Supabase)
 
 - **Tables:** `transcriptions` (history / shared clipboard), `dictionary`, `notes`, `canvas`, `devices`,
-  `pairings`, `app_versions`, `groq_usage` (proxy rate-limit/usage ledger). **Storage buckets:**
+  `pairings`, `app_versions`, `groq_usage` (proxy rate-limit/usage ledger), `issue_reports`
+  (in-app issue reports, service-role-only). **Storage buckets:**
   `recordings`, `canvas-images`, `releases` (all public).
 - **Edge Functions:** `groq-proxy` (`supabase/functions/groq-proxy/index.ts`) brokers AI access —
   provider keys are server-side function secrets, never in any client. Clients POST audio/chat with their
@@ -361,6 +362,15 @@ bounded `config['meetings']` (`MEETINGS_CAP`). The HUD appears when the meeting 
   the claim link via **Resend** (`RESEND_API_KEY` + `INVITE_FROM_EMAIL` secrets). `verify_jwt` on;
   caller identity from the JWT, owner/admin re-checked against the DB; the row stores only the token's
   sha256 and is DELETED again if the mail fails, so a "pending" invite always means one that was sent.
+  `report-issue` (`supabase/functions/report-issue/index.ts`, 2026-09) saves an in-app issue report to
+  `issue_reports` (service role; the table has RLS with no policies) then best-effort emails the founder
+  via Resend — accepts session JWT or anon key, row-first/email-optional. See `04-data-model.md`.
+  `beta-signup` (`supabase/functions/beta-signup/index.ts`, 2026-09) receives the public beta form on
+  `idiaz.io/flume/beta.html` (name+email) — `verify_jwt` OFF (public marketing form, the
+  `download`/`invite` posture); abuse bounded by a honeypot field, a per-IP-hash hourly rate limit, and
+  a unique-email idempotent insert. Row-first into `beta_signups`, then best-effort Resend welcome email
+  (branded like invite-member's, with both download links) + founder notification. See
+  `03-features.md` §Beta signup and `04-data-model.md`.
   `download` (`supabase/functions/download/index.ts`, IDI-224) is the **ONE stable URL the website's
   download button links to** — `verify_jwt` off (a public download link can't demand a JWT), it reads
   `app_versions_latest`, HEAD-probes the target before redirecting (so a dead release reads as a

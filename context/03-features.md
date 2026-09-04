@@ -1086,6 +1086,86 @@ request bearing only the anon key (no user JWT) was rejected with 401. The deskt
 itself via curl. `wipe_local_account_data()` was verified by code review only, not live execution — it
 deletes real files under `~/.verbal/` and this development machine has a real, in-use installation.
 
+## Beta signup (website → email, 2026-09 — beta launch)
+
+The beta distribution front door: **`https://idiaz.io/flume/beta.html`** is the ONE link shared
+publicly (posts, DMs). A visitor enters name + email → the page immediately flips to a success state
+with both download buttons (Mac/Windows, straight at the `download` Edge Function, visitor's OS
+first; phones get a "open the email on your computer" note) → they also get a branded welcome email
+with the same links, and the founder gets a "Flume beta signup #N — {name}" notification. The form is
+a **guestbook, not a gate** (the download URL stays public); its value is knowing who the testers are
+and having an email channel to them.
+
+- **Page:** `site/flume/beta.html` (source of truth in this repo; copy to
+  `/Users/mshabbar/IDIAZ/flume-site/` and re-publish via here.now after edits, same as `invite.html`).
+  Static, styled as the site's LIGHT marketing theme (2026-09-04, user feedback — first version was
+  the product's dark theme): the sky photo background and mascot icon are inlined as data URIs
+  (both lifted from download.html's own bundle assets, page ≈ 335 KB), dark `#2b2b29` pill nav with
+  the lime CTA, ink `#182430` headline + terracotta period, lime `#d9e7a4` pitch panel (with the
+  dark window-chrome before/after mockup and 01/02/03 mono rows) beside the purple radial-gradient
+  form panel with floaty chips and a paper `#fffdf8` form card; buttons are the site's dark
+  `#1d2312` pills. Honeypot `company` field rendered off-screen. On backend failure it still offers
+  a direct download link — fail open for the tester.
+- **Function:** `supabase/functions/beta-signup/index.ts` — `verify_jwt` OFF; row-first into
+  `beta_signups`, both emails best-effort; honeypot → fake success; per-IP-hash rate limit 8/h
+  (fails open). **Duplicate email → RE-SENDS the welcome** (2026-09-04: the original silent
+  duplicate looked like "the email never sent" when someone re-tested the form) — guarded by the
+  STORED name (a resubmit can't rewrite the email), ≤5 sends per row, ≥15 min apart; never
+  re-notifies the founder; response `{ok, already:true, emailed}` and the page says "re-sent to
+  your inbox" when emailed. **Welcome email design matches the beta page's light site theme**
+  (2026-09-04 rework, user feedback — the first version reused invite-member's cream/sky-band
+  layout): paper card on soft-sky ground, lime `#d9e7a4` hero band with the "///" eyebrow, dark
+  `#1d2312` pill buttons, the dark window-chrome before/after demo, 01/02/03 mono rows;
+  `reply_to` the founder. The logo is a **hosted image** (`https://idiaz.io/flume/flume-mark-128.png`,
+  source `site/flume/flume-mark-128.png` — the 128px **mascot-head app icon**, resized from
+  `whisperflow/assets/brand/flume-mascot-head.png`, user-picked 2026-09-04; also the beta page's
+  nav/favicon data URI. Published with the flume-site; `FLUME_ICON_URL` overrides). **A changed
+  email logo MUST ship under a NEW filename** — Gmail's image proxy caches per-URL, so overwriting
+  the old `flume-icon.png` kept showing recipients the old mark (that stale URL still serves the
+  new icon for previously-sent emails) —
+  NOT a `cid:` inline attachment: the cid icon rendered as a broken image in the founder's client
+  even with the attachment verified intact (2026-09-04), cid handling is per-client flaky, and
+  dropping the attachment also drops the paperclip indicator. (`invite-member` still uses cid and
+  may show the same broken icon in that client.) The founder notification `reply_to`s the tester.
+  Delivery verified via Resend logs (both 2026-09-03 signups: status `delivered` in ~1 s). See
+  `04-data-model.md` §`beta_signups`.
+- **Funnel reporting** is a SQL join, not a dashboard: `beta_signups` → `auth.users` (installed +
+  signed in?) → usage tables (active?). Verified live 2026-09-03: signup → row + both emails,
+  duplicate → `already:true` no row, honeypot → no row, bad email → 400.
+
+## Report an issue (all platforms, 2026-09 — beta launch)
+
+In-app feedback: a message box whose submission is saved to the `issue_reports` table and best-effort
+emailed to the founder. Deliberately minimal — no screenshots, no ticket system, no in-app status;
+triage is manual (the founder reads the table / the email).
+
+**Server-side:** `supabase/functions/report-issue/index.ts` (`verify_jwt` on — a session JWT **or the
+anon key** both pass, so signed-out testers can report; an anon-role caller is stored as an anonymous
+report). Validates the message (required, clipped to 4000 chars; platform allowlisted to
+`mac|win|ios|android`, other metadata clipped — metadata never rejects a report), INSERTs into
+`issue_reports` with the service role **first**, then best-effort emails via Resend — the exact
+inversion of `invite-member`'s posture: there the email is the product, here the ROW is, so a Resend
+outage / missing `RESEND_API_KEY` / unverified domain never loses a report and is invisible to the
+tester (logged server-side only). Secrets: reuses `RESEND_API_KEY` + `INVITE_FROM_EMAIL`; recipient is
+`ISSUE_REPORT_EMAIL` (optional, defaults to the founder's address in code). Response
+`{ok, id, emailed}`. The table is RLS-on with **no policies** (service-role-only, the
+`groq_rate_limits` pattern) — verified live: anon SELECT returns `[]`, anon INSERT is rejected 401.
+
+**Clients** (both send `{message, platform, app_version, device_name, os_version}` and treat any
+`ok:false` as one friendly retry line — mirrors, change one, check the other):
+- **Desktop (both OSes):** Settings → **Support** group in the shared `flume_html()` rail
+  (`flume_dashboard_html.py`, `sendIssueReport()`) → `DashboardApi.report_issue(message)`
+  (`shared_dashboard.py`) → httpx POST with `auth_header()` (falls back to the anon key when signed
+  out). Platform/version from `config.PLATFORM`/`APP_VERSION`.
+- **Mobile (iOS + Android):** Settings → About → **Report an issue** row → `ReportIssueScreen`
+  (Menu modal stack, chevron-back per the back-affordance invariant) → `lib/reportIssue.ts` (raw fetch
+  with the session token or the anon key, the `useAuth.deleteAccount` pattern). Version via guarded
+  `require('expo-constants')`, OS via guarded `require('expo-device')`, platform `Platform.OS` —
+  all fail-soft. Success = haptic + native `Alert` (Hard Rule #14 — this stack is a native modal).
+
+Live-verified end-to-end (2026-09-03): anon-key POST → row landed in `issue_reports` with correct
+meta → `emailed:true` (Resend accepted); test row deleted after verification.
+
 ## Meetings — capture, live transcript, hybrid summary
 
 - **Two-speaker model — the Granola approach (2026-08-28, current).** Meetings show exactly two speakers:

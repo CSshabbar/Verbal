@@ -50,3 +50,6 @@ artifacts/windows-exe/
 dist-windows/
 build_exe.sh
 .commandcode/
+
+# here.now publish-tool state (written by publish.sh when publishing site/flume)
+.herenow/

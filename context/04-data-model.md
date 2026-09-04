@@ -106,6 +106,47 @@ been provisioned live, so `getGroqKey()` returned `''` and its call-site gates f
 dictation/retry/note-cleanup — while `lib/groq.ts` ignored the key parameter anyway (the proxy holds it).
 `whisperflow/supabase_app_config.sql` remains in the repo as an unapplied historical file only.
 
+**`issue_reports`** — `whisperflow/supabase_issue_reports.sql` (applied live 2026-09-03, migration
+`create_issue_reports`). In-app "Report an issue" feedback, one row per report from any platform.
+`id` uuid PK · `user_id` text `''` (auth uid; `''` = anonymous/signed-out) · `email` text `''` ·
+`platform` text `''` (`mac|win|ios|android`) · `app_version` text `''` · `message` text ·
+`meta` jsonb `'{}'` (`{device_name?, os_version?}`) · `status` text `'new'` (`new|seen|resolved`,
+manual triage) · `created_at`. Index `(created_at desc)`. **RLS on with NO policies on purpose**
+(the `groq_rate_limits` pattern): written ONLY by the `report-issue` Edge Function with the service
+role, read by the founder via dashboard/SQL — verified live that the anon key can neither SELECT nor
+INSERT. See `03-features.md` §Report an issue.
+
+`report-issue` (`supabase/functions/report-issue/index.ts`, 2026-09) — `verify_jwt` on; accepts a
+session JWT **or the anon key** (anonymous reports allowed by design). Saves the row FIRST with the
+service role, then best-effort emails the founder via Resend (reuses `RESEND_API_KEY` +
+`INVITE_FROM_EMAIL`; recipient = optional `ISSUE_REPORT_EMAIL` secret, code-defaulted) — an email
+failure never fails the request or reaches the client. Returns `{ok, id, emailed}`.
+
+**`beta_signups`** — `whisperflow/supabase_beta_signups.sql` (applied live 2026-09-03, migration
+`beta_signups_table`). One row per person who filled the public beta form (`idiaz.io/flume/beta.html`).
+`id` uuid PK · `name` text · `email` text (stored lowercased; **unique index** — repeat submits are
+idempotent) · `platform_hint` text `''` (`mac|win|ios|android`, visitor UA at signup) · `ip_hash` text
+`''` (sha-256 of caller IP, rate limiting only — the raw IP is never stored) · `status` text `'new'`
+(`new|active|churned`, manual triage) · `welcome_emailed` bool · `founder_notified` bool ·
+`welcome_sends` int `0` + `last_welcome_at` timestamptz (migration
+`beta_signups_welcome_resend_tracking`, 2026-09-04 — cap and space out duplicate re-sends) ·
+`created_at`. Indexes `(created_at desc)`, `(ip_hash, created_at desc)`. **RLS on with NO policies**
+(the `issue_reports` pattern): written ONLY by the `beta-signup` Edge Function with the service role.
+Funnel joins: `beta_signups.email → auth.users.email` answers "did they install and create an
+account"; from there the usage tables answer "are they active". See `03-features.md` §Beta signup.
+
+`beta-signup` (`supabase/functions/beta-signup/index.ts`, 2026-09) — `verify_jwt` OFF (public form).
+Honeypot `company` field (filled → fake success, nothing saved/sent), per-IP-hash rate limit
+(8/hour, counted in-table, fails open), row-first, then best-effort Resend welcome email (light
+site theme — see `03-features.md` §Beta signup — hosted logo `idiaz.io/flume/flume-mark-128.png`
+(NOT cid; filename is versioned per icon change — Gmail proxy caches per-URL; 2026-09-04), Mac+Windows `download`-function
+links, `reply_to` the founder) + founder notification (`Flume beta signup #N — {name}`, `reply_to`
+the tester). Duplicate email → 409 → **welcome RE-SENT** using the stored name/hint (≤5 sends per
+row via `welcome_sends`, ≥15 min apart via `last_welcome_at`; founder never re-notified) →
+`{ok:true, already:true, emailed}`. Secrets shared with invite-member/report-issue
+(`RESEND_API_KEY`, `INVITE_FROM_EMAIL`, `ISSUE_REPORT_EMAIL`); optional `FLUME_DOWNLOAD_FN` override.
+Returns `{ok, already, emailed}`.
+
 **`push_tokens`** — `(user_id, token)` composite PK, `platform`, `device_name`, `updated_at`. RLS on.
 Backs the meeting-start push-notification feature (`verbal-mobile/lib/notifications.ts::
 registerForMeetingPush` upserts here) — undocumented until this pass.
