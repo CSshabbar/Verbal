@@ -1433,6 +1433,19 @@
     leaks above. The Dock icon blinking for the pill's lifetime is the accepted cost (and invisible on a
     full-screen Space anyway). The other floating panels (`autolearn_widget.py`, `transform_widget.py`,
     `meeting_prompt.py`) still rely on the dashboard-side reverts only.
+    **The fifth path (2026-09-04) is not a policy leak at all: the NSPanel itself rots.** After hours of
+    uptime (full-screen Spaces created/destroyed all day, display sleep, the Regular↔Accessory flips above)
+    the WindowServer can silently shed a long-lived panel's Space binding, so `orderFrontRegardless()`
+    succeeds but the pill never appears on full-screen Spaces — with the policy correct and every prior fix
+    in place. Reported as "runs fine for a few hours, then stops appearing over full-screen apps; restarting
+    the app fixes it" (the restart recreates the panel). `overlay.py` now defends at the point of showing:
+    `_order_front()` re-applies all panel traits (`_apply_panel_traits` — level, collection behavior, etc.;
+    idempotent) before every `orderFrontRegardless()`, then checks `isOnActiveSpace()` — a
+    canJoinAllSpaces window must say YES once ordered front, so NO means the binding rotted. On NO,
+    `_heal_stale_panel()` does in-place what a restart did: rebuilds the NSPanel around the SURVIVING
+    WKWebView (page, bridge, and `_page_ready` handshake carry over) and orders the new panel front.
+    Panels get `setReleasedWhenClosed_(False)` so the heal's `close()` can't double-release under PyObjC.
+    Errors reading `isOnActiveSpace` count as "fine" — never churn windows on an unreadable signal.
 
 57. **A conditionally-shown element must be in the pixel budget, not just the steady-state one.**
     `meeting_html.py`'s ambient bar expands `.barOpt`'s `max-width` from 0 to a hardcoded cap on

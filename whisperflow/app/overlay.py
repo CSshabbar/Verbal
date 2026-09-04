@@ -126,36 +126,59 @@ class OverlayBar:
         return self._this_device()
 
     # ── window / webview ──────────────────────────────────────────────────────
-    def setup(self):
-        screen = NSScreen.mainScreen()
-        if not screen:
-            return
-        sf = screen.frame()
-        x = (sf.size.width - PANEL_W) / 2
-        y = 40
+    def _apply_panel_traits(self, win):
+        """Everything that makes the panel float over every Space.
 
-        NSNonactivatingPanelMask = 1 << 7
-        self._window = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
-            NSMakeRect(x, y, PANEL_W, PANEL_H),
-            NSWindowStyleMaskBorderless | NSNonactivatingPanelMask,
-            NSBackingStoreBuffered, False)
-        self._window.setLevel_(NSScreenSaverWindowLevel)
-        self._window.setOpaque_(False)
-        self._window.setBackgroundColor_(NSColor.clearColor())
-        self._window.setHasShadow_(False)
-        self._window.setIgnoresMouseEvents_(False)  # buttons need clicks
-        self._window.setFloatingPanel_(True)
-        self._window.setBecomesKeyOnlyIfNeeded_(True)
-        self._window.setHidesOnDeactivate_(False)
+        Called at creation AND re-asserted on every order-front: after hours of
+        uptime (full-screen Spaces created/destroyed, display sleep, the
+        Regular↔Accessory policy flips of conventions #56), the WindowServer can
+        silently shed a long-lived panel's level / collection behavior. That rot
+        is invisible until the next show over a full-screen app — which is why
+        it presented as "the pill stops appearing on full-screen apps until I
+        restart". Re-applying is idempotent and costs nothing.
+        """
+        win.setLevel_(NSScreenSaverWindowLevel)
+        win.setOpaque_(False)
+        win.setBackgroundColor_(NSColor.clearColor())
+        win.setHasShadow_(False)
+        win.setIgnoresMouseEvents_(False)  # buttons need clicks
+        win.setFloatingPanel_(True)
+        win.setBecomesKeyOnlyIfNeeded_(True)
+        win.setHidesOnDeactivate_(False)
+        # We close() stale panels in _heal_stale_panel; PyObjC must keep
+        # ownership or that close would double-release.
+        win.setReleasedWhenClosed_(False)
         # Stage Manager opt-outs: without .auxiliary + .canJoinAllApplications the
         # panel gets swept into the side strip and every click looks dead
         # (same recipe as meeting_window.py).
-        self._window.setCollectionBehavior_(
+        win.setCollectionBehavior_(
             NSWindowCollectionBehaviorCanJoinAllSpaces
             | NSWindowCollectionBehaviorStationary
             | NSWindowCollectionBehaviorFullScreenAuxiliary
             | (1 << 17)   # NSWindowCollectionBehaviorAuxiliary
             | (1 << 18))  # NSWindowCollectionBehaviorCanJoinAllApplications
+
+    def _make_panel(self, rect):
+        NSNonactivatingPanelMask = 1 << 7
+        win = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
+            rect,
+            NSWindowStyleMaskBorderless | NSNonactivatingPanelMask,
+            NSBackingStoreBuffered, False)
+        self._apply_panel_traits(win)
+        return win
+
+    def _default_frame(self):
+        screen = NSScreen.mainScreen()
+        if not screen:
+            return None
+        sf = screen.frame()
+        return NSMakeRect((sf.size.width - PANEL_W) / 2, 40, PANEL_W, PANEL_H)
+
+    def setup(self):
+        rect = self._default_frame()
+        if rect is None:
+            return
+        self._window = self._make_panel(rect)
 
         try:
             self._build_webview()
@@ -281,12 +304,74 @@ class OverlayBar:
         if not self._window:
             self.setup()
         self._borrow_accessory_policy()
+        try:
+            self._apply_panel_traits(self._window)  # rots over hours — see docstring
+        except Exception:
+            pass
         self._window.orderFrontRegardless()
+        if not self._on_active_space():
+            self._heal_stale_panel()
         self._visible = True
         # Every state that appears on screen needs hover, not just recording:
         # Done hides "Copy again" behind it too, and show_briefly() can be the
         # first thing shown (a transcript arriving from another device).
         self._start_hover_monitor()
+
+    def _on_active_space(self):
+        """True if the pill is actually showing on the current Space.
+
+        A canJoinAllSpaces window must report isOnActiveSpace == YES once
+        ordered front; NO means its Space binding rotted (typically bound to a
+        since-destroyed full-screen Space). Errors count as fine — never churn
+        windows on a signal we can't read.
+        """
+        try:
+            return bool(self._window.isOnActiveSpace())
+        except Exception:
+            return True
+
+    def _heal_stale_panel(self):
+        """Self-heal the fifth path of conventions #56: the panel exists, the
+        activation policy is right, orderFrontRegardless ran — and the pill
+        still isn't on the active (full-screen) Space, because the long-lived
+        NSPanel's Space binding rotted inside the WindowServer. No event fires
+        for that, and no property re-assert fixes it; the only cure users found
+        was restarting the app. Do the equivalent in-place: rebuild the NSPanel
+        around the SURVIVING WKWebView (its loaded page, bridge, and
+        _page_ready handshake all carry over) and order the new panel front.
+        Runs at most once per show, only when isOnActiveSpace says NO.
+        """
+        logger.info("overlay: panel missing from active Space after orderFront — rebuilding panel")
+        old, self._window = self._window, None
+        frame = None
+        try:
+            frame = old.frame() if old is not None else None
+        except Exception:
+            pass
+        try:
+            if self._webview is not None:
+                self._webview.removeFromSuperview()
+        except Exception:
+            pass
+        try:
+            if old is not None:
+                old.orderOut_(None)
+                old.close()
+        except Exception:
+            pass
+        try:
+            if frame is None:
+                frame = self._default_frame()
+            if frame is None:
+                return
+            self._window = self._make_panel(frame)
+            if self._webview is not None:
+                self._window.setContentView_(self._webview)
+            self._window.orderFrontRegardless()
+        except Exception as e:
+            # _window may be None now; the next _order_front runs setup() and
+            # rebuilds the webview too — degraded, but never a dead pill.
+            logger.error("overlay: panel rebuild failed: %s", e)
 
     def _push(self, mode, data=None):
         import json
